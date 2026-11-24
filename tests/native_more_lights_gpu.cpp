@@ -102,6 +102,31 @@ static float numeric(IDirect3DDevice9* d,IDirect3DSurface9* target,const std::ve
      setup();faults.sets=0;faults.failFrom=3;must(d->BeginScene());const HRESULT broken=renderer.draw(renderer.kind(original),&mirror,[](bool,float*){},draw);must(d->EndScene());assert(FAILED(broken)&&renderer.restoreFailed);
      unsigned submitted=0;assert(FAILED(renderer.draw(Kind::None,&mirror,[](bool,float*){},[&]{++submitted;return S_OK;}))&&!submitted);
      faults.failFrom=0;setup();renderer.deviceReset();assert(!renderer.restoreFailed);restored();}
+    if(!terrain){
+        const auto unchanged=[](bool,float*){};
+        float bank[44]{};
+        renderer.limits(8,8);
+        must(d->SetVertexShader(original));
+        must(d->SetVertexShaderConstantF(236,bank,11));
+        assert(renderer.keepsModelState(original,&mirror,unchanged,false));
+        bank[0]=1.f;
+        must(d->SetVertexShaderConstantF(236,bank,11));
+        assert(!renderer.keepsModelState(original,&mirror,unchanged,false));
+        const auto clear=[](bool,float* values){values[0]=0.f;};
+        assert(renderer.keepsModelState(original,&mirror,clear,true));
+        faults.shaderWrites=faults.constantWrites=0;
+        must(renderer.draw(Kind::Model,&mirror,clear,[]{return D3D_OK;}));
+        assert(!faults.shaderWrites&&!faults.constantWrites);
+        renderer.registerShader(eight,reinterpret_cast<const DWORD*>(expanded.data()),expanded.size(),false);
+        must(d->SetVertexShader(eight));
+        assert(renderer.keepsModelState(eight,&mirror,unchanged,false));
+        assert(!renderer.keepsModelState(eight,&mirror,clear,true));
+        renderer.limits(7,8);
+        bank[12]=1.f;
+        must(d->SetVertexShaderConstantF(236,bank,11));
+        assert(!renderer.keepsModelState(eight,&mirror,unchanged,false));
+        std::puts("MORE_LIGHTS_PAIR_STATE_PASS zero RGB admitted, live RGB and changed bank split");
+    }
     std::puts("MORE_LIGHTS_STATE_PASS unrelated520=warm-cache-preserved failedSetterAfterWrite=restored exception=restored persistentFailure=blocked reset=recovered");
 #endif
 #ifdef NORTHLIGHT_MORE_LIGHTS_BENCHMARK

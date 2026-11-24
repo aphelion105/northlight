@@ -15,7 +15,7 @@ public:
     static const char* name(Stage s){static const char* names[]={"admission","constants","snapshot","boundsPose","heightRead","uv","subdivide","geometryUpload","normalCache","normalBuild","mips","captureSetup","captureDraw","captureRestore","pomSetup","nativeDraw","finalApply","sharedPOM","visibilityAudit","deferredRecord","deferredFlush","poseEnvelope","poseFallback","poseLocal"};return names[s];}
     using Clock=uint64_t(*)();
     enum Counter {Candidates,RangeRejected,NoContribution,NormalHit,NormalMiss,BoundsVertices,PoseVertices,PoseBudget,
-        GeometryHit,GeometryBuilt,OcclusionDraw,OcclusionFarSkipped,KnownCaptureState,CounterCount};
+        GeometryHit,GeometryBuilt,OcclusionDraw,OcclusionFarSkipped,KnownCaptureState,AdmissionRasterBatch,EarlyNormalRefused,CounterCount};
     struct Scope;
 private:
     static constexpr unsigned Tags=20,Ring=3,MaxSpans=256,NativeStride=16;
@@ -92,7 +92,7 @@ public:
         for(unsigned stage=0;stage<StageCount;++stage){CPU total{};for(unsigned tag=0;tag<Tags;++tag){const auto& c=cpu[stage*Tags+tag];total.calls+=c.calls;total.exclusive+=c.exclusive;total.items+=c.items;total.bytes+=c.bytes;}
             logf("MATERIAL_STAGE frame=%llu stage=%s calls=%u cpuMs=%.6f items=%llu bytes=%llu nativeStride=%u",(unsigned long long)frame,name(Stage(stage)),total.calls,total.exclusive*1e-6,(unsigned long long)total.items,(unsigned long long)total.bytes,stage==NativeDraw&&gpuSample?NativeStride:1u);}
         logf("MATERIAL_PROFILE frame=%llu cpuExclusiveMs=%.6f clockReads=%llu queryCpuMs=%.6f newQueries=%u gpuRecording=%u nativeCpuVisits=%u nativeCpuSkipped=%u",(unsigned long long)frame,sum*1e-6,(unsigned long long)reads,queryNs*1e-6,queryCreates,unsigned(gpuSample&&!gpuDisabled),nativeCpuVisits,nativeCpuSkipped);
-        static const char* counterNames[]={"candidates","rangeRejected","noContribution","normalHit","normalMiss","boundsVertices","poseVertices","poseBudget","geometryHit","geometryBuilt","occlusionDraw","occlusionFarSkipped","knownCaptureState"};
+        static const char* counterNames[]={"candidates","rangeRejected","noContribution","normalHit","normalMiss","boundsVertices","poseVertices","poseBudget","geometryHit","geometryBuilt","occlusionDraw","occlusionFarSkipped","knownCaptureState","admissionRasterBatch","earlyNormalRefused"};
         for(unsigned i=0;i<counts.size();++i)if(counts[i])logf("MATERIAL_WORK frame=%llu counter=%s count=%llu",(unsigned long long)frame,counterNames[i],(unsigned long long)counts[i]);active=false;parent=nullptr;
     }
     void poll(){

@@ -84,6 +84,7 @@ static_assert(sizeof(Vertex)==24&&offsetof(Vertex,color)==12&&offsetof(Vertex,uv
 struct Device final:ForwardIDirect3DDevice9 {
     Texture texture,secondTexture;Declaration declaration;Buffer vertices;Indices indices;
     float constants[1024]{};DWORD source=D3DBLEND_SRCALPHA,destination=D3DBLEND_ONE,alphaTest=TRUE,alphaRef=1,alphaFunc=D3DCMP_GREATEREQUAL;unsigned streamOffset=0;
+    unsigned samplerReads=0,constantReads=0;
     Device():ForwardIDirect3DDevice9(nullptr){
         constants[8]=constants[13]=constants[18]=constants[22]=1; // c2..5, clip.w = view.z
         constants[24]=constants[29]=1; // Native UV0 matrix.
@@ -98,11 +99,13 @@ struct Device final:ForwardIDirect3DDevice9 {
         default:assert(false);return E_NOTIMPL;}return D3D_OK;
     }
     HRESULT STDMETHODCALLTYPE GetSamplerState(DWORD sampler,D3DSAMPLERSTATETYPE type,DWORD* out)override{
+        ++samplerReads;
         assert(sampler<2);switch(type){case D3DSAMP_SRGBTEXTURE:*out=0;break;
         case D3DSAMP_ADDRESSU:case D3DSAMP_ADDRESSV:*out=D3DTADDRESS_CLAMP;break;
         case D3DSAMP_MAGFILTER:case D3DSAMP_MINFILTER:*out=D3DTEXF_POINT;break;default:assert(false);return E_NOTIMPL;}return D3D_OK;
     }
     HRESULT STDMETHODCALLTYPE GetVertexShaderConstantF(UINT start,float* out,UINT count)override{
+        ++constantReads;
         assert(start==0&&count==256);std::memcpy(out,constants,sizeof(constants));return D3D_OK;
     }
     HRESULT STDMETHODCALLTYPE GetVertexDeclaration(IDirect3DVertexDeclaration9** out)override{*out=&declaration;declaration.AddRef();return D3D_OK;}
@@ -128,6 +131,72 @@ struct Device final:ForwardIDirect3DDevice9 {
 static std::vector<DWORD> words(FILE* file){unsigned size;assert(std::fread(&size,4,1,file)==1);std::vector<DWORD> out(size);assert(std::fread(out.data(),4,size,file)==size);return out;}
 static unsigned family(const Shader& shader){std::uint64_t hash=14695981039346656037ull;for(auto byte:std::vector<unsigned char>(reinterpret_cast<const unsigned char*>(shader.code.data()),reinterpret_cast<const unsigned char*>(shader.code.data())+shader.code.size()*4))hash=(hash^byte)*1099511628211ull;return m2ShaderFamily(hash);}
 static bool close(float a,float b){return std::fabs(a-b)<.00001f;}
+static void mirrorAdmission(NorthlightParticleCapture::Capture& capture,Shader& vertex,Shader& mesh,Pixel& pixel,
+                            IDirect3DBaseTexture9* texture,const NorthlightParticleTextures::View& image,const char* fixture){
+    using namespace NorthlightParticleDraw;
+    struct Mirror {
+        bool trusted=true;
+        unsigned targetWrites=0;
+        bool vertexShaderKnown=false,pixelShaderKnown=false;
+        IDirect3DVertexShader9* vertexShader=nullptr;
+        IDirect3DPixelShader9* pixelShader=nullptr;
+        bool textureKnown[16]={};
+        IDirect3DBaseTexture9* textures[16]={};
+        State particleDraw;
+        bool active()const{return trusted;}
+    } mirror;
+    unsigned classifications=0;
+    auto& state=mirror.particleDraw;
+    const auto route=[&]{return capture.route(mirror,&classifications);};
+    const auto blend=[&](auto s,DWORD value,bool known=true){state.blend(blendSlot(s),value,known);};
+    assert(supported(D3DPT_TRIANGLELIST,1)&&supported(D3DPT_TRIANGLESTRIP,1)&&supported(D3DPT_TRIANGLEFAN,1));
+    assert(!supported(D3DPT_POINTLIST,1)&&!supported(D3DPT_TRIANGLELIST,0));
+    blend(D3DRS_ALPHABLENDENABLE,FALSE);assert(!route()&&classifications==0);
+    mirror.trusted=false;assert(route());mirror.trusted=true;
+    mirror.targetWrites=1;assert(route());mirror.targetWrites=0;
+    {State::Write write(state,true);assert(route());}
+    blend(D3DRS_SRCBLEND,D3DBLEND_ZERO);blend(D3DRS_DESTBLEND,D3DBLEND_ZERO);
+    blend(D3DRS_ALPHABLENDENABLE,TRUE);assert(!route());
+    blend(D3DRS_SRCBLEND,D3DBLEND_SRCALPHA);assert(!route());
+    blend(D3DRS_DESTBLEND,D3DBLEND_INVSRCALPHA);assert(route()&&classifications==1);
+
+    const auto bind=[&](IDirect3DVertexShader9* vs,IDirect3DPixelShader9* ps){
+        State::Write write(state,true,true);
+        mirror.vertexShaderKnown=mirror.pixelShaderKnown=true;
+        mirror.vertexShader=vs;mirror.pixelShader=ps;
+    };
+    Shader unregisteredVertex;Pixel unregisteredPixel;
+    bind(&unregisteredVertex,&pixel);assert(!route()&&classifications==2);
+    for(unsigned i=0;i<100;++i)assert(!route()&&classifications==2);
+    bind(&vertex,&unregisteredPixel);assert(!route()&&classifications==3);
+    bind(&vertex,nullptr);assert(!route()&&classifications==4);
+    bind(nullptr,&pixel);assert(!route()&&classifications==5);
+    bind(nullptr,nullptr);assert(route()&&classifications==6);
+    bind(&vertex,&pixel);assert(route()&&classifications==7);
+    bind(&mesh,&pixel);assert(route()&&classifications==8);
+    blend(D3DRS_ALPHABLENDENABLE,FALSE);assert(!route());
+    blend(D3DRS_ALPHABLENDENABLE,FALSE,false);assert(route()&&classifications==8);
+
+    constexpr unsigned flashes=NorthlightEmission::Lightning|NorthlightEmission::SkyLightning;
+    assert(capture.mayEmit(mirror,flashes)&&capture.mayEmit(mirror,~0u)); // Unknown texture.
+    assert(state.samplers==1);
+    mirror.textureKnown[0]=true;mirror.textures[0]=texture;
+    assert(!capture.mayEmit(mirror,flashes)&&!capture.mayEmit(mirror,~0u)); // Decoded ordinary texture.
+    {State::Write write(state,true);assert(capture.mayEmit(mirror,flashes)&&capture.mayEmit(mirror,~0u));}
+    const auto path=std::filesystem::path(std::string(fixture)+".flash-catalog");
+    const uint32_t header[]{1,24,1};
+    for(const unsigned kind:{0u,unsigned(NorthlightEmission::Lightning),unsigned(NorthlightEmission::SkyLightning)}){
+        const NorthlightEmission::Entry entry{image.rgbaHash,image.width,image.height,0,NorthlightEmission::Glow|kind};
+        std::ofstream out(path,std::ios::binary);out.write("NLE1",4);
+        out.write(reinterpret_cast<const char*>(header),sizeof header);
+        out.write(reinterpret_cast<const char*>(&entry),sizeof entry);out.close();
+        NorthlightParticleCapture::Capture flashCapture;
+        assert(flashCapture.catalog.read(path)&&flashCapture.mayEmit(mirror,~0u));
+        assert(flashCapture.mayEmit(mirror,flashes)==bool(kind));
+    }
+    std::filesystem::remove(path);
+    mirror.textures[0]=nullptr;assert(capture.mayEmit(mirror,flashes));
+}
 int main(int argc,char** argv){
     assert(argc==2||argc==3);const bool influenceOnly=argc==3&&std::strcmp(argv[2],"--view-influence-only")==0;assert(argc==2||influenceOnly);
     FILE* file=std::fopen(argv[1],"rb");assert(file);Shader vertex,white,mesh;vertex.code=words(file);white.code=words(file);mesh.code=words(file);const auto pixel=words(file);
@@ -149,13 +218,49 @@ int main(int argc,char** argv){
     const auto prepare=[&](Shader& shader){return capture.prepare(&device,&shader,&ps,args,inverse,camera,projection,frame);};
     const auto publish=[&](){frame.publish(nullptr,0,fixed,camera,selection);return selection.update(fixed,camera,8,1.f/120,true,nullptr,frame.output.data(),frame.outputCount,frame.immediate.data(),frame.immediateCount);};
     if(!influenceOnly){
+    mirrorAdmission(capture,vertex,mesh,ps,&device.texture,texture,argv[1]);
     auto prepared=prepare(vertex);assert(prepared.count==1&&frame.triangles==1);
     const auto& emitted=prepared.clusters[0].sample;assert(close(emitted.position[0],100)&&close(emitted.position[1],200)&&close(emitted.position[2],302));
     assert(emitted.rgb[2]>emitted.rgb[0]&&emitted.rgb[2]>emitted.rgb[1]);
     for(unsigned k=0;k<3;++k)assert(close(emitted.rgb[k],float((vertices[0].color>>(16-8*k))&255)/255*texel[k]*float((vertices[0].color>>24)&255)/255*texel[3]));
+    {
+        capture.setStateSource(static_cast<IDirect3DDevice9*>(&device),[](void* context,const D3DRENDERSTATETYPE* keys,unsigned count,DWORD* out){
+            auto* d=static_cast<IDirect3DDevice9*>(context);
+            for(unsigned i=0;i<count;++i)if(FAILED(d->GetRenderState(keys[i],out+i)))return false;
+            return true;
+        },[](void* context,DWORD stage,unsigned mask,DWORD* out){
+            auto* d=static_cast<IDirect3DDevice9*>(context);
+            for(unsigned i=0;i<D3DSAMP_DMAPOFFSET;++i)if((mask&(1u<<i))&&FAILED(d->GetSamplerState(stage,D3DSAMPLERSTATETYPE(i+1),out+i)))return false;
+            return true;
+        });
+        NorthlightParticleLights::Frame cachedFrame;
+        const auto cached=capture.prepare(&device,&vertex,&ps,args,inverse,camera,projection,cachedFrame);
+        assert(cached.count==1&&cachedFrame.triangles==1);
+        for(unsigned k=0;k<3;++k){
+            assert(cached.clusters[0].sample.position[k]==emitted.position[k]);
+            assert(cached.clusters[0].sample.rgb[k]==emitted.rgb[k]);
+        }
+        capture.setStateSource(nullptr,nullptr,nullptr);
+    }
     capture.submit(prepared,false,false,frame);assert(publish().count==0&&frame.accepted==0);
     capture.submit(prepared,true,true,frame);auto shown=publish();assert(frame.accepted==1&&frame.deferred==1&&shown.count==1&&shown.color[0][2]>.01f);
     frame.nextFrame();assert(publish().count==0&&selection.fading==0); // No selection fade/TTL after native particles retire.
+    {
+        const auto savedVertices=vertices;const auto savedArgs=args;
+        const std::uint16_t repeated[]{99,1,2,3,1,2,3};
+        uploads.write(&device.indices,1,0,repeated,sizeof(repeated),false);device.indices.bytes=sizeof(repeated);
+        args.primCount=2;
+        const auto beforeReuse=uploads.stats();
+        const auto reused=prepare(vertex);
+        assert(uploads.stats().hits-beforeReuse.hits==(NORTHLIGHT_PARTICLE_PROBE_REFERENCE?12u:9u));
+        assert(reused.count==1&&reused.clusters[0].count==2&&frame.triangles==2);
+        assert(close(reused.clusters[0].sample.position[0],emitted.position[0]));
+        for(auto& v:vertices)v.position[0]+=2;
+        uploads.write(&device.vertices,1,device.streamOffset,vertices.data(),sizeof(vertices),false);
+        frame.nextFrame();const auto moved=prepare(vertex);
+        assert(moved.count==1&&close(moved.clusters[0].sample.position[0],emitted.position[0]+2));
+        vertices=savedVertices;args=savedArgs;device.indices.bytes=sizeof(indices);upload();frame.nextFrame();
+    }
     prepared=prepare(vertex);capture.submit(prepared,true,false,frame);assert(publish().count==1&&frame.accepted==1&&frame.deferred==0);
     frame.nextFrame();const auto indexed=args;args.type=NorthlightSpellLayer::DrawType::PrimitiveUP;args.first=0;args.vertexData=vertices.data();args.stride=sizeof(Vertex);
     assert(prepare(vertex).count==1);args=indexed; // UP bytes use their pointer, never the bound stream's offset.
@@ -167,7 +272,15 @@ int main(int argc,char** argv){
     frame.nextFrame();device.source=D3DBLEND_SRCALPHA;for(auto& v:vertices)v.color=0;upload();
     const auto constant=prepare(white);assert(constant.count==1); // Native ParticleUnlit constant white is not VB COLOR0.
     for(unsigned k=0;k<3;++k)assert(close(constant.clusters[0].sample.rgb[k],texel[k]*texel[3]));
-    frame.nextFrame();uploads.forget(&device.vertices);assert(!prepare(vertex).count&&frame.bufferMiss>0); // Miss stays dark; no Lock.
+    frame.nextFrame();uploads.forget(&device.vertices);args.primCount=16;
+    const auto samplerReads=device.samplerReads,constantReads=device.constantReads;
+    assert(!prepare(vertex).count&&frame.bufferMiss==1); // A missing stream ends this draw's probe.
+    assert(device.samplerReads==samplerReads&&device.constantReads==constantReads);
+    args=indexed;
+    frame.nextFrame();upload();
+    for(unsigned i=0;i<NorthlightParticleLights::DrawLimit;++i)assert(frame.takeDraw());
+    assert(!prepare(vertex).count&&frame.probes==1&&frame.dropped==1);
+    assert(device.samplerReads==samplerReads&&device.constantReads==constantReads);
     frame.nextFrame();upload();textures.invalidate(&device.texture);assert(!prepare(vertex).count&&frame.textureMiss==1);
     textures.upload(&device.texture,&device.texture,image[0],image[1],0,image[2],payload.data(),payload.size(),image[3],true,true);
     for(auto& v:vertices)v.color=packed(nativeTint);upload();
@@ -257,7 +370,7 @@ int main(int argc,char** argv){
         const auto readsBefore=uploads.stats();
         const auto result=capture.prepare(&device,&vertex,&ps,args,rotatedInverse,camera,projection,frame);
         const auto readsAfter=uploads.stats();
-        require(readsAfter.hits-readsBefore.hits==(up?0u:NORTHLIGHT_PARTICLE_PROBE_REFERENCE?12u:6u)&&readsAfter.misses==readsBefore.misses,"INPUT_READS");
+        require(readsAfter.hits-readsBefore.hits==(up?0u:NORTHLIGHT_PARTICLE_PROBE_REFERENCE?9u:6u)&&readsAfter.misses==readsBefore.misses,"INPUT_READS");
         require(frame.triangles==1&&frame.draws==1,"INPUT_REUSE");
         require(result.count==1,"ROTATION_MISMATCH");const auto& source=result.clusters[0].sample;
         require(std::fabs(source.position[0]-102.6f)<.0001f&&std::fabs(source.position[1]-200.f)<.0001f&&std::fabs(source.position[2]-302.f)<.0001f,"WORLD_POSITION");
@@ -344,7 +457,8 @@ int main(int argc,char** argv){
     const auto junkBefore=uploads.stats();
     for(unsigned i=0;i<NorthlightParticleLights::ProbeLimit;++i)require(bool(prepare(vertex).count)==(i<NorthlightParticleLights::DrawLimit),"MULTI_OUTSIDE_ADMISSION");
     const auto junkAfter=uploads.stats();
-    const unsigned reads=(NorthlightParticleLights::DrawLimit*NorthlightParticleLights::TrianglesPerDraw+NorthlightParticleLights::ProbeLimit-NorthlightParticleLights::DrawLimit+NORTHLIGHT_PARTICLE_PROBE_REFERENCE*NorthlightParticleLights::DrawLimit)*6;
+    const unsigned indexedTriangles=NorthlightParticleLights::DrawLimit*(NorthlightParticleLights::TrianglesPerDraw+NORTHLIGHT_PARTICLE_PROBE_REFERENCE);
+    const unsigned reads=3*(indexedTriangles+NorthlightParticleLights::DrawLimit);
     require(junkAfter.hits-junkBefore.hits==reads&&junkAfter.misses==junkBefore.misses,"MULTI_OUTSIDE_READS");
     require(frame.probes==128&&frame.draws==32&&frame.triangles==512&&frame.dropped==96,"MULTI_OUTSIDE_COUNTS");
     // Every triangle uses the same known texel/colour, so all four RGBA samples run.

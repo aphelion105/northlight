@@ -11,6 +11,7 @@ import subprocess
 import sys
 sys.path[:0]=[str(Path(__file__).resolve().parents[1]),str(Path(__file__).resolve().parents[1]/'scripts/shaders')]
 import northlight_paths as fp
+from scripts.shaders.shader_sources import source_files, world_source_text
 from shader_compiler import Compiler,validate_assembly
 
 parser=argparse.ArgumentParser(__doc__)
@@ -20,13 +21,13 @@ parser.add_argument('--backend',type=Path,action='append')
 args=parser.parse_args();out=args.output.resolve();out.mkdir(parents=True,exist_ok=True)
 inputs=[Path(__file__),fp.TESTS/'probe_local_visibility_gpu.cpp',fp.TESTS/'probe_local_visibility_gpu.hlsl',
         fp.src('probe_local_visibility.h'),fp.src('world_gi.cpp'),
-        fp.SHADERS/'world_effects.hlsl',fp.SHADERS/'auto_bump_normal.hlsl',fp.COMPILED/'WorldGI.bin']
+        *source_files(fp.SHADERS/'world_effects.hlsl'),fp.COMPILED/'WorldGI.bin']
 sha=lambda p:hashlib.sha256(p.read_bytes()).hexdigest()
 hashes={str(p):sha(p) for p in inputs}
 compiler=Compiler(allow_compatible_binary=True)
 # Exercise the actual production helper and bytecode. The legacy control uses
 # LocalVisibilityInfo.x=0; the runtime always binds its resident local atlas.
-world=(fp.SHADERS/'world_effects.hlsl').read_text().replace('"auto_bump_normal.hlsl"','"'+(fp.SHADERS/'auto_bump_normal.hlsl').as_posix()+'"')
+world=world_source_text(fp.SHADERS/'world_effects.hlsl').replace('"auto_bump_normal.hlsl"','"'+(fp.SHADERS/'auto_bump_normal.hlsl').as_posix()+'"')
 query=(fp.TESTS/'probe_local_visibility_gpu.hlsl').read_text()
 stats={}
 for name,entry,body in [('VisibilityQuery','VisibilityQuery',world+'\n'+query),

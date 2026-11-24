@@ -21,6 +21,8 @@ def main():
     NorthlightLegacyFog::Constants legacyFog;
     NorthlightLegacyFog::Hold legacyFogHold;
     struct Active {std::string map="Northrend";} activeValue;Active* active=&activeValue;
+    DWORD parityTime=0;
+    DWORD visualTime()const{return parityTime?parityTime:GetTickCount();}
 ''')
     harness = harness.replace('Ext* d;bool', 'explicit World(Ext* device):d(device){}\nExt* d;bool')
     harness = harness.replace('std::map<IDirect3DVertexShader9*,Capture> captureShaders;',
@@ -32,7 +34,8 @@ def main():
     harness = harness.replace('bool wmoContext(IDirect3DVertexShader9*){valid=true;return true;}', wmo)
     getter = method('src/world/world_renderer.h', 'const NorthlightLegacyFog::Constants& legacyFogConstants(')
     harness = harness.replace('__MODEL__', test['MODEL'] + '\n' + getter)
-    harness = harness.replace('__BEFORE__', test['BEFORE']).replace('__PROJECTION__', test['PROJECTION'])
+    harness = (harness.replace('__MENU__', test['MENU']).replace('__BEFORE__', test['BEFORE'])
+               .replace('__PROJECTION__', test['PROJECTION']).replace('__TERRAIN_DEPTH__', test['TERRAIN_DEPTH']))
     # Model-context reads are injected as in the existing production-gate test.
     # Only the already-valid terrain/WMO prefix is under test here.
     harness += r'''
@@ -63,6 +66,11 @@ int main(){
      w.activeValue.map="Northrend";w.legacyFogKnown=true;w.legacyFog=NorthlightLegacyFog::Constants{};
      assert(w.legacyFogConstants().parameters[3]==0);++cases;
      w.legacyFogKnown=false;w.legacyFogHold.lastUpdate=GetTickCount()-NorthlightLegacyFog::Hold::HoldMs-1;
+     assert(w.legacyFogConstants().parameters[3]==0);++cases;}
+    if(!expectBug){Device p;auto& w=*p.world;NorthlightLegacyFog::Constants fog;
+     fog.parameters[3]=1;w.parityTime=1200;w.legacyFogHold.update("Northrend",fog,true,w.parityTime-16);
+     assert(w.legacyFogConstants().parameters[3]==1);++cases;
+     w.parityTime+=NorthlightLegacyFog::Hold::HoldMs;
      assert(w.legacyFogConstants().parameters[3]==0);++cases;}
     std::printf("AO fog capture: %u cases, %s\n",cases,expectBug?"original regression reproduced":"PASS");
 }

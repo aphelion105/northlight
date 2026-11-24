@@ -24,6 +24,9 @@ def source_identity(repo=northlight_paths.REPO):
     digest = hashlib.sha256()
     paths = [p for folder in ('src', 'shaders') for p in (repo/folder).rglob('*') if p.is_file()]
     paths += [repo/'scripts/build_renderer.py', repo/'northlight_paths.py']
+    water_manifest = repo/'tideglass/source.json'
+    if water_manifest.is_file():
+        paths.append(water_manifest)
     assets_builder = repo/'scripts/build_renderer_assets.py'
     if assets_builder.is_file():
         paths.append(assets_builder)
@@ -42,29 +45,32 @@ def link_renderer(command, env, output_dll):
     # Zig 0.15.2 does not forward --gc-sections to COFF, and rejects /OPT:REF.
     # Reuse its exact library/CRT selection, then repeat the cheap link with REF.
     # Keep PDBs and distinct function addresses; do not enable ICF or change -O2.
-    log = northlight_paths.out() / (output_dll.stem + '-build.log')
-    result = subprocess.run([*command, '-v'], env=env, capture_output=True, text=True)
-    log.write_text(result.stdout + result.stderr, encoding='utf-8')
-    if result.returncode:
-        raise SystemExit(f'Renderer compilation failed; see {log}\n{result.stderr[-6000:]}')
-    lines = [line for line in result.stderr.splitlines() if line.startswith('lld-link ')]
-    if len(lines) != 1:
-        raise SystemExit(f'Expected one Zig 0.15.2 COFF link command; see {log}')
-    # The pinned Zig driver prints raw arguments without quoting spaces. Its
-    # COFF switches are uppercase (except -lldmingw); input files are absolute,
-    # except its cache files, printed relative to the working directory when under it.
-    # Split at argument starts, not at arbitrary whitespace inside a path.
-    try:
-        cache = '|' + re.escape(os.path.relpath(env['ZIG_GLOBAL_CACHE_DIR'])) + r'[\\/]'
-    except ValueError:   # the cache is on another drive: Zig prints it absolute
-        cache = ''
-    linker = re.split(r' (?=-[A-Z]|-lldmingw\b|[A-Za-z]:[\\/]|/' + cache + ')', lines[0])
-    if linker[0] != 'lld-link' or '-OUT:' + str(output_dll) not in linker or any(
-            not Path(arg).is_file() for arg in linker[1:] if not arg.startswith('-')):
-        raise SystemExit(f'Cannot safely reconstruct Zig COFF inputs; see {log}')
-    final = [command[0], *linker, '-OPT:REF', '-OPT:NOICF',
-             '-MAP:' + str(northlight_paths.out() / (output_dll.stem + '.map'))]
-    subprocess.run(final, env=env, check=True)
+    output = northlight_paths.out()
+    log = output / (output_dll.stem + '-build.log')
+    # Zig prints cache paths relative to its working directory when possible.
+    # Preserve the caller's caches and run in a fresh directory so the log contains
+    # absolute inputs, including their spaces.
+    env = dict(env)
+    env['ZIG_LOCAL_CACHE_DIR'] = str(Path(env.get('ZIG_LOCAL_CACHE_DIR') or '.zig-cache').resolve())
+    for name in ('ZIG_GLOBAL_CACHE_DIR', 'ZIG_LIB_DIR'):
+        if env.get(name):
+            env[name] = str(Path(env[name]).resolve())
+    with tempfile.TemporaryDirectory(prefix='coff-link-', dir=output) as cwd:
+        result = subprocess.run([*command, '-v'], cwd=cwd, env=env, capture_output=True, text=True)
+        log.write_text(result.stdout + result.stderr, encoding='utf-8')
+        if result.returncode:
+            raise SystemExit(f'Renderer compilation failed; see {log}\n{result.stderr[-6000:]}')
+        lines = [line for line in result.stderr.splitlines() if line.startswith('lld-link ')]
+        if len(lines) != 1:
+            raise SystemExit(f'Expected one Zig 0.15.2 COFF link command; see {log}')
+        # The pinned driver's COFF switches and absolute input paths mark
+        # argument starts. A raw path may contain unquoted spaces.
+        linker = re.split(r' (?=-[A-Z]|-lldmingw\b|[A-Za-z]:[\\/]|/)', lines[0])
+        if linker[0] != 'lld-link' or '-OUT:' + str(output_dll) not in linker or any(
+                not Path(arg).is_file() for arg in linker[1:] if not arg.startswith('-')):
+            raise SystemExit(f'Cannot safely reconstruct Zig COFF inputs; see {log}')
+        final = [command[0], *linker, '-OPT:REF', '-OPT:NOICF', '-MAP:' + str(output / (output_dll.stem + '.map'))]
+        subprocess.run(final, cwd=cwd, env=env, check=True)
 
 def check_compiler(zig, env):
     if sys.platform != 'win32':
@@ -89,6 +95,8 @@ def check_compiler(zig, env):
 
 def main(argv=None):
     arguments = sys.argv[1:] if argv is None else argv
+    from tideglass_source import verify
+    verify()
     dev_tuning = '--dev-tuning' in arguments
     stand_replay = '--stand-replay' in arguments
     profile_symbols = '--profile-symbols' in arguments
@@ -129,25 +137,27 @@ def main(argv=None):
         if manifest['shaders'].get(entry, {}).get('source_sha256') != actor_hash:
             raise SystemExit(f'{entry} has stale actor AO dependencies; rebuild all actor shader entries.')
     world_manifest = json.loads((SHADERS/'world-shader-build.json').read_text())
-    if hashlib.sha256((SHADERS/'world_effects.hlsl').read_bytes()).hexdigest() not in json.dumps(world_manifest):
-        raise SystemExit('World shader source differs from offline build.')
-    from shaders.compile_world_shaders import NORMAL_ENTRIES, normal_sources
+    from shaders.shader_sources import source_hashes, world_source_bytes
+    from shaders.compile_world_shaders import ENTRIES, NORMAL_ENTRIES, normal_sources
+    world_source = SHADERS/'world_effects.hlsl'
+    world_hash = hashlib.sha256(world_source_bytes(world_source)).hexdigest()
+    if (world_manifest.get('sources') != source_hashes(world_source) or world_manifest['source_sha256'] != world_hash or
+        any(world_manifest['shaders'][entry]['source_sha256'] != world_hash for entry, _ in ENTRIES if entry not in NORMAL_ENTRIES)):
+        raise SystemExit('World shader source or an include differs from the offline build.')
     normal_inputs=normal_sources()
     if (world_manifest.get('normal_sources')!=normal_inputs or
         any(world_manifest['shaders'][entry]['source_sha256']!=normal_inputs['world_normals.hlsl'] for entry in NORMAL_ENTRIES)):
         raise SystemExit('World normal inputs differ from the offline build. Recompile both normal entries.')
     transition_manifest = json.loads((SHADERS/'shadow-transition-shader-build.json').read_text())
-    for name, digest in transition_manifest['sources'].items():
-        if hashlib.sha256((SHADERS/name).read_bytes()).hexdigest() != digest:
-            raise SystemExit('Shadow transition source differs from offline build; run scripts/shaders/compile_shadow_transition_shaders.py.')
+    if transition_manifest['sources'] != source_hashes(SHADERS/'shadow_transition.hlsl'):
+        raise SystemExit('Shadow transition source differs from offline build; run scripts/shaders/compile_shadow_transition_shaders.py.')
     for name, metadata in transition_manifest['shaders'].items():
         if hashlib.sha256((northlight_paths.COMPILED/(name+'.bin')).read_bytes()).hexdigest() != metadata['sha256']:
             raise SystemExit(f'{name} differs from the validated shadow transition build.')
     local_manifest = json.loads((SHADERS/'local-light-shader-build.json').read_text())
     volume_manifest = json.loads((SHADERS/'fog-volume-shader-build.json').read_text())
-    for name, digest in volume_manifest['sources'].items():
-        if hashlib.sha256((SHADERS/name).read_bytes()).hexdigest() != digest:
-            raise SystemExit('Volume fog source differs from offline build; run scripts/shaders/compile_fog_volume_shaders.py.')
+    if volume_manifest['sources'] != source_hashes(SHADERS/'fog_volume.hlsl'):
+        raise SystemExit('Volume fog source differs from offline build; run scripts/shaders/compile_fog_volume_shaders.py.')
     for name, metadata in volume_manifest['shaders'].items():
         if hashlib.sha256((northlight_paths.COMPILED/(name+'.bin')).read_bytes()).hexdigest() != metadata['sha256']:
             raise SystemExit(f'{name} differs from the validated volume fog build.')
@@ -206,6 +216,12 @@ def main(argv=None):
                '-DIMGUI_USER_CONFIG="northlight_imconfig.h"',
                *[str(northlight_paths.src(n)) for n in OVERLAY_SOURCES],
                '-luser32', '-luuid', '-o', str(output_dll)]
+    water = northlight_paths.REPO / 'tideglass'
+    command[command.index('-luser32'):command.index('-luser32')] = [
+        '-DNORTHLIGHT_WATER=1',
+        *['-I' + str(water / folder) for folder in ('src', 'integrations', 'generated')],
+        str(water / 'src/surface_depth.cpp'), str(water / 'src/screen_pass.cpp'),
+    ]
     if profile_symbols:
         command[command.index('-shared'):command.index('-shared')] = ['-g', '-DNORTHLIGHT_PROFILE_BUILD=1']
     if dev_tuning:

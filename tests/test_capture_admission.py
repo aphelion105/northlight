@@ -39,7 +39,8 @@ checks['the root travels: Replay::captureRoot set at capture, cleared on injecte
     and 'p->captureRootValid=false;' in m and 'item.captureRootValid=p.captureRootValid;' in fp.src('prepare_worker.h').read_text() and 'rootAt' not in sel)
 checks['every draw of the outside sections (importOutside) right after the selection (outside the try); admission forgotten on a lost selection, a map change and releaseGPU']=(
     x.index('}catch(...){')<x.index('if(radius&&stableRan)admission.importOutside(actorShadowScratch.actors,actorShadowDraws);')<x.index('if(captureSampled){const double ms=')
-    and 'actorShadowHistory.clear();admission.reset();' in x and 'rigidMemory.resetStats();admission.reset();' in m and 'rigidMemoryClear();admission.reset();admissionOn=false;' in w)
+    and 'actorShadowHistory.clear();admission.reset();' in x and 'rigidMemory.resetStats();admission.reset();' in m
+    and 'rigidMemoryClear();\n        admission.reset();admissionOn=false;' in w)
 checks['gated bodies are rigid-memory bodies (a prop held by a far NPC is not a ghost)']=('rigidBodies.insert(rigidBodies.end(),gatedBodies.begin(),gatedBodies.end());' in m)
 checks['end of frame: the cut after the sampled log, before the counters of the next frame']=(
     w.index('admissionCentre=%s')<w.index('admission.endFrame(size_t(captureBudgetMiB)*1048576,replaySnapshots.bytesRead());'))

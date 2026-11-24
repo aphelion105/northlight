@@ -7,13 +7,16 @@ preset, also with Diagnostics=1) leaves the 0.3.148 paths - the Off replay loop,
 frame%120 sample and self-check cadence, no extra clock read or counter - and the probe
 cannot reach the image or fail the frame. Static analysis and native code only; no Wine,
 Windows binary or game is run."""
+
+from source_units import source_text
 import sys; from pathlib import Path; sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root
 import northlight_paths as fp
 from pathlib import Path
 import hashlib,json,os,re,subprocess,tempfile
 HERE=Path(__file__).resolve().parent
 OUT=fp.output_dir()
-FILES=['render_thread_probe.h','quality_settings.h','renderer.cpp','world_renderer.h','world_replay_probe.inl','device_mirror.h',
+FILES=['render_thread_probe.h','quality_settings.h','renderer.cpp','world_renderer.h','world_directional_pass.inl','world_replay_probe.inl','world_replay_probe_pass.h','shadow_replay_submit.h','device_mirror.h',
+       'draw_capture_route.h','device_frame_effects.inl','renderer_backend_windows.h','mirror_audit_schedule.h',
        'extension_raw_methods.inl','generate_extension_raw_methods.py','gpu_profile.h','test_render_thread_probe.cpp','test_render_thread_probe.py']
 runs=[]
 with tempfile.TemporaryDirectory(prefix='northlight-render-thread-') as tmp:
@@ -23,14 +26,17 @@ with tempfile.TemporaryDirectory(prefix='northlight-render-thread-') as tmp:
         out=subprocess.run([str(exe)],check=True,capture_output=True,text=True).stdout
         print(label+':\n'+out,end='',flush=True);runs.append({'flags':flags,'stdout':out})
 
-read=lambda n:fp.tracked(n).read_text()
+read=lambda n:source_text(fp.tracked(n))
 r,w,probe,probeH,mirror,raw,q=read('renderer.cpp'),read('world_renderer.h'),read('world_replay_probe.inl'),read('render_thread_probe.h'),read('device_mirror.h'),read('extension_raw_methods.inl'),read('quality_settings.h')
+gpu_probe=read('world_replay_probe_pass.h')
+route=read('draw_capture_route.h')
 CLOCKS=('QueryPerformanceCounter','steady_clock','QpcClock','::now(')
 loop=w[w.index('auto replayLoop=[&](auto& split)->bool{'):w.index('ReplaySplit split;split.timed=profiled;')]
-submit=w[w.index('template<class Split,class Check> bool submitReplay('):w.index('    bool render(IDirect3DSurface9* targetSurface,')]
+submit=read('shadow_replay_submit.h')
 ticks=r[r.index('struct PresentTicks {'):r.index('static void finishDeviceFrame(IDirect3DDevice9* owner,bool implicitChain);')]
-issue=probe[probe.index('NorthlightReplayDrawState::Cache probeBindings(d);'):probe.index('        if(draws==replayProbeList.size())return true;')]
+issue=probe[probe.index('NorthlightShadowReplay::Pass replayPass(d);'):probe.index('        if(draws==replayProbeList.size())return true;')]
 probeBody=probe[probe.index('    template<class Mode> bool replayProbeIssue('):probe.index('    // endFrame(): a finished window')]
+frameEnd=w[w.index('        /* 0.3.149 RenderProfile lines:'):w.index('        for(int slot=0;slot<4;++slot){lastCascadeActions')]
 counted=[l for l in raw.splitlines() if 'm->countRaw(' in l and 'rawActive()){++m->rawCalls;' not in l]
 checks={
  # gate
@@ -40,11 +46,14 @@ checks={
    and 'NorthlightRenderThreadProbe::configure(NorthlightQuality::renderProfile(quality),NorthlightQuality::replayProbe(quality));' in w
    and 'probeFlag.store(profile&&probe,std::memory_order_relaxed);' in probeH,
  # functional cadences
- 'self-check keeps frame%120==0; the diagnostic sample is a separate flag':r.count(',vs,frame%120==0,NorthlightRenderThreadProbe::sampleFrame(frame));captureWater(')==3
-   and r.count(',vs,frame%120==0,NorthlightRenderThreadProbe::sampleFrame(frame),out);')==1
+ 'self-check keeps frame%120==0; the diagnostic sample is a separate flag':
+   r.count('captureGameDraw<NorthlightWaterRenderer::')==4
+   and route.count('vs,frame%120==0,NorthlightRenderThreadProbe::sampleFrame(frame)')==2
    and w.count('constantSelfCheck=selfCheck;sample=sample&&NorthlightDiagnostics::enabled();')==2 and 'frame%120!=60' in read('mirror_audit_schedule.h'),
- 'sampler: RenderProfile=0 is frame%120==0, RenderProfile=1 the prime 127':'inline bool sampleFrame(unsigned frame,bool profile){return profile?profileFrame(frame):frame%SamplePeriod==0;}' in probeH
-   and 'constexpr unsigned SamplePeriod=120,ProfilePeriod=127;' in probeH and 'bool sampled()const{return NorthlightRenderThreadProbe::sampleFrame(frame)&&NorthlightDiagnostics::enabled();}' in r
+ 'sampler: RenderProfile=0 is frame%120==0, RenderProfile=1 the prime 127':
+   'constexpr unsigned SamplePeriod=120,ProfilePeriod=127;' in probeH
+   and 'return profile?profileFrame(frame):frame%SamplePeriod==0;' in probeH
+   and 'bool sampled()const{return NorthlightRenderThreadProbe::sampleFrame(frame)&&NorthlightDiagnostics::enabled();}' in r
    and 'if(diagnostics())gpuProfile->beginFrame(frame,NorthlightRenderThreadProbe::sampleFrame(frame));' in r,
  # replay loop
  'replay loop: Off unless a RenderProfile sample or the probe':'const bool profiled=profileSampled(),probeRecord=replayProbeActive()&&slot==0&&captureMode==CaptureFresh&&!shadowDiagnosticCapture;' in w
@@ -52,7 +61,8 @@ checks={
    and 'ReplaySplit split;split.timed=profiled;' in w and 'bool profileSampled()const{return captureSampled&&NorthlightRenderThreadProbe::profiling();}' in probe
    and 'bool replayProbeActive()const{return NorthlightRenderThreadProbe::probing()&&!replayProbeDisabled;}' in probe,
  'Off hooks empty; probe modes drop calls at compile time':re.search(r'struct Off \{\s*static constexpr bool Draws=true,Calls=true;\s*void start\(\)\{\}\s*void mark\(Bucket\)\{\}\s*void constant\(Constant\)\{\}\s*template<class Packet> void drawn\(const Packet\*\)\{\}\s*\};',probeH) is not None
-   and 'if constexpr(!Split::Calls)return poseConstants.prepare(*p,rows,worldMatrix);' in submit and 'if constexpr(Split::Draws)hr=shadowReplayDraw(*p,' in submit,
+   and 'if constexpr(!Split::Calls)return preparePose(packet,rows,matrix,floats);' in submit and 'if constexpr(Split::Draws){' in submit
+   and 'result=grouped?issue():alphaDraw(issue);' in submit and 'return shadowReplayDraw(*p,draw);' in w and 'bool groupedReplays=!legacyReplay&&!probeRecord;' in w,
  'Split reads the clock only when timed':'void start(){if(timed)last=Clock::now();}' in probeH and 'void mark(Bucket b){if(!timed)return;const int64_t now=Clock::now();' in probeH,
  'no clock read in the replay loop or submitReplay':not any(c in loop or c in submit for c in CLOCKS),
  'whole-loop timing only when the probe records':'const int64_t loopStart=probeRecord?QpcClock::now():0;' in w, # 0.3.199 (fog clouds): +1 the wind clock (functional, every frame). 0.3.197: +2 for the local-light tracker: its frame time (functional, every frame) and selectUs (Diagnostics only)
@@ -62,7 +72,7 @@ checks={
  'upload window timer only on profile frames':'const int64_t uploadWindowStart=profileSampled()?QpcClock::now():0;' in w and 'if(uploadWindowStart)uploadWindowTicks=QpcClock::now()-uploadWindowStart;' in w
    and 'uploadWindowMs=%.3f' in probe and 'uploadWindowTicks<0?-1.0:double(uploadWindowTicks)*tick' in probe,
  'no log line inside the cascade: split/profile/probe lines from endFrame':'logf(' not in loop and 'logf(' not in submit and 'keepReplaySplit(slot,split,' in w
-   and 'if(profileSampled())logRenderProfile();else{replayProfileUsed.clear();replayGiPacked.clear();}\n        frameStaging=frameProbeUpload=false;\n        logReplayProbeWindow();' in w
+   and frameEnd.index('if(profileSampled())logRenderProfile();')<frameEnd.index('frameStaging=frameProbeUpload=false;')<frameEnd.index('logReplayProbeWindow();')
    and w.count('logRenderProfile()')==1 and w.count('logReplayProbeWindow()')==1,
  'profile logs gated':'if(profileSampled())logf("WORLD replay split ' in probe and 'if(profileSampled())logf("WORLD profile frame ' in probe
    and 'if(NorthlightRenderThreadProbe::profiling())logf("WORLD replay probe window=' in probe,
@@ -73,7 +83,7 @@ checks={
    and 'mirrorState.rawCounting=sampled()&&NorthlightRenderThreadProbe::profiling();' in r
    # Draw methods use the raw mirror path; only these direct methods need separate counters.
    and {re.search(r'STDMETHODCALLTYPE (\w+)\(',l).group(1) for l in counted}=={'Clear','StretchRect','ColorFill','SetScissorRect','SetTextureStageState'}
-   and all('{ if(m->rawCounting&&rawActive())m->countRaw(' in l for l in counted) and raw.count('#ifndef NORTHLIGHT_DEVICE_MIRROR_TEST_API')==1,
+   and all('if(m->rawCounting&&rawActive())m->countRaw(' in l for l in counted) and raw.count('#ifndef NORTHLIGHT_DEVICE_MIRROR_TEST_API')==1,
  # per-frame times
  'Present ticks and frame cost only with RenderProfile':'bool on=NorthlightRenderThreadProbe::profiling();' in ticks and ticks.count('QueryPerformanceCounter(')==3 and ticks.count('if(on)QueryPerformanceCounter(')==3
    and 'CpuScope cpu(sampled()?&cpuEffects:nullptr);' in r and 'CpuScope frameCostScope(!sampled()&&NorthlightRenderThreadProbe::profiling()?&cpuEffects:nullptr);' in r
@@ -83,19 +93,21 @@ checks={
  'both Present paths timed':r.count('PresentTicks ticks;')==2 and 'presentedDeviceFrame(owner,ticks)' in r and 'ticks.present();presented(ticks);' in r,
  # probe
  'probe after the bounds join and the sun near loop, before the union':w.index('replayBoundsJoin(); /* 0.3.143: first pointBounds reader */')<w.index('auto replayLoop=[&]')<w.index('replayProbe(rows,matrices[cascade],realLoopMs);')
-   <w.index('if(!unionShadow(shadowSurface[slot],dynamicShadow,nearEnvironment[source],0,0,0,1024))return false;') and w.count('replayProbe(rows,matrices[cascade],realLoopMs)')==1,
+   <w.index('if(!unionShadow(directionalMaps.current(slot).surface,dynamicShadow,directionalMaps.nearEnvironment(source).texture,0,0,0,1024))return false;') and w.count('replayProbe(rows,matrices[cascade],realLoopMs)')==1,
  'probe GPU marks only in probing windows':'const bool marks=profile&&replayProbeMode!=NorthlightRenderThreadProbe::ProbeOff;\n                if(marks)profile->mark("SunNearLoop");replayProbe(rows,matrices[cascade],realLoopMs);if(marks)profile->mark("ReplayProbe");' in w,
- 'probe target: cascade formats and size, private, restored':'static constexpr unsigned ReplayProbeSize=1024' in probe and 'D3DUSAGE_RENDERTARGET,D3DFMT_R32F,D3DPOOL_DEFAULT,&replayProbeTexture' in probe
-   and 'D3DFMT_D24S8,D3DMULTISAMPLE_NONE,0,TRUE,&replayProbeDepth' in probe and all(x not in w for x in ('replayProbeSurface','replayProbeTexture','replayProbeDepth'))
-   and 'SavedState save(d,&stateBlocks);' in probe and re.findall(r'SetRenderTarget\(([^)]*)\)',probe)==['0,replayProbeSurface']
-   and 'SetTexture(' not in probe and 'SetSamplerState(' not in probe and 'SetRenderState(' not in probe and 'materialPixelAudit.reset();replayBoundsAbandon();releaseReplayProbe();' in w[w.index('void releaseGPU(bool keepMesh=false)'):],
+ 'probe target: cascade formats and size, private, restored':'static constexpr unsigned Size=1024' in gpu_probe and 'D3DUSAGE_RENDERTARGET,D3DFMT_R32F,D3DPOOL_DEFAULT,&texture_' in gpu_probe
+   and 'D3DFMT_D24S8,D3DMULTISAMPLE_NONE,0,TRUE,&depth_' in gpu_probe
+   and 'SavedState save(d,&states);' in gpu_probe and re.findall(r'SetRenderTarget\(([^)]*)\)',gpu_probe)==['0,surface_']
+   and not any(x in probe or x in gpu_probe for x in ('SetTexture(', 'SetSamplerState(', 'SetRenderState('))
+   and 'replayProbePass.run<QpcClock>(d,stateBlocks,' in probe and 'replayProbePass.reset();replayProbeList.clear();' in probe
+   and 'materialPixelAudit.reset();replayBoundsAbandon();releaseReplayProbe();' in w[w.index('void releaseGPU(bool keepMesh=false)'):],
  'probe never fails the frame (no check(), no failed flag; the call site ignores its result)':'check(' not in probe and 'failed=true' not in probe and 'void replayProbe(const float* rows,const float* worldMatrix,double realLoopMs){' in probe,
- 'probe issues the same per-draw sequence, own counters':'submitReplay(p,probeBindings,probePoses,rows,worldMatrix,mode,constantBytes,constantCalls,' in issue
+ 'probe issues the same per-draw sequence, own counters':'submitReplay(p,replayPass,rows,worldMatrix,mode,constantBytes,constantCalls,' in issue
    and all(x not in probe for x in ('replayDraws','replayConstantBytes','replayConstantCalls','culledReplayDraws','replaySlot','staticDedup','persistentSkipped','replayMeshKeys','replayPosePrepared')),
  'probe failures counted, disabled after 8':'ReplayProbeFailureLimit=8' in probe and 'if(++replayProbeFailures<ReplayProbeFailureLimit&&hr!=E_OUTOFMEMORY)return;' in probe,
  'sample lines tag the mirror audit frame (no skipping)':'mirrorAudit=%u counted=%d' in r and 'CPU timers frame=%u mirrorAudit=%u' in r and r.count('unsigned(sampleFrame%120==60)')==2,
- # version
- 'version 0.3.217':'logf("Northlight renderer 0.3.217; reference sun look (sun glow hue from native/sunHalo band, soft-shoulder glare, veil, sun-tinted haze), native sun/moon suppressed (F1b), lamps dimmed to 30 pct in direct sun, native moon02 skipped by texture identity, no game bytes in the DLL, MEMREAD self-read profile (RenderProfile), soft sun removal in shadow, jump-stable shadow anchor, geometry coverage hold with travel lead, steadier animated shadow edges (near 5x5 tent, still-camera shadow history), native blob shadows kept at BlobShadowStrength (faint texture under modulate blend), bilinear lighting history, near capture reserve for the player and companions, remembered rigid prop shadows (drawn-by-game states, windowed held), AO and bloom folded into the world composite, ground normals reject object tops, both wide samples, batched celestial terrain mask, DXVK async left to the runtime, render-thread terrain upload and rigid bookkeeping trims, moon without the horizon stall, art layer bands retimed to the sun and moon, actor prepare on a worker, trimmed prepare handoff, in-place capture constants, gate thread census, predicted snapshot lookups, word-wise memcmp, owner-thread gate elision; abandoned-frame prepare quarantine; removal smoothing on matching normals in its own pass (35/50 degree gate); per-frame draw gates; translucent depth census; early depth for translucent actors; DXVK 3.1.1 default, dxvk2 (2.7.1) by choice only, no automatic fallback; AO depth texel snap; shadow cascades follow camera zoom and collision; reduced terrain shadow reach under address-space pressure; command-stream replay thread; draw-hook lookup caches; lighter replay retire; fresh texture shadows evict only stale keeps; soft local-light cap with fades; blended GI re-publication; Forever-style rain (storm light bands, weather draw detection); moving fog clouds; GPU budget control; frames ahead and frame skipping in the command stream; replay jobs; AO denoise pass; rain mask (MRT, depth scrub), effect boundary at the UI in rain; UI boundary fallback for font mods; TestCooperativeLevel answered on the game thread; two large buffer shadows (36 MiB allowance); lamp fog glow capped once over all lamps; texture readback diagnostics, texture readbacks without a queue drain; sky light held across the weather rescale; colour-guided lighting upsample and colour-picked contact normals at wall and actor feet; actor shadow map with soft contact-hardening filter; uncached maps skip geometry builds; nearest-first actor capture (radius gate, distance cut), stride-aligned replay bulk; floating names keep the game\'s colour (stencil mask); instance map names with an apostrophe or a space reach the world context; lamps in view first, screen-coherent lamp batches (16-lamp passes); backend=' in r,
+ 'startup log records the renderer version and selected backend':
+   re.search(r'logf\("Northlight renderer \d+\.\d+\.\d+;[^"\n]*backend=%s path=%ls loaded=%d error=%lu"', r) is not None,
 }
 for name,ok in checks.items():print(('PASS ' if ok else 'FAIL ')+name)
 assert all(checks.values())

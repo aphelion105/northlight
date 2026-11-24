@@ -8,8 +8,59 @@
 static void must(HRESULT hr){assert(SUCCEEDED(hr));}
 struct TerrainCaptureDemandTest {
     using Owner=WorldRenderer::TerrainSnapshot;
-    static Owner patch(unsigned id){
-        auto p=std::make_shared<NorthlightTerrainCapture::MeshSnapshot>();
+    using Snapshot=NorthlightTerrainCapture::MeshSnapshot;
+#ifdef NORTHLIGHT_LIVE_TERRAIN_INDEX_OWNER_TEST
+    static void indexFaults(IDirect3DDevice9* d,D3DPRESENT_PARAMETERS& present){
+        struct FaultDevice:ForwardIDirect3DDevice9 {
+            using ForwardIDirect3DDevice9::ForwardIDirect3DDevice9;
+            unsigned creates=0;
+            bool refuse=false;
+            HRESULT STDMETHODCALLTYPE CreateIndexBuffer(UINT bytes,DWORD usage,D3DFORMAT format,D3DPOOL pool,
+                                                          IDirect3DIndexBuffer9** out,HANDLE* shared)override{
+                ++creates;
+                assert(usage==(D3DUSAGE_DYNAMIC|D3DUSAGE_WRITEONLY)&&format==D3DFMT_INDEX32&&pool==D3DPOOL_DEFAULT&&!shared);
+                const auto result=real->CreateIndexBuffer(bytes,usage,format,pool,out,shared);
+                return refuse&&SUCCEEDED(result)?E_OUTOFMEMORY:result;
+            }
+        } device(d);
+        NorthlightDynamicRing::FrameFence fence;fence.device=&device;
+        NorthlightLiveTerrainIndices indices;
+        using Result=NorthlightLiveTerrainIndices::Upload;
+        unsigned writes=0,errors=0;
+        bool admit=false;
+        const auto upload=[&]{
+            return indices.upload(&device,12,fence,[&](UINT capacity){
+                assert(capacity==NorthlightDynamicRing::ringCapacity(12));return admit;
+            },[&](std::uint32_t* dst){++writes;dst[0]=0;dst[1]=1;dst[2]=2;},
+            [&](HRESULT result,const char* action){
+                if(SUCCEEDED(result))return true;
+                assert(result==E_OUTOFMEMORY&&std::strcmp(action,"live index buffer")==0);++errors;return false;
+            });
+        };
+        assert(upload()==Result::Deferred&&!device.creates&&!writes&&!indices.buffer()&&!fence.current);
+        admit=device.refuse=true;
+        assert(upload()==Result::Failed&&device.creates==1&&errors==1&&!writes&&!indices.buffer()&&!fence.current);
+        device.refuse=false;
+        assert(upload()==Result::Ready&&device.creates==2&&writes==1&&indices.buffer()&&indices.base()==0);
+        auto* const query=fence.current;
+        indices.touch(fence);
+        assert(query&&fence.current==query&&fence.endFrame());
+        assert(upload()==Result::Ready&&device.creates==2&&writes==2&&indices.base()==3&&fence.current);
+        indices.release(fence);
+        assert(!indices.buffer()&&indices.base()==0&&!fence.current);
+        must(d->Reset(&present));
+        assert(upload()==Result::Ready&&device.creates==3&&writes==3&&indices.base()==0);
+        indices.release(fence);
+        std::puts("LIVE_TERRAIN_INDEX_OWNER_PASS deferred=1 partialOom=1 retry=1 appended=1 sharedEvent=1 reset=1");
+    }
+#endif
+    static std::shared_ptr<Snapshot> snapshot(std::vector<Snapshot>* ordered){
+        if(!ordered)return std::make_shared<Snapshot>();
+        assert(ordered->size()<ordered->capacity());
+        return {&ordered->emplace_back(),[](Snapshot*){}};
+    }
+    static Owner patch(unsigned id,std::vector<Snapshot>* ordered=nullptr){
+        auto p=snapshot(ordered);
         const float x=-.95f+float(id%32)*.06f,y=-.9f+float(id/32)*.09f;
         for(unsigned i=0;i<203;++i)p->positions.push_back({x+float(i%7)*.012f,y+float(i/7)*.004f,.2f+float((i+id)%13)*.02f});
         for(unsigned i=0;i<317;++i){const unsigned v=i%169;p->indices.push_back(v);p->indices.push_back(v+1);p->indices.push_back(v+7);}
@@ -32,11 +83,23 @@ struct TerrainCaptureDemandTest {
     }
     static std::vector<char> image(WorldRenderer& w,IDirect3DSurface9* target,unsigned samples,unsigned shader,unsigned mask){
         auto* d=w.d;must(d->Clear(0,nullptr,D3DCLEAR_TARGET|D3DCLEAR_ZBUFFER,0xffffffff,1,0));must(d->BeginScene());
-        must(d->SetStreamSource(0,w.liveTerrainGPU.vertices(),0,sizeof(StaticShadow::Vertex)));must(d->SetIndices(w.liveIndicesGPU));
-        if(shader==1)must(d->DrawIndexedPrimitive(D3DPT_TRIANGLELIST,0,0,w.liveTerrainGPU.vertexCapacity(),UINT(w.liveIndexBase+w.liveTerrainIndexCount),UINT(w.liveDirectionalIndexCount/3)));
+#ifdef NORTHLIGHT_LIVE_TERRAIN_INDEX_OWNER_TEST
+        auto* indices=w.liveTerrainIndices.buffer();
+        const UINT base=w.liveTerrainIndices.base();
+#else
+        auto* indices=w.liveIndicesGPU;
+        const UINT base=w.liveIndexBase;
+#endif
+        must(d->SetStreamSource(0,w.liveTerrainGPU.vertices(),0,sizeof(StaticShadow::Vertex)));must(d->SetIndices(indices));
+        if(shader==1)must(d->DrawIndexedPrimitive(D3DPT_TRIANGLELIST,0,0,w.liveTerrainGPU.vertexCapacity(),UINT(base+w.liveTerrainIndexCount),UINT(w.liveDirectionalIndexCount/3)));
         else for(const auto& b:w.pointLiveBatches){if(mask==1&&b.low.x>-.1f)continue;if(mask==2&&b.low.x<-.3f)continue;
-            must(d->DrawIndexedPrimitive(D3DPT_TRIANGLELIST,0,0,w.liveTerrainGPU.vertexCapacity(),UINT(w.liveIndexBase+b.start),b.count));}
-        NorthlightDynamicRing::touch(w.liveIndexRing,w.fence());must(d->EndScene());w.frameFence.endFrame();
+            must(d->DrawIndexedPrimitive(D3DPT_TRIANGLELIST,0,0,w.liveTerrainGPU.vertexCapacity(),UINT(base+b.start),b.count));}
+#ifdef NORTHLIGHT_LIVE_TERRAIN_INDEX_OWNER_TEST
+        w.liveTerrainIndices.touch(w.fence());
+#else
+        NorthlightDynamicRing::touch(w.liveIndexRing,w.fence());
+#endif
+        must(d->EndScene());w.frameFence.endFrame();
         IDirect3DSurface9 *resolved=nullptr,*read=nullptr;
         if(samples){must(d->CreateRenderTarget(128,96,D3DFMT_R32F,D3DMULTISAMPLE_NONE,0,FALSE,&resolved,nullptr));must(d->StretchRect(target,nullptr,resolved,nullptr,D3DTEXF_NONE));}
         must(d->CreateOffscreenPlainSurface(128,96,D3DFMT_R32F,D3DPOOL_SYSTEMMEM,&read,nullptr));must(d->GetRenderTargetData(resolved?resolved:target,read));
@@ -45,7 +108,12 @@ struct TerrainCaptureDemandTest {
         must(read->UnlockRect());read->Release();if(resolved)resolved->Release();return out;
     }
     static void run(IDirect3DDevice9* d,const char* output,bool timing){
-        WorldRenderer w(d);w.meshGeneration=1;std::vector<Owner> owners;for(unsigned i=0;i<(timing?640u:24u);++i)owners.push_back(patch(i));
+        // The uploader sorts owners by address. Reuse the same relative
+        // address order in each correctness process, including replacements.
+        std::vector<Snapshot> ordered;
+        if(!timing)ordered.reserve(32);
+        WorldRenderer w(d);w.meshGeneration=1;std::vector<Owner> owners;
+        for(unsigned i=0;i<(timing?640u:24u);++i)owners.push_back(patch(i,timing?nullptr:&ordered));
         std::mt19937 random(926);std::shuffle(owners.begin(),owners.end(),random);upload(w,owners);
         if(timing){
             for(unsigned mode=0;mode<3;++mode){std::vector<double> times;size_t bytes=0,reused=0;
@@ -71,9 +139,9 @@ struct TerrainCaptureDemandTest {
             must(d->CreateRenderTarget(128,96,D3DFMT_R32F,D3DMULTISAMPLE_TYPE(samples),0,FALSE,&target,nullptr));must(d->CreateDepthStencilSurface(128,96,D3DFMT_D24S8,D3DMULTISAMPLE_TYPE(samples),0,TRUE,&depth,nullptr));
             must(d->SetRenderTarget(0,target));must(d->SetDepthStencilSurface(depth));D3DVIEWPORT9 vp={0,0,128,96,0,1};must(d->SetViewport(&vp));
             for(unsigned frame=0;frame<8;++frame){
-                if(frame==2){auto changed=std::make_shared<NorthlightTerrainCapture::MeshSnapshot>(*owners[0]);for(auto& p:changed->positions)p.z+=.1f;changed->bounds.low[2]+=.1f;changed->bounds.high[2]+=.1f;owners[0]=changed;}
+                if(frame==2){auto changed=snapshot(&ordered);*changed=*owners[0];for(auto& p:changed->positions)p.z+=.1f;changed->bounds.low[2]+=.1f;changed->bounds.high[2]+=.1f;owners[0]=changed;}
                 if(frame==3)owners.pop_back();
-                if(frame==4){owners.push_back(patch(nextOwner++));++w.meshGeneration;w.fixedTerrain=std::make_shared<const std::set<std::pair<int,int>>>(std::set<std::pair<int,int>>{{0,0},{1,0},{2,0}});}
+                if(frame==4){owners.push_back(patch(nextOwner++,&ordered));++w.meshGeneration;w.fixedTerrain=std::make_shared<const std::set<std::pair<int,int>>>(std::set<std::pair<int,int>>{{0,0},{1,0},{2,0}});}
                 if(frame==6){w.liveTerrainGPU.clear();w.liveTerrainGeneration=0;}
                 std::shuffle(owners.begin(),owners.end(),random);upload(w,owners);
                 for(unsigned shader=0;shader<3;++shader)for(unsigned mask=0;mask<(shader==1?1u:3u);++mask){
@@ -97,5 +165,14 @@ int main(int argc,char** argv){
     auto module=LoadLibraryA(argv[1]);assert(module);auto create=reinterpret_cast<IDirect3D9*(WINAPI*)(UINT)>(reinterpret_cast<void*>(GetProcAddress(module,"Direct3DCreate9")));assert(create);auto api=create(D3D_SDK_VERSION);assert(api);
     D3DPRESENT_PARAMETERS pp{};pp.Windowed=TRUE;pp.hDeviceWindow=hwnd;pp.BackBufferWidth=pp.BackBufferHeight=64;pp.BackBufferFormat=D3DFMT_X8R8G8B8;pp.SwapEffect=D3DSWAPEFFECT_DISCARD;pp.PresentationInterval=D3DPRESENT_INTERVAL_IMMEDIATE;
     IDirect3DDevice9* d=nullptr;must(api->CreateDevice(0,D3DDEVTYPE_HAL,hwnd,D3DCREATE_HARDWARE_VERTEXPROCESSING|D3DCREATE_FPU_PRESERVE,&pp,&d));
-    TerrainCaptureDemandTest::run(d,argv[3],timing);d->Release();api->Release();FreeLibrary(module);DestroyWindow(hwnd);
+    TerrainCaptureDemandTest::run(d,argv[3],timing);
+    d->Release();
+#ifdef NORTHLIGHT_LIVE_TERRAIN_INDEX_OWNER_TEST
+    if(!timing){
+        must(api->CreateDevice(0,D3DDEVTYPE_HAL,hwnd,D3DCREATE_HARDWARE_VERTEXPROCESSING|D3DCREATE_FPU_PRESERVE,&pp,&d));
+        TerrainCaptureDemandTest::indexFaults(d,pp);
+        d->Release();
+    }
+#endif
+    api->Release();FreeLibrary(module);DestroyWindow(hwnd);
 }

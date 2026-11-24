@@ -27,6 +27,7 @@ import os
 import platform
 import re
 import shutil
+import struct
 import subprocess
 import tempfile
 import zipfile
@@ -132,7 +133,24 @@ def verify_installer(path):
                   'Forever atmosphere does not match BUILD-INFO')
         except ValueError as error:
             problems.append(str(error))
-    check(problems, {p for p, e in payload.items() if e.get('preserve')} == {'northlight-quality.ini', 'celestial-profiles.ini', 'shadow-range-profiles.ini'}, 'preserve flags')
+    core = files.get('payload/water-core.dll')
+    water_files = {'water-core.dll', *bp.WATER_SETTINGS}
+    expected_preserve = set(bp.PAYLOAD_COMMON)
+    if 'tideglass' in info:
+        expected_preserve.update(bp.WATER_SETTINGS)
+        check(problems, core is not None and water_files <= payload.keys(), 'Tideglass payload')
+        if core:
+            try:
+                core_version = bp.check_water_core(core, dll)
+                check(problems, info['tideglass'] == {
+                    'version': core_version, 'source_revision': json.loads((fp.REPO / 'tideglass/source.json').read_bytes())['revision'],
+                    'core_sha256': sha(core)}, 'Tideglass build identity')
+                check(problems, info['version'] == bp.combo_version(info['dll_version'], core_version), 'Tideglass package version')
+            except (SystemExit, ValueError, struct.error) as error:
+                problems.append(str(error))
+    else:
+        check(problems, not water_files & payload.keys(), 'Tideglass payload lacks metadata')
+    check(problems, {p for p, e in payload.items() if e.get('preserve')} == expected_preserve, 'preserve flags')
     d3d9 = [r for r in files if r.lower().endswith('/d3d9.dll') and not r.startswith('runtime/')]
     check(problems, d3d9 == ['payload/d3d9.dll'], f'd3d9.dll copies: {d3d9}')
     # pins

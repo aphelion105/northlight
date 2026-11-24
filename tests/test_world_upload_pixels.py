@@ -19,6 +19,7 @@ for name in ('test_world_mesh_plan', 'test_world_mesh_pages', 'test_world_mesh_p
 
 for name in ('test_upload_payload_release.py', 'test_mesh_buffer_store.py'):
     subprocess.run([sys.executable, str(fp.TESTS/name)], check=True)
+subprocess.run([sys.executable, str(fp.TESTS/'test_replay_upload.py'), '--zig'], check=True)
 
 for name in ('test_static_shadow_gpu', 'test_static_plan_job'):
     exe = out / (name + '.exe')

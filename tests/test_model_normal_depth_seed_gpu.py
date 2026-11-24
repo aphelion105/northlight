@@ -25,6 +25,7 @@ for index,backend in enumerate(a.backend):
  for fmt in a.format or ['R32F']:
   processes();r=subprocess.run(list(map(str,[exe,backend.resolve(),out/'body.bin',out/'pixel.bin',out/'alpha.bin',fmt,*(['timing'] if a.timing else [])])),env={**os.environ,'DXVK_LOG_PATH':str(out),'DISABLE_VULKAN_OBS_CAPTURE':'1','DXVK_CONFIG':'d3d9.customVendorId = 1002; d3d9.supportDFFormats = True'},capture_output=True,timeout=240)
   name=f'gpu-{index}-{fmt}.log';(out/name).write_bytes(r.stdout+r.stderr);print(name,(r.stdout+r.stderr).decode(errors='replace')[-700:],flush=True);r.check_returncode();assert b'MODEL_NORMAL_DEPTH_SEED_PASS' in r.stdout
+  if not a.timing and fmt=='R32F':assert b'MODEL_NORMAL_DEPTH_REUSE_PASS' in r.stdout
   results.append(dict(backend=str(backend.resolve()),backend_sha256=sha(backend),format=fmt,log=name,sha256=sha(out/name)))
 assert all(sha(Path(f))==h for f,h in inputs.items()),'Source changed during oracle'
 (out/'validation.json').write_text(json.dumps(dict(pass_=True,timing=a.timing,concurrent_games=games,inputs=inputs,results=results,command=list(map(str,command)),scope='Authored DXVK D24/RESZ, native directly bound INTZ or R32F depth -> production normal replay -> WorldNormals. Paired full seed+replay timestamps; not gameplay FPS or whole-frame budget.'),indent=2)+'\n',encoding='utf-8',newline='\n')

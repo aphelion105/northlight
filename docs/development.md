@@ -15,9 +15,15 @@ Run commands from the repository root. Start with [the architecture map](archite
 | `northlight_paths.py` | the only place that knows where the client, toolchain and outputs are |
 | `client-config/` | factory profile `.ini` files for packages and settings reset; personal client profiles may differ |
 | `*.py` (top level) | the art layer (MPQ patch) builder `build_art_layer.py` and its steps, `mpq.py`, `client_archives.py`, `renderer_status.py` (install/uninstall on macOS) |
-| `out/` | build and test output (ignored) |
+| `out/`, `.local/out/` | ignored build and test output. `northlight_paths.py` resolves the configured output directory |
 
 `tools/` and `backups/` are local and untracked.
+
+The test runner streams each test's output to one log and removes the test's
+private OS temporary directory on exit. Write evidence that should outlive
+the test to `fp.output_dir()`. The
+[Northrend harness](northrend-baseline.md) uses a reusable client stage and
+removes per-attempt caches and replay scratch by default.
 
 For the local Forever extraction, missing import fields and preserved research
 artifacts, start with [the Forever data audit](forever-data-audit.md).
@@ -138,7 +144,9 @@ the pinned driver's actual link command and repeats that inexpensive link with
 `/OPT:REF /OPT:NOICF`. This removes unused code while retaining the separate PDB
 and distinct function addresses. Compilation remains `-O2`; global `-Os` is not
 used without matched performance evidence. Link diagnostics and the map are saved
-under the configured output root.
+under the configured output root. The driver runs in a temporary directory there
+with the caller's cache paths resolved before changing directories, so its printed
+COFF inputs are absolute even when the caches live inside the checkout.
 
 The build first runs the layout check (nothing back at a pre-move path, unique basenames). On
 Windows it also compiles a minimal C++ file before starting the renderer build. Zig 0.15.2
@@ -158,10 +166,47 @@ touches the game):
 python3 scripts/shaders/compile_world_shaders.py   # or compile_shaders, compile_local_light_shaders, ...
 ```
 
+After changing a shared `world_effects_*.hlsl` module, run all three affected
+compilers. Their manifests record the complete local include tree.
+
+```sh
+python3 scripts/shaders/compile_world_shaders.py
+python3 scripts/shaders/compile_shadow_transition_shaders.py
+python3 scripts/shaders/compile_fog_volume_shaders.py
+```
+
 A compiler writes `shaders/compiled/<Entry>.bin` and `.bin.asm`, `src/generated/*_compiled_shaders.h`
 and the `shaders/*-shader-build.json` manifest. Every shader uses the one toolchain in
 `scripts/shaders/shader_compiler.py` (IEEE strict, O3; Wine's builtin compiler is refused).
 `build_environment.py` keeps the Wine prefix outside the client folder.
+
+## Tideglass
+
+The optional Tideglass 0.1.0 core uses the cooperative D3D9 API. The export
+under `tideglass/` comes from the upstream combo release and is checked against
+its SHA-256 manifest before build or packaging. Build the 32-bit core with
+CMake, Ninja and the i686 LLVM-MinGW tools on PATH. The combo command also
+builds the regular Northlight renderer with the pinned Zig toolchain.
+
+```powershell
+python scripts/build_combo.py --storm-source <clean-pinned-StormLib-checkout>
+python renderer/build_packages.py --platform windows --version 0.3.218-tideglass-0.1.0 --water-core <out>/tideglass/water-core.dll
+python tests/verify_packages.py <out>/packages/Northlight-0.3.218-tideglass-0.1.0-Windows.zip
+```
+
+Omit `--storm-source` to let CMake fetch the pinned revision. The installer
+preserves both water INIs and generates the reflection archive list from the
+client's archive chain. With the art layer enabled, the combo package uses
+daylight lighting underwater. Water settings are under **Water** in the
+in-game overlay. Changing **Use Tideglass** requires a restart.
+
+Tideglass runs with SDR and HDR output, including multisampled targets.
+The HDR path uses the legacy scene before Northlight decodes it into linear
+colour. MSAA scene snapshots resolve to single-sample textures while liquid
+shading writes to the original target. During rain, the depth-scrubbed rain
+mask retains streaks over the composited water. Northlight uses native water
+when the DLL is disabled, missing or incompatible. The vendored core carries
+local changes for multisample snapshots and state restoration.
 
 ## Test
 
@@ -221,6 +266,61 @@ it is ignored by git), then a default. `python3 northlight_paths.py` prints what
 - `git clean -x` also deletes the ignored local folders (`tools/`, `backups/`, `out/`).
 
 ## Validation harness
+
+For a private Windows 3.3.5a client run, fixed Northrend baseline and original
+D3D9 trace import, see [Northrend baseline and replay](northrend-baseline.md).
+
+### Windows package live gate
+
+Run the named gate on a trusted Windows GPU runner with the private Northrend
+stage and a ZIP built from the current tree. Set both environment variables to
+absolute paths and choose a fresh output directory under the stage.
+
+```powershell
+$env:NORTHLIGHT_RELEASE_PACKAGE = '<Windows ZIP>'
+$env:NORTHLIGHT_LIVE_STAGE = '<private stage>'
+python scripts/run_tests.py --suite release-live --strict --jobs 1 --output "$env:NORTHLIGHT_LIVE_STAGE\release-candidate"
+```
+
+Set `NORTHLIGHT_RELEASE_BACKGROUND=1` for a release check on an occupied desktop. It skips foreground requests and requires a complete background Present interval for each World case. The expected package payload, camera, crowd, output mode and native capability checks still apply.
+
+The gate runs `verify_packages.py`, then checks both the character menu and
+a 128-player Dalaran scene on packaged DXVK 3, packaged DXVK 2 and
+system D3D9. The DXVK cases check the active HDR target. System D3D9 checks
+the primary SDR backbuffer. Each check uses the staged resolution and MSAA.
+An x86 probe uses the renderer's capability checks with the default system
+D3D9 adapter. If a required feature is missing, the receipt records the probe
+and marks both native cases `UNSUPPORTED` without opening WoW for those cases.
+The two packaged DXVK backends still have to complete all their cases.
+World cases turn on diagnostic logging in the packaged quality profile. The
+default mode requests focus for the private window. Both modes require a
+complete warm interval and published equipment and particle lights. The runner
+restores the private stage payload after each case.
+The receipt records the archive, actual runtime payload hashes, resolved backend,
+and identity of the renderer that reached each checkpoint. Use the separate
+Northrend replay workflow for image parity and performance comparisons.
+
+Use `scripts/northrend_live_ab.py --stage <private-stage> --output <run-dir>
+--package <Windows-ZIP> --feature gamescene` for one-feature live comparisons
+on the exact package. The four arms alternate in both orders and reuse the
+private client. Pass `--background` to use the same window mode in all four
+arms without foreground requests. The receipt includes Present percentiles,
+repeat spread, sampled GPU passes, submission counts and query waits.
+Live DXVK uses the regular EVENT wait by default. Use
+`NORTHLIGHT_EVENT_ADAPTIVE=1` to measure the short-spin mode explicitly.
+The live Dalaran comparison favored the regular wait at p95 and p99.
+
+`run_northrend_baseline.py run --return-to-menu --windows 0` extends the
+World readiness smoke. The loopback fixture logs completed logout. The
+runner also requires a fresh character enumeration and a new rendered
+character-menu context before it accepts the transition.
+
+On selected `--light-history-audit` frames, the shader map can read the
+actual water resolve, RainScrub, sky background, HDR sky decode and late
+weather bindings. The journals carry shader bytecode, render target and
+texture descriptions, filters, source MSAA where applicable, and explicit
+skip reasons. A resolved output can use a different sample count from its
+input. Component GPU tests verify these contracts with controlled inputs.
 
 The existing runner owns selection, prerequisites, logs and the result. Suites are
 listed explicitly in [tests/suites.json](../tests/suites.json):

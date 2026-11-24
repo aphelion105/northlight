@@ -91,9 +91,11 @@ def detect_locale(client, locale=None):
                      f'{", ".join(installed) or "none"}); pass --locale')
 
 
-def chain(client, archives='all', locale=None, without=''):
+def chain(client, archives='all', locale=None, without='', pending=()):
     """The archives the game loads, lowest priority first (the last one holding a name wins).
-    without: patch letters to leave out, e.g. 'z' to read the client under our own art layer."""
+    without: patch letters to leave out, e.g. 'z' to read the client under our own art layer.
+    pending: client-relative paths of archives in the current install transaction.
+    """
     if archives not in VIEWS:
         raise ValueError(f'archives must be one of {VIEWS}, not {archives!r}')
     without = (without or '').lower()
@@ -103,14 +105,21 @@ def chain(client, archives='all', locale=None, without=''):
     locale = detect_locale(client, locale).lower()
     suffixes = STOCK_SUFFIXES if archives == 'stock' else ('',) + tuple(SUFFIXES)
     suffixes = [s for s in suffixes if not s or s not in without]   # '' (patch.mpq) is never left out
-    top, local = _entries(data), _entries(locale_dir(client, locale))
+    locale_folder = locale_dir(client, locale)
+    top, local = _entries(data), _entries(locale_folder)
+    staged = {client / name for name in pending}
+    for path in staged:
+        if path.parent == data:
+            top[path.name.lower()] = path
+        elif path.parent == locale_folder:
+            local[path.name.lower()] = path
     names = [(top, n + '.mpq') for n in BASE]
     names += [(top, 'patch' + (f'-{s}' if s else '') + '.mpq') for s in suffixes if s in STOCK_SUFFIXES]
     names += [(local, f'{n}-{locale}.mpq') for n in LOCALE_BASE]
     names += [(local, f'patch-{locale}' + (f'-{s}' if s else '') + '.mpq') for s in suffixes if s in STOCK_SUFFIXES]
     names += [(top, f'patch-{s}.mpq') for s in suffixes if s not in STOCK_SUFFIXES]
     names += [(local, f'patch-{locale}-{s}.mpq') for s in suffixes if s not in STOCK_SUFFIXES]
-    return [folder[n] for folder, n in names if n in folder and folder[n].is_file()]
+    return [folder[n] for folder, n in names if n in folder and (folder[n] in staged or folder[n].is_file())]
 
 
 def is_custom_patch(path):

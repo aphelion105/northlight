@@ -57,7 +57,7 @@ class ProjectHarness(unittest.TestCase):
         self.assertEqual(report['status'],'PASS');self.assertTrue(report['all_passed'])
         self.assertEqual(report['input_identity'],report['input_identity_after'])
         self.assertIn('src/core/input.h',report['inputs'])
-        self.assertEqual(report['tests'][self.test.name]['command'],[sys.executable,str(self.test)])
+        self.assertEqual(report['tests'][self.test.name]['command'],[sys.executable,'-u',str(self.test)])
         self.assertTrue((self.output/'logs/test_sample.log').is_file())
 
     def test_unmatched_pattern_cannot_hide_behind_a_valid_match(self):
@@ -96,16 +96,28 @@ class ProjectHarness(unittest.TestCase):
         self.assertEqual(self.invoke('--strict'),1)
         self.assertEqual(self.report()['tests'][self.test.name]['status'],'XFAIL')
 
-    def test_failed_test_and_timeout_keep_diagnostics(self):
-        self.run.return_value=subprocess.CompletedProcess([],7,'','failure details')
+    def test_failed_test_keeps_merged_output_and_bounded_summary(self):
+        def fail(*args, stdout, stderr, **kwargs):
+            self.assertEqual(stderr, subprocess.STDOUT)
+            stdout.write(b'partial output\n' + b'x' * 8000 + b'\nfailure details\n')
+            return subprocess.CompletedProcess([], 7)
+        self.run.side_effect=fail
         self.assertEqual(self.invoke(),1);self.assertEqual(self.report()['status'],'FAIL')
-        self.assertIn('failure details',(self.output/'logs/test_sample.log').read_text())
+        self.assertIn('partial output',(self.output/'logs/test_sample.log').read_text())
+        self.assertEqual(self.report()['tests'][self.test.name]['note'], 'failure details')
 
     def test_timeout_preserves_partial_output(self):
-        self.run.side_effect=subprocess.TimeoutExpired(['python'],1,output=b'partial output',stderr=b'error')
+        def timeout(*args, stdout, env, **kwargs):
+            self.assertEqual(env['TMPDIR'], env['TEMP'])
+            self.assertEqual(env['TMP'], env['TEMP'])
+            (Path(env['TEMP']) / 'abandoned-cache').write_text('scratch')
+            stdout.write(b'partial output')
+            raise subprocess.TimeoutExpired(['python'],1)
+        self.run.side_effect=timeout
         self.assertEqual(self.invoke(),1)
         self.assertEqual(self.report()['counts']['TIMEOUT'],1)
         self.assertIn('partial output',(self.output/'logs/test_sample.log').read_text())
+        self.assertEqual(list(self.output.glob('.work-*')), [])
 
     def test_source_drift_invalidates_otherwise_passing_results(self):
         def change(*args,**kwargs):

@@ -57,6 +57,21 @@ struct Snapshot {
     std::uint64_t copyServed=0,copyServedBytes=0,copyFills=0,copyFillBytes=0,copyFallback=0,copyEvictions=0,copyInvalidations=0,copyRefused=0;
     std::uint64_t copyResidentBytes=0,copyResidentBuffers=0,copyCapBytes=0,copyLargeGrants=0,copyLargeDrops=0,copyLargeBytes=0;   // gauges at the end of the interval
 };
+#ifdef NORTHLIGHT_REPLAY_STAND
+// Stand measurements span the trace even when the wall-clock interval log drains.
+inline Snapshot copyHistory;
+inline Snapshot replayCopyWork(){
+    auto work=copyHistory;
+    const auto& s=state();
+    const auto load=[](const Counter& value){return value.load(std::memory_order_relaxed);};
+    work.readLocks+=load(s.readLocks);work.readBytes+=load(s.readBytes);
+    work.copyFills+=load(s.copyFills);work.copyFillBytes+=load(s.copyFillBytes);
+    work.copyFallback+=load(s.copyFallback);work.copyServedBytes+=load(s.copyServedBytes);
+    work.copyEvictions+=load(s.copyEvictions);
+    work.copyResidentBytes=load(s.copyResidentBytes);work.copyLargeBytes=load(s.copyLargeBytes);
+    return work;
+}
+#endif
 // Returns the interval since the previous call and starts the next one.
 inline Snapshot takeInterval(){
     auto& s=state();Snapshot r;const auto take=[](Counter& c){return c.exchange(0,std::memory_order_relaxed);};
@@ -68,6 +83,12 @@ inline Snapshot takeInterval(){
     r.copyEvictions=take(s.copyEvictions);r.copyInvalidations=take(s.copyInvalidations);r.copyRefused=take(s.copyRefused);
     r.copyResidentBytes=s.copyResidentBytes.load(std::memory_order_relaxed);r.copyResidentBuffers=s.copyResidentBuffers.load(std::memory_order_relaxed);r.copyCapBytes=s.copyCapBytes.load(std::memory_order_relaxed);
     r.copyLargeGrants=take(s.copyLargeGrants);r.copyLargeDrops=take(s.copyLargeDrops);r.copyLargeBytes=s.copyLargeBytes.load(std::memory_order_relaxed);
+#ifdef NORTHLIGHT_REPLAY_STAND
+    copyHistory.readLocks+=r.readLocks;copyHistory.readBytes+=r.readBytes;
+    copyHistory.copyFills+=r.copyFills;copyHistory.copyFillBytes+=r.copyFillBytes;
+    copyHistory.copyFallback+=r.copyFallback;copyHistory.copyServedBytes+=r.copyServedBytes;
+    copyHistory.copyEvictions+=r.copyEvictions;
+#endif
     return r;
 }
 }

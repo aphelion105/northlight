@@ -6,11 +6,13 @@ D3D9. The implementation is independent of the shipped Forever shader code;
 reference and the limits of the static evidence.
 
 For Azeroth/Kalimdor the local `forever-atmosphere.bin` must be beside the DLL.
-`CelestialStyle=Forever` selects orbital placement only; it does not supply
-atmosphere data. `FOREVER atmosphere loaded=0` means those continents use the
+`CelestialStyle=Forever` selects orbital placement and the imported sky palette
+when the file supplies one. The volumetric medium uses its own fog setting.
+`FOREVER atmosphere loaded=0` means those continents use the
 regional fallback even when all volume shaders are in the resource bundle.
 An active volume reports `FOG_VOLUME` on sampled frames. Outland/Northrend
-instead use the built-in biome profiles and their FRF parent-zone coverage;
+use the built-in biome profiles and their FRF parent-zone coverage for the
+volume and the optional Forever sky approximation;
 they do not require the external Forever table.
 
 Expansion profiles author scattering/extinction only. They inherit the native

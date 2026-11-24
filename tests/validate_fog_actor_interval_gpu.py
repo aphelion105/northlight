@@ -5,6 +5,7 @@ import argparse,ast,importlib.util,json,os,subprocess,sys
 from pathlib import Path
 sys.path[:0]=[str(Path(__file__).resolve().parents[1]),str(Path(__file__).resolve().parents[1]/'scripts/shaders')]
 import northlight_paths as fp
+from scripts.shaders.shader_sources import world_source_text
 from shader_compiler import Compiler
 p=argparse.ArgumentParser(description=__doc__);p.add_argument('--prefix',required=True);p.add_argument('--output',type=Path,required=True);p.add_argument('--sparse',action='store_true');a=p.parse_args();a.output.mkdir(parents=True,exist_ok=True)
 spec=importlib.util.spec_from_file_location('guard',fp.TESTS/'validate_native_scene_trace.py');guard=importlib.util.module_from_spec(spec);spec.loader.exec_module(guard);guard.processes()
@@ -25,7 +26,7 @@ Out CasterVS(float3 p:POSITION0){Out o;o.position=mul(float4(p,1),Matrix);o.dept
 float4 CasterPS(float z:TEXCOORD0):COLOR0{return z.xxxx;}
 ''')
 for entry,target in [('CasterVS','vs_3_0'),('CasterPS','ps_3_0')]:compiler.compile(fixture,entry,target,a.output/(entry+'.bin'))
-hlsl=(fp.SHADERS/'world_effects.hlsl').read_text();start=hlsl.index('sampler2D FogActorMap');end=hlsl.index('\nfloat2 probeUV',start);helper=hlsl[start:end]
+hlsl=world_source_text(fp.SHADERS/'world_effects.hlsl');start=hlsl.index('sampler2D FogActorMap');end=hlsl.index('\nfloat2 probeUV',start);helper=hlsl[start:end]
 combiner=helper[helper.index('float fogCombineActor('):]
 point='''float fogActorShadow(float3 q,float3 delta){q+=delta*.5;if(max(abs(q.x),abs(q.y))>=1||q.z<0||q.z>1)return 1;return q.z-PassInfo.x*4>tex2Dlod(FogActorMap,float4(q.xy*float2(.5,-.5)+.5+.5/1024,0,0)).r?0:1;}'''
 ray_hlsl='''void rays(float2 uv,out float3 q,out float3 delta){

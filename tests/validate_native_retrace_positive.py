@@ -4,7 +4,7 @@
 
 This manual gate compiles only the transparent test proxy and authored EXE.
 It never runs the data-only client PE, records original game quality or measures
-scene FPS. The existing six-case Reset gate remains separate and unchanged.
+scene FPS. The six-case Reset gate is a separate check.
 """
 import argparse
 import importlib.util
@@ -31,8 +31,10 @@ def main():
     parser = argparse.ArgumentParser(__doc__)
     for option in ('tool-root', 'backend-dll', 'stand-dll', 'host', 'client', 'output'):
         parser.add_argument('--' + option, type=Path, required=True)
+    parser.add_argument('--stand-assets', type=Path)
+    parser.add_argument('--msaa', type=int, choices=(0, 2), default=0)
     parser.add_argument('--reset-resize', action='store_true',
-                        help='Separate six-frame client-resize-before-Reset discriminator; original failure remains preserved')
+                        help='Resize the client before Reset and compare three frames on either side')
     args = parser.parse_args()
     if os.name != 'nt':
         raise ValueError('The positive transport requires actual Windows D3D9; no substitute backend')
@@ -42,6 +44,9 @@ def main():
     tools = plan.tool_runtime(args.tool_root)
     source, original = fp.TESTS / 'native_retrace_transport_smoke.cpp', fp.TESTS / 'native_scene_trace_smoke.cpp'
     host, client, backend, stand = (p.resolve() for p in (args.host, args.client, args.backend_dll, args.stand_dll))
+    assets = args.stand_assets or stand.with_name('northlight-assets.bin')
+    if not args.stand_assets and not assets.is_file():
+        assets = stand.with_suffix('.assets.bin')
     if host.name.lower() != 'northlight-native-retrace.exe':
         raise ValueError('A distinctly named real import host is required')
     for path in (host, client, backend, stand):
@@ -53,7 +58,7 @@ def main():
     compiler = fp.zig()
     watched = [Path(__file__).resolve(), source, original, fp.TESTS / 'validate_native_scene_trace.py',
                fp.SCRIPTS / 'compile_native_replay_plan.py', fp.SCRIPTS / 'prepare_native_scene.py',
-               fp.SCRIPTS / 'prepare_native_retrace_host.py', host, client, backend, stand, compiler]
+               fp.SCRIPTS / 'prepare_native_retrace_host.py', host, client, backend, stand, assets, compiler]
     watched += [fp.src(name) for name in ('native_snapshot_capture.h', 'snapshot_capture_sink.h', 'snapshot_archive.h',
                 'snapshot_store.h', 'game_snapshot.h', 'forwarders.h', 'backend_loader.h', 'stand_inputs.h',
                 'native_retrace_bridge.h', 'native_retrace_bridge.cpp', 'celestial_disc_native.h', 'celestial_glare_native.h')]
@@ -67,8 +72,8 @@ def main():
     report = {'format': 1, 'output': str(out), 'inputs': inputs, 'commands': [], 'pass': False,
               'authored_transport_only': True, 'original_game_producer': False, 'game_launched': False,
               'full_scene_ready': False, 'original_quality_parity_validated': False,
-              'raw_depth_equivalence_validated': False, 'msaa': 0, 'fps_eligible': False,
-              'timings_are_performance_evidence': False, 'original_reset_gate_still_failed': True,
+              'raw_depth_equivalence_validated': False, 'msaa': args.msaa, 'fps_eligible': False,
+              'timings_are_performance_evidence': False,
               'reset_client_resize_discriminator': args.reset_resize}
 
     def copy(source, target):
@@ -118,12 +123,15 @@ def main():
                            NORTHLIGHT_TRANSPORT_CLIENT_PE=str(client),
                            NORTHLIGHT_TRANSPORT_SNAPSHOT_DIR=str(capture / 'snapshots'))
         source_command = [capture / exe.name, capture]
-        if args.reset_resize:
-            source_command.append('reset-resize')
+        if args.reset_resize or args.msaa:
+            source_command.append('reset-resize' if args.reset_resize else 'no-reset')
+        if args.msaa:
+            source_command.append(str(args.msaa))
         trace_fixture.run(source_command, out, capture_env, 'producer', report)
         source_report = json.loads((capture / 'authored-source.json').read_text())
         frames = 6 if args.reset_resize else 3
         if (not source_report.get('authored_transport') or source_report.get('frames') != frames or
+                source_report.get('msaa') != args.msaa or
                 source_report.get('draws') != frames * 4 or source_report.get('nonzero_occlusions') != frames or
                 source_report.get('event_completions') != frames or source_report.get('fps_eligible') is not False):
             raise ValueError('Actual authored producer did not complete all positive controls')
@@ -138,8 +146,10 @@ def main():
         stand_dir = replay / 'stand'
         staged_stand = stand_dir / 'northlight-stand.dll'
         copy(stand, staged_stand)
+        copy(assets, stand_dir / 'northlight-assets.bin')
         copy(backend, stand_dir / 'native_scene_backend.dll')
-        fixture_renderer = '[Renderer]\nBackend=dxvk\nBackendPath=native_scene_backend.dll\nExperimentalHDR=0\n'
+        fixture_renderer = ('[Renderer]\nBackend=dxvk\nBackendPath=native_scene_backend.dll\n'
+                            'HDRPipelineVersion=2\nExperimentalHDR=0\n')
         (stand_dir / 'northlight-renderer.ini').write_text(fixture_renderer)
         # Explicit authored-transport isolation, never a copied or edited player
         # INI and never a claim about original rendering quality or workload.
@@ -159,7 +169,10 @@ def main():
                 compiled['summary']['draws'] != frames * 4 or compiled['summary']['presents'] != frames):
             raise ValueError('Plan did not prove actual markers, packets, source draws and nonzero typed aliases')
         report['compiled_plan'] = compiled
-        records = list(plan.calls(plan_dir / 'trace.dump'))
+        dump = plan_dir / 'trace.dump'
+        if args.reset_resize:
+            report['reset_and_image_trace_coverage'] = trace_fixture.coverage(dump, args.msaa)
+        records = list(plan.calls(dump))
         for api in plan.DRAW_APIS:
             if sum(row['name'] == 'IDirect3DDevice9::' + api for row in records) != frames:
                 raise ValueError('All four actual Draw APIs must be present once per frame')

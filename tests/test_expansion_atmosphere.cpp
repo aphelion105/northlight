@@ -1,5 +1,6 @@
 #include "expansion_atmosphere.h"
 #include "celestial_context.h"
+#include "celestial_disc.h"
 #include "settings_schema.h"
 #include <cassert>
 #include <cstring>
@@ -10,13 +11,14 @@ int main(){
     using namespace NorthlightExpansionAtmosphere;
     unsigned cases=0;
     for(const auto& p:Profiles)for(unsigned minute=0;minute<1440;minute+=5)for(float storm:{0.f,.5f,1.f}){
-        auto f=at(p.map,p.zone,float(minute)/1440,storm);assert(f.valid);
+        auto f=at(p.map,p.zone,float(minute)/1440,storm);assert(f.valid&&f.skyValid);
+        for(const auto& band:f.sky.color)for(float channel:band)assert(std::isfinite(channel)&&channel>=0&&channel<=1);
         float c[38][4];NorthlightForever::constants(f,c,1200,1);
         for(const auto& row:c)for(float v:row)assert(std::isfinite(v));
         const float ground=NorthlightForever::sigma(f,100,150,150),high=NorthlightForever::sigma(f,100,1150,150);
         assert(ground>0&&high>=0&&high<ground);
         assert(std::fabs(ground-NorthlightForever::sigma(f,100,3150,3150))<1e-7);
-        if(storm==0){const auto wet=at(p.map,p.zone,float(minute)/1440,1);assert(NorthlightForever::sigma(wet,100,150,150)>ground);}
+        if(storm==0){const auto wet=at(p.map,p.zone,float(minute)/1440,1);assert(NorthlightForever::sigma(wet,100,150,150)>ground);assert(std::memcmp(f.sky.color,wet.sky.color,sizeof f.sky.color));}
         ++cases;
     }
     auto density=[](const char* map,uint32_t zone){return NorthlightForever::sigma(at(map,zone,.5f,0),100,0,0);};
@@ -26,6 +28,11 @@ int main(){
     assert(!at("Azeroth",3521,.5f,0).valid&&!at("Expansion01",3430,.5f,0).valid);
     assert(!at("Northrend",0,.5f,0).valid&&!at("Northrend",65,-1,0).valid);
     assert(!at("Northrend",65,std::numeric_limits<float>::quiet_NaN(),0).valid);
+    const auto hellfire=at("Expansion01",3483,.5f,0),netherstorm=at("Expansion01",3523,.5f,0);
+    const auto dragonblight=at("Northrend",65,.5f,0),dark=at("Northrend",65,0,0);
+    assert(hellfire.sky.color[0][0]>hellfire.sky.color[0][2]&&netherstorm.sky.color[0][2]>netherstorm.sky.color[0][0]);
+    assert(dragonblight.sky.color[0][2]>dragonblight.sky.color[0][0]&&dark.sky.color[0][2]<dragonblight.sky.color[0][2]);
+    assert(hellfire.sky.color[6][0]==0&&dragonblight.sky.color[6][0]==1);
     // Cached parent-zone boundary: bilinear density, continuity, no camera-height dependence.
     NorthlightRegionalFog::Region region;NorthlightRegionalFog::Tile tile;tile.x=tile.y=32;
     for(unsigned y=0;y<16;++y)for(unsigned x=0;x<16;++x)tile.zones[y*16+x]=x<8?3518:3521;
@@ -34,11 +41,19 @@ int main(){
     const float regionDirect[]={.8f,.6f,.4f},regionAmbient[]={.15f,.2f,.3f};
     const auto middle=sample(region,"Expansion01",pos,.5f,0,regionDirect,regionAmbient);
     for(unsigned c=0;c<3;++c){assert(middle.direct[c]==regionDirect[c]);assert(middle.ambient[c]==regionAmbient[c]);}
-    assert(!middle.skyValid); // Native expansion sky art and emission stay native.
+    assert(middle.skyValid);
+    const auto nagrand=at("Expansion01",3518,.5f,0),zangarmarsh=at("Expansion01",3521,.5f,0);
+    for(unsigned band=0;band<8;++band)for(unsigned c=0;c<3;++c)
+        assert(std::fabs(middle.sky.color[band][c]-(nagrand.sky.color[band][c]+zangarmarsh.sky.color[band][c])*.5f)<1e-6f);
     const float expected=(density("Expansion01",3518)+density("Expansion01",3521))*.5f;
     assert(std::fabs(NorthlightForever::sigma(middle,100,0,0)-expected)<1e-5);
     pos[1]-=.001f;const auto right=sample(region,"Expansion01",pos,.5f,0,regionDirect,regionAmbient);pos[1]+=.002f;const auto left=sample(region,"Expansion01",pos,.5f,0,regionDirect,regionAmbient);
     assert(std::fabs(NorthlightForever::sigma(right,100,0,0)-NorthlightForever::sigma(left,100,0,0))<1e-6);
+    for(unsigned y=0;y<16;++y)for(unsigned x=8;x<16;++x)region.tiles[0].zones[y*16+x]=3430;
+    const auto edge=sample(region,"Expansion01",pos,.5f,0,regionDirect,regionAmbient);
+    assert(edge.skyValid&&std::fabs(edge.sky.color[0][0]-nagrand.sky.color[0][0])<1e-6f);
+    pos[1]-=NorthlightRegionalFog::ChunkSize;
+    assert(!sample(region,"Expansion01",pos,.5f,0,regionDirect,regionAmbient).skyValid);
 
     using namespace NorthlightForeverSky;
     assert(std::fabs(evaluate(.5).sun.elevation-65)<1e-4);
@@ -65,6 +80,29 @@ int main(){
     assert(imported.sunWeight==1&&imported.moonWeight==0);
     const auto once=imported;NorthlightCelestial::resolveRendererSky(imported,direct,true);
     assert(imported.sun.angularRadius==once.sun.angularRadius); // never accumulate enlargement
+    const NorthlightCelestialProfiles::Profile appearance;
+    for(unsigned minute=0;minute<1440;++minute){
+        NorthlightCelestial::Context dragon=once,kalimdor=native,azeroth=native;
+        dragon.dayFraction=kalimdor.dayFraction=azeroth.dayFraction=float(minute)/1440;
+        const auto northern=NorthlightCelestial::resolveRendererSky(dragon,direct,true,"Northrend");
+        const auto western=NorthlightCelestial::resolveRendererSky(kalimdor,direct,true,"Kalimdor");
+        const auto eastern=NorthlightCelestial::resolveRendererSky(azeroth,direct,true,"Azeroth");
+        for(auto* sky:{&dragon,&kalimdor,&azeroth})NorthlightCelestialProfiles::apply(appearance,direct,*sky);
+        for(unsigned c=0;c<3;++c){
+            assert(northern.sun.direction[c]==western.sun.direction[c]&&northern.sun.direction[c]==eastern.sun.direction[c]);
+            assert(northern.moon.direction[c]==western.moon.direction[c]&&northern.moon.direction[c]==eastern.moon.direction[c]);
+        }
+        auto sameDisc=[](const NorthlightCelestial::Body& a,const NorthlightCelestial::Body& b){
+            assert(a.angularRadius==b.angularRadius&&a.emission==b.emission&&a.alpha==b.alpha);
+            assert(!std::memcmp(a.tint,b.tint,sizeof a.tint));
+            NorthlightCelestialDisc::Disc first,second;
+            const bool visible=NorthlightCelestialDisc::prepare(a.direction,a.tint,a.alpha,a.angularRadius,first);
+            assert(visible==NorthlightCelestialDisc::prepare(b.direction,b.tint,b.alpha,b.angularRadius,second));
+            if(visible)assert(first.tangentRadius==second.tangentRadius);
+        };
+        sameDisc(dragon.sun,kalimdor.sun);sameDisc(dragon.sun,azeroth.sun);
+        sameDisc(dragon.moon,kalimdor.moon);sameDisc(dragon.moon,azeroth.moon);
+    }
 
     // Apply the imported curve once. Native animation/base changes must not
     // resize this mode; all three Azeroth continents share the resolved radii.
@@ -99,5 +137,5 @@ int main(){
     bool rejected=false;try{applyChanges(docs,fields,style->id()+"\tunknown\n");}catch(...){rejected=true;}assert(rejected);
     for(const auto* text:{"Forever","forever","1"}){Document doc(std::string("[Quality]\nCelestialStyle=")+text);assert(qualityOf(doc,"").celestialStyle==1);}
     assert(canonicalOption("0","Default,Forever")=="Default"&&canonicalOption("1","Default,Forever")=="Forever");
-    std::printf("PASS %u biome/time/weather cases, %u reused-size cases, zone seams, recovered orbit, scale, native mode and live settings\n",cases,sizeCases);
+    std::printf("PASS %u biome/time/weather cases, 1440 matched orbit and disc samples, %u reused-size cases, zone seams, native mode and live settings\n",cases,sizeCases);
 }

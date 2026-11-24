@@ -5,10 +5,11 @@ animated, cache invalid, bounds outside, skinned), the opaque vertex coverage pr
 memory, plus the renderer wiring invariants. Never launches game/Wine."""
 import sys; from pathlib import Path; sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root
 import northlight_paths as fp
+from source_units import source_text
 from pathlib import Path
 import subprocess,tempfile
 HERE=Path(__file__).resolve().parent
-src=fp.src('world_renderer.h').read_text()
+src=source_text(fp.src('world_renderer.h'))
 gpu=fp.src('static_shadow_gpu.h').read_text()
 # The M2 skip is its own mask: the WMO proof path (exact triangles) is untouched.
 assert 'for(auto& p:replays){p->staticProofMask=p->staticM2Mask=0;p->staticM2Model=nullptr;}' in src
@@ -38,7 +39,7 @@ for needle in ('rigidProgram(p.originalShader)','p.cutoff>=0','!p.shared','North
     assert needle in body,needle
 # releaseGPU resets the M2 memory (stale identities and their owners are released with the device)
 rel=src[src.index('void releaseGPU(bool keepMesh=false){'):]
-rel=rel[:rel.index('drop(shadowDecl);')]
+rel=rel[:rel.index('\n    }\n')]
 assert 'staticM2Memory.clear();' in rel
 assert 'staticM2Memory.clear();' in src[src.index('staticScene->map!=lastRequest.map){staticCasters.reset()'):][:200]
 assert 'm2Skipped=%u m2Verified=%u m2Rejected=%u' in src and 'staticM2Skipped=%llu,%llu,%llu,%llu' in src

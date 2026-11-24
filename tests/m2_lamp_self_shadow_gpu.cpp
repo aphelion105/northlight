@@ -3,6 +3,7 @@
 // and its native four-bone shader under controlled poses, not a gameplay capture.
 #undef NDEBUG
 #include "../src/proxy/renderer.cpp"
+#include "fixtures/replay_float_bank.h"
 #include <cassert>
 #include <filesystem>
 #include <fstream>
@@ -15,6 +16,22 @@ static IDirect3DTexture9* texture(IDirect3DDevice9* d,const Fgr& im){IDirect3DTe
 static Fgr readSurface(IDirect3DDevice9* d,IDirect3DSurface9* s,unsigned stride){D3DSURFACE_DESC desc;must(s->GetDesc(&desc));Fgr im;im.w=desc.Width;im.h=desc.Height;im.format=desc.Format;im.stride=stride;im.bytes.resize(size_t(im.w)*im.h*stride);IDirect3DSurface9* copy=nullptr;must(d->CreateOffscreenPlainSurface(im.w,im.h,desc.Format,D3DPOOL_SYSTEMMEM,&copy,nullptr));must(d->GetRenderTargetData(s,copy));D3DLOCKED_RECT l;must(copy->LockRect(&l,nullptr,D3DLOCK_READONLY));for(unsigned y=0;y<im.h;++y)std::memcpy(im.bytes.data()+size_t(y)*im.w*stride,(char*)l.pBits+y*l.Pitch,im.w*stride);must(copy->UnlockRect());copy->Release();return im;}
 static void save(const Fgr& im,const std::string& path){std::ofstream f(path,std::ios::binary);f.write((const char*)&im,20);f.write((const char*)im.bytes.data(),im.bytes.size());assert(f);}
 struct PointTerrainCoverageTest{
+ template<class W,class=void> struct HasNormalsOwner : std::false_type {};
+ template<class W> struct HasNormalsOwner<W,std::void_t<decltype(std::declval<W&>().worldNormals)>> : std::true_type {};
+ template<class W> static IDirect3DTexture9*& normalTexture(W& w){
+  if constexpr(HasNormalsOwner<W>::value)return w.worldNormals.texture_;
+  else return w.normalBuffer;
+ }
+ template<class W,class=void> struct HasScreenLighting : std::false_type {};
+ template<class W> struct HasScreenLighting<W,std::void_t<decltype(std::declval<W&>().screenLighting)>> : std::true_type {};
+ template<class W> static IDirect3DTexture9*& baselineTexture(W& w){
+  if constexpr(HasScreenLighting<W>::value)return w.screenLighting.baseline_.texture;
+  else return w.baselineLight;
+ }
+ template<class W> static IDirect3DSurface9* baselineSurface(const W& w){
+  if constexpr(HasScreenLighting<W>::value)return w.screenLighting.baseline().surface;
+  else return w.baselineSurface;
+ }
  static void states(IDirect3DDevice9* d,bool shadow){
   for(const auto& p:std::initializer_list<std::pair<D3DRENDERSTATETYPE,DWORD>>{{D3DRS_ZENABLE,shadow},{D3DRS_ZWRITEENABLE,shadow},{D3DRS_ZFUNC,D3DCMP_LESSEQUAL},{D3DRS_CULLMODE,D3DCULL_NONE},{D3DRS_ALPHATESTENABLE,FALSE},{D3DRS_ALPHABLENDENABLE,FALSE},{D3DRS_SEPARATEALPHABLENDENABLE,FALSE},{D3DRS_COLORWRITEENABLE,15},{D3DRS_FOGENABLE,FALSE},{D3DRS_STENCILENABLE,FALSE},{D3DRS_SCISSORTESTENABLE,FALSE},{D3DRS_CLIPPLANEENABLE,0},{D3DRS_SRGBWRITEENABLE,FALSE},{D3DRS_DEPTHBIAS,0},{D3DRS_SLOPESCALEDEPTHBIAS,0},{D3DRS_SRCBLEND,D3DBLEND_ONE},{D3DRS_DESTBLEND,D3DBLEND_ONE},{D3DRS_BLENDOP,D3DBLENDOP_ADD}})must(d->SetRenderState(p.first,p.second));
   for(auto f:{D3DSAMP_MINFILTER,D3DSAMP_MAGFILTER})must(d->SetSamplerState(0,f,D3DTEXF_LINEAR));
@@ -62,13 +79,13 @@ struct PointTerrainCoverageTest{
   void* upload=nullptr;must(w.d->CreateVertexBuffer(UINT(s.bytes.size()),0,0,D3DPOOL_MANAGED,&p->stream[0],nullptr));must(p->stream[0]->Lock(0,0,&upload,0));std::memcpy(upload,s.bytes.data(),s.bytes.size());must(p->stream[0]->Unlock());p->stride[0]=sizeof(Vertex);
   if(indexed){for(unsigned i=0;i<vertices.size();++i)p->snapshot.indices.push_back(i);
     must(w.d->CreateIndexBuffer(UINT(vertices.size()*4),0,D3DFMT_INDEX32,D3DPOOL_MANAGED,&p->index,nullptr));must(p->index->Lock(0,0,&upload,0));std::memcpy(upload,p->snapshot.indices.data(),vertices.size()*4);must(p->index->Unlock());}
-  p->constantStorage[31*4]=p->constantStorage[32*4+1]=p->constantStorage[33*4+2]=1;
-  p->constantStorage[8]=p->constantStorage[13]=p->constantStorage[18]=p->constantStorage[22]=1;
+  replayFixtureFloats(*p)[31*4]=replayFixtureFloats(*p)[32*4+1]=replayFixtureFloats(*p)[33*4+2]=1;
+  replayFixtureFloats(*p)[8]=replayFixtureFloats(*p)[13]=replayFixtureFloats(*p)[18]=replayFixtureFloats(*p)[22]=1;
   if(native){
     p->projectionKind=2;p->constantUsage=NorthlightShaderConstants::analyze(words.data(),words.size(),2);
     p->pointBounds.valid=true;for(unsigned k=0;k<3;++k){p->pointBounds.low[k]=INFINITY;p->pointBounds.high[k]=-INFINITY;
       for(const auto& v:vertices){const float value[]={v.x,v.y,v.z};p->pointBounds.low[k]=std::min(p->pointBounds.low[k],value[k]);p->pointBounds.high[k]=std::max(p->pointBounds.high[k],value[k]);}
-      auto* row=p->constantStorage+4*(31+k);for(unsigned j=0;j<3;++j)row[j]=w.context.inverseView[k*4+j];row[3]=0;for(unsigned j=0;j<3;++j)row[3]-=row[j]*w.context.camera[j];}
+      auto* row=replayFixtureFloats(*p)+4*(31+k);for(unsigned j=0;j<3;++j)row[j]=w.context.inverseView[k*4+j];row[3]=0;for(unsigned j=0;j<3;++j)row[3]-=row[j]*w.context.camera[j];}
     p->shared=std::make_shared<const NorthlightDrawSnapshot::Mesh>(std::move(p->snapshot));
 
     w.replays.push_back(std::move(p));return;
@@ -143,24 +160,24 @@ struct PointTerrainCoverageTest{
   auto& stream=p->snapshot.streams[0];stream.stride=p->stride[0]=48;stream.bytes.assign(data.begin()+20,data.begin()+20+h[1]*48);void* upload=nullptr;
   must(d->CreateVertexBuffer(h[1]*48,0,0,D3DPOOL_MANAGED,&p->stream[0],nullptr));must(p->stream[0]->Lock(0,0,&upload,0));std::memcpy(upload,stream.bytes.data(),stream.bytes.size());must(p->stream[0]->Unlock());
   must(d->CreateIndexBuffer(h[2]*4,0,D3DFMT_INDEX32,D3DPOOL_MANAGED,&p->index,nullptr));must(p->index->Lock(0,0,&upload,0));std::memcpy(upload,p->snapshot.indices.data(),h[2]*4);must(p->index->Unlock());
-  p->constantUsage=NorthlightShaderConstants::analyze(words.data(),words.size(),2);p->constantStorage[8]=p->constantStorage[13]=p->constantStorage[18]=p->constantStorage[23]=1;
+  p->constantUsage=NorthlightShaderConstants::analyze(words.data(),words.size(),2);replayFixtureFloats(*p)[8]=replayFixtureFloats(*p)[13]=replayFixtureFloats(*p)[18]=replayFixtureFloats(*p)[23]=1;
   float low[3]={INFINITY,INFINITY,INFINITY},high[3]={-INFINITY,-INFINITY,-INFINITY};
   for(unsigned i=0;i<h[1];++i){float point[3];std::memcpy(point,stream.bytes.data()+i*48,12);for(unsigned k=0;k<3;++k){low[k]=std::min(low[k],point[k]);high[k]=std::max(high[k],point[k]);}}
   p->shared=std::make_shared<const NorthlightDrawSnapshot::Mesh>(std::move(p->snapshot));
   w.replays.push_back(std::move(p));auto& actor=*w.replays.back();
-  const auto pose=[&](float move,float bend){for(unsigned bone=0;bone<h[3];++bone){auto* c=actor.constantStorage+4*(31+3*bone);std::fill(c,c+12,0.f);c[0]=c[5]=c[10]=.9f;
+  const auto pose=[&](float move,float bend){for(unsigned bone=0;bone<h[3];++bone){auto* c=replayFixtureFloats(actor)+4*(31+3*bone);std::fill(c,c+12,0.f);c[0]=c[5]=c[10]=.9f;
       c[3]=1.5f-(low[0]+high[0])*.45f+move+(bone==h[4]?bend:0);c[7]=.5f-(low[1]+high[1])*.45f;c[11]=-9.f-low[2]*.9f;}
     actor.pointBounds={};w.captureMode=WorldRenderer::CaptureFresh;w.shadowSelectionDone=true;
     for(unsigned warm=0;warm<8&&!actor.pointBounds.valid;++warm){w.replayBoundsBegin();w.replayBoundsKick();w.replayBoundsJoin();}assert(actor.pointBounds.valid);};
   constexpr unsigned Size=512,Full=Size*2;const auto prefix=output+"/"+std::filesystem::path(root).filename().string();
   Fgr normal;normal.w=normal.h=Size;normal.format=D3DFMT_A32B32G32R32F;normal.stride=16;normal.bytes.resize(Size*Size*16);
-  for(unsigned i=0;i<Size*Size;++i){const float n[]={basis[6],basis[7],basis[8],1};std::memcpy(normal.bytes.data()+i*16,n,16);}drop(w.normalBuffer);w.normalBuffer=texture(d,normal);
+  for(unsigned i=0;i<Size*Size;++i){const float n[]={basis[6],basis[7],basis[8],1};std::memcpy(normal.bytes.data()+i*16,n,16);}drop(normalTexture(w));normalTexture(w)=texture(d,normal);
   Fgr depth;depth.w=depth.h=Full;depth.format=D3DFMT_R32F;depth.stride=4;depth.bytes.resize(Full*Full*4);const float z=64.f/(64.f-.1f)*(1.f-.1f/9.f);
   for(unsigned i=0;i<Full*Full;++i)std::memcpy(depth.bytes.data()+i*4,&z,4);auto* depths=texture(d,depth);
   IDirect3DSurface9 *target=nullptr,*visualDepth=nullptr;must(d->CreateRenderTarget(Size,Size,D3DFMT_A32B32G32R32F,D3DMULTISAMPLE_NONE,0,FALSE,&target,nullptr));
   must(d->CreateDepthStencilSurface(Size,Size,D3DFMT_D24S8,D3DMULTISAMPLE_NONE,0,TRUE,&visualDepth,nullptr));
-  const float sunlitCut=daylight?.7f:0.f,sunEnergy=daylight?4.f:0.f;w.sourceDirections[0]={basis[6],basis[7],basis[8]};must(d->SetRenderTarget(0,w.baselineSurface));must(d->Clear(0,nullptr,D3DCLEAR_TARGET,daylight?0xff000000:0,1,0));
-  const auto softSelected=[&](){IDirect3DPixelShader9* current=nullptr;must(d->GetPixelShader(&current));assert(current==(soft?w.pointSoftLightingPS:w.pointLightingPS));if(soft)assert(w.pointSoftLightingPS);drop(current);};
+  const float sunlitCut=daylight?.7f:0.f,sunEnergy=daylight?4.f:0.f;w.sourceDirections[0]={basis[6],basis[7],basis[8]};must(d->SetRenderTarget(0,baselineSurface(w)));must(d->Clear(0,nullptr,D3DCLEAR_TARGET,daylight?0xff000000:0,1,0));
+  const auto softSelected=[&](){IDirect3DPixelShader9* current=nullptr;must(d->GetPixelShader(&current));assert(current==(soft?w.pointLighting.softShader():w.pointLighting.hardShader()));if(soft)assert(w.pointLighting.softShader());drop(current);};
   const auto correction=[&](float energy=-1.f){w.pointSlot().selectionGain=1;must(d->SetRenderTarget(0,target));must(d->SetDepthStencilSurface(nullptr));states(d,false);must(d->Clear(0,nullptr,D3DCLEAR_TARGET,0,1,0));
     must(d->SetVertexShader(nullptr));must(d->SetFVF(D3DFVF_XYZRHW|D3DFVF_TEX1));must(d->BeginScene());assert(w.renderPointLighting(depths,nullptr,Full,Full,.1f,64,0,1,1,sunlitCut,1,energy<0?sunEnergy:energy));must(d->EndScene());softSelected();
     const auto image=readSurface(d,target,16);std::vector<float> pixels(Size*Size);for(unsigned i=0;i<pixels.size();++i){float rgb[4];std::memcpy(rgb,image.bytes.data()+i*16,16);pixels[i]=-rgb[0]-rgb[1]-rgb[2];assert(std::isfinite(pixels[i])&&pixels[i]>=-1e-6f);}return pixels;};
@@ -174,7 +191,7 @@ struct PointTerrainCoverageTest{
     const auto wait=[&](IDirect3DQuery9* query,void* data,DWORD size){const DWORD begun=GetTickCount();for(;;){const HRESULT hr=query->GetData(data,size,D3DGETDATA_FLUSH);if(hr==S_OK)return;must(hr);assert(GetTickCount()-begun<10000);Sleep(0);}};
     LARGE_INTEGER cpuFrequency;assert(QueryPerformanceFrequency(&cpuFrequency));constexpr unsigned Samples=8,Repeats=8;
     for(bool facing:{true,false}){
-      for(unsigned i=0;i<Size*Size;++i){const float sign=facing?1.f:-1.f,n[]={sign*basis[6],sign*basis[7],sign*basis[8],1};std::memcpy(normal.bytes.data()+i*16,n,16);}drop(w.normalBuffer);w.normalBuffer=texture(d,normal);
+      for(unsigned i=0;i<Size*Size;++i){const float sign=facing?1.f:-1.f,n[]={sign*basis[6],sign*basis[7],sign*basis[8],1};std::memcpy(normal.bytes.data()+i*16,n,16);}drop(normalTexture(w));normalTexture(w)=texture(d,normal);
       for(bool refresh:{false,true}){
         const auto frame=[&](){
           if(refresh){++w.meshGeneration;w.pointSlot().cacheValid=false;}
@@ -202,9 +219,9 @@ struct PointTerrainCoverageTest{
     c[33][0]=c[33][1]=Full;c[33][2]=c[33][3]=Size;
     std::memcpy(c[36],l.position,12);c[36][3]=l.attenuationEnd;std::memcpy(c[44],l.diffuse,12);c[44][3]=1.f/(l.attenuationEnd-l.attenuationStart);c[52][0]=c[52][1]=1;
     const auto drawDirect=[&](float cut){c[52][2]=cut;must(d->SetRenderTarget(0,target));must(d->SetDepthStencilSurface(nullptr));states(d,false);must(d->Clear(0,nullptr,D3DCLEAR_TARGET,D3DCOLOR_COLORVALUE(.025f,.025f,.025f,1),1,0));
-    for(unsigned s=0;s<16;++s)d->SetTexture(s,nullptr);must(d->SetTexture(1,depths));must(d->SetTexture(12,w.baselineLight));must(d->SetTexture(14,w.normalBuffer));
+    for(unsigned s=0;s<16;++s)d->SetTexture(s,nullptr);must(d->SetTexture(1,depths));must(d->SetTexture(12,baselineTexture(w)));must(d->SetTexture(14,normalTexture(w)));
     for(unsigned s:{1u,12u,14u})for(auto f:{D3DSAMP_MINFILTER,D3DSAMP_MAGFILTER})must(d->SetSamplerState(s,f,D3DTEXF_POINT));
-    must(d->SetVertexShader(nullptr));must(d->SetFVF(D3DFVF_XYZRHW|D3DFVF_TEX1));must(d->SetPixelShaderConstantF(0,c[0],116));must(d->SetPixelShader(w.localDirectPS));must(d->SetRenderState(D3DRS_ALPHABLENDENABLE,TRUE));must(d->BeginScene());must(w.quad(Size,Size));must(d->EndScene());};drawDirect(sunlitCut);
+    must(d->SetVertexShader(nullptr));must(d->SetFVF(D3DFVF_XYZRHW|D3DFVF_TEX1));must(d->SetPixelShaderConstantF(0,c[0],116));must(d->SetPixelShader(w.localLighting.directShader()));must(d->SetRenderState(D3DRS_ALPHABLENDENABLE,TRUE));must(d->BeginScene());must(NorthlightScreen::drawViewportQuad(w.d,Size,Size));must(d->EndScene());};drawDirect(sunlitCut);
     if(phase==0){const auto image=readSurface(d,target,16);save(image,prefix+"-direct.fgr");float directLow=INFINITY;for(unsigned i=0;i<Size*Size;++i){float rgb[4];std::memcpy(rgb,image.bytes.data()+i*16,16);const float energy=rgb[0]+rgb[1]+rgb[2]-.075f;directPeak=std::max(directPeak,energy);directLow=std::min(directLow,energy);}assert(directPeak>.01f&&directPeak-directLow>.05f);
       if(daylight){drawDirect(0);const auto night=readSurface(d,target,16);save(night,prefix+"-undimmed-direct.fgr");const float background=float(D3DCOLOR_COLORVALUE(.025f,.025f,.025f,1)&255)/255.f;for(unsigned i=0;i<Size*Size;++i){float dayRGB[4],nightRGB[4];std::memcpy(dayRGB,image.bytes.data()+i*16,16);std::memcpy(nightRGB,night.bytes.data()+i*16,16);for(unsigned channel=0;channel<3;++channel)dayDimmingError=std::max(dayDimmingError,std::fabs((dayRGB[channel]-background)-(nightRGB[channel]-background)*.3f));}assert(dayDimmingError<2e-6f);drawDirect(sunlitCut);}}
     must(d->BeginScene());assert(w.renderPointLighting(depths,nullptr,Full,Full,.1f,64,0,1,1,sunlitCut,1,sunEnergy));must(d->EndScene());softSelected();const auto receiver=readSurface(d,target,16);save(receiver,prefix+"-receiver-"+std::to_string(phase)+".fgr");
@@ -213,7 +230,7 @@ struct PointTerrainCoverageTest{
     // The floor underneath is the production direct pass plus its correction.
     must(d->SetDepthStencilSurface(visualDepth));must(d->Clear(0,nullptr,D3DCLEAR_ZBUFFER,0,z,0));states(d,true);must(d->SetPixelShader(solid));
     const float a=64.f/(64.f-.1f),b=.1f*a;float matrix[16]={};for(unsigned k=0;k<3;++k){matrix[k*4]=1.4f*basis[k];matrix[k*4+1]=1.4f*basis[3+k];matrix[k*4+2]=-a*basis[6+k];matrix[k*4+3]=-basis[6+k];matrix[12]-=1.4f*basis[k]*w.context.camera[k];matrix[13]-=1.4f*basis[3+k]*w.context.camera[k];matrix[14]+=a*basis[6+k]*w.context.camera[k];matrix[15]+=basis[6+k]*w.context.camera[k];}matrix[14]-=b;
-    must(d->SetVertexShader(w.pointShadowVS));must(d->SetVertexShaderConstantF(0,matrix,4));must(d->SetVertexDeclaration(w.shadowDecl));must(d->BeginScene());UINT page=UINT_MAX;
+    must(d->SetVertexShader(w.pointTargets.casterVertex()));must(d->SetVertexShaderConstantF(0,matrix,4));must(d->SetVertexDeclaration(w.shadowPrograms.worldLayout()));must(d->BeginScene());UINT page=UINT_MAX;
     for(const auto& batch:w.batches){const bool block=batch.page==boxPage;const float color[]={block?.55f:batch.lampSourceId?.9f:.18f,block?.24f:batch.lampSourceId?.65f:.23f,block?.08f:batch.lampSourceId?.15f:.28f,1};must(d->SetPixelShaderConstantF(0,color,1));assert(w.bindMeshPage(batch,page));must(d->DrawIndexedPrimitive(D3DPT_TRIANGLELIST,0,batch.minVertex,batch.vertexCount,batch.start,batch.count));}
     float actorConstants[1024];std::memcpy(actorConstants,actor.constants,sizeof actorConstants);const float projection[]={1.4f,0,0,0,0,1.4f,0,0,0,0,-a,-b,0,0,-1,0};std::memcpy(actorConstants+8,projection,sizeof projection);
     for(unsigned i=0;i<nativeReplays;++i){const auto& lamp=*w.replays[i];float bank[1024];std::memcpy(bank,lamp.constants,sizeof bank);std::memcpy(bank+8,projection,sizeof projection);const float grey[]={.3f,.34f,.4f,1};must(d->SetPixelShaderConstantF(0,grey,1));must(d->SetVertexShader(lamp.originalShader));must(d->SetVertexShaderConstantF(0,bank,256));must(d->SetVertexDeclaration(lamp.decl));must(d->SetStreamSource(0,lamp.stream[0],0,lamp.stride[0]));must(d->SetIndices(nullptr));must(d->DrawPrimitive(lamp.type,lamp.start,lamp.count));}
@@ -241,7 +258,7 @@ struct PointTerrainCoverageTest{
   auto bank=readBytes(output+"/direct-constants.f32");assert(bank.size()==116*16);float c[116][4];std::memcpy(c,bank.data(),sizeof c);
   WorldRenderer w(d);load(w,root,true,{c[6][0],c[6][1],c[6][2]});
   std::memcpy(w.context.inverseView,c[3],64);std::memcpy(w.projection,c[1],12);
-  drop(w.normalBuffer);w.normalBuffer=texture(d,readFgr(prefix+"normals.fgr"));drop(w.baselineLight);w.baselineLight=texture(d,readFgr(prefix+"baseline.fgr"));
+  drop(normalTexture(w));normalTexture(w)=texture(d,readFgr(prefix+"normals.fgr"));drop(baselineTexture(w));baselineTexture(w)=texture(d,readFgr(prefix+"baseline.fgr"));
   drop(w.materialDetail);w.materialDetail=texture(d,readFgr(prefix+"lighting-input-g0-s9.fgr"));
   w.materialBumpGain=c[73][0];w.materialBumpDistance=c[73][1];
   const auto depthImage=readFgr(prefix+"depth.fgr"),localImage=readFgr(prefix+"current-local-light.fgr");

@@ -1,100 +1,100 @@
-ArgentTournamentDungeon: исправление допуска replay GPU cache, 2026-11-02
+Argent Tournament Dungeon replay GPU cache admission fix, 2026-11-02
 
-Исправлено в WorldRenderer::uploadReplay. Раньше первая новая резидентная
-геометрия в кадре проверялась как рост на 64 МиБ, а результат разрешал или
-запрещал все остальные заявки. dynamicBudget требовал available=448 МиБ и
-largest=144 МиБ. В QA при largest=79 МиБ это запрещало даже малые меши.
+Corrected at WorldRender::uploadReplay.
+Geometry in the frame was tested as height by 64 M &amp; B and the result allowed or
+The dynamicBudget demanded available=448 MIB and
+largest=144 MIB. In QA at largest=79 MIB prohibited even small messes.
 
-GPU-замеры и указанная ниже исследовательская DLL относятся к полному
-локальному интегрированному дереву с уже существовавшими правками. Само
-исправление допуска, его регрессии и стенд публикуются отдельно от этих
-посторонних локальных изменений; identity DLL не является identity чистого PR.
+The GPU measurements and the research DLL shown below refer to the total
+Locally integrated tree with existing amendments.
+correction of tolerance, its regressions and the bench shall be published separately from these
+Foreign local changes; identity DLL is not identity pure PR.
 
-Теперь перед каждой заявкой проверяется суммарный объём допущенных мешей
-этого вызова uploadReplay плюс один stride на меш для выравнивания общего
-пакета. Ожидающие commit меши ещё не отражены в измеренной свободной памяти,
-поэтому проверка только текущего bytes была бы недостаточна. Созданные и
-неудачные допущенные заявки не вычитаются из накопленного резерва: это
-консервативная оценка до следующего вызова. Новая проверка получает свежие
-GlobalMemoryStatusEx/VirtualQuery данные через существующий admission probe.
-Готовая резидентная геометрия проверку роста не вызывает.
+Now, before each application, the total volume of the approved furs is checked.
+this call uploadReplay plus one string per mix to level the total
+The pending comms are not yet reflected in the measured free memory,
+So checking only the current bytes would be insufficient.
+unsuccessful admitted applications are not deducted from the accumulated reserve:
+A conservative estimate before the next call.
+GlobalMemoryStatusEx/VirtualQuery Data through the existing admission probe.
+The ready-made resident geometry is not a growth test.
 
-Сохранены ProcessReserve=256 МиБ, тройной запас объёма, двойной запас
-непрерывного блока плюс ChunkMargin=16 МиБ, лимиты кэша и загрузки, probation,
-ограничение времени создания и обычный bulk fallback. Отказ опасной аллокации
-и возврат необязательного кэша перед ростом bulk-буферов остались прежними.
-Изменение не увеличивает общий лимит кэша и не меняет качество теней.
+Saved ProcessReserve=256 MiB, triple stock, double stock
+continuous block plus ChunkMargin=16 MiB, cache and load limits, production,
+Limiting the time of creation and normal bulk fallsback.
+And the return of the non-binding cache before the bulk-buffers were still the same.
+The change does not increase the overall cache limit, nor does it change the quality of shadows.
 
-Регрессионная проверка
+Regressive verification
 
-test_replay_upload.py исполняет извлечённый production uploadReplay с четырьмя
-кэшами: старый отдельный, старый batched с multi-/single-stream и текущий
-NativeStore/NativeClient. Каждый — O2 и ASan+UBSan. Новый случай упал на
-старом коде при 942/79 МиБ; после изменения все восемь вариантов проходят.
-Проверены накопленные заявки, случай «хватает только на первый меш», сброс
-резерва в следующем вызове, недостоверная проба памяти, недостаток aggregate/
-contiguous VA, сохранность draw/байтов, отказы создания и COM-владение.
+test_replay_upload.py Performs recovered production uploadReplay with four
+Cash: old single, old batched with multi-/single-stream and current
+NativeStore/NativeClient. Each one is O2 and Asan+UBSAN.
+the old code at 942/79 MB; after the change all eight options pass.
+Accumulated applications checked, case "only grabbed by the first mess", discharge
+Reserve in the next call, incorrect memory sample, lack of aggregate/
+Contiguous VA, preservation of draw/bytes, failure of creation and COM ownership.
 
-Linux CPU runner: 6 PASS, 0 FAIL. test_shared_gpu_wiring.py в нём был SKIP
-из-за Windows/zig требований, затем отдельно прошёл в Windows на Zig 0.15.2
-в оптимизированном и sanitizer вариантах. Он проверяет production bind lambda,
-переиспользование без admission/новых GPU-аллокаций и перенос владения между
-материалами и тенями. Полный suite этим запуском не заменяется.
+Linux CPU runner: 6 PASS, 0 FAIL. test_shared_gpu_wiring.py was SKIP
+Due to Windows/zig requirements, then went separately to Windows on Zig 0.15.2
+in optimized and santizer versions. It checks production bind lambda,
+Reuse without admission/new GPU allocations and transfer of ownership between
+The complete suite is not replaced by this launch.
 
-Реальная x86 GPU проверка арены
+Real x86 GPU Arsenal Verification
 
-Сравнены два executable, различающиеся только этим участком world_renderer.h:
-замороженный вариант до исправления и текущий. Использованы текущий клиентский
-кэш ArgentTournamentDungeon, production WorldRenderer/NativeStore и 16 мешей,
-снятых с настоящих загруженных mesh pages. Сумма данных — 45 608 байт.
-Включён memory-pressure режим, shadow cache cap=32 МиБ. Для адресной
-фрагментации использованы настоящие MEM_RESERVE/PAGE_NOACCESS размещения
-в собственном 32-битном процессе. Игра не запускалась.
+The two executables which differ only by this section world_renderer.h are compared:
+Frozen version before correction and current.
+Cash ArgentTournamentDungeon, production WorldRenderer/NativeStore and 16 mesh,
+Data taken from the current downloads are 45 608 byte.
+It's a memory-pressure mode, Shadow cache cap=32 MIB.
+The fragmentation used is the actual MEM_RESERVE/PAGE_NOACCESS locations
+in his own 32-The game didn't start.
 
-Бэкенды: native D3D9 и DXVK, GPU RTX 4090. По три измеряемых кадра на случай:
+Backends: native D3D9 and DXVK, GPU RTX 4090. Three measured frames in case:
 
-1. Около 942 МиБ свободно, крупнейший блок 60..66 МиБ.
-   До: 0/16 резидентных мешей; 45 608 байт каждый кадр идут через bulk.
-   После: 16/16 резидентны; первая загрузка 45 608 байт, затем 0 байт.
+1. About 942 MIB is free, the largest block 60..66 MIB.
+   Up to: 0/16 resident furs; 45 608 byte each frame goes through bulk.
+   After: 16/16 resident; first download 45 608 byte, then 0 byte.
 
-2. Около 942 МиБ свободно, крупнейший блок 12..15 МиБ.
-   Обе версии отказывают резидентности и сохраняют все 16 draw через bulk.
+2. About 942 MIB is free, the largest block 12..15 MIB.
+   Both versions fail to be resident and retain all 16 draw via bulk.
 
-3. Около 250 МиБ свободно, крупнейший блок 60..66 МиБ.
-   Обе версии сохраняют отказ при недостатке aggregate reserve; все draw
-   остаются через уже существующие bulk-буферы.
+3. About 250 MIB is free, the largest block 60..66 MIB.
+   Both versions retain failure if there is a lack of Aggregate watch; all draw
+   are left through the already existing bullk-buffers.
 
-На всех 36 измеряемых кадрах R32F теневая картинка 128x128 побитово равна
-эталону тех же мешей через bulk, включая 1 047 покрытых пикселей. Это проверка
-байтов, адресации и сохранности геометрии; исходных игровых draw/поз/боя нет.
-Ускорение полного кадра, прирост игрового FPS и устранение всех фризов
-не измерялись. Размерные проверки не устраняют само давление/фрагментацию VA.
+For all 36 measured frames of R32F, the shadow image 128 x128 is beaten.
+This is a test of the same fur through the bulk including 1 047 covered pixels.
+Bytes, address and preserve geometry; no reference draw/post/fight.
+Accelerating the full frame, increasing the game FPS and eliminating all fries
+The dimensional checks do not eliminate the pressure/fragmentation VA itself.
 
-Локальные доказательства
+Local evidence
 
 out/qa-instance-cache-fix-20261102/validation.json:
-  source inputs, SHA256, команды, обе версии, backend hashes и pressure.tsv.
-  Все production source/shader inputs были неизменны во время GPU проверки.
+  Source inputs, SHA256, teams, both versions, backend hashes and presure.tsv.
+  All production source/shader inputs were constant during the GPU verification.
 out/qa-instance-cache-fix-20261102/{before,current}-{native,dxvk}/gpu.log
 out/qa-instance-cache-fix-20261102/cpu/test-output/20261102-195932/results.tsv
-out/qa-instance-cache-fix-20261102/run_gpu.py — повтор локального GPU опыта.
+out/qa-instance-cache-fix-20261102/run_gpu.py is a repeat of local GPU experience.
 
-Сборка
+Compilation
 
-Production DLL собрана через python scripts/build_renderer.py, Zig 0.15.2;
-все штатные shader freshness gates сохранены и пройдены.
-renderer/frd9.dll: 9 053 696 байт, обычный x86 proxy; check_dll паковщика прошёл.
+Production DLL collected via python scripts/build_renderer.py, Zig 0.15.2;
+All state-level shader freshness gates are saved and passed.
+renderer/frd9.dll: 9 053 696 Byte, normal x86 proxy; heck_dll packer passed.
 Source identity:
 8af7f27faecc039c851cae1fe711836b0bb2fa5eb1bb543ecd17f0e48c000d95
 SHA256 DLL:
 6cdb7ab702f300709429e0fe450ad84bbb6b5dc8a1a743b5ecd7cb4746ac6589
-Build time 2026-11-02 18:10:15 UTC. Встроенная identity совпала с исходниками;
-source/shader inputs после GPU проверки не изменились. Дополнительно прошёл
-test_build_source_identity.py. Метаданные: build-validation.json рядом с GPU
-доказательствами. DLL собрана в репозитории; файлы установленного клиента
-этим исправлением не заменялись.
+Build time 2026-11-02 18:10:15 UTC. The built-in identity coincided with the originals;
+source/shader inputs have not changed since GPU checks.
+test_build_source_identity.py Metadata: build-validation.json near the GPU
+DLL is collected in a repository; the files of an established client
+This correction has not been replaced.
 
-Артефакт на ткани этим изменением не исправляется: он уже есть в сцене до
-экранного освещения. Точная причина требует native draw-входов или отдельной
-проверки того же вида с выключенными эффектами Northlight. Исследование и
-границы предыдущего воспроизведения: qa-argent-tournament-20261102.txt.
+The artifact on the tissue is not corrected by this change: it is already in the stage before
+The exact reason requires native drow-entrys or separate
+Checks of the same species with the effects of Northlight off.
+boundaries of the previous play: qa-argent-tournament-20261102.txt.

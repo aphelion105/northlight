@@ -21,7 +21,7 @@ span_begin=header.index('            auto floatConstants=[&]')
 span_end=header.index('            // An omitted bank',span_begin)
 span=header[span_begin:span_end]
 assert 'const bool comparablePixel=' in span and span.count('floatConstants(')==2
-full_constants='''            if(needed(previous&&previous->vertexFirst==packet->vertexFirst&&previous->vertexCount==packet->vertexCount&&!std::memcmp(previous->vertexConstants,packet->vertexConstants,packet->vertexCount*16)))step(d->SetVertexShaderConstantF(packet->vertexFirst,packet->vertexConstants,packet->vertexCount));
+full_constants='''            if(needed(originalVertexState&&previous&&previous->vertexFirst==packet->vertexFirst&&previous->vertexCount==packet->vertexCount&&!std::memcmp(previous->vertexConstants,packet->vertexConstants,packet->vertexCount*16)))step(d->SetVertexShaderConstantF(packet->vertexFirst,packet->vertexConstants,packet->vertexCount));
             if(needed(previous&&previous->first==packet->first&&previous->pixelConstants.size()==packet->pixelConstants.size()&&!std::memcmp(previous->pixelConstants.data(),packet->pixelConstants.data(),packet->pixelConstants.size()*sizeof(float))))step(d->SetPixelShaderConstantF(packet->first,packet->pixelConstants.data(),UINT(packet->pixelConstants.size()/4)));
 '''
 old=old.replace(span,full_constants)
@@ -36,13 +36,16 @@ for current,replacement in [(freq,'            step(d->SetStreamSourceFreq(0,1))
 aux='if(needed(auxiliaryKnown&&boundAuxiliary==attachAuxiliary))'
 assert old.count(aux)==1;old=old.replace(aux,'if(true)')
 old=old.replace('                    frequencyKnown=viewportKnown=auxiliaryKnown=false;auxiliaryWritesKnown=false;','')
+placement='            if(packet.borrowPlacement()){++placementReuses;return true;}\n'
+assert old.count(placement)==1
+old=old.replace(placement,'')
 control=out/'control';control.mkdir(exist_ok=True);(control/'auto_bump_renderer.h').write_bytes(old.encode())
 records=[]
 for optimization in ['-O2','-O0']:
     cells={};constant_cells={}
     for name,folder in [('control',control),('current',out)]:
         exe=out/f'fixture-{name}-{optimization[1:]}.exe'
-        command=[str(fp.zig()),'c++','-target','x86-windows-gnu',optimization,'-UNDEBUG','-std=c++17','-Wno-microsoft-exception-spec','-I',str(folder),'-I',str(out),*fp.test_include_flags(),str(source),'-luser32','-luuid','-o',str(exe)]
+        command=[str(fp.zig()),'c++','-target','x86-windows-gnu',optimization,'-UNDEBUG','-std=c++17','-Wno-microsoft-exception-spec','-DNORTHLIGHT_TEST_MATERIAL_PLACEMENT','-I',str(folder),'-I',str(out),*fp.test_include_flags(),str(source),'-luser32','-luuid','-o',str(exe)]
         subprocess.run(command,env=fp.zig_env(),check=True)
         result=subprocess.run([str(exe)],capture_output=True,text=True)
         (out/f'{name}-{optimization[1:]}.log').write_text(result.stdout+result.stderr,encoding='utf-8')
@@ -55,6 +58,8 @@ for optimization in ['-O2','-O0']:
     for a,b in zip(cells['control'],cells['current']):
         for field in ['reset','shape','failure','success','draws','hash','resident','up','restored']:assert a[field]==b[field],(field,a,b)
         for field in ['viewportCalls','frequencyCalls','auxiliaryCalls']:assert int(b[field])<=int(a[field]),(field,a,b)
+        if b['failure']=='0':
+            assert a['placementReuses']=='0' and int(b['placementReuses'])==(2 if b['shape']=='1' else 4),(a,b)
         if b['shape']=='0' and b['failure']=='0':
             assert int(b['frequencyCalls'])<int(a['frequencyCalls']) and int(b['auxiliaryCalls'])<int(a['auxiliaryCalls']) and int(b['viewportCalls'])<int(a['viewportCalls'])
     for a,b in zip(constant_cells['control'],constant_cells['current']):

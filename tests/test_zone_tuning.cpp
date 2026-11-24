@@ -21,6 +21,11 @@ int main(int argc,char** argv){
     assert(shipped.explicitKeys.at({"Kalimdor",215u}).count("sun_fog_gain")&&shipped.explicitKeys.at({"Kalimdor",215u}).count("sun_light_mix"));
     assert(!shipped.explicitKeys.at({"Azeroth",12u}).count("sun_fog_gain")&&shipped.explicitKeys.at({"Azeroth",12u}).count("sun_disc"));
     assert(near(shipped.at("Azeroth",12).fogGain[0],4.3f)&&near(shipped.at("Kalimdor",215).fogGain[0],3.f));
+    assert(shipped.fallback.moonTerrainSpecular==0);
+    {CP::Profile p;
+     assert(!CP::assignKey(p,"moon_terrain_specular","0.65")&&near(p.moonTerrainSpecular,.65f));
+     assert(near(CP::blend(shipped.fallback,p,.5f).moonTerrainSpecular,.325f));
+     assert(CP::assignKey(p,"moon_terrain_specular","1.01")&&CP::assignKey(p,"sun_terrain_specular","0.5"));}
     // The shared key helper keeps the shipped ranges.
     {CP::Profile p;assert(!CP::assignKey(p,"moon_horizon_haze","2.5")&&near(p.horizonHaze[1],2.5f));
      assert(CP::assignKey(p,"sun_fog_gain","8.5")&&CP::assignKey(p,"sun_wat","1")&&CP::assignKey(p,"sun_light","0,0,0")&&CP::assignKey(p,"sun_disc","1,1"));}

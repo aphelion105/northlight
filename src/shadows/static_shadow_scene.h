@@ -53,6 +53,7 @@ struct Request {
     Vec3 directions[2]={{0,0,1},{0,0,1}}; // toward the source
     bool active[2]={true,false}; // may include an upcoming source for prewarm
     bool allowLoads=true; // admission pressure never removes already-ready casters
+    uint32_t diagnosticTick=0; // fixed visual clock for audited retries
 };
 struct Stats {
     uint64_t sharedModelSources=0,compactDecodes=0;
@@ -104,7 +105,7 @@ public:
     // until resumed. External immutable snapshot holders stay valid.
     void setPaused(bool);
     std::shared_ptr<const Snapshot> snapshot() const;
-    // Native offline tests/diagnostics only; never block the render thread.
+    // Offline tests and opt-in image parity diagnostics only.
     bool waitIdle(unsigned timeoutMs=30000) const;
 private:
     struct State;

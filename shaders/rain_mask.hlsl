@@ -20,3 +20,16 @@ float4 RainScrub(float2 uv : TEXCOORD0) : COLOR0
     clip(abs(tex2D(Scene, uv).r - tex2D(Depth, uv).r) - 1e-6);
     return 0;
 }
+
+// Compact depth stores positive view distance. Tideglass additionally reads coverage from G.
+float4 TideglassCoverage(float2 uv : TEXCOORD0) : COLOR0
+{
+    float distance = tex2D(Scene, uv).r;
+    return float4(distance, distance > 0, 0, 1);
+}
+
+// Blend the native scene back only where the depth-scrubbed rain mask retained streaks.
+float4 TideglassRetainRain(float2 uv : TEXCOORD0) : COLOR0
+{
+    return float4(tex2D(Scene, uv).rgb, tex2D(Depth, uv).r);
+}

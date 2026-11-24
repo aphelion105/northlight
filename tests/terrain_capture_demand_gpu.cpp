@@ -37,7 +37,7 @@ struct TerrainCaptureDemandTest {
         switches(true);capture();assert(w.frameTerrain.size()==1&&w.terrainAttempts==1&&d.reads>0);
         const auto original=w.frameTerrain.front();assert(original->positions.size()==3&&original->positions[0].z==3);
         const auto entries=w.terrainBoundsCache.persistentEntries();const auto bytes=w.terrainBoundsCache.persistentBytes();assert(entries&&bytes);
-        assert(w.uploadLiveTerrain());auto* cachedVB=w.liveTerrainGPU.vertices();auto* cachedIB=w.liveIndicesGPU;assert(cachedVB&&cachedIB);
+        assert(w.uploadLiveTerrain());auto* cachedVB=w.liveTerrainGPU.vertices();auto* cachedIB=w.liveTerrainIndices.buffer();assert(cachedVB&&cachedIB);
         const auto cachedBytes=w.liveTerrainGPU.bytes();assert(cachedBytes&&w.uploadedTerrain.size()==1);
         frame();switches(false);const auto attempts=w.terrainAttempts;
         for(unsigned f=0;f<8;++f){d.reads=0;const auto sourceBytes=w.terrainBoundsCache.bytesRead();
@@ -46,7 +46,7 @@ struct TerrainCaptureDemandTest {
             w.captureUP(D3DPT_TRIANGLELIST,0,3,1,nullptr,D3DFMT_INDEX16,vertices,sizeof(Position),false,shader,false,false);
             assert(d.reads==0&&w.terrainAttempts==attempts&&w.frameTerrain.empty()&&w.liveTerrainChunks.empty()&&w.pointLiveBatches.empty());
             assert(w.terrainBoundsCache.bytesRead()==sourceBytes&&w.terrainBoundsCache.persistentEntries()==entries&&w.terrainBoundsCache.persistentBytes()==bytes);
-            assert(w.liveTerrainGPU.vertices()==cachedVB&&w.liveIndicesGPU==cachedIB&&w.liveTerrainGPU.bytes()==cachedBytes&&w.uploadedTerrain.front()==original);
+            assert(w.liveTerrainGPU.vertices()==cachedVB&&w.liveTerrainIndices.buffer()==cachedIB&&w.liveTerrainGPU.bytes()==cachedBytes&&w.uploadedTerrain.front()==original);
             frame();
         }
         // Same-frame bounds remain available with shadows disabled (AutoBump handoff).
@@ -55,7 +55,7 @@ struct TerrainCaptureDemandTest {
         assert(d.reads>0&&w.frameTerrain.size()==1&&w.frameTerrain.front()==original);frame();
         // No cache rebuild or upload is required when the unchanged source returns.
         switches(true);capture();assert(w.frameTerrain.size()==1&&w.frameTerrain.front()==original);
-        assert(w.uploadLiveTerrain()&&w.terrainUploadReused&&!w.terrainUploadBytes&&w.liveTerrainGPU.vertices()==cachedVB&&w.liveIndicesGPU==cachedIB);frame();
+        assert(w.uploadLiveTerrain()&&w.terrainUploadReused&&!w.terrainUploadBytes&&w.liveTerrainGPU.vertices()==cachedVB&&w.liveTerrainIndices.buffer()==cachedIB);frame();
         // Dormancy is not permission to reuse stale bytes after a native buffer write.
         switches(false);vertices[0].z=9;write();capture();assert(w.frameTerrain.empty());frame();switches(true);capture();
         assert(w.frameTerrain.size()==1&&w.frameTerrain.front()!=original&&w.frameTerrain.front()->positions[0].z==9);frame();

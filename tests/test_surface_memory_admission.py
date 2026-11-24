@@ -1,5 +1,7 @@
 # northlight-test: requires=cxx
 """Run every surface admission predicate against the production memory guard."""
+
+from source_units import source_text
 from pathlib import Path
 import re
 import os
@@ -9,7 +11,7 @@ import tempfile
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import northlight_paths as fp
 
-source = fp.src('renderer.cpp').read_text(encoding='utf-8')
+source = source_text(fp.src('renderer.cpp'), encoding='utf-8')
 weather = source[source.index('    void surfaceWeather()'):source.index('    void renderEffects()')]
 predicates = re.findall(r'!?memoryGuard\.(?:pressure|capsHalved)\(\)', weather)
 assert predicates == ['memoryGuard.capsHalved()'], 'Review the supplemental weather memory gate'

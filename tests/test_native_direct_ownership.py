@@ -28,13 +28,19 @@ assert 'nativeTerrainPointShaders.count(sourceVS)!=0' in draw
 assert 'NorthlightNativeDirect::terrainBank(' in draw
 assert 'terrainReceiver?4:2' in draw and 'terrainReceiver?11:14' in draw
 assert 'cachedTerrainBank(mirror)' in draw
-assert 'start=terrainReceiver?29+3*first:17+first' in draw
+assert 'nativePointSubmit.draw(d,submitBank,extraCanOwn,failed,submit)' in draw
+assert 'SetVertexShaderConstantF' not in draw
+submit=fp.src('native_point_submit.h').read_text()
+assert 'start=bank.terrain?29+3*first:17+first' in submit
+assert draw.index('nativeDiagnosticCapture->nativeBefore(')<draw.index('const HRESULT result=ownedSubmit();')
 assert 'terrainReceiver||!matched||privateMismatch' in draw
 coverage=world[world.index('    bool terrainShadowCoverage('):world.index('    bool terrainShadowActive()')]
-assert 'registerNativePointShader(shader,reinterpret_cast<const DWORD*>(output.data()),output.size(),false,true)' in coverage
-assert 'nativePointPixelOwners[result.shader]=NorthlightNativeLocalPatch::pointOwnerPixel' in coverage
-neutral=world[world.index('    IDirect3DPixelShader9* terrainShadowReplacement('):world.index('    bool terrainShadowCoverage(')]
-assert 'nativePointPixelOwners[replacement]=NorthlightNativeLocalPatch::pointOwnerPixel' in neutral
+assert 'terrainShadowPrograms.coverage(' in coverage and 'terrainVertexProof(derived,words,count)' in coverage
+assert 'terrainPixelProof(derived,words,count)' in coverage
+assert 'if(words)registerNativePointShader(shader,reinterpret_cast<const DWORD*>(words),count,false,true)' in world
+assert 'if(words)nativePointPixelOwners[shader]=NorthlightNativeLocalPatch::pointOwnerPixel(words,count)' in world
+assert 'terrainShadowPrograms.forgetPixel(shader,' in world and 'terrainShadowPrograms.forgetVertex(shader,' in world
+assert 'terrainShadowPrograms.neutral(' in world
 wmo=world[world.index('    template<class Draw> HRESULT captureNativeWmoDraw('):world.index('    template<class Draw> HRESULT nativeLocalDraw(')]
 assert wmo.index('!gpuNormalDiagnosticRequested')<wmo.index('d->GetDepthStencilSurface')
 for gate in ('wmoShaders.count(sourceVS)','depth.p!=mainDepth','D3DRS_ZWRITEENABLE','D3DRS_ALPHABLENDENABLE','native-wmo-without-proven-point-bank'):

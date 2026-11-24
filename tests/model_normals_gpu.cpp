@@ -31,8 +31,24 @@ struct ModelNormalPacketTestAccess {
     static unsigned materialReads(const NorthlightModelNormals& n){return n.materialBankReads;}
     static unsigned materialMismatches(const NorthlightModelNormals& n){return n.materialBankMismatches;}
 #endif
+#ifdef NORTHLIGHT_TEST_LARGE_NORMAL_BATCH
+    static void duplicateProbe(){
+        NorthlightModelNormals::DuplicateProbe probe;
+        unsigned scans=0,last=0;
+        for(unsigned frame=0;frame<128;++frame){
+            if(!probe.ready(2800,true))continue;
+            assert(frame-last<=16);
+            last=frame;++scans;probe.observe(false);
+        }
+        assert(scans==11&&probe.ready(1500,true));
+        probe.observe(true);assert(probe.ready(1500,true));
+        probe.observe(false);assert(probe.ready(1500,false));
+        probe.observe(false);assert(probe.ready(200,true));
+        std::puts("MODEL_NORMALS_DUPLICATE_PROBE_PASS maxInterval=16 stableScans=11 frames=128");
+    }
+#endif
 #ifdef NORTHLIGHT_MODEL_NORMALS_CONSTANT_TEST
-    static void exactBank(const NorthlightModelNormals& n,const float* bank){assert(!n.pending.empty());const auto& p=*n.pending.back();const auto range=p.constantUsage.floats;assert(!std::memcmp(p.constants+range.first*4,bank+range.first*4,range.count*16));}
+    static void exactBank(const NorthlightModelNormals& n,const float* bank){assert(!n.pending.empty());const auto& p=*n.pending.back();const auto first=p.vertex->first,count=p.vertex->count;assert(!std::memcmp(p.constants+first*4,bank+first*4,count*16));}
 #endif
 };
 #endif
@@ -122,10 +138,17 @@ int main(int argc,char**argv){
     assert(argc==5||(argc==6&&(std::string(argv[5])=="--no-timing"||std::string(argv[5])=="--range-only"||std::string(argv[5])=="--cold-only"||std::string(argv[5])=="--stream-only")));std::setvbuf(stdout,nullptr,_IONBF,0);std::string dir=argv[2],tag=argv[3];
     WNDCLASSW wc{};wc.lpfnWndProc=DefWindowProcW;wc.lpszClassName=L"NorthlightOfflineShadowCamera";wc.hInstance=GetModuleHandleW(nullptr);assert(RegisterClassW(&wc));auto window=CreateWindowExW(0,wc.lpszClassName,L"",WS_OVERLAPPED,0,0,64,64,nullptr,nullptr,wc.hInstance,nullptr);assert(window);
     auto module=LoadLibraryA(argv[1]);assert(module);auto create=(IDirect3D9*(WINAPI*)(UINT))GetProcAddress(module,"Direct3DCreate9");assert(create);auto api=create(D3D_SDK_VERSION);assert(api);D3DPRESENT_PARAMETERS pp{};pp.Windowed=TRUE;pp.hDeviceWindow=window;pp.BackBufferWidth=pp.BackBufferHeight=64;pp.BackBufferFormat=D3DFMT_X8R8G8B8;pp.SwapEffect=D3DSWAPEFFECT_DISCARD;pp.PresentationInterval=D3DPRESENT_INTERVAL_IMMEDIATE;ok(api->CreateDevice(0,D3DDEVTYPE_HAL,window,D3DCREATE_HARDWARE_VERTEXPROCESSING|D3DCREATE_FPU_PRESERVE,&pp,&d));
-    auto modelVS=vs(dir+argv[4]);auto modelPS=ps(dir+"ModelPS.bin");auto alphaModelPS=ps(dir+"ModelAlphaPS.bin");
-    auto sourceMesh=read(dir+"human-0.mesh");unsigned meshVertices,meshIndices;std::memcpy(&meshVertices,sourceMesh.data()+4,4);std::memcpy(&meshIndices,sourceMesh.data()+8,4);assert(sourceMesh.size()==12+meshVertices*48+meshIndices*4);
+    auto modelVS=vs(dir+argv[4]);
     D3DVERTEXELEMENT9 modelElements[]={{0,0,D3DDECLTYPE_FLOAT3,0,D3DDECLUSAGE_POSITION,0},{0,12,D3DDECLTYPE_UBYTE4N,0,D3DDECLUSAGE_BLENDWEIGHT,0},{0,16,D3DDECLTYPE_UBYTE4,0,D3DDECLUSAGE_BLENDINDICES,0},{0,20,D3DDECLTYPE_FLOAT3,0,D3DDECLUSAGE_NORMAL,0},{0,32,D3DDECLTYPE_FLOAT2,0,D3DDECLUSAGE_TEXCOORD,0},D3DDECL_END()};
     IDirect3DVertexDeclaration9* modelDecl=nullptr;ok(d->CreateVertexDeclaration(modelElements,&modelDecl));
+    if(argc==6&&std::string(argv[5])=="--range-only"){
+        ok(d->SetVertexDeclaration(modelDecl));ok(d->SetVertexShader(modelVS));
+        IDirect3DTexture9* white=nullptr;ok(d->CreateTexture(1,1,1,0,D3DFMT_A8R8G8B8,D3DPOOL_MANAGED,&white,nullptr));D3DLOCKED_RECT lock{};ok(white->LockRect(0,&lock,nullptr,0));*static_cast<DWORD*>(lock.pBits)=0xffffffff;ok(white->UnlockRect(0));bind(0,white);
+        normalRange(modelVS);white->Release();modelDecl->Release();modelVS->Release();
+        d->Release();api->Release();FreeLibrary(module);DestroyWindow(window);return 0;
+    }
+    auto modelPS=ps(dir+"ModelPS.bin");auto alphaModelPS=ps(dir+"ModelAlphaPS.bin");
+    auto sourceMesh=read(dir+"human-0.mesh");unsigned meshVertices,meshIndices;std::memcpy(&meshVertices,sourceMesh.data()+4,4);std::memcpy(&meshIndices,sourceMesh.data()+8,4);assert(sourceMesh.size()==12+meshVertices*48+meshIndices*4);
 #ifdef NORTHLIGHT_MODEL_NORMALS_CONSTANT_TEST
     // The bank and pixel oracle uses the stock model, independent of terrain.
     float bank[256][4]={};bank[2][0]=1.275f;bank[3][1]=1.7f;
@@ -141,14 +164,6 @@ int main(int argc,char**argv){
     auto shadowVS=vs(dir+"ShadowVS.bin"),rasterVS=vs(dir+"RasterVS.bin");auto shadowPS=ps(dir+"ShadowPS.bin"),normalPS=ps(dir+"WorldNormals.bin"),fixedNormalPS=ps(dir+"WorldNormalsFixed.bin"),lightingPS=ps(dir+"ActorShadow.bin"),tilePS=ps(dir+"ActorTiles.bin"),rasterPS=ps(dir+"RasterPS.bin");
     D3DVERTEXELEMENT9 decl[]={{0,0,D3DDECLTYPE_FLOAT3,0,D3DDECLUSAGE_POSITION,0},{0,12,D3DDECLTYPE_FLOAT3,0,D3DDECLUSAGE_NORMAL,0},{0,24,D3DDECLTYPE_FLOAT2,0,D3DDECLUSAGE_TEXCOORD,0},D3DDECL_END()};IDirect3DVertexDeclaration9* declaration=nullptr;ok(d->CreateVertexDeclaration(decl,&declaration));
     auto noDistancePS=ps(dir+"WorldNormalsNoDistance.bin");
-    if(argc==6&&std::string(argv[5])=="--range-only"){
-        ok(d->SetVertexDeclaration(modelDecl));ok(d->SetVertexShader(modelVS));ok(d->SetPixelShader(modelPS));
-        IDirect3DTexture9* white=nullptr;ok(d->CreateTexture(1,1,1,0,D3DFMT_A8R8G8B8,D3DPOOL_MANAGED,&white,nullptr));D3DLOCKED_RECT lock{};ok(white->LockRect(0,&lock,nullptr,0));*static_cast<DWORD*>(lock.pBits)=0xffffffff;ok(white->UnlockRect(0));bind(0,white);
-        normalRange(modelVS);white->Release();modelDecl->Release();declaration->Release();
-        for(auto* vertex:{shadowVS,rasterVS,modelVS})vertex->Release();
-        for(auto* pixel:{shadowPS,normalPS,fixedNormalPS,lightingPS,tilePS,rasterPS,modelPS,alphaModelPS,noDistancePS})pixel->Release();
-        d->Release();api->Release();FreeLibrary(module);DestroyWindow(window);return 0;
-    }
     CaptureCalls captureCalls(d);auto modelNormals=std::make_unique<NorthlightModelNormals>(&captureCalls);
     IDirect3DStateBlock9* batchFixtureState=nullptr;
     IDirect3DVertexBuffer9* sentinelVB=nullptr;IDirect3DIndexBuffer9* sentinelIB=nullptr;ok(d->CreateVertexBuffer(48,0,0,D3DPOOL_MANAGED,&sentinelVB,nullptr));ok(d->CreateIndexBuffer(6,0,D3DFMT_INDEX16,D3DPOOL_MANAGED,&sentinelIB,nullptr));

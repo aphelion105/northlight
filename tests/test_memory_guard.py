@@ -9,6 +9,8 @@ bytes; plus a source audit of the render-thread wiring. No Wine, Windows binary
 or game is run. -O2 and ASan/UBSan; the sampler/guard handoff also under TSan.
 BENCH lines: main-thread trim cost on production-like cache sizes (native macOS,
 fake D3D; DXVK buffer Release cost not modelled)."""
+
+from source_units import source_text
 import sys; from pathlib import Path; sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root
 import northlight_paths as fp
 from pathlib import Path
@@ -335,7 +337,7 @@ int main(){
     std::printf("PASS sampler/guard handoff under TSan: walks=%u taken=%u entered=%u recovered=%u trims=%u\n",walks.load(),taken,entered,recovered,trims);
 }
 '''
-r=fp.src('renderer.cpp').read_text();w=fp.src('world_renderer.h').read_text();inl=fp.src('world_memory_guard.inl').read_text();scene=fp.src('gpu_scene.h').read_text()
+r=fp.src('renderer.cpp').read_text();w=source_text(fp.src('world_renderer.h'));inl=fp.src('world_memory_guard.inl').read_text();scene=fp.src('gpu_scene.h').read_text()
 reset_start=w.index('auto resetPreparation=[&]{')
 preparation_reset=w[reset_start:w.index('};',reset_start)]
 finish=r[r.index('    void finishFrameImpl() {'):r.index('    HRESULT STDMETHODCALLTYPE Present(const RECT* src,const RECT* dst,HWND wnd')]
@@ -362,7 +364,7 @@ checks={
  'world trim: terrain, snapshot+index, pool, GPU cache, worker flag':all(x in inl for x in ['t.terrainDeferred=terrainBoundsCache.clearPersistent(critical&&!batch?nullptr:&NorthlightStreaming::cpuRetirement(),batch);','replaySnapshots.clearIndexCache(critical&&!batch?nullptr:&NorthlightStreaming::cpuRetirement(),batch);','freeReplays.clear();','pooledSnapshotBytes=0;','replayGpuCache.clear();','workerMemoryTrim.store(true']),
  'mesh pool: the guard trim frees idle page buffers only (never the active table), never during a staged upload; after a staged commit the hysteresis trim does the same (a map change reuses the buffers)':'t.gpu+=trimMeshPools();' in inl and 'size_t trimMeshPools(uint64_t maxBytes=UINT64_MAX){\n        if(pendingMesh)return 0;' in w and 'meshStore.trimIdle(maxBytes,' in w and w.count('trimMeshPools()')==1 and 'else trimMeshPools();' in w[w.index('void releaseDefaultMesh(){'):w.index('void reset(bool preserveCaptureSources=false){')] and w.count('trimMeshPools(request)')==1,
  'world caps preserve demand savings; terrain halves only under real low address space':all(x in inl for x in ['void setMemoryPressure(bool on,bool halveTerrain)','setSnapshotCacheLimit(on?NorthlightDrawSnapshot::Frame::SnapshotCacheLimit/2:NorthlightDrawSnapshot::Frame::SnapshotCacheLimit)','setPersistentByteLimit(halveTerrain?16u*1024u*1024u:32u*1024u*1024u)','gpuScene->setMemoryPressure(on,halveTerrain);','memoryPressure?ReplayPoolBytes/2:ReplayPoolBytes']) and all(x in scene for x in ['native.setTotalLimit(episode&&critical?32u<<20:SIZE_MAX);','materials.setLimit(32u<<20);shadows.setLimit(episode?32u<<20:64u<<20);']),
- 'replay pool cap: records and snapshots, no underflow above a lowered cap':all(x in w for x in ('records>limit/sizeof(Replay)||pooledSnapshotBytes>limit-records*sizeof(Replay)','const size_t available=limit-records*sizeof(Replay)-pooledSnapshotBytes;' , 'const size_t capacity=p->retainedBytes();if(capacity>available)return;','while(freeReplays.size()>replayPoolLimit()/sizeof(Replay))freeReplays.pop_back();')),
+ 'replay pool cap: record headers, snapshots and float banks count toward a lowered cap':all(x in w for x in ('records>limit/sizeof(Replay)||pooledSnapshotBytes>limit-records*sizeof(Replay)','const size_t available=limit-records*sizeof(Replay)-pooledSnapshotBytes;', 'const size_t capacity=p->retainedBytes();if(capacity>available)return;', 'while(!freeReplays.empty()&&pooledSnapshotBytes+freeReplays.size()*sizeof(Replay)>replayPoolLimit())', 'pooledSnapshotBytes-=freeReplays.back()->retainedBytes();freeReplays.pop_back();')),
  'worker drops all shared preparation caches at request start; a trim keeps the entry lift (a floor on measured free memory)':w.count('if(workerMemoryTrim.exchange(false,std::memory_order_relaxed))resetPreparation();')==1 and w.index('workerMemoryTrim.exchange')<w.index('auto result=std::make_shared<Snapshot>();result->map=r.map;') and all(preparation_reset.count(x)==1 for x in ('meshPreparation.reset();','sceneSources.reset();','localGeometry.reset();')) and 'entryLift' not in preparation_reset,
  'a superseded spatial region drops its entry lift and terrain hint at every cancellation':w.count('stallEnd("superseded")')==1 and 'entryLift.clear();chunkLift.clear();coldLift.clear();terrainSizeHint={};stallEnd("superseded");' in w and w.count('abandonGeometry();')==3,
  'entry lift tracks the refused region across small retargets':'entryLiftMap=r.map;entryLiftCenter=r.geometryCenter;\n                    auto& lift=coldRecovery?coldLift:chunkedLocal?chunkLift:entryLift;lift.refused(' in w and 'if((entryLift.armed||chunkLift.armed||coldLift.armed)&&!NorthlightWorldStreaming::applicable(entryLiftMap,entryLiftCenter,r.map,r.camera)){\n                entryLift.clear();chunkLift.clear();coldLift.clear();terrainSizeHint={};' in w,

@@ -194,7 +194,7 @@ else:
                 records.append({'architecture':architecture,'optimization':optimization,'name':name,'command':cmd,'exe_sha256':sha(binary),'rows':cells[name],'view_influence_rows':influence})
             for a,b in zip(cells['control'],cells['current']):
                 for field in ['scenario','up','prepared','selected','hash','triangles','draws','probes','distant','bufferMiss','uploadMisses']:assert a[field]==b[field],(field,a,b)
-                saved_reads=0 if b['up']=='1' or b['scenario'] in ['5','6'] else 6
+                saved_reads=0 if b['up']=='1' or b['scenario'] in ['5','6'] else 3
                 assert int(a['uploadHits'])-int(b['uploadHits'])==saved_reads,(a,b)
     negative=root/'negative';negative.mkdir(exist_ok=True)
     unsafe=header.replace('if(sample==placedSample)','if(sample==0&&placedSample<samples)');assert unsafe!=header
@@ -204,4 +204,4 @@ else:
     assert result.returncode!=0 and 'PARTICLE_PROBE_TRIANGLE_MISMATCH' in result.stderr,result.stdout+result.stderr
 assert all(sha(Path(p))==h for p,h in inputs.items()),'Source changed during final validation'
 (root/'validation.json').write_text(json.dumps({'inputs':inputs,'inputs_unchanged':True,'fixture_sha256':sha(fixture),'records':records,'view_influence_only':args.view_influence_only,'old_centroid_gate_rejected':args.view_influence_only,'unsafe_probe_reuse_rejected':not args.view_influence_only,'authored_geometry_and_receivers':True,'matched_game_item':False,'timings_claimed':False,'gpu_or_game_launched':False},indent=2)+'\n')
-print('PASS actual SDK particle influence:13 exact source/receiver, camera, cluster, track, world-transform, finite-input and bounded-work cases per variant; old centroid negative rejected; no game/GPU/FPS claim.' if args.view_influence_only else 'PASS actual SDK particle capture,17 full-output/count cases plus13 influence cases per variant, indexed/UP and late failed probes, six fewer uploaded input reads per reused indexed probe; no timing benchmark.')
+print('PASS actual SDK particle influence:13 exact source/receiver, camera, cluster, track, world-transform, finite-input and bounded-work cases per variant; old centroid negative rejected; no game/GPU/FPS claim.' if args.view_influence_only else 'PASS actual SDK particle capture, 17 full-output/count cases plus 13 influence cases per variant, indexed/UP, shared vertices and late failed probes; no timing benchmark.')

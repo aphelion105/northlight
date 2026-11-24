@@ -3,6 +3,7 @@ conversion and consumes an argument, which crashed 0.3.165 at startup ("lamps 30
 Also pins the startup banner to exactly its four conversions (%s %ls %d %lu)."""
 import re, sys
 from pathlib import Path
+from source_units import source_text
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import northlight_paths as fp  # noqa: E402
 
@@ -16,6 +17,6 @@ for path in sorted((fp.REPO / 'src').rglob('*')):
         if re.search(r'%\s', m.group(1)):
             bad.append(f'{path.relative_to(fp.REPO)}: {m.group(1)[:80]}')
 assert not bad, 'stray "% " in log format strings:\n' + '\n'.join(bad)
-banner = re.search(r'logf\("(Northlight renderer [^"]*)"', fp.src('renderer.cpp').read_text()).group(1)
+banner = re.search(r'logf\("(Northlight renderer [^"]*)"', source_text(fp.src('renderer.cpp'))).group(1)
 assert [c for c in CONV.findall(banner) if c != '%'] == ['s', 's', 'd', 'u'], CONV.findall(banner)
 print('PASS log format literals')

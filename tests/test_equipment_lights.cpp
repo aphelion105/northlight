@@ -3,6 +3,7 @@
 #include "equipment_light_proof.h"
 #include "local_light_selection.h"
 #include "quality_settings.h"
+#include "frame_parity_clock.h"
 #ifdef NDEBUG
 #undef NDEBUG
 #endif
@@ -15,6 +16,11 @@
 #include <xmmintrin.h>
 #endif
 using namespace NorthlightEquipmentLights;
+static_assert(NorthlightFrameParityClock::milliseconds(0)==1000);
+static_assert(NorthlightFrameParityClock::milliseconds(282)==5700);
+static_assert(NorthlightFrameParityClock::milliseconds(290)==5833);
+static_assert(NorthlightFrameParityClock::counter(60,10000000)-NorthlightFrameParityClock::counter(0,10000000)==10000000);
+static_assert(NorthlightFrameParityClock::counter(282,10000000)-NorthlightFrameParityClock::counter(281,10000000)==166667);
 static std::array<float,16> identity(){std::array<float,16> m{};m[0]=m[5]=m[10]=m[15]=1;return m;}
 static void bankDecodeParity(){
     auto matrix=identity();float camera[]={-8565,1011,95},bank[44]{};
@@ -128,6 +134,22 @@ int main(){
     t.reset();t.observe(n,0xfffffff0u,none);t.publish(0xfffffff0u);t.publish(0x20u);assert(t.count==1);t.publish(0x200u);t.publish(0x300u);assert(!t.count); // DWORD wrap.
     for(unsigned i=0;i<Capacity+4;++i){n.position[0]=float(i*2);t.observe(n,2000,none);}assert(t.count==Capacity&&t.dropped==4);
     t.reset();t.observe(n,3000,{light(n,2,1)});assert(!t.count&&t.duplicates==1);
+    {
+        Native emitter=n;emitter.position[0]=16;emitter.position[1]=32;emitter.position[2]=4;
+        auto other=emitter;other.position[0]+=3;
+        std::vector<NorthlightLocalLights::Light> authored{light(other,1,1),light(emitter,2,1)};
+        const auto indexed=indexStaticLights(authored);
+        for(float offset:{-.2501f,-.25f,-.2499f,0.f,.2499f,.25f,.2501f,3.f}){
+            auto drawn=emitter;
+            drawn.position[0]+=offset;
+            assert(staticDuplicate(drawn,authored,&indexed)==staticDuplicate(drawn,authored));
+            drawn.position[1]+=.5f;
+            assert(!staticDuplicate(drawn,authored,&indexed));
+        }
+        Tracker indexedTracker;
+        indexedTracker.observe(emitter,3000,authored,nullptr,0,0,0,&indexed);
+        assert(!indexedTracker.count&&indexedTracker.duplicates==1);
+    }
     // A closer new source wins a full budget; an almost equal newcomer does
     // not churn the incumbent, and a stale source is immediately replaceable.
     t.reset();for(unsigned i=0;i<Capacity;++i){n.position[0]=camera[0]+20+2*i;t.observe(n,3000,none,camera);}
@@ -153,7 +175,8 @@ int main(){
     n.position[0]=camera[0]+2;Tracker publication;publication.observe(n,4000,none);publication.publish(4000);publication.publish(4050);
     NorthlightLocalLightSelection::Tracker pubSelect;pubSelect.update(none,camera,8,.016f,false,nullptr,publication.output.data(),publication.outputCount);
     const auto staticSource=light(n,77,1);std::vector<NorthlightLocalLights::Light> appeared{staticSource};
-    publication.publish(4060,&appeared);assert(!publication.count&&publication.suppressedCount==1);
+    const auto appearedIndex=indexStaticLights(appeared);
+    publication.publish(4060,&appeared,&appearedIndex);assert(!publication.count&&publication.suppressedCount==1);
     for(unsigned i=0;i<publication.suppressedCount;++i)pubSelect.forget(publication.suppressed[i]);
     auto appearedOut=pubSelect.update(appeared,camera,8,.016f,true);assert(appearedOut.count==1);
     // When FGL removes the source, its native replacement must also remove the

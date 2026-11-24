@@ -8,6 +8,7 @@ No game, device, or image generation is used.
 """
 import sys; from pathlib import Path; sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root
 import northlight_paths as fp
+from scripts.shaders.shader_sources import world_source_text
 import math,struct,unittest,json
 from pathlib import Path
 ROOT=Path(__file__).resolve().parent
@@ -64,7 +65,7 @@ class Geometry(unittest.TestCase):
                     raw=store_depth(scene,near,far)
                     self.assertEqual(receiver(raw,mask,alpha,False),receiver(raw,mask,alpha,True))
         self.assertGreater(cases,25)
-        shader=(fp.SHADERS/'world_effects.hlsl').read_text()
+        shader=world_source_text(fp.SHADERS/'world_effects.hlsl')
         self.assertIn('float water=waterDistance(uv,d);return water>0?water:viewDistance(min(d,.99999));',shader)
         self.assertEqual(shader.count('fogReceiverDistance(uv,depth)'),4)  # The optional moon-floor fog pass shares this helper.
         self.assertNotIn('receiverDistance(uv,min(depth,.99999))',shader)

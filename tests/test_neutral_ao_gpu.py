@@ -7,10 +7,12 @@ import northlight_paths as fp
 from windows_gpu_guard import processes
 p=argparse.ArgumentParser(__doc__);p.add_argument('--output',type=Path,required=True);p.add_argument('--backend',type=Path,action='append',required=True);a=p.parse_args()
 processes();out=a.output.resolve();out.mkdir(parents=True,exist_ok=True);overlay=out/'overlay';overlay.mkdir(exist_ok=True)
-source=fp.src('renderer.cpp').read_text();marker='} else if(linearHdr&&fold)neutralAOPending=true;';assert source.count(marker)==1
+source=fp.src('renderer.cpp').read_text();ao=fp.src('contact_ao_pass.h').read_text()
+marker='} else if(linearHdr&&fold)neutralAOPending=true;';assert ao.count(marker)==1
 inputs={str(f):hashlib.sha256(f.read_bytes()).hexdigest() for f in [*fp.SRC.rglob('*.h'),*fp.SRC.rglob('*.inl'),*fp.SRC.rglob('*.cpp'),ROOT/'tests/neutral_ao_gpu.cpp',ROOT/'tests/world_screen_effects_gpu.cpp',Path(__file__).resolve()]}
-source=source.replace('class Device final :','extern bool northlightForceNeutralAO;\nclass Device final :',1).replace(marker,'} else if(linearHdr&&fold&&!northlightForceNeutralAO)neutralAOPending=true;')
 (overlay/'renderer.cpp').write_bytes(source.encode())
+ao=ao.replace(marker,'} else if(linearHdr&&fold&&!northlightForceNeutralAO)neutralAOPending=true;')
+(overlay/'contact_ao_pass.h').write_bytes(('extern bool northlightForceNeutralAO;\n'+ao).encode())
 exe=out/'neutral-ao.exe';sources=['world_gi.cpp','world_mesh_plan.cpp','static_shadow_scene.cpp','settings_overlay.cpp','settings_panel.cpp','imgui.cpp','imgui_draw.cpp','imgui_tables.cpp','imgui_widgets.cpp','imgui_impl_dx9.cpp']
 command=[fp.zig(),'c++','-target','x86-windows-gnu','-O2','-UNDEBUG','-std=c++17','-Wno-microsoft-exception-spec','-DIMGUI_USER_CONFIG="northlight_imconfig.h"','-I',overlay,*fp.test_include_flags(),ROOT/'tests/neutral_ao_gpu.cpp',*[fp.src(s) for s in sources],'-luser32','-luuid','-o',exe]
 env={**fp.zig_env(),'PYTHONUTF8':'1','DISABLE_VULKAN_OBS_CAPTURE':'1','DXVK_LOG_PATH':str(out)}

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# northlight-test: requires=cxx
+# northlight-test: requires=zig slow
 """0.3.153: run the production GI worker and geometry builder threads (the whole
 extracted work()) against a render-thread simulator. Only the region-build block
 is replaced by a synthetic scene whose roof height depends on the build centre,
@@ -10,12 +10,14 @@ deferral with a still camera; stop/shutdown mid-build; builder and worker faults
 Native CPU only: no Wine, game, D3D device or world cache. Windows uses real
 thread/timer APIs and O2/debug builds without sanitizers; Unix retains sanitizers.
 """
+
+from source_units import source_text
 import sys; from pathlib import Path; sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root
 import northlight_paths as fp
 import hashlib,json,os,subprocess,tempfile
 from pathlib import Path
 HERE=Path(__file__).resolve().parent
-source=fp.src('world_renderer.h').read_text()
+source=source_text(fp.src('world_renderer.h'))
 work=source[source.index('    void work() {'):source.index('\n    bool check(HRESULT h,const char* s)')]
 begin=work.index('            // BEGIN REGION BUILD');end=work.index('            // END REGION BUILD')
 work=work[:begin]+'''            // FIXTURE REGION BUILD
@@ -46,6 +48,8 @@ palette=palette[:palette.index('\n')]
 fog_region=source[source.index('    struct FogRegion {'):];fog_region=fog_region[:fog_region.index('\n')]
 orphaned=source[source.index('    template<class Pending,class Active> static bool pendingOrphaned('):]
 orphaned=orphaned[:orphaned.index('\n')] # 0.3.156 production release rule
+publication=fp.src('world_publication.h').read_text()
+worker_methods=publication[publication.index('    template<class Built>'):publication.rindex('\n};')]
 fixture=r'''
 #ifdef _WIN32
 #define NOMINMAX
@@ -68,6 +72,7 @@ fixture=r'''
 #include "scene_source_cache.h"
 #include "world_mesh_pages.h"
 #include "memory_profile_snapshot.h"
+#include "frame_parity_clock.h"
 #include <atomic>
 #include <cassert>
 #include <chrono>
@@ -120,10 +125,11 @@ REQUEST
 PALETTE
 FOG_REGION
 ORPHANED
+WORKER_METHODS
  NorthlightGeometryMemory::StallWatch generationStall;
  NorthlightQuality::Settings quality;std::string root="fixture/";
  std::shared_ptr<NorthlightGI::SceneSourceCache> sharedSceneSources=std::make_shared<NorthlightGI::SceneSourceCache>();
- std::mutex mutex;std::condition_variable wake;Request request;bool stopping=false,pending=false,geometryRebuild=false;std::shared_ptr<const Snapshot> payloadRebuildSource;
+ std::mutex mutex;std::condition_variable wake,giSettled;Request request;bool stopping=false,pending=false,geometryRebuild=false;std::shared_ptr<const Snapshot> payloadRebuildSource;
  std::atomic<bool> workerBusy{false},workerMemoryTrim{false},giMemoryTrim{false};std::atomic<unsigned> workerFaultCode{0},geometryBuildEstimateMs{1000};std::atomic<uint64_t> geometryMemoryDemand{0};
  std::shared_ptr<Snapshot> published;std::shared_ptr<const PaletteRegion> publishedPaletteRegion;
  std::shared_ptr<const FogRegion> publishedFogRegion;
@@ -359,7 +365,7 @@ int main(){
   assert(entries==2&&ends==2); /* the end line is logged when the map changes back */std::puts("uncached map: one probe and one error snapshot per entry, camera moves start no build, continent builds again");}
  std::puts("PASS concurrent geometry build: moves solved on the previous generation during builds; settled atlas bit-identical to a sequential final-generation solve; still-camera deferral; stop mid-build; builder and worker faults join; map change, build failure and stale adoption during builds; orphaned staged upload released (0.3.156); same-map teleports recover with a still camera; 0.3.169 120/150 hold adopts without a stall; lead region idles without spinning");
 }
-'''.replace('SNAPSHOT',snapshot).replace('REQUEST',request).replace('PALETTE',palette).replace('FOG_REGION',fog_region).replace('ORPHANED',orphaned).replace('WORK',work)
+'''.replace('SNAPSHOT',snapshot).replace('REQUEST',request).replace('PALETTE',palette).replace('FOG_REGION',fog_region).replace('ORPHANED',orphaned).replace('WORKER_METHODS',worker_methods).replace('WORK',work)
 windows=os.name=='nt'
 report={'status':'pass','game_launched':False,'platform':sys.platform,'sanitizers':not windows,'runs':[],'sha256':{n:hashlib.sha256(fp.tracked(n).read_bytes()).hexdigest() for n in ['world_renderer.h','world_probe_progress.h','world_probe_cache.h','gi_solve_pool.h','world_gi.h','world_gi.cpp','world_mesh_plan.h','world_mesh_plan.cpp','scene_source_cache.h','test_concurrent_geometry_build.py']}}
 modes=([('O2',['-O2']),('debug',['-O0','-g'])] if windows else

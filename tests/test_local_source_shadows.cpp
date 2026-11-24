@@ -77,12 +77,12 @@ int main(){
     auto shrinking=tracker.update(many,camera,4,.01f,true);assert(shrinking.count<=4+NorthlightLocalLightSelection::Spare);
     for(unsigned i=0;i<50;++i)shrinking=tracker.update(many,camera,4,.1f,true);
     assert(shrinking.count<=4);assert(tracker.update(many,camera,128,0,false).count==128);
-    for(unsigned limit:{16u,30u,32u,64u,128u}){
+    for(unsigned limit:{1u,4u,6u,15u,16u,30u,32u,64u,128u}){
         problems.clear();std::istringstream in("[Quality]\nPointShadowLimit="+std::to_string(limit)+"\nLocalLightLimit=128\n");
         config=NorthlightQuality::load(&in,nullptr,problems);assert(problems.empty()&&config.pointShadowLimit==limit&&config.localLightLimit==128);
         assert(NorthlightSettings::liveQualityUpdate(defaults,config).pointShadowLimit==limit);
     }
-    for(unsigned invalidLimit:{0u,4u,15u,129u}){
+    for(unsigned invalidLimit:{0u,129u}){
         problems.clear();std::istringstream in("[Quality]\nPointShadowLimit="+std::to_string(invalidLimit)+"\n");
         config=NorthlightQuality::load(&in,nullptr,problems);assert(!problems.empty()&&config.pointShadowLimit==64);
     }

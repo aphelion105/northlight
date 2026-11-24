@@ -6,6 +6,8 @@ the adapter relies on (MoveFileExW REPLACE_EXISTING refuses a read-only target
 and a source open without delete sharing; a stub log without a device
 never replaces the previous session) and (2) real POSIX files in a temporary directory. Plus a source
 audit of the renderer.cpp wiring. No Wine, Windows binary or game is run."""
+
+from source_units import source_text
 import sys; from pathlib import Path; sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root
 import northlight_paths as fp
 from pathlib import Path
@@ -91,7 +93,7 @@ int main(int argc,char** argv){
     std::puts("PASS log rotation: missing/moved/replaced/read-only previous and current; probe stub never replaces the previous session (held or closed); live real session kept, nothing copied; launch orders probe-first (running/exited) and game-first keep the ended session in .prev; real files");
 }
 '''
-r=fp.src('renderer.cpp').read_text()
+r=source_text(fp.src('renderer.cpp'))
 logger=r[r.index('static void logf('):r.index('static void reportLogCost()')]
 checks={
  'rotation once, before the first open, inside the logger lock':re.search(r'AcquireSRWLockExclusive\(&logLock\);.*if \(!logFile\) \{\s*if\(!logRotated\)\{logRotated=true;rotatePreviousLog\(\);\}\s*wchar_t path\[MAX_PATH\];.*_wfopen\(path, L"w"\)',logger,re.S) is not None,

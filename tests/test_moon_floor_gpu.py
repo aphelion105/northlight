@@ -5,6 +5,7 @@ import argparse,hashlib,json,os,subprocess,sys
 from pathlib import Path
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 import northlight_paths as fp
+from scripts.shaders.shader_sources import source_hashes, world_source_bytes
 from windows_gpu_guard import processes
 parser=argparse.ArgumentParser(__doc__)
 parser.add_argument('--host-only',action='store_true',help='Focused actual-renderer wiring regression; shader fixtures remain a separate full run.')
@@ -16,13 +17,15 @@ out=args.output.resolve();assert not fp.is_client(out);out.mkdir(parents=True,ex
 sha=lambda p:hashlib.sha256(p.read_bytes()).hexdigest()
 entries=['WorldFog','WorldFogActor','WorldFogActorTiled','WorldFogTransition','WorldFogActorTransition','WorldFogActorTiledTransition']
 world=json.loads((fp.SHADERS/'world-shader-build.json').read_text());transition=json.loads((fp.SHADERS/'shadow-transition-shader-build.json').read_text())
-assert world['source_sha256']==sha(fp.SHADERS/'world_effects.hlsl')
-assert all(sha(fp.SHADERS/name)==value for name,value in transition['sources'].items())
+assert world['source_sha256']==hashlib.sha256(world_source_bytes(fp.SHADERS/'world_effects.hlsl')).hexdigest()
+assert world['sources']==source_hashes(fp.SHADERS/'world_effects.hlsl')
+assert transition['sources']==source_hashes(fp.SHADERS/'shadow_transition.hlsl')
 for entry in entries:
  for name in [entry,entry.replace('WorldFog','MoonFloorFog')]:
   manifest=transition if name.endswith('Transition') else world
   assert sha(fp.COMPILED/(name+'.bin'))==manifest['shaders'][name]['sha256']
-owned=['src/sky/regional_fog.h','src/world/world_renderer.h','shaders/world_effects.hlsl','shaders/shadow_transition.hlsl','src/generated/world_compiled_shaders.h','src/generated/shadow_transition_compiled_shaders.h','tests/moon_floor_field.cpp','tests/moon_floor_gpu.cpp','tests/moon_floor_host_gpu.cpp']
+owned=['src/sky/regional_fog.h','src/world/world_renderer.h','src/world/world_moon_floor_fog.h','src/world/world_fog_field.h','src/world/world_atmospheric_fog.inl','src/generated/world_compiled_shaders.h','src/generated/shadow_transition_compiled_shaders.h','tests/moon_floor_field.cpp','tests/moon_floor_gpu.cpp','tests/moon_floor_host_gpu.cpp']
+owned.extend('shaders/'+name for name in sorted(world['sources'].keys() | transition['sources'].keys()))
 inputs={name:sha(fp.REPO/name) for name in owned}
 report={'game_control':False,'timings_measured':False,'actual_renderer':True,'allow_game_process':args.allow_game_process,'inputs':inputs,'runs':[]}
 env={k:v for k,v in os.environ.items() if not k.startswith(('NORTHLIGHT_','DXVK_','TRACE_','RETRACE_','APITRACE_'))};env['DXVK_LOG_PATH']=str(out)

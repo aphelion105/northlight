@@ -18,6 +18,12 @@ using namespace NorthlightReplayBoundsJob;
 using NorthlightDrawSnapshot::Mesh;
 
 int main(){
+    Cache budgets;
+    budgets.beginFrame(false,1024,true);assert(budgets.operationLimit()==BaseOperationLimit);
+    budgets.beginFrame(false,1800,true);assert(budgets.operationLimit()==BaseOperationLimit+776*256);
+    budgets.beginFrame(false,1800,true,false);assert(budgets.operationLimit()==BaseOperationLimit);
+    budgets.beginFrame(false,1800,false);assert(budgets.operationLimit()==BaseOperationLimit);
+    budgets.beginFrame(false,SIZE_MAX,true);assert(budgets.operationLimit()==2*BaseOperationLimit);
     AdaptiveTimeBudget time;
     for(size_t count:{size_t(0),size_t(256),size_t(1222),size_t(4096),SIZE_MAX}){
         time.reset(count);

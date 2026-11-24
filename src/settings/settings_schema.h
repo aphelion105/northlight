@@ -11,10 +11,10 @@
 #include "hdr_settings_contract.h"
 
 namespace NorthlightSettings {
-using Images=std::array<FileImage,4>;
-using Documents=std::array<Document,4>;
-inline Documents documents(const Images& a){Documents d;for(unsigned i=0;i<4;++i)d[i]=Document(a[i].raw);return d;}
-inline Documents factoryDocuments(){return {Document("[Quality]\nLocalLightLimitsVersion=2\nPreset=Quality\n"),Document("[Renderer]\nBackend=dxvk\n"),Document(kSettingsFactoryCelestial),Document(kSettingsFactoryShadowRange)};}
+using Images=std::array<FileImage,FileCount>;
+using Documents=std::array<Document,FileCount>;
+inline Documents documents(const Images& a){Documents d;for(unsigned i=0;i<FileCount;++i)d[i]=Document(a[i].raw);return d;}
+inline Documents factoryDocuments(){return {Document("[Quality]\nLocalLightLimitsVersion=2\nPreset=Quality\n"),Document("[Renderer]\nBackend=dxvk\n"),Document(kSettingsFactoryCelestial),Document(kSettingsFactoryShadowRange),Document(kSettingsFactoryWater),Document(kSettingsFactoryWaterHost)};}
 inline std::string number(float f){std::ostringstream s;s<<std::setprecision(6)<<f;return s.str();}
 inline std::string migrateHdr(const std::filesystem::path& root){
     try{Store store(root,3000);const auto before=store.read();auto docs=documents(before);auto values=docs[1].values();
@@ -85,7 +85,7 @@ inline std::string explicitValue(const Document& d,const std::string& section,co
 struct Field {
     unsigned file=0;std::string section,key,kind="slider",low="0",high="1",step="1",saved,active,factory,inherited,overrideValue="~",factoryOverride="~",apply="R",options,origin;
     bool available=true;
-    std::string id()const{return std::string(1,"QRCS"[file])+"\t"+section+"\t"+key;}
+    std::string id()const{return std::string(1,FileIds[file])+"\t"+section+"\t"+key;}
 };
 // Case-insensitive match against a comma list of options; unknown values (and "~") stay as written so validation still reports them.
 inline std::string canonicalOption(const std::string& value,const std::string& options){
@@ -93,12 +93,12 @@ inline std::string canonicalOption(const std::string& value,const std::string& o
     if(options=="Manual,Auto"){float mode=0;if(NorthlightHdrSettingsContract::parse(value,mode)&&(mode==0||mode==1))return NorthlightHdrSettingsContract::modeName(mode);}
     std::istringstream s(options);std::string o;while(std::getline(s,o,','))if(lower(o)==lower(value))return o;return value;
 }
-inline std::vector<Field> schema(const Documents& docs,const Documents& initial,const Config& active,const std::string& legacy,const std::string& backendOptions="native,dxvk,dxvk2,legacy",const std::string& hdrProfile=""){
+inline std::vector<Field> schema(const Documents& docs,const Documents& initial,const Config& active,const std::string& legacy,const std::string& backendOptions="native,dxvk,dxvk2,legacy",const std::string& hdrProfile="",bool waterInstalled=false){
     auto factory=factoryDocuments();const auto available=","+backendOptions+",";
     const std::string factoryBackend=available.find(",dxvk,")!=available.npos?"dxvk":available.find(",dxvk2,")!=available.npos?"dxvk2":"native";factory[1].set("Renderer","Backend",&factoryBackend);
     const auto saved=configOf(docs,legacy,false,hdrProfile),defaults=configOf(factory,legacy);std::vector<Field> out;
-    std::array<Values,4> savedValues,factoryValues,initialValues;
-    for(unsigned i=0;i<4;++i){savedValues[i]=docs[i].values();factoryValues[i]=factory[i].values();initialValues[i]=initial[i].values();}
+    std::array<Values,FileCount> savedValues,factoryValues,initialValues;
+    for(unsigned i=0;i<FileCount;++i){savedValues[i]=docs[i].values();factoryValues[i]=factory[i].values();initialValues[i]=initial[i].values();}
     const auto legacyQuality=qualityOf(Document("[Quality]\nPreset=Quality\n"),legacy);
     auto add=[&](Field f){f.overrideValue=explicitValue(savedValues[f.file],f.section,f.key);f.factoryOverride=explicitValue(factoryValues[f.file],f.section,f.key);if(f.kind=="enum")for(auto* v:{&f.overrideValue,&f.factoryOverride,&f.saved,&f.active})*v=canonicalOption(*v,f.options); // readers accept any case; the menu compares exact spellings
         f.origin=f.overrideValue=="~"?"inherited":"override";out.push_back(std::move(f));};
@@ -137,14 +137,53 @@ inline std::vector<Field> schema(const Documents& docs,const Documents& initial,
                 f.saved=value(savedValues[3]);f.active=value(initialValues[3]);f.factory=value(factoryValues[3]);
                 auto base=explicitValue(savedValues[3],"default",f.key);f.inherited=section=="default"||base=="~"?f.low:base;add(f);}
         }
-    }return out;
+    }
+    if(waterInstalled){
+        // "S" values are picked up by Tideglass's existing water.ini watcher after Save.
+        // Inherited values are core defaults; factory overrides come from the packaged INIs.
+        struct WaterControl { const char* key; float fallback,low,high,step; };
+        static constexpr WaterControl controls[]={
+            {"WaveStrength",1,0,4,.05f},{"WaveSpeed",1,0,10,.05f},
+            {"WaveCrestShape",0,0,1,.05f},{"WaveCrestSharpness",0,0,1,.05f},
+            {"RippleStrength",1.6f,0,5,.05f},{"FoamStrength",1,0,4,.05f},{"OpenWaterCrestFoam",1,0,1,.05f},
+            {"ReflectionResolution",100,50,100,25},{"ShortReflectionDistance",0,0,1,1},{"ReflectionScenery",0,0,1,1},{"Clarity",1,.05f,10,.05f},
+            {"Reflection",.7f,0,4,.05f},{"NearReflection",.55f,0,1,.05f},
+            {"Underwater",1,0,1,1},{"UnderwaterVisibility",35,2,500,1},{"UnderwaterScenery",0,0,1,1},
+            {"Slime",1,0,1,1},{"Lava",1,0,1,1},
+        };
+        auto addWater=[&](unsigned file,const WaterControl& control){
+            Field f;f.file=file;f.section=file==WaterFile?"Water":"WaterIntegration";f.key=control.key;
+            f.low=number(control.low);f.high=number(control.high);f.step=number(control.step);
+            f.kind=control.high==1&&control.step==1?"check":"slider";
+            f.apply=file==WaterFile?"S":"R";f.inherited=number(control.fallback);
+            if(f.key=="ReflectionResolution"){f.kind="enum";f.options="100,75,50";}
+            if(f.key=="ShortReflectionDistance" || f.key=="ReflectionScenery"){f.kind="enum";f.options="0,1";}
+            if(f.key=="ReflectionScenery" && explicitValue(savedValues[file],"Water","ReflectionProducer")=="3")f.inherited="1";
+            auto value=[&](const Values& values){
+                auto raw=explicitValue(values,f.section,f.key);
+                return raw=="~"?f.inherited:raw;
+            };
+            f.saved=value(savedValues[file]);f.factory=value(factoryValues[file]);
+            f.active=file==WaterFile?f.saved:value(initialValues[file]);
+            const bool legacyOff=f.key=="ReflectionScenery" && explicitValue(savedValues[file],"Water","ScreenReflections")=="0";
+            add(std::move(f));
+            if(legacyOff){
+                Field& reflection=out.back();
+                reflection.saved=reflection.active=reflection.overrideValue="0";
+                reflection.origin="override";
+            }
+        };
+        addWater(WaterHostFile,{"Enable",0,0,1,1});
+        for(const auto& control:controls)addWater(WaterFile,control);
+    }
+    return out;
 }
 inline void validateValue(const Field& f,const std::string& value){
     if(value.size()>128||value.find_first_of("\t\r\n\0",0,4)!=value.npos)throw std::runtime_error("Invalid settings value");
     if(value=="~"){if(f.file==1&&f.key=="Backend"&&(","+f.options+",").find(",legacy,")==std::string::npos)throw std::runtime_error("Legacy backend is not installed; select an available backend");return;}
     if(f.kind=="enum"){std::istringstream s(f.options);std::string v;while(std::getline(s,v,','))if(v==value)return;throw std::runtime_error("Unknown option for "+f.key);}
     if(f.file==2){NorthlightCelestialProfiles::Profile p;if(auto e=NorthlightCelestialProfiles::assignKey(p,f.key,value))throw std::runtime_error(f.key+": "+e);return;}
-    if(f.file==1&&std::stof(f.step)<1){float n=0;if(!NorthlightHdrSettingsContract::parse(value,n)||n<std::stof(f.low)||n>std::stof(f.high))throw std::runtime_error("Value outside allowed range for "+f.key);return;}
+    if((f.file==1&&std::stof(f.step)<1)||(f.file==WaterFile&&f.kind=="slider")){float n=0;if(!NorthlightHdrSettingsContract::parse(value,n)||n<std::stof(f.low)||n>std::stof(f.high))throw std::runtime_error("Value outside allowed range for "+f.key);return;}
     if(f.file==0&&std::stoi(f.low)<0){int n=0;if(!NorthlightQuality::signedNumber(value,n)||n<std::stoi(f.low)||n>std::stoi(f.high))throw std::runtime_error("Value outside allowed range for "+f.key);return;}
     if(value.empty()||value.find_first_not_of("0123456789")!=value.npos)throw std::runtime_error("Expected an integer for "+f.key);
     auto n=std::stoull(value);if(n<std::stoull(f.low)||n>std::stoull(f.high))throw std::runtime_error("Value outside allowed range for "+f.key);
@@ -157,6 +196,11 @@ inline Documents applyChanges(Documents docs,const std::vector<Field>& fields,co
         auto id=line.substr(0,at),value=line.substr(at+1);if(!known.count(id)||!changed.insert(id).second)throw std::runtime_error("Unknown or duplicate setting");const auto& f=*known.at(id);
         if(!f.available)throw std::runtime_error(f.key+" is not supported by this renderer build");
         if(value=="@factory")value=f.factoryOverride;validateValue(f,value);docs[f.file].set(f.section,f.key,value=="~"?nullptr:&value);
+        // A player who explicitly enables scenery can also restore it on older INIs
+        // whose master reflection switch was off. Leave that key alone on unrelated saves.
+        if(f.file==WaterFile && f.key=="ReflectionScenery" && (value=="1" || value=="~") &&
+           explicitValue(docs[WaterFile],"Water","ScreenReflections")=="0")
+            docs[WaterFile].set("Water","ScreenReflections",nullptr);
         if(f.file==3&&value=="~"){
             auto values=docs[3].values();if(values[lower(f.section)].empty())for(auto i=docs[3].lines.begin();i!=docs[3].lines.end();++i)if(lower(Document::content(i->text))=="["+lower(f.section)+"]"){i->text.clear();break;}}
     }return docs;
@@ -164,7 +208,7 @@ inline Documents applyChanges(Documents docs,const std::vector<Field>& fields,co
 inline std::string wire(const std::string& value){std::string out;for(auto c:value)switch(c){case '%':out+="%25";break;case '\t':out+="%09";break;case '\r':out+="%0d";break;case '\n':out+="%0a";break;default:out+=c;}return out;}
 inline std::string serialize(const std::vector<Field>& fields,const std::string& revision,const std::string& activeRevision){
     std::string out="NLS1\t"+revision+"\t"+activeRevision+"\n";
-    for(const auto& f:fields){bool first=true;for(const auto& cell:{std::string("F"),std::string(1,"QRCS"[f.file]),f.section,f.key,f.kind,f.low,f.high,f.step,f.saved,f.active,f.factory,f.overrideValue,f.apply,f.options,f.origin,f.inherited,f.factoryOverride,std::string(f.available?"1":"0")}){if(!first)out+='\t';first=false;out+=wire(cell);}out+='\n';}
+    for(const auto& f:fields){bool first=true;for(const auto& cell:{std::string("F"),std::string(1,FileIds[f.file]),f.section,f.key,f.kind,f.low,f.high,f.step,f.saved,f.active,f.factory,f.overrideValue,f.apply,f.options,f.origin,f.inherited,f.factoryOverride,std::string(f.available?"1":"0")}){if(!first)out+='\t';first=false;out+=wire(cell);}out+='\n';}
     return out;
 }
 } // namespace NorthlightSettings

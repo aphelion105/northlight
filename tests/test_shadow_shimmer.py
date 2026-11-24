@@ -10,11 +10,12 @@ Writes shadow-shimmer-validation.json to the test output dir.
 """
 import sys; from pathlib import Path; sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root
 import northlight_paths as fp
+from scripts.shaders.shader_sources import world_source_text
 import json
 import random
 import re
 
-hlsl = fp.src('world_effects.hlsl').read_text()
+hlsl = world_source_text(fp.src('world_effects.hlsl'))
 w = fp.src('world_renderer.h').read_text()
 checks = {}
 
@@ -25,15 +26,19 @@ def code(text):
 
 
 # ---- 1. source pins ----
-temporal = hlsl[hlsl.index('TemporalOutput TemporalLight('):hlsl.index('// 1x1 pass: fraction of the source disc')]
+temporal = hlsl[hlsl.index('TemporalOutput temporalLight('):hlsl.index('// Keep current normals/distance')]
 LINES = ['    float4 tight=clamp(history,lo,hi);',
          '    float still=saturate(2-4*length(puv*half-(base+.5)));',  # 0.3.171 gate: full to .25 px, none from .5
          '    float margin=.15/max(RemovalInfo.z,1e-4)*RemovalInfo.y*still;',
          '    float loose=clamp(history.a,lo.a-margin,hi.a+margin);',
          '    float3 reach=abs(loose-tight.a)*RemovalInfo.z*TemporalReach.w;',
-         '    o.light=lerp(current,float4(clamp(history.rgb,lo.rgb-reach,hi.rgb+reach),loose),TemporalInfo.x);']
+         '    float4 retained=float4(clamp(history.rgb,lo.rgb-reach,hi.rgb+reach),loose);',
+         '    float4 delta=retained-current;',
+         '    float4 roundingBand=max(abs(current),0.00006103515625)*(3.0/1024.0);',
+         '    float4 keep=1-step(abs(delta),roundingBand);',
+         '    o.light=current+delta*(historyWeight*keep);']
 positions = [temporal.find(l + '\n') for l in LINES]
-checks['TemporalLight: the six new lines, in order, once each, as the last statements'] = (
+checks['TemporalLight: clamp, retained history and FP16 rounding guard in order'] = (
     all(temporal.count(l + '\n') == 1 for l in LINES) and positions == sorted(positions) and -1 not in positions
     and temporal[positions[-1]:].split('\n')[1].strip() == 'return o;')
 checks['TemporalReach aliases c15; Camera.w is read nowhere; TemporalReach.w only in TemporalLight'] = (
@@ -42,13 +47,15 @@ checks['TemporalReach aliases c15; Camera.w is read nowhere; TemporalReach.w onl
     and code(hlsl).count('TemporalReach.w') == 1 and code(temporal).count('TemporalReach.w') == 1)
 
 # ---- 2. CPU wiring: c15.w from the drawn, active sources before the one bank upload ----
-upload = w.index('c[30][0]=waterMask?1.f:0.f;d->SetPixelShaderConstantF(0,&c[0][0],68);')
+bank = fp.src('world_frame_constants.inl').read_text()
+upload = bank.index('screenLighting.bindFrameBank(d,c,shadowTuning,textures);')
 cpu = ('        for(int source=0;source<2;++source)if(sourceWeights[source]>0&&sourceActive[source])\n'
        '            c[15][3]=std::max(c[15][3],std::max({sourceColors[source].x,sourceColors[source].y,sourceColors[source].z})*drawnWeight/sourceWeights[source]);\n')
 checks['c[15][3] set once, from drawn active sources, after drawnWeight and before the bank upload'] = (
-    w.count(cpu) == 1 and w.index('const float drawnWeight=') < w.index(cpu) < upload
-    and len(re.findall(r'c\[15\]\[3\]=', w)) == 1 and 'memcpy(c[15],context.camera,12);' in w
-    and 'float c[68][4]={};' in w)
+    bank.count(cpu) == 1 and bank.index('const float drawnWeight=') < bank.index(cpu) < upload
+    and w.index('prepareFrameShaderBank(') < w.index('publishFrameShaderBank(')
+    and len(re.findall(r'c\[15\]\[3\]=', w+bank)) == 1 and 'memcpy(c[15],context.camera,12);' in bank
+    and 'float rows[68][4]={};' in bank)
 
 # ---- 3. no new configuration ----
 keys = {'TemporalReach', 'ShadowShimmer', 'ShimmerMargin', 'ShadowHistoryMargin', 'NearShadowTent'}

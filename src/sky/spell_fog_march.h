@@ -8,8 +8,10 @@
 // altitude = z - field ground at the sample (so the heights are relative to the ground at every step, as in the shader).
 #include <algorithm>
 #include <cmath>
+#include "forever_atmosphere.h"
 #include "regional_fog.h"
 namespace NorthlightSpellFog {
+inline constexpr unsigned RegionalRaySteps=24, ImportedRaySteps=48;
 struct March{
     float night=0,volume[4]={},forestAir=0,airFloor=.0017f;   // c31.w, c32, c22.w, c59.w
     float nearStart=3.5f,nearInv=1.f/12;                       // c58.x, c58.y
@@ -34,6 +36,21 @@ inline FieldSample fieldAt(const NorthlightRegionalFog::Field& f,float x,float y
     const float edge=saturate(std::min(std::min(gx,gy),std::min(float(N-1)-gx,float(N-1)-gy))*.5f);
     s.coverage=total*edge*edge*(3-2*edge);
     return s;
+}
+
+// The imported volume uses quadratic spacing and its own extinction law.
+inline float importedOpticalDepth(const NorthlightRegionalFog::Field& field,const NorthlightForever::Frame& medium,
+                                  const float eye[3],const float to[3],float distance){
+    constexpr float denominator=float(ImportedRaySteps*ImportedRaySteps);
+    float depth=0;
+    for(unsigned j=0;j<ImportedRaySteps;++j){
+        const float a=distance*float(j*j)/denominator,b=distance*float((j+1)*(j+1))/denominator,t=(a+b)*.5f;
+        const float x=eye[0]+(to[0]-eye[0])*t/distance,y=eye[1]+(to[1]-eye[1])*t/distance,z=eye[2]+(to[2]-eye[2])*t/distance;
+        const auto sample=fieldAt(field,x,y);
+        if(sample.coverage>0&&z>=sample.ground)
+            depth+=NorthlightForever::sigma(medium,t,z,sample.ground)*sample.coverage*(b-a);
+    }
+    return depth;
 }
 // WorldFog's sigma at a world point before the near fade; also returns the field sample (the cloud term needs ground, height and coverage).
 inline float sigma(const NorthlightRegionalFog::Field& f,const March& m,float x,float y,float z,FieldSample& s){

@@ -14,9 +14,10 @@ with tempfile.TemporaryDirectory(prefix='northlight-point-clip-') as tmp:
 renderer=fp.src('world_point_rendering.inl').read_text()
 assert 'const NorthlightPointShadow::FaceClip clip(faceMatrices,pointSlot().selected,faces);' in renderer
 assert 'if((faces&(1u<<face))&&!NorthlightPointShadow::faceMatrix(' in renderer
-assert 'pointMask(batch.boundsLow,batch.boundsHigh,clip,faces)' in renderer
-assert 'pointMask(batch.boundsLow,batch.boundsHigh,clip,rebuildMask&faces)' in renderer
+assert 'pointMeshBounds.mask(i,batch,clip,faces)' in fp.src('world_point_mesh.inl').read_text()
+assert 'pointMeshBounds.mask(i,batch,clip,mask)' in renderer
 assert 'pointMask(batch.low,batch.high,clip,faces)' in renderer
-assert 'clip.mask(bounds.low,bounds.high,bounds.valid,groupFaces)' in renderer
+assert 'pointReplayCasters.classify(clip,faces' in renderer
+assert 'clip.mask(caster.bounds,groupFaces)' in fp.src('point_replay_casters.h').read_text()
 assert 'const FaceClip clip(matrices);' in fp.src('point_light_shadow.h').read_text()
 print('PASS prepared clipping is shared by static, terrain, live, replay, and content paths')

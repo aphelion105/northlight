@@ -41,6 +41,12 @@ public:
         codeProofInstalled_=true;return true;
     }
     bool codeProofInstalled()const noexcept{return codeProofInstalled_;}
+    // Optional feature proofs can be absent on older captures. Only admit
+    // observed code that has already been checked against the imported PE.
+    bool readObservedCode(std::uintptr_t address,void* output,std::size_t bytes){
+        if(!valid()||!codeProofInstalled_||!codeProof_.read(address,output,bytes))return false;
+        staticReads.fetch_add(1,std::memory_order_relaxed);return true;
+    }
     bool missing(){missingReads.fetch_add(1,std::memory_order_relaxed);reject();return false;}
     ClientImage::Region region(std::uintptr_t address,std::size_t bytes)const{return image_.region(address,bytes);}
     bool read(GameSnapshot* snapshot,std::uintptr_t address,void* output,std::size_t bytes){

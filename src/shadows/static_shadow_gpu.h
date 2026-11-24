@@ -537,18 +537,17 @@ private:
         for(const auto& mat:model->materials)dest.opaque.push_back(mat.alphaCutoff<=0||((!mat.width||!mat.height||(!model->uploadPrepared&&mat.texels().empty()))&&mat.alphaCutoff<=1));
         staging_=identity;return true;
     }
-    bool advance(IDirect3DDevice9* d,Resource& r,size_t& budget,const std::chrono::steady_clock::time_point& start){
-        auto timedOut=[&](){return std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count()>=limits_.uploadMs||(sharedBudget_&&!sharedBudget_->available());};
+    template<class Available> bool advance(IDirect3DDevice9* d,Resource& r,size_t& budget,const Available& available){
         const Model& m=*r.model;
         // Publication waits for all chunks: these ranges have never been drawn.
-        while(budget&&!timedOut()){
+        while(budget&&available()){
             size_t total=m.vertices.size()*sizeof(Vertex);
             if(r.vertexDone<total){size_t n=std::min({budget,total-r.vertexDone,size_t(64u<<10)});void* out=nullptr;if(FAILED(r.vb->Lock(UINT(r.vertexDone),UINT(n),&out,NorthlightUpload::FreshBufferLock))||!out)return false;std::memcpy(out,reinterpret_cast<const char*>(m.vertices.data())+r.vertexDone,n);if(FAILED(r.vb->Unlock()))return false;r.vertexDone+=n;budget-=n;if(sharedBudget_)sharedBudget_->consume(n);continue;}
             total=m.indexCount()*(m.index16?2:4);
             if(r.indexDone<total){const size_t stride=m.index16?2:4;size_t n=std::min({budget,total-r.indexDone,size_t(64u<<10)})/stride*stride;if(!n)break;void* out=nullptr;if(FAILED(r.ib->Lock(UINT(r.indexDone),UINT(n),&out,NorthlightUpload::FreshBufferLock))||!out)return false;if(m.uploadPrepared&&m.index16)std::memcpy(out,reinterpret_cast<const char*>(m.uploadIndices16.data())+r.indexDone,n);else if(m.index16){auto* dst=static_cast<uint16_t*>(out);for(size_t i=0;i<n/2;++i)dst[i]=uint16_t(m.indices[r.indexDone/2+i]);}else std::memcpy(out,m.indices.data()+r.indexDone/4,n);if(FAILED(r.ib->Unlock()))return false;r.indexDone+=n;budget-=n;if(sharedBudget_)sharedBudget_->consume(n);continue;}
             bool all=true;
             for(size_t i=0;i<r.textures.size();++i){
-                if(timedOut()){all=false;break;}
+                if(!available()){all=false;break;}
                 if(!r.textures[i]){const auto& mat=m.materials[i];uint64_t key=m.materialKeys[i];auto range=textures_.equal_range(key);for(auto it=range.first;it!=range.second;++it){auto candidate=it->second.lock();if(candidate&&sameAlpha(*candidate,m,i)){r.textures[i]=std::move(candidate);break;}}
                     if(!r.textures[i]){auto texture=std::make_shared<Texture>();texture->key=key;texture->owner=r.model;texture->material=i;texture->width=std::max(1u,mat.width);texture->height=std::max(1u,mat.height);texture->bytes=size_t(texture->width)*texture->height*alphaFormat_.stride;makeRoom(texture->bytes);
                         if(sharedBudget_&&!sharedBudget_->available())return true;
@@ -559,7 +558,10 @@ private:
                         texture->accounted=&textureBytes_;textureBytes_+=texture->bytes;if(m.uploadPrepared){texture->preparedAlpha=m.uploadAlpha[i];texture->owner.reset();}else texture->alpha.resize(size_t(texture->width)*texture->height);textures_.emplace(key,texture);r.textures[i]=std::move(texture);
                     }
                 }
-                auto& t=*r.textures[i];if(t.ready)continue;all=false;const size_t rowBytes=size_t(t.width)*alphaFormat_.stride;if(rowBytes>budget)break;const unsigned rows=unsigned(std::min({size_t(t.height-t.nextRow),budget/rowBytes,size_t(64)}));
+                auto& t=*r.textures[i];if(t.ready)continue;all=false;const size_t rowBytes=size_t(t.width)*alphaFormat_.stride;
+                // This visit cannot make progress until the next byte budget.
+                if(rowBytes>budget)return true;
+                const unsigned rows=unsigned(std::min({size_t(t.height-t.nextRow),budget/rowBytes,size_t(64)}));
                 RECT rect{0,LONG(t.nextRow),LONG(t.width),LONG(t.nextRow+rows)};D3DLOCKED_RECT lock{};if(FAILED(t.staging->LockRect(0,&lock,&rect,0))||!lock.pBits)return false;const auto& mat=m.materials[i];
                 for(unsigned y=0;y<rows;++y){auto* dst=static_cast<char*>(lock.pBits)+y*lock.Pitch;const size_t offset=size_t(t.nextRow+y)*t.width*4;
                     if(m.uploadPrepared){const auto& alpha=*m.uploadAlpha[i];const size_t first=size_t(t.nextRow+y)*t.width;for(unsigned x=0;x<t.width;++x)NorthlightShadowAlphaTexture::write(dst,x,alphaFormat_.stride,alpha[first+x]);}
@@ -610,10 +612,23 @@ public:
     }
     void setAdmission(std::function<bool(size_t)> f){mutate();admit_=std::move(f);}
     const Statistics& stats()const{return stats_;}
+    uint64_t readyContentHash()const{
+        uint64_t hash=14695981039346656037ull;
+        for(const auto& ready:readyByKey_){
+            for(unsigned char byte:ready.first)hash=(hash^byte)*1099511628211ull;
+            hash=(hash^0u)*1099511628211ull;
+            const uint64_t revision=ready.second->model->contentRevision;
+            for(unsigned shift=0;shift<64;shift+=8)hash=(hash^uint8_t(revision>>shift))*1099511628211ull;
+        }
+        return hash;
+    }
     void reset(){mutate(true);++epoch_;coveredChanged();changed();groups_=nullptr;fallbackGroups_.clear();covered_.reset();deferred_.clear();missing_.clear();expiry_.clear();readyByKey_.clear();lastUpdateFrame_=0;resources_.clear();drainRetired(true);textures_.clear();textureSweep_=textures_.end();scene_.reset();staging_.clear();release(vs_);release(instancedVS_);release(ps_);release(fastPS_);release(opaqueFastPS_);release(opaquePS_);release(decl_);release(instancedDecl_);release(instances_);device_=nullptr;map_.clear();generation_=0;canInstance_=false;instanceCapacity_=instanceCursor_=0;stats_.residentBytes=0;stats_.readyModels=0;stats_.pendingModels=0;}
-    bool update(IDirect3DDevice9* d,std::shared_ptr<const Snapshot> scene,uint64_t frame,bool allowUploads=true,NorthlightStreaming::Budget* sharedBudget=nullptr){
+    bool update(IDirect3DDevice9* d,std::shared_ptr<const Snapshot> scene,uint64_t frame,bool allowUploads=true,NorthlightStreaming::Budget* sharedBudget=nullptr,bool bytesOnly=false){
         mutate();sharedBudget_=sharedBudget;maintenanceLeft_=64;
+        struct ResetBudget {NorthlightStreaming::Budget*& budget;~ResetBudget(){budget=nullptr;}} resetBudget{sharedBudget_};
         const auto start=std::chrono::steady_clock::now();stats_.frameBytes=0;stats_.uploadMs=0;if(!scene||!d)return true;
+        const auto available=[&]{return (!sharedBudget_||sharedBudget_->available())&&
+            (bytesOnly||std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count()<limits_.uploadMs);};
         if((device_&&device_!=d)||(scene_&&(scene->map!=map_||scene->mapGeneration!=generation_))){auto owners=std::move(covered_);reset();covered_=std::move(owners);coveredChanged();}
         device_=d;map_=scene->map;generation_=scene->mapGeneration;
         stats_.publishFrameMs=0;
@@ -623,13 +638,13 @@ public:
         if(!allowUploads||(sharedBudget_&&!sharedBudget_->available())||(staging_.empty()&&(missing_.empty()||missing_.begin()->first>frame))){stats_.residentBytes=memory();stats_.instancing=canInstance_;return true;}
         size_t budget=sharedBudget_?std::min(limits_.uploadBytes,sharedBudget_->remainingBytes()):limits_.uploadBytes;const size_t initialBudget=budget;bool ok=true;
         if(!shaders(d)){++stats_.failures;return false;}
-        while(budget&&(!sharedBudget_||sharedBudget_->available())&&std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count()<limits_.uploadMs){
+        while(budget&&available()){
             if(staging_.empty()){
                 if(missing_.empty()||missing_.begin()->first>frame)break;const auto name=missing_.begin()->second;missing_.erase(missing_.begin());auto next=scene_->models.find(name);if(next==scene_->models.end())continue;
                 if(!begin(d,next->second,frame)){if(sharedBudget_&&(!sharedBudget_->available()||!maintenanceLeft_)){missing_.emplace(frame+1,name);break;}deferred_[name]=frame+60;missing_.emplace(frame+60,name);++stats_.failures;ok=false;break;}
             }
             auto found=resources_.find(staging_);if(found==resources_.end()){staging_.clear();break;}
-            const size_t before=budget;if(!advance(d,*found->second,budget,start)){const auto name=found->second->model->key;deferred_[name]=frame+60;missing_.emplace(frame+60,name);eraseResource(found);++stats_.failures;ok=false;break;}
+            const size_t before=budget;if(!advance(d,*found->second,budget,available)){const auto name=found->second->model->key;deferred_[name]=frame+60;missing_.emplace(frame+60,name);eraseResource(found);++stats_.failures;ok=false;break;}
             if(found->second->ready){const auto name=found->second->model->key;modelChanged(*found->second);++stats_.uploads;++stats_.readyModels;--stats_.pendingModels;deferred_.erase(name);staging_.clear();refreshReady(name);
                 // A successfully uploaded revision replaces its old ready fallback.
                 const std::string prefix=name+"#";for(auto old=resources_.lower_bound(prefix);old!=resources_.end()&&old->first.compare(0,prefix.size(),prefix)==0;){if(old!=found&&!old->second->wanted){auto victim=old++;eraseResource(victim);}else ++old;}pruneTextures();

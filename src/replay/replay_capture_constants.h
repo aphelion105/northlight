@@ -1,5 +1,6 @@
 #pragma once
 #include <cassert>
+#include <cstring>
 #include "captured_constant_epoch.h"
 #include "replay_pose_groups.h"
 
@@ -28,18 +29,44 @@ struct Stats {std::uint64_t tests=0,hits=0,bytesAvoided=0,poseFastHits=0,
     // Granularity diagnostic: how often each 16-register block was dirty in a
     // block capture. Bone blocks near blockTests mean per-batch palette writes.
     std::uint64_t dirtyBlocks[NorthlightConstantEpoch::FloatBlocks]={};};
-// Compare certified floats with a fresh read; repair and uncertify on mismatch.
-template<class Replay,class FetchFloats> void verify(Replay& p,FetchFloats& fetchFloats,Stats* stats){
-    const auto f=p.constantUsage.floats;float check[1024];
-    if(!f.count||!fetchFloats(f.first,f.count,check+4*f.first))return;
-    if(stats)++stats->selfChecks;
-    if(!std::memcmp(check+4*f.first,p.constants+4*f.first,std::size_t(f.count)*16))return;
-    if(stats)++stats->selfCheckMismatches;
-    std::memcpy(p.constantStorage+4*f.first,check+4*f.first,std::size_t(f.count)*16);
-    p.constants=p.constantStorage;p.constantStamp={};
-}
 template<class Replay> void reset(Replay& p){
     p.constants=p.constantStorage;p.bools=p.boolStorage;p.ints=p.intStorage;p.constantStamp={};
+}
+
+struct InlineBanks {
+    template<class Replay> static void begin(Replay& p){reset(p);}
+    template<class Replay> static float* writeFloats(Replay& p){return p.constantStorage;}
+    template<class Replay> static void reuse(Replay& p,const Replay& previous,bool floats){
+        if(floats)p.constants=previous.constants;
+        p.bools=previous.bools;p.ints=previous.ints;
+    }
+};
+
+struct SharedFloatBanks {
+    template<class Replay> static void begin(Replay& p){p.resetConstantCapture();}
+    template<class Replay> static float* writeFloats(Replay& p){return p.writableConstants();}
+    template<class Replay> static void reuse(Replay& p,const Replay& previous,bool floats){
+        if(floats)p.shareConstants(previous);
+        // These smaller banks belong to this packet, including when its
+        // float bank has a different owner from its predecessor.
+        const auto b=p.constantUsage.booleans,i=p.constantUsage.integers;
+        if(b.count)std::memcpy(p.boolStorage+b.first,previous.bools+b.first,b.count*sizeof(p.boolStorage[0]));
+        if(i.count)std::memcpy(p.intStorage+4*i.first,previous.ints+4*i.first,i.count*4*sizeof(p.intStorage[0]));
+    }
+};
+
+// Compare certified floats with a fresh read; repair and uncertify on mismatch.
+template<class Storage=InlineBanks,class Replay,class FetchFloats> bool verify(Replay& p,FetchFloats& fetchFloats,Stats* stats){
+    const auto f=p.constantUsage.floats;float check[1024];
+    if(!f.count||!fetchFloats(f.first,f.count,check+4*f.first))return true;
+    if(stats)++stats->selfChecks;
+    if(!std::memcmp(check+4*f.first,p.constants+4*f.first,std::size_t(f.count)*16))return true;
+    if(stats)++stats->selfCheckMismatches;
+    p.constantStamp={};
+    float* owned=Storage::writeFloats(p);
+    if(!owned)return false;
+    std::memcpy(owned+4*f.first,check+4*f.first,std::size_t(f.count)*16);
+    p.constants=owned;return true;
 }
 template<class Replay> bool compatible(const Replay& a,const Replay& b){
     const auto& x=a.constantUsage;const auto& y=b.constantUsage;
@@ -148,15 +175,28 @@ template<class Mirror> struct ClockSource {
     }
     const NorthlightConstantEpoch::Stamp& live()const{return clock->live();}
     NorthlightConstantEpoch::Stamp snapshot()const{return clock->stamp(mirror->active());}
+    // A same-draw loan remains valid only while the caller holds the gate.
+    const float* borrow(const NorthlightConstantEpoch::BankHandoff* bank,unsigned first,unsigned count)const{
+        if(!bank||!bank->covers(first,count)||!attached()||!mirror->heldByThisThread()||!valid()||
+           !NorthlightConstantEpoch::sameWords(*bank,live()))return nullptr;
+        return bank->bank+first*4;
+    }
+    bool copy(const NorthlightConstantEpoch::BankHandoff* bank,unsigned first,unsigned count,float* out)const{
+        const float* rows=borrow(bank,first,count);
+        if(!rows)return false;
+        std::memcpy(out,rows,std::size_t(count)*16);
+        return true;
+    }
 };
 // 0.3.180 (C1+C2): the Reader overload's result, bytes and Stats, comparing the stamp in place and
 // copying it once, only to certify. No post-fetch re-read: the caller holds the gate from before to
 // after and a fetch never advances the Clock, so after==before and nothing races the block fetch.
 // Validation builds keep both re-reads, as assertions. selfCheck/check: C0 above.
-template<class Replay,class Source,class Fetch,class FetchFloats> bool captureBlocks(Replay& p,const Replay* previous,
-    const Source& source,Fetch&& fetch,FetchFloats&& fetchFloats,Stats* stats,bool selfCheck,SelfCheck& check){
+template<class Storage=InlineBanks,class Replay,class Source,class Fetch,class FetchFloats,class CheckFloats>
+bool captureBlocks(Replay& p,const Replay* previous,const Source& source,Fetch&& fetch,FetchFloats&& fetchFloats,
+                   Stats* stats,bool selfCheck,SelfCheck& check,CheckFloats&& checkFloats){
     namespace E=NorthlightConstantEpoch;
-    reset(p);
+    Storage::begin(p);
     const bool valid=source.valid();
     [[maybe_unused]] const E::Stamp before=ValidateEvery&&valid?source.snapshot():E::Stamp{};
     static const E::Stamp detached{}; /* a source without a clock: never bind live() through null */
@@ -165,39 +205,44 @@ template<class Replay,class Source,class Fetch,class FetchFloats> bool captureBl
     const auto& u=p.constantUsage;
     const bool usable=valid&&previous&&previous->constantStamp.valid&&compatible(*previous,p);
     if(usable&&E::sameWords(previous->constantStamp,now)){
-        p.constants=previous->constants;p.bools=previous->bools;p.ints=previous->ints;p.constantStamp=source.snapshot();
+        Storage::reuse(p,*previous,true);p.constantStamp=source.snapshot();
         if(stats){++stats->hits;stats->bytesAvoided+=u.floats.count*16+u.booleans.count*sizeof(p.bools[0])+u.integers.count*16;}
-        if(ValidateEvery)verify(p,fetchFloats,check.stats);
+        if(ValidateEvery)return verify<Storage>(p,checkFloats,check.stats);
         return true;
     }
     if(BlockReuse&&usable&&E::sameBanks(previous->constantStamp,now,u.booleans.count,u.integers.count)){
         const unsigned lo=u.floats.first,hi=lo+u.floats.count;unsigned first=lo,last=lo;
         E::dirtySpan(previous->constantStamp,now,lo,hi,first,last);
-        bool shared=first==last;
+        bool shared=first==last;float* owned=nullptr;
         if(!shared){
-            if(!fetchFloats(first,last-first,p.constantStorage+4*first))return false;
+            owned=Storage::writeFloats(p);
+            if(!owned||!fetchFloats(first,last-first,owned+4*first))return false;
             if constexpr(ValidateEvery)assert(E::exact(before,source.snapshot()));
-            shared=!std::memcmp(p.constantStorage+4*first,previous->constants+4*first,std::size_t(last-first)*16);
+            shared=!std::memcmp(owned+4*first,previous->constants+4*first,std::size_t(last-first)*16);
         }
-        if(shared)p.constants=previous->constants;
-        else{
-            std::memcpy(p.constantStorage+4*lo,previous->constants+4*lo,std::size_t(first-lo)*16);
-            std::memcpy(p.constantStorage+4*last,previous->constants+4*last,std::size_t(hi-last)*16);
+        if(!shared){
+            std::memcpy(owned+4*lo,previous->constants+4*lo,std::size_t(first-lo)*16);
+            std::memcpy(owned+4*last,previous->constants+4*last,std::size_t(hi-last)*16);
         }
-        p.bools=previous->bools;p.ints=previous->ints;p.constantStamp=source.snapshot();
+        Storage::reuse(p,*previous,shared);p.constantStamp=source.snapshot();
         if(stats){++stats->blockTests;stats->blockShared+=shared;stats->blockRewrites+=shared&&first!=last;stats->blockCopies+=!shared;
             stats->registersReused+=u.floats.count-(last-first);stats->registersFetched+=last-first;
             stats->bytesAvoided+=(u.floats.count-(last-first))*16+u.booleans.count*sizeof(p.bools[0])+u.integers.count*16;
             for(unsigned block=first/E::BlockRegisters;first<last&&block*E::BlockRegisters<last;++block)
                 stats->dirtyBlocks[block]+=previous->constantStamp.floatBlock[block]!=now.floatBlock[block];}
         if(selfCheck)++check.serial;
-        if(ValidateEvery||(selfCheck&&SelfCheckInterval&&check.serial%SelfCheckInterval==0))verify(p,fetchFloats,check.stats);
+        if(ValidateEvery||(selfCheck&&SelfCheckInterval&&check.serial%SelfCheckInterval==0))return verify<Storage>(p,checkFloats,check.stats);
         return true;
     }
     if(!fetch())return false;
     if constexpr(ValidateEvery)assert(source.valid()==valid&&(!valid||E::exact(before,source.snapshot())));
     if(valid)p.constantStamp=source.snapshot();
     return true;
+}
+template<class Replay,class Source,class Fetch,class FetchFloats>
+bool captureBlocks(Replay& p,const Replay* previous,const Source& source,Fetch&& fetch,FetchFloats&& fetchFloats,
+                   Stats* stats,bool selfCheck,SelfCheck& check){
+    return captureBlocks(p,previous,source,fetch,fetchFloats,stats,selfCheck,check,fetchFloats);
 }
 template<class Replay> bool samePose(const Replay& a,const Replay& b,Stats* stats=nullptr){
     if(compatible(a,b)&&NorthlightConstantEpoch::pose(a.constantStamp,b.constantStamp,b.projectionKind)){

@@ -10,12 +10,13 @@ import shutil
 import sys
 sys.path[:0] = [str(Path(__file__).resolve().parents[1]), str(Path(__file__).resolve().parents[1]/'scripts/shaders')]
 import northlight_paths as fp
+from scripts.shaders.shader_sources import world_source_bytes
 from shader_compiler import Compiler, validate_assembly
 
 parser = argparse.ArgumentParser(__doc__)
 parser.add_argument('--compatible-compiler', action='store_true')
 args = parser.parse_args()
-original = (fp.SHADERS/'world_effects.hlsl').read_bytes()
+original = world_source_bytes(fp.SHADERS/'world_effects.hlsl')
 source = original.decode('utf-8')
 support = r'    // Skip whole world-grid intervals beyond the regional field support\.\n.*?\n    \[loop\]for\(int i=first;i<(\d+)&&max\(0,\(i-offset\)\*stepLength\)<marchEnd;\+\+i\)\{'
 source, count = re.subn(support, lambda m: '    [loop]for(int i=0;i<'+m[1]+'&&max(0,(i-offset)*stepLength)<surface;++i){', source, flags=re.S)

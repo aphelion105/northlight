@@ -1,4 +1,5 @@
 #pragma once
+#include "particle_draw_state.h"
 // Shared, serialized read-through state cache. Only the extension queries it;
 // game-facing resource wrappers prevent raw GetDevice/Apply escape paths.
 // Unknown interface/resource escapes permanently disable caching before return.
@@ -9,6 +10,7 @@
 #include <d3d9.h>
 #include "forwarders.h"
 #endif
+#include <array>
 #include <cstring>
 #include <mutex>
 #include <cstdint>
@@ -68,6 +70,7 @@ struct DeviceMirror {
     IDirect3DBaseTexture9* textures[Textures]={};bool textureKnown[Textures]={};
     DWORD samplers[Textures][SamplerTypes]={};bool samplerKnown[Textures][SamplerTypes]={};
     DWORD renderStates[RenderStates]={};bool renderStateKnown[RenderStates]={};
+    NorthlightParticleDraw::State particleDraw;
     float nPatchMode=0;
     bool nPatchKnown=false;
     unsigned nPatchWrites=0;
@@ -75,7 +78,8 @@ struct DeviceMirror {
     IDirect3DSurface9* targets[Targets]={};bool targetKnown[Targets]={},targetAbsent[Targets]={};
     unsigned targetWrites=0,pixelShaderWrites=0,viewportWrites=0;
     IDirect3DSurface9* depth=nullptr;bool depthKnown=false;
-    float vsFloat[VsFloat][4]={};bool vsFloatKnown[VsFloat]={};
+    using FloatRow=float[4];
+    FloatRow vsFloat[VsFloat]={};bool vsFloatKnown[VsFloat]={};
     // Diagnostic setter evidence is independent of successful Get* support.
     bool vsFloatWriteObservation=false,vsFloatWritten[VsFloat]={};
     void setVsFloatWriteObservation(bool on){
@@ -117,6 +121,11 @@ struct DeviceMirror {
         ~TargetWrite(){clear();--mirror->targetWrites;}
     };
     bool heldByThisThread()const{return MirrorGuard::heldByThisThread(gate);} /* 0.3.180 (C1): the in-place epoch source's precondition */
+    // Borrow for the current draw. Consume before a write or gate release.
+    const FloatRow* borrowKnownVertexFloats(unsigned first,unsigned count) const {
+        if(!heldByThisThread()||!active()||!count||first>=VsFloat||count>VsFloat-first||!allKnown(vsFloatKnown+first,count))return nullptr;
+        return vsFloat+first;
+    }
     // Accepted, active setter whose value is already in the slot's field.
     // Scalar slots (render/sampler states, viewport) additionally need this
     // exact value proven by an earlier round trip: a backend may normalize or
@@ -155,6 +164,7 @@ struct DeviceMirror {
     // Callers hold gate, including ALL block Apply, Reset, and disable paths.
     void invalidate(){
         constantEpoch.invalidate();if(synced)synced->clearAll();
+        particleDraw.invalidate();
         nPatchKnown=false;programmableVS=false;
         vertexShaderKnown=pixelShaderKnown=declarationKnown=fvfKnown=indicesKnown=viewportKnown=depthKnown=false;
         for(auto& s:streams)s.known=false;
@@ -217,23 +227,25 @@ public:
     // trusted slot (written()). Null resources never write through: backends
     // differ on null stream/target/depth/index reads (retention, NOTFOUND).
     HRESULT STDMETHODCALLTYPE SetVertexShader(IDirect3DVertexShader9* value) override{
-        Guard lock(m->gate);const std::uint64_t serial=m->mutations+1;HRESULT hr=real->SetVertexShader(value);m->vertexShaderKnown=false;
+        Guard lock(m->gate);NorthlightParticleDraw::State::Write decision(m->particleDraw,true,true);
+        const std::uint64_t serial=m->mutations+1;HRESULT hr=real->SetVertexShader(value);m->vertexShaderKnown=false;
         if(accepted(hr)){m->programmableVS=m->mutations==serial&&value!=nullptr;m->vertexShader=value;m->vertexShaderKnown=m->written(DeviceMirror::VertexShaderSlot,serial);}else m->forget(DeviceMirror::VertexShaderSlot);return hr;
     }
     HRESULT STDMETHODCALLTYPE GetVertexShader(IDirect3DVertexShader9** out) override{
         Guard lock(m->gate);if(out&&m->active()&&m->vertexShaderKnown){++m->answered;giveRef(m->vertexShader,out);return D3D_OK;}
         ++m->forwarded;const auto serial=m->mutations;HRESULT hr=real->GetVertexShader(out);
-        if(out&&m->active()&&m->mutations==serial){m->observed(DeviceMirror::VertexShaderSlot,SUCCEEDED(hr)&&*out==m->vertexShader);m->programmableVS=SUCCEEDED(hr)&&*out!=nullptr;if(SUCCEEDED(hr)){m->vertexShader=*out;m->vertexShaderKnown=true;}}
-        else if(m->mutations!=serial){m->programmableVS=m->vertexShaderKnown=false;m->forget(DeviceMirror::VertexShaderSlot);}return hr;
+        if(out&&m->active()&&m->mutations==serial){m->observed(DeviceMirror::VertexShaderSlot,SUCCEEDED(hr)&&*out==m->vertexShader);m->programmableVS=SUCCEEDED(hr)&&*out!=nullptr;if(SUCCEEDED(hr)){m->vertexShader=*out;m->vertexShaderKnown=true;m->particleDraw.shaders=NorthlightParticleDraw::State::Shaders::Dirty;}}
+        else if(m->mutations!=serial){m->programmableVS=m->vertexShaderKnown=false;m->forget(DeviceMirror::VertexShaderSlot);m->particleDraw.shaders=NorthlightParticleDraw::State::Shaders::Dirty;}return hr;
     }
     HRESULT STDMETHODCALLTYPE SetPixelShader(IDirect3DPixelShader9* value) override{
-        Guard lock(m->gate);const std::uint64_t serial=m->mutations+1;++m->pixelShaderWrites;HRESULT hr=real->SetPixelShader(value);--m->pixelShaderWrites;m->pixelShaderKnown=false;
+        Guard lock(m->gate);NorthlightParticleDraw::State::Write decision(m->particleDraw,true,true);
+        const std::uint64_t serial=m->mutations+1;++m->pixelShaderWrites;HRESULT hr=real->SetPixelShader(value);--m->pixelShaderWrites;m->pixelShaderKnown=false;
         if(accepted(hr)){m->pixelShader=value;m->pixelShaderKnown=m->written(DeviceMirror::PixelShaderSlot,serial);}else m->forget(DeviceMirror::PixelShaderSlot);return hr;
     }
     HRESULT STDMETHODCALLTYPE GetPixelShader(IDirect3DPixelShader9** out) override{
         Guard lock(m->gate);if(out&&m->active()&&!m->pixelShaderWrites&&!m->targetWrites&&m->pixelShaderKnown){++m->answered;giveRef(m->pixelShader,out);return D3D_OK;}
         const auto serial=m->mutations;++m->forwarded;HRESULT hr=real->GetPixelShader(out);
-        if(out&&m->active()&&!m->pixelShaderWrites&&!m->targetWrites&&m->mutations==serial){m->observed(DeviceMirror::PixelShaderSlot,SUCCEEDED(hr)&&*out==m->pixelShader);if(SUCCEEDED(hr)){m->pixelShader=*out;m->pixelShaderKnown=true;}}return hr;
+        if(out&&m->active()&&!m->pixelShaderWrites&&!m->targetWrites&&m->mutations==serial){m->observed(DeviceMirror::PixelShaderSlot,SUCCEEDED(hr)&&*out==m->pixelShader);if(SUCCEEDED(hr)){m->pixelShader=*out;m->pixelShaderKnown=true;m->particleDraw.shaders=NorthlightParticleDraw::State::Shaders::Dirty;}}return hr;
     }
     HRESULT STDMETHODCALLTYPE SetVertexDeclaration(IDirect3DVertexDeclaration9* value) override{
         Guard lock(m->gate);const std::uint64_t serial=m->mutations+1;HRESULT hr=real->SetVertexDeclaration(value);m->declarationKnown=false;m->fvfKnown=false;
@@ -279,7 +291,9 @@ public:
         ++m->forwarded;HRESULT hr=real->GetStreamSourceFreq(n,out);if(valid&&SUCCEEDED(hr)&&m->active()){m->frequency[n]=*out;m->frequencyKnown[n]=true;}return hr;
     }
     HRESULT STDMETHODCALLTYPE SetTexture(DWORD stage,IDirect3DBaseTexture9* t) override{
-        Guard lock(m->gate);if(m->synced)m->synced->texture(stage);const std::uint64_t serial=m->mutations+1;HRESULT hr=real->SetTexture(stage,t);const bool slot=stage<DeviceMirror::Textures;if(slot)m->textureKnown[stage]=false;
+        Guard lock(m->gate);const bool slot=stage<DeviceMirror::Textures;
+        NorthlightParticleDraw::State::Write decision(m->particleDraw,slot);
+        if(m->synced)m->synced->texture(stage);const std::uint64_t serial=m->mutations+1;HRESULT hr=real->SetTexture(stage,t);if(slot)m->textureKnown[stage]=false;
         if(accepted(hr)&&slot){m->textures[stage]=t;m->textureKnown[stage]=m->written(DeviceMirror::TextureSlot+stage,serial);}else if(slot)m->forget(DeviceMirror::TextureSlot+stage);return hr;
     }
     HRESULT STDMETHODCALLTYPE GetTexture(DWORD stage,IDirect3DBaseTexture9** out) override{
@@ -302,12 +316,15 @@ public:
             if(SUCCEEDED(hr)){m->samplers[n][type]=*out;m->samplerKnown[n][type]=true;}}return hr;
     }
     HRESULT STDMETHODCALLTYPE SetRenderState(D3DRENDERSTATETYPE type,DWORD value) override{
-        Guard lock(m->gate);if(m->synced)m->synced->renderState(unsigned(type));const std::uint64_t serial=m->mutations+1;HRESULT hr=real->SetRenderState(type,value);const bool slot=unsigned(type)<DeviceMirror::RenderStates;
+        Guard lock(m->gate);const unsigned particleSlot=NorthlightParticleDraw::blendSlot(type);
+        NorthlightParticleDraw::State::Write decision(m->particleDraw,particleSlot!=0);
+        if(m->synced)m->synced->renderState(unsigned(type));const std::uint64_t serial=m->mutations+1;HRESULT hr=real->SetRenderState(type,value);const bool slot=unsigned(type)<DeviceMirror::RenderStates;
         if(slot)m->renderStateKnown[type]=false;
         // Vendor command states (RESZ/ATOC etc.) may have implicit side effects.
         const bool vendor=type==D3DRS_POINTSIZE||type==D3DRS_ADAPTIVETESS_Y;if(vendor)m->invalidate();
         if(accepted(hr)&&slot&&!vendor){m->renderStates[type]=value;const unsigned id=DeviceMirror::RenderStateSlot+unsigned(type);m->renderStateKnown[type]=m->written(id,serial,m->isProven(DeviceMirror::pair(id,value)));}
-        else if(slot)m->forget(DeviceMirror::RenderStateSlot+unsigned(type));return hr;
+        else if(slot)m->forget(DeviceMirror::RenderStateSlot+unsigned(type));
+        if(particleSlot)m->particleDraw.blend(particleSlot,value,m->renderStateKnown[type]);return hr;
     }
     HRESULT STDMETHODCALLTYPE GetRenderState(D3DRENDERSTATETYPE type,DWORD* out) override{
         Guard lock(m->gate);bool valid=unsigned(type)<DeviceMirror::RenderStates&&out;
@@ -315,7 +332,8 @@ public:
         ++m->forwarded;HRESULT hr=real->GetRenderState(type,out);
         if(valid&&m->active()){const unsigned id=DeviceMirror::RenderStateSlot+unsigned(type);const bool same=SUCCEEDED(hr)&&*out==m->renderStates[type];
             if(same&&m->pending[id])m->prove(DeviceMirror::pair(id,*out));m->observed(id,same);
-            if(SUCCEEDED(hr)){m->renderStates[type]=*out;m->renderStateKnown[type]=true;}}return hr;
+            if(SUCCEEDED(hr)){m->renderStates[type]=*out;m->renderStateKnown[type]=true;
+                if(const unsigned particleSlot=NorthlightParticleDraw::blendSlot(type))m->particleDraw.blend(particleSlot,*out,true);}}return hr;
     }
     HRESULT STDMETHODCALLTYPE SetViewport(const D3DVIEWPORT9* value) override{
         Guard lock(m->gate);if(m->synced)m->synced->viewport();const std::uint64_t serial=m->mutations+1;++m->viewportWrites;HRESULT hr=real->SetViewport(value);--m->viewportWrites;m->viewportKnown=false;
@@ -365,6 +383,10 @@ public:
     bool peekVertexShader(IDirect3DVertexShader9*& out){
         Guard lock(m->gate);if(!kMirrorBorrowedPeek||!m->active()||!m->vertexShaderKnown||!m->vertexShader)return false;
         ++m->answered;++m->peeks;out=m->vertexShader;return true;
+    }
+    bool peekVertexDeclaration(IDirect3DVertexDeclaration9*& out){
+        Guard lock(m->gate);if(!kMirrorBorrowedPeek||!m->active()||!m->declarationKnown||!m->declaration)return false;
+        ++m->answered;++m->peeks;out=m->declaration;return true;
     }
     bool peekTexture(DWORD stage,IDirect3DBaseTexture9*& out){
         Guard lock(m->gate);if(!kMirrorBorrowedPeek||stage>=DeviceMirror::Textures||!m->active()||!m->textureKnown[stage]||!m->textures[stage])return false;
@@ -555,12 +577,77 @@ class ExtensionDevice final : public MirrorDevice {
     LONG refs=1;
 public:
     class RawScope;
+    using IndexedStencil=std::array<DWORD,3>;
+    static constexpr D3DRENDERSTATETYPE IndexedStencilKeys[]={D3DRS_STENCILENABLE,D3DRS_STENCILREF,D3DRS_STENCILWRITEMASK};
 private:
     // Only the owning thread may bypass the per-call gate. Other callers take
     // the normal MirrorDevice path; shared rawDepth is never read lock-free.
     static inline thread_local RawScope* currentRaw=nullptr;
+    static inline thread_local ExtensionDevice* indexedPairOwner=nullptr;
+    void* indexedPairContext=nullptr;
+    void(*indexedPairFlush)(void*)=nullptr;
+    bool(*indexedPairAllowsFloats)(void*,UINT,const float*,UINT)=nullptr;
+    bool(*indexedPairAllowsTexture)(void*,DWORD,IDirect3DBaseTexture9*)=nullptr;
+    IndexedStencil indexedStencil{};
+    unsigned indexedStencilChanges=0;
     bool rawActive()const;
+    void materializeIndexedStencil(){
+        const unsigned changes=indexedStencilChanges;
+        indexedStencilChanges=0;
+        for(unsigned i=0;i<indexedStencil.size();++i)
+            if(changes&(1u<<i))MirrorDevice::SetRenderState(IndexedStencilKeys[i],indexedStencil[i]);
+    }
+    void indexedBarrier(){
+        if(indexedPairOwner!=this)return;
+        indexedPairFlush(indexedPairContext);
+        if(indexedStencilChanges)materializeIndexedStencil();
+    }
+    void indexedRaster(D3DRENDERSTATETYPE state){
+        if(indexedPairOwner!=this)return;
+        if(indexedPairAllowsTexture||indexedStencilSlot(state)==indexedStencil.size())indexedBarrier();
+        else if(indexedStencilChanges)materializeIndexedStencil();
+    }
+    void indexedFloats(UINT first,const float* values,UINT count){
+        if(indexedPairOwner==this&&(!indexedPairAllowsFloats||!indexedPairAllowsFloats(indexedPairContext,first,values,count)))indexedBarrier();
+    }
+    void indexedTexture(DWORD stage,IDirect3DBaseTexture9* texture){
+        if(indexedPairOwner==this&&(!indexedPairAllowsTexture||!indexedPairAllowsTexture(indexedPairContext,stage,texture)))indexedBarrier();
+    }
 public:
+    static unsigned indexedStencilSlot(D3DRENDERSTATETYPE state){
+        switch(state){
+        case IndexedStencilKeys[0]:return 0;
+        case IndexedStencilKeys[1]:return 1;
+        case IndexedStencilKeys[2]:return 2;
+        default:return sizeof IndexedStencilKeys/sizeof IndexedStencilKeys[0];
+        }
+    }
+    // Only the indexed replay scope owns a deferred mark. The physical mirror
+    // remains unchanged until a draw or another extension operation needs it.
+    bool beginIndexedStencil(const IndexedStencil& values,unsigned changes){
+        if(indexedPairOwner!=this||indexedPairAllowsTexture||indexedStencilChanges||!changes||!m->active())return false;
+        indexedStencil=values;indexedStencilChanges=changes;
+        return true;
+    }
+    unsigned endIndexedStencil(){
+        const unsigned changes=indexedStencilChanges;
+        indexedStencilChanges=0;
+        return changes;
+    }
+    bool pendingIndexedStencil(IndexedStencil& values)const{
+        if(indexedPairOwner!=this||!indexedStencilChanges||!m->active())return false;
+        values=indexedStencil;return true;
+    }
+    void observeIndexedStencil(D3DRENDERSTATETYPE state){
+        if(indexedPairOwner==this&&indexedStencilChanges&&indexedStencilSlot(state)<indexedStencil.size())
+            materializeIndexedStencil();
+    }
+    void setIndexedPair(void* context,void(*flush)(void*),bool(*allowsFloats)(void*,UINT,const float*,UINT),
+                        bool(*allowsTexture)(void*,DWORD,IDirect3DBaseTexture9*)=nullptr){
+        indexedPairContext=context;indexedPairFlush=flush;indexedPairAllowsFloats=allowsFloats;
+        indexedPairAllowsTexture=allowsTexture;
+        indexedPairOwner=flush?this:nullptr;
+    }
     // 0.3.192 (CS): "raw" callers (the renderer's own work) run on the thread that executes the Device: the game
     // thread on the direct path, the replay thread in stream mode. The gate's owner is that same thread either way.
     class RawScope {
@@ -571,6 +658,7 @@ public:
     public:
         explicit RawScope(ExtensionDevice& owner)
             :device(&owner),lock(owner.m->gate,MirrorSite::Raw),previous(currentRaw){
+            owner.indexedBarrier();
             owner.m->invalidate();++owner.m->rawDepth;++owner.m->rawScopes;
             currentRaw=this;
         }

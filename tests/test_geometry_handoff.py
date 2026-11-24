@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
-# northlight-test: requires=cxx
+# northlight-test: requires=zig
 """Execute the production geometry handoff/error publication against camera retargets."""
+
+from source_units import source_text
 import sys; from pathlib import Path; sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root
 import northlight_paths as fp
 import hashlib, json, subprocess, tempfile, os
 from pathlib import Path
 HERE = Path(__file__).resolve().parent
-source = fp.src('world_renderer.h').read_text()
+source = source_text(fp.src('world_renderer.h'))
 handoff = source.split('// BEGIN GEOMETRY HANDOFF:', 1)[1]
 handoff = handoff[handoff.index('{std::lock_guard'):].split('// END GEOMETRY HANDOFF', 1)[0]
 snapshot = source[source.index('    struct Snapshot {'):source.index('\n    struct Request ')]
@@ -14,14 +16,19 @@ error = source[source.index('            auto publishError='):source.index('    
 fixture = r'''
 #include "world_streaming.h"
 #include "world_probe_cache.h"
+#include "probe_local_visibility.h"
 #include "diagnostics_switch.h"
 #include <cassert>
 #include <limits>
 #include <mutex>
 #include <cstdio>
-using V=NorthlightGI::Vec3;using DWORD=uint32_t;
+using V=NorthlightGI::Vec3;
+#ifndef _WIN32
+using DWORD=uint32_t;
+#endif
 namespace NorthlightRegionalFog {struct Field {};}
 namespace NorthlightLocalLights {struct Light {};}
+namespace NorthlightEquipmentLights {using StaticLightIndex=std::vector<std::pair<float,size_t>>;}
 namespace NorthlightLightAttachments {struct Records {};}
 template<class... T> void logf(const char*,T...){}
 struct Fixture {
@@ -37,6 +44,7 @@ SNAPSHOT
  std::shared_ptr<NorthlightWorldMesh::WorldMeshUploadPlan> scenePlan=std::make_shared<NorthlightWorldMesh::WorldMeshUploadPlan>();
  std::shared_ptr<const NorthlightRegionalFog::Field> sceneFog=std::make_shared<NorthlightRegionalFog::Field>();
  std::shared_ptr<const NorthlightLightAttachments::Records> sceneLightAttachments=std::make_shared<NorthlightLightAttachments::Records>();
+ std::shared_ptr<const NorthlightEquipmentLights::StaticLightIndex> sceneLightIndex=std::make_shared<NorthlightEquipmentLights::StaticLightIndex>();
  std::shared_ptr<const PreparedCommit> scenePrepared=std::make_shared<PreparedCommit>();
  std::vector<NorthlightLocalLights::Light> rawSceneLights;
  std::shared_ptr<Snapshot> published,previousLighting,result=std::make_shared<Snapshot>();
@@ -68,7 +76,7 @@ int main(){
   assert(f.published->center.x==0&&f.published->map=="Azeroth"&&f.published->serial==17&&f.published->atlas.size()==2);
   assert(old->bvh!=f.bvh&&old->center.x==0&&old->serial==17); // immutable fallback
   assert(f.published->fogField==f.sceneFog&&f.published->prepared==f.scenePrepared); // paired with meshPlan
-  assert(f.published->lightAttachments==f.sceneLightAttachments);
+  assert(f.published->lightAttachments==f.sceneLightAttachments&&f.published->localLightIndex==f.sceneLightIndex&&!old->localLightIndex);
   if(distance<=64){assert(f.enteredGI==1&&f.retargeted==1&&!f.pending&&f.consumed.actorJob==19&&f.consumed.id==9);
    assert(f.result->center.x==0&&f.result->requestedAt==200&&f.result->requestId==9);}
   else assert(!f.enteredGI&&f.pending&&f.retargeted==0); // geometry useful, GI needs a newer build
@@ -100,10 +108,14 @@ int main(){
 }
 '''.replace('SNAPSHOT', snapshot).replace('HANDOFF', handoff).replace('ERROR', error)
 report = {'game_launched': False, 'production_sha256': hashlib.sha256(source.encode()).hexdigest(), 'runs': []}
+windows = sys.platform == 'win32'
+compiler = [str(fp.zig()), 'c++', '-target', 'x86-windows-gnu'] if windows else ['clang++']
+modes = [('O2', ['-O2']), ('ubsan', ['-O1', '-g', '-fsanitize=undefined'])] if windows else [('O2', ['-O2']), ('asan-ubsan', ['-O1', '-g', '-fsanitize=address,undefined'])]
 with tempfile.TemporaryDirectory(prefix='geometry-handoff-') as temp:
     root = Path(temp); (root / 'test.cpp').write_text(fixture)
-    for mode, flags in [('O2', ['-O2']), ('asan-ubsan', ['-O1', '-g', '-fsanitize=address,undefined'])]:
-        subprocess.run(['clang++', '-std=c++17', *flags, *fp.test_include_flags(), str(root / 'test.cpp'), str(fp.src('world_gi.cpp')), str(fp.src('world_mesh_plan.cpp')), '-o', str(root / 'test')], check=True)
-        output = subprocess.check_output([str(root / 'test')], text=True)
+    binary = root / ('test.exe' if windows else 'test')
+    for mode, flags in modes:
+        subprocess.run([*compiler, '-std=c++17', *flags, *fp.test_include_flags(), str(root / 'test.cpp'), str(fp.src('world_gi.cpp')), str(fp.src('world_mesh_plan.cpp')), '-o', str(binary)], env=fp.zig_env(), check=True)
+        output = subprocess.check_output([str(binary)], text=True)
         print(mode, output.strip()); report['runs'].append({'mode': mode, 'stdout': output})
 (fp.output_dir() / 'geometry-handoff.json').write_text(json.dumps(report, indent=2) + '\n')

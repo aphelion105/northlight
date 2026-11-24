@@ -57,10 +57,13 @@ struct TestTr {
         return reinterpret_cast<T*>((std::uintptr_t)p+0x10000);
     }
     template<class T> T* toProxy(T* p){return p?reinterpret_cast<T*>((std::uintptr_t)p+0x20000):nullptr;}
-    std::vector<unsigned>* nativeModels=nullptr;
+    std::vector<NorthlightM2Draw::Section>* nativeSections=nullptr;
+    std::vector<NorthlightAdtBounds::Evidence>* terrainBounds=nullptr;
     void result(Cmd cmd,HRESULT hr){
-        if(nativeModels&&cmd==Cmd::Device_DrawIndexedPrimitive)
-            nativeModels->push_back(NorthlightM2Draw::current?NorthlightM2Draw::current->model:0);
+        if(nativeSections&&cmd==Cmd::Device_DrawIndexedPrimitive)
+            nativeSections->push_back(NorthlightM2Draw::current?*NorthlightM2Draw::current:NorthlightM2Draw::Section{});
+        if(terrainBounds&&cmd==Cmd::Device_DrawIndexedPrimitive)
+            terrainBounds->push_back(NorthlightAdtBounds::current?*NorthlightAdtBounds::current:NorthlightAdtBounds::Evidence{});
         results.push_back(hr);
     }
     void skipped(Cmd){++skips;}
@@ -130,6 +133,23 @@ static void orderingAcrossChunks(){
     CHECK(get(q.stats.commands)==sizes.size()&&get(q.stats.chunksLive)==1);   // consumed chunks went back to the pool
 }
 static void publishRules(){
+    {
+        Queue q;record(q,1,16,0);q.publish();const auto* first=q.next(false);CHECK(first);
+        record(q,2,16,1);record(q,3,16,2);CHECK(!q.publishedAfter(first));
+        q.publish();const auto* second=q.publishedAfter(first);CHECK(second&&second->id==2);
+        const auto* third=q.publishedAfter(second);CHECK(third&&third->id==3&&!q.publishedAfter(third));
+        q.retire(first);CHECK(q.next(false)==second);q.retire(second);CHECK(q.next(false)==third);q.retire(third);
+    }
+    {
+        Queue q;struct Work {unsigned effect=0,checks=0;bool ready=false;} work;
+        std::thread poster([&]{q.runExpress(+[](void* arg){
+            auto& value=static_cast<Work*>(arg)->effect;CHECK(value==1);value=2;
+        },&work,nullptr,ExpressKind::Query,+[](void* arg){auto& w=*static_cast<Work*>(arg);++w.checks;return w.ready;});});
+        const auto drain=[&]{CHECK(work.effect==0);work.effect=1;};
+        while(!work.checks){q.serveExpress(kExpressIdle,drain);std::this_thread::yield();}
+        CHECK(work.effect==0);work.ready=true;q.serveExpress(kExpressIdle,drain);CHECK(work.effect==2);
+        poster.join();
+    }
     {Queue q;for(int i=0;i<10;++i)record(q,1,16,i);CHECK(!q.next(false));   // unpublished commands are invisible
      q.publish();for(int i=0;i<10;++i){auto* h=q.next(false);CHECK(h);q.retire(h);}CHECK(!q.next(false));}
     {Queue q;for(int i=0;i<63;++i)record(q,1,8,i);CHECK(!q.next(false));record(q,1,8,63);CHECK(q.next(false));}   // 64 commands auto-publish
@@ -441,20 +461,55 @@ static void nestedSync(){
     rp.stop();
 }
 
-static void nativeM2Packets(){
-    Queue queue;TestTr tr;std::vector<unsigned> models;tr.nativeModels=&models;
-    NorthlightM2Draw::Section section{11,12,13,4,5};
-    record_Device_DrawIndexedPrimitive(queue,4,0,0,3,0,1,&section);
-    section.model=22;
+static void nativeDrawPackets(){
+    using NorthlightM2Draw::Range;
+    Queue queue;TestTr tr;std::vector<NorthlightM2Draw::Section> sections;tr.nativeSections=&sections;
+    std::vector<NorthlightAdtBounds::Evidence> bounds;tr.terrainBounds=&bounds;
+    const Range first{0,0,3,2,1}, second{3,0,3,5,1};
+    NorthlightM2Draw::Section section{11,12,13,4,5,first,true,99,127};
+    record_Device_DrawIndexedPrimitive(queue,4,0,0,3,2,1,&section);
+    section.model=22;section.range=second;section.auditedPalette=100;
     record_Device_DrawIndexedPrimitive(queue,4,0,0,3,0,1);
-    record_Device_DrawIndexedPrimitive(queue,4,0,0,3,0,1,&section);
-    section.model=99;queue.publish();
+    NorthlightAdtBounds::Evidence terrain{{5,25,650},{38,58,660},127};
+    record_Device_DrawIndexedPrimitive(queue,4,0,0,3,0,1,nullptr,&terrain);
+    record_Device_DrawIndexedPrimitive(queue,4,3,0,3,5,1,&section);
+    section.model=99;terrain.high[2]=0;queue.publish();
     NorthlightM2Draw::Scope outer(&section);
-    for(unsigned i=0;i<3;++i){
+    NorthlightAdtBounds::Scope terrainOuter(&terrain);
+    for(unsigned i=0;i<4;++i){
         auto* h=queue.next(false);CHECK(h&&dispatchGenerated(h,tr));queue.retire(h);
         CHECK(NorthlightM2Draw::current==&section);
+        CHECK(NorthlightAdtBounds::current==&terrain);
     }
-    CHECK((models==std::vector<unsigned>{11,0,22}));
+    CHECK(sections.size()==4&&sections[0].model==11&&sections[1].model==0&&sections[2].model==0&&sections[3].model==22);
+    CHECK(sections[0].range==first&&sections[3].range==second);
+    CHECK(sections[0].paletteAudited&&sections[0].producerFrame==127&&sections[0].auditedPalette==99&&sections[3].auditedPalette==100);
+    CHECK(bounds.size()==4&&bounds[0].producerFrame==0&&bounds[1].producerFrame==0&&bounds[3].producerFrame==0);
+    CHECK(bounds[2].producerFrame==127&&bounds[2].low[0]==5&&bounds[2].high[2]==660);
+}
+
+static void nativeParticleUploadRange(){
+    using namespace NorthlightGx12340;
+    std::array<std::uint32_t,64> stack{};
+    const auto decode=[&](unsigned& used){
+        return decodeParticleUpload(0x1000,0x1100,[&](std::uintptr_t at){return stack.at((at-0x1000)/4);},used);
+    };
+    stack[0]=0x1020;stack[1]=0x68face;
+    stack[8]=0x1040;stack[9]=0x68fafc;stack[10]=0x7000;
+    stack[16]=0x1060;stack[17]=0x6c490c;stack[18]=0x7000;stack[19]=864;
+    stack[25]=0x6c4c80;
+    unsigned used=0;
+    CHECK(decode(used)&&used==864);
+    stack[25]=0x6c4c41;stack[19]=ParticleUploadReservation;
+    CHECK(decode(used)&&used==ParticleUploadReservation);
+    stack[19]+=96;CHECK(!decode(used));
+    stack[19]=400;CHECK(!decode(used));
+    stack[19]=864;stack[25]=0;CHECK(!decode(used));
+    stack[17]=0x6c4cbf;CHECK(!decode(used));
+    stack[19]=0;CHECK(decode(used)&&used==0);
+    stack[18]++;CHECK(!decode(used));
+    stack[18]--;stack[0]=0x10fc;CHECK(!decode(used));
+    stack[0]=0x1020;stack[9]++;CHECK(!decode(used));
 }
 
 #include "command_stream_targets.h"
@@ -463,7 +518,11 @@ static void nativeM2Packets(){
 #include "buffer_range_shadow_scenarios.h"
 
 int main(int argc,char** argv){
-    nativeM2Packets();
+    nativeDrawPackets();
+    nativeParticleUploadRange();
+    if(argc==1||std::string(argv[1])=="particlewindows")orderedParticleWindows();
+    if(argc>1&&std::string(argv[1])=="particlewindows"){std::puts("PASS ordered particle replay windows and barriers");return 0;}
+    if(argc>1&&std::string(argv[1])=="coalesceduploads"){coalescedBufferUploads();std::puts("PASS adjacent buffer uploads and exact fallback");return 0;}
     if(argc>1&&std::string(argv[1])=="rangeshadow"){bufferRangeShadowModel();oversizedBufferRangeShadows();oversizedBufferPumpedWrite();return 0;}
     if(argc>1&&std::string(argv[1])=="memorypressure"){pressureKeepsShadows();syncStormDetector();std::puts("PASS pressure shadows and sync-storm attribution");return 0;}
     if(argc>1&&std::string(argv[1])=="effecthooks"){effectHookReplay();return 0;}

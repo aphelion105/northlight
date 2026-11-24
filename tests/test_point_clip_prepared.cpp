@@ -32,17 +32,21 @@ int main(int argc,char** argv){
             for(unsigned k=0;k<3;++k){const float a=p[k]+unit(rng)*range*2;const float size=std::fabs(unit(rng))*range*.3f;b.lo[k]=a-size;b.hi[k]=a+size;}
             if(i%37==0)b.lo[i%3]=NAN;if(i%41==0)b.hi[i%3]=INFINITY;if(i%43==0)b.lo[i%3]=b.hi[i%3]+1;if(i%47==0)b.valid=false;
             const auto full=faceMask(b.lo,b.hi,b.valid,matrices);
+            const FaceClip::PreparedBounds bounds(b.lo,b.hi,b.valid);
             assert(prepared.mask(b.lo,b.hi,b.valid)==full);
+            assert(prepared.mask(bounds)==full);
             const unsigned requested=rng()&127;
             assert(prepared.mask(b.lo,b.hi,b.valid,requested)==(full&requested));++checks;
             const auto sphereMask=outsideSphere(b,p,range)?0:full;
             assert(sphere.mask(b.lo,b.hi,b.valid,requested)==(sphereMask&requested));
+            assert(sphere.mask(bounds,requested)==(sphereMask&requested));
             if(i<4)for(unsigned subset=0;subset<128;++subset)assert(prepared.mask(b.lo,b.hi,b.valid,subset)==(full&subset));
             if(i<4)for(unsigned subset:{0u,1u,3u,7u,63u,127u}){
                 const FaceClip partial(matrices,subset);
                 assert(partial.mask(b.lo,b.hi,b.valid,subset)==(full&subset));
                 assert(partial.mask(b.lo,b.hi,b.valid)==((full&subset)|(63&~subset)));
                 assert(FaceClip(matrices,light,subset).mask(b.lo,b.hi,b.valid,subset)==(sphereMask&subset));
+                assert(FaceClip(matrices,light,subset).mask(bounds,subset)==(sphereMask&subset));
             }
             if(i<4)for(unsigned invalid=0;invalid<4;++invalid){auto unknown=light;
                 if(invalid==0)unknown.attenuationEnd=-1;if(invalid==1)unknown.attenuationEnd=NAN;

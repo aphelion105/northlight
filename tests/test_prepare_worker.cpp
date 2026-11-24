@@ -312,7 +312,7 @@ static void staleDeclaration(World& world){
         crossFrame.reset();}
     assert(stale>frames/2);std::printf("stale declaration: a cross-frame pointer-keyed copy differs in %zu of %zu reused-address frames; the per-frame arena is equal\n",stale,frames);
 }
-// 0.3.179 (T3): the release publish and the fence-fence wake at WakeBatch=1 with producer pauses long
+// The release publish and wake at WakeBatch=1 with producer pauses long
 // enough for the worker to sleep between records: every published record is prepared without the
 // join's help (a lost wakeup leaves one waiting: bounded wait, then assert), equal to inline.
 static void wakeStress(World& world,unsigned frames){
@@ -326,13 +326,51 @@ static void wakeStress(World& world,unsigned frames){
         for(std::size_t k=0;k<n;++k){
             if(rng()%3==0){std::this_thread::sleep_for(std::chrono::microseconds(40+rng()%80));++slept;} /* past the 30 us spin: the worker sleeps */
             else for(unsigned i=rng()%500;i;--i)NorthlightActorPrepare::pause();
-            worker.publish(p.records[k],p.index[k]);}
-        for(unsigned i=0;i<20000&&worker.done()<n;++i)std::this_thread::sleep_for(std::chrono::microseconds(25)); /* bounded: 0.5 s */
-        assert(worker.done()==n); /* no lost wakeup */
+            assert(worker.publish(p.records[k],p.index[k]));}
+        const auto waitingSince=std::chrono::steady_clock::now();
+        for(unsigned i=0;i<20000&&worker.done()<n;++i)std::this_thread::sleep_for(std::chrono::microseconds(25));
+        const auto completed=worker.done();
+        if(completed!=n){
+            const double waitMs=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-waitingSince).count();
+            const auto stopped=worker.stop();
+            std::fprintf(stderr,"WAKE_STRESS_TIMEOUT frame=%u expected=%zu published=%u done=%u wakes=%u waitMs=%.3f recordsAtStop=%u recordFailed=%u stopTimedOut=%u\n",
+                f,n,stopped.published,completed,worker.wakes(),waitMs,stopped.done,unsigned(stopped.failed),unsigned(stopped.timedOut));
+            std::abort();
+        }
         const auto r=worker.stop();assert(!r.timedOut&&r.done==n);wakes+=worker.wakes();
         std::vector<Output> out(n);for(std::size_t k=0;k<n;++k)out[k]=worker.outputs()[k];assert(equal(out,reference,n));records+=n;
     }
-    std::printf("wake stress (WakeBatch=1, release publish, fence-fence wake): %u frames, %zu records all prepared by the worker, %zu producer pauses past the spin, %u notifies; equal to inline\n",frames,records,slept,wakes);
+    std::printf("wake stress (WakeBatch=1): %u frames, %zu records all prepared by the worker, %zu producer pauses past the spin, %u notifies; equal to inline\n",frames,records,slept,wakes);
+}
+
+static void batchedWake(){
+    using Frame=NorthlightActorPrepare::Frame;
+    struct CopyIndex {
+        void operator()(State&,const int&,std::size_t index,Caches&,const Frame&,Output& output)const{
+            output.after.distanceTests=index+1;
+        }
+    };
+    auto caches=std::make_unique<Caches>();
+    NorthlightActorPrepare::Worker<int,CopyIndex> worker;
+    constexpr unsigned batch=worker.WakeBatch,rounds=64,batches=3,tail=7;
+    worker.setWatchdogMs(2000);
+    const int record=0;
+    for(unsigned round=0;round<rounds;++round){
+        assert(worker.begin(Frame{},*caches));
+        for(unsigned k=0;k<batches;++k){
+            std::this_thread::sleep_for(std::chrono::microseconds(120));
+            for(unsigned i=k*batch;i<(k+1)*batch;++i)assert(worker.publish(&record,i));
+            const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(2);
+            while(worker.done()<(k+1)*batch&&std::chrono::steady_clock::now()<deadline)std::this_thread::sleep_for(std::chrono::microseconds(50));
+            assert(worker.done()==(k+1)*batch);
+        }
+        for(unsigned i=batches*batch;i<batches*batch+tail;++i)assert(worker.publish(&record,i));
+        const auto result=worker.stop();
+        assert(!result.failed&&!result.timedOut&&result.published==batches*batch+tail);
+        assert(result.done>=batches*batch&&result.done<=result.published);
+        for(unsigned i=0;i<result.done;++i)assert(worker.outputs()[i].after.distanceTests==i+1);
+    }
+    std::printf("batched wake: %u full batches at WakeBatch=%u, ordered outputs and partial-tail handover\n",rounds*batches,batch);
 }
 // 0.3.179 (M1): the handoff meter against a synthetic clock whose every read costs readNs (the span of a
 // timed record pays about one read): the corrected estimate equals the true (x16) cost within 5 %; raw is
@@ -441,7 +479,7 @@ struct Renderer {
     std::vector<NorthlightActorShadowSelection::Draw> actorShadowDraws;
     bool sampled=false;bool profileSampled()const{return sampled;}
     static NorthlightActorShadowSelection::Tuning selectionTuning(){return NorthlightActorShadowSelection::active();}
-    unsigned logs=0;void logf(const char*,...){++logs;}
+    mutable unsigned logs=0;void logf(const char*,...)const{++logs;}
     std::unique_ptr<Caches> prepareCaches=std::make_unique<Caches>();
     std::unique_ptr<Caches> prepareAbandonedCaches;
     std::vector<std::unique_ptr<Rec>> prepareQuarantine;
@@ -660,6 +698,7 @@ int main(int argc,char** argv){
     loopIdentity(world,tsan?40:600);layouts(world,tsan?20:200);staleDeclaration(world);handover(world,tsan?4:24);evictedDeclaration(world);
     threaded<NorthlightActorPrepare::Prepare>(world,tsan?10000:3000,tsan?3:12,false);
     wakeStress(world,tsan?600:1500);
+    batchedWake();
     threaded<Faulty>(world,tsan?2000:1500,tsan?3:12,true);
     integration(world,tsan?3000:2000,tsan?4:16);
     rearmCap(world);

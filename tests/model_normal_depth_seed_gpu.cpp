@@ -6,6 +6,8 @@
 #include <chrono>
 struct ModelNormalPacketTestAccess {
     static void coldSeed(NorthlightModelNormals& n){if(n.depthSeedPS)n.depthSeedPS->Release();n.depthSeedPS=nullptr;}
+    static IDirect3DSurface9* privateDepth(const NorthlightModelNormals& n){return n.depth;}
+    static IDirect3DSurface9* depthLoan(const NorthlightModelNormals& n){return n.sharedDepth;}
 };
 struct SeedCalls:ForwardIDirect3DDevice9 {
     using ForwardIDirect3DDevice9::ForwardIDirect3DDevice9;
@@ -91,6 +93,80 @@ int main(int argc,char** argv){assert(argc>=6);std::setvbuf(stdout,nullptr,_IONB
             ok(d->SetDepthStencilSurface(nullptr));ok(d->SetRenderTarget(0,output.s));for(unsigned i=1;i<4;++i)ok(d->SetRenderTarget(i,nullptr));bind(1,snapshot?resolvedSnapshot:resolved);bind(13,normals.texture());ok(d->SetPixelShader(consumer));float c[80][4]={};c[0][0]=1.f/W;c[0][1]=1.f/H;c[0][2]=nearZ;c[0][3]=farZ;c[1][0]=c[1][1]=c[1][2]=1;c[1][3]=rangeMin;c[2][0]=1/(rangeMax-rangeMin);c[3][0]=c[4][1]=c[5][2]=c[6][3]=1;c[33][0]=W;c[33][1]=H;c[33][2]=W/2;c[33][3]=H/2;c[79][0]=1;ok(d->SetPixelShaderConstantF(0,c[0],80));quad(output);auto image=pixels(output);unsigned accepted=0;for(size_t i=6;i<image.size();i+=8){unsigned short h;std::memcpy(&h,image.data()+i,2);unsigned short r;std::memcpy(&r,image.data()+i-6,2);accepted+=half(h)==1.f&&std::fabs(half(r))>.01f;}if(!timing&&shape>=10&&shape<138&&(shape-10)%8==3)assert(accepted>W*H/8);if(reference.empty())reference=image;else {if(reference!=image){unsigned changed=0;for(size_t i=0;i<image.size();++i)changed+=image[i]!=reference[i];std::printf("MISMATCH shape=%u current=%u bytes=%u\n",shape,unsigned(current),changed);}assert(reference==image);}++cases;
             std::printf("SEED_FRAME shape=%u round=%u current=%u seed=%u draws=%u accepted=%u gpuMs=%.6f cpuMs=%.6f\n",shape,round,unsigned(current),seeded,count,accepted,gpuMs,std::chrono::duration<double,std::milli>(stop-start).count());
         }
+    }
+    if(!timing&&!snapshot){
+        using Depth=ModelNormalPacketTestAccess;
+        IDirect3DSurface9 *loan=nullptr,*wrongSize=nullptr;
+        ok(d->CreateDepthStencilSurface(W,H,D3DFMT_D24S8,D3DMULTISAMPLE_NONE,0,FALSE,&loan,nullptr));
+        ok(d->CreateDepthStencilSurface(W/2,H/2,D3DFMT_D24S8,D3DMULTISAMPLE_NONE,0,FALSE,&wrongSize,nullptr));
+        bind(13,nullptr);bind(1,nullptr);normals.reset();normals.setDeferredCapture(true);
+        ok(d->SetRenderTarget(0,scene.s));viewport(scene);ok(d->SetDepthStencilSurface(loan));
+        ok(d->SetRenderState(D3DRS_SCISSORTESTENABLE,FALSE));
+        // Seed the loan with near depth. A successful borrow must clear it.
+        ok(d->Clear(0,nullptr,D3DCLEAR_ZBUFFER,0,0,0));ok(d->SetDepthStencilSurface(ds));
+        auto queue=[&](float z,IDirect3DPixelShader9* shader=nullptr){
+            ok(d->SetVertexDeclaration(decl));ok(d->SetVertexShader(modelVS));ok(d->SetPixelShader(shader?shader:modelPS));bind(0,white);
+            ok(d->SetRenderState(D3DRS_ZENABLE,TRUE));ok(d->SetRenderState(D3DRS_ZWRITEENABLE,TRUE));
+            ok(d->SetRenderState(D3DRS_ZFUNC,D3DCMP_LESSEQUAL));ok(d->SetRenderState(D3DRS_COLORWRITEENABLE,15));
+            const float nearZ=.5f,farZ=500,A=farZ/(farZ-nearZ);
+            float bank[256][4]={};bank[2][0]=bank[3][1]=1;bank[4][2]=A;bank[4][3]=-nearZ*A;bank[5][2]=bank[28][3]=1;bank[6][0]=bank[7][1]=1;
+            for(unsigned bone=0;bone<75;++bone){const unsigned r=31+3*bone;bank[r][0]=bank[r+1][1]=z;bank[r+2][2]=1;bank[r+2][3]=z;}
+            ok(d->SetVertexShaderConstantF(0,bank[0],256));
+            const NorthlightDrawSnapshot::Draw geometry{D3DPT_TRIANGLELIST,0,0,6,0,2,false};
+            normals.capture(modelVS,[]{return D3DERR_INVALIDCALL;},true,&geometry,nullptr,D3DFMT_UNKNOWN,vertices,48);
+            assert(normals.testPendingPackets()==1);
+        };
+        auto final=[&](IDirect3DSurface9* materialDepth){
+            ok(d->BeginScene());queue(3);assert(normals.finishCaptures(true,nullptr,materialDepth));ok(d->EndScene());
+        };
+        ok(d->BeginScene());queue(3);assert(!Depth::privateDepth(normals));
+        assert(normals.finishCaptures(true));ok(d->EndScene());
+        const auto reference=capturedPixels(normals.texture(),W,H);
+        assert(std::any_of(reference.begin(),reference.end(),[](unsigned char b){return b!=0;}));
+        normals.reset();final(loan);
+        assert(Depth::depthLoan(normals)==loan&&!Depth::privateDepth(normals));
+        assert(capturedPixels(normals.texture(),W,H)==reference);
+        normals.endFrame();assert(!Depth::depthLoan(normals));
+
+        // Early replay owns depth that a subsequent final replay must keep.
+        ok(d->BeginScene());queue(3);assert(normals.finishCaptures());
+        auto* early=Depth::privateDepth(normals);assert(early);
+        queue(4);assert(normals.finishCaptures(true,nullptr,loan));ok(d->EndScene());
+        assert(Depth::privateDepth(normals)==early&&!Depth::depthLoan(normals));
+        assert(capturedPixels(normals.texture(),W,H)==reference);
+        normals.endFrame();final(wrongSize);
+        assert(Depth::privateDepth(normals)==early&&!Depth::depthLoan(normals));
+
+        for(unsigned frame=0;frame<30;++frame){
+            normals.endFrame();final(loan);
+            assert(Depth::depthLoan(normals)==loan);
+            assert(Depth::privateDepth(normals)==(frame==29?nullptr:early));
+        }
+        assert(capturedPixels(normals.texture(),W,H)==reference);
+
+        // The opaque receiver still clips on the native shader and capture range.
+        using NorthlightWaterShaderPatch::dst;using NorthlightWaterShaderPatch::src;
+        const DWORD killCode[]={0xffff0300,0x05000051,dst(2,0),0xbf000000,0,0,0x3f800000,
+            0x0200001f,0x80000005,dst(1,0,3),0x03000002,dst(0,0),src(1,0,0),src(2,0,0),
+            0x01000041,dst(0,0),0x02000001,dst(8,0),src(2,0,0xff),65535};
+        IDirect3DPixelShader9* killPS=nullptr;ok(d->CreatePixelShader(killCode,&killPS));
+        normals.endFrame();ok(d->SetRenderState(D3DRS_ALPHATESTENABLE,FALSE));
+        ok(d->BeginScene());queue(3,killPS);assert(normals.finishCaptures(true));ok(d->EndScene());
+        const auto clipped=capturedPixels(normals.texture(),W,H);
+        const unsigned char zero[8]={};
+        for(unsigned y=0;y<H;++y)for(unsigned x=0;x<W;++x){
+            if(x==W/2)continue;
+            const auto at=(size_t(y)*W+x)*8;
+            assert(std::memcmp(clipped.data()+at,x<W/2?zero:reference.data()+at,8)==0);
+        }
+        killPS->Release();normals.endFrame();ok(d->BeginScene());queue(49);assert(normals.finishCaptures(true));ok(d->EndScene());
+        const auto distant=capturedPixels(normals.texture(),W,H);
+        assert(std::none_of(distant.begin(),distant.end(),[](unsigned char b){return b!=0;}));
+        std::puts("MODEL_NORMAL_OPAQUE_PASS native_kill exact_covered_pixels range_clip");
+
+        IDirect3DSurface9* restored=nullptr;ok(d->GetDepthStencilSurface(&restored));assert(restored==ds);restored->Release();
+        normals.reset();loan->Release();wrongSize->Release();
+        std::puts("MODEL_NORMAL_DEPTH_REUSE_PASS empty_loan_clear exact_pixels early_depth_retained wrong_size_fallback idle_depth_retired native_binding_restored");
     }
     bind(13,nullptr);bind(1,nullptr);normals.reset();for(auto* q:{event,begin,end,freq,disjoint})if(q)q->Release();decl->Release();consumer->Release();modelVS->Release();modelPS->Release();alphaPS->Release();if(resolvedSnapshot)resolvedSnapshot->Release();white->Release();resolved->Release();ds->Release();dispose(scene);dispose(output);}raw->Release();api->Release();FreeLibrary(module);DestroyWindow(window);std::printf("MODEL_NORMAL_DEPTH_SEED_PASS cases=%u consumerChecks=%u expectedRefusals=%u consumer=exact\n",cases,cases-(timing?0:4),timing?0:4);
 }

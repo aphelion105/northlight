@@ -11,10 +11,10 @@ import subprocess
 
 ROOT = Path(__file__).resolve().parent
 OUT = fp.output_dir()
-SOURCE = fp.src('renderer.cpp')
+SOURCE = fp.src('renderer_log.h')
 text = SOURCE.read_text()
 start = text.index("static SRWLOCK logLock")
-end = text.index("// CPU wall-time samples", start)
+end = len(text)
 logger = text[start:end]
 assert "static void logf(" in logger and "static void reportLogCost()" in logger
 

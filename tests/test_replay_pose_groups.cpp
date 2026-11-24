@@ -10,6 +10,10 @@ struct Replay {
     NorthlightShaderConstants::Usage constantUsage;
     float constants[1024]={};int32_t bools[16]={};int ints[64]={};
     unsigned projectionKind=2,constantGroup=0;
+    unsigned char directionalPaletteEnd=0;
+    bool gpuCached=true;
+    struct {bool valid=true;} pointBounds;
+    struct {unsigned weightedPaletteEnd=0;} boundsWork;
 };
 static void group(std::vector<Replay>& p){
     for(size_t i=0;i<p.size();++i)p[i].constantGroup=i?p[i-1].constantGroup+(!sameCaptured(p[i-1],p[i])):0;
@@ -92,6 +96,32 @@ static void worldProjection(){
     assert(pass.prepare(actor,rows,world)&&std::memcmp(pass.desired()+8,rows,sizeof rows)==0);
     std::puts("PASS grass world projection preserves captured view/fade and grouping; actors retain view projection");
 }
+static void cubeProjection(){
+    Replay caster;
+    for(unsigned i=0;i<1024;++i)caster.constants[i]=float(i+1);
+    caster.bools[0]=1;caster.ints[0]=7;
+    const float first[16]={},second[16]={1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16};
+    Pass<int32_t> pass;
+    assert(pass.prepare(caster,first)&&pass.floats.count==256);
+    pass.beginProjection();
+    assert(pass.prepare(caster,second)&&pass.floats.first==2&&pass.floats.count==4);
+    assert(!pass.booleans.count&&!pass.integers.count);
+    assert(std::memcmp(pass.desired()+8,second,sizeof second)==0);
+    assert(std::memcmp(pass.desired()+24,caster.constants+24,1000*sizeof(float))==0);
+
+    // The static pass writes c0–c3 on the same device before replay.
+    pass.recordFloatPrefix(first,4);
+    assert(pass.prepare(caster,second)&&pass.floats.first==0&&pass.floats.count==4);
+    assert(std::memcmp(pass.desired(),caster.constants,8*sizeof(float))==0);
+    assert(std::memcmp(pass.desired()+8,second,sizeof second)==0);
+    assert(!pass.booleans.count&&!pass.integers.count);
+
+    // An instanced draw changes the layout of the palette registers.
+    pass.reset();
+    assert(pass.prepare(caster,second)&&pass.floats.count==256);
+    assert(pass.booleans.count&&pass.integers.count);
+    std::puts("PASS cube projections preserve unchanged bank rows across faces and record external static writes");
+}
 static volatile uint64_t sink;
 static void weightedUploads(){
     Replay a,b;
@@ -102,6 +132,28 @@ static void weightedUploads(){
     assert(sameRange(narrow,{2,47}));
     assert(sameRange(weightedUploadRange(a.constantUsage,1),{2,39}));
     assert(!weightedUploadRange(a.constantUsage,0).count&&!weightedUploadRange(a.constantUsage,76).count);
+    a.boundsWork.weightedPaletteEnd=1;
+    b.boundsWork.weightedPaletteEnd=6;
+    const auto member=[&](size_t i){return weightedPacketPaletteEnd(i?b:a);};
+    assert(sameRange(weightedRunUploadRange(a.constantUsage,2,member),narrow));
+    b.pointBounds.valid=false;
+    assert(!weightedRunUploadRange(a.constantUsage,2,member).count);
+    b.pointBounds.valid=true;
+    b.gpuCached=false;
+    assert(!weightedRunUploadRange(a.constantUsage,2,member).count);
+    b.gpuCached=true;
+    b.boundsWork.weightedPaletteEnd=0;
+    assert(!weightedRunUploadRange(a.constantUsage,2,member).count);
+    const std::array<Replay*,2> packets{&a,&b};
+    b.constantGroup=a.constantGroup;
+    groupDirectionalPalettes(packets);
+    assert(!weightedUploadRange(a.constantUsage,a.directionalPaletteEnd).count);
+    b.boundsWork.weightedPaletteEnd=6;
+    groupDirectionalPalettes(packets);
+    assert(a.directionalPaletteEnd==6&&b.directionalPaletteEnd==6);
+    ++b.constantGroup;
+    groupDirectionalPalettes(packets);
+    assert(a.directionalPaletteEnd==1&&b.directionalPaletteEnd==6);
     float rows[16]={};Pass<int32_t> pass;
     assert(pass.prepare(a,rows,nullptr,narrow)&&sameRange({pass.floats.first,pass.floats.count},narrow));
     assert(pass.prepare(a,rows,nullptr,narrow)&&pass.reused==1&&!pass.floats.count);
@@ -133,4 +185,4 @@ static void benchmark(unsigned parts){
     double old=run(false),now=run(true);
     std::printf("BENCH native helper only %u parts/pose, 1200 draws x 2 cascades x %u frames including grouping: baseline %.3f ms, grouped %.3f ms, %.3fx; prepares/frame 2400 -> %u; extra persistent bytes/draw %zu\n",parts,frames,old,now,old/now,2400/parts,sizeof(unsigned));
 }
-int main(){equality();reference();worldProjection();weightedUploads();benchmark(8);benchmark(4);benchmark(1);}
+int main(){equality();reference();worldProjection();cubeProjection();weightedUploads();benchmark(8);benchmark(4);benchmark(1);}

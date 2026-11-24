@@ -1,17 +1,19 @@
 # northlight-test: requires=zig
 """Run the production sky boundary with native foreground/grade ownership."""
+
+from source_units import source_text
 from pathlib import Path
 import subprocess
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import northlight_paths as fp
 
-source = fp.src('renderer.cpp').read_text()
+source = source_text(fp.src('renderer.cpp'))
 start = source.index('    void composeSkyBackground(){')
 end = source.index('    NorthlightAuroraNative::DiagnosticCapture', start)
 method = source[start:end]
 world_source = fp.src('world_renderer.h').read_text()
-start = world_source.index('    bool skyBackgroundContext(')
+start = world_source.index('    const NorthlightForever::SkyKey* celestialSkyPalette()')
 end = world_source.index('    bool celestialContext(', start)
 camera_method = world_source[start:end]
 effects = source[source.index('    void renderEffects() {'):source.index('    bool nameMaskReady(){')]
@@ -19,18 +21,22 @@ assert 'renderSkyBackground(' not in effects
 hook = source[source.index('    template<class Capture,class Draw> HRESULT drawHook('):]
 hook = hook[:hook.index('    // 0.3.154: blob shadow claim')]
 assert hook.count('composeSkyBackground();') == 2
-assert hook.index('composeSkyBackground();') < hook.index('spellDraw(') < hook.index('const HRESULT hr=waterMrtDraw(')
+assert hook.index('composeSkyBackground();') < hook.index('spellDraw(') < hook.index('auto submit=[&]{return waterMrtDraw(')
 
 fixture = r'''
 #include <cassert>
 #include <cstdio>
 #include <cstring>
+#include <optional>
 #include <string>
+#include "forever_atmosphere.h"
+#include "quality_settings.h"
 #include "world_draw_domain.h"
 struct Texture {};
 struct Surface {int color=10;};
 struct D3DSURFACE_DESC {unsigned Width=8,Height=8,Format=21;};
 struct D3DVIEWPORT9 {float MinZ=0,MaxZ=.94f;};
+using HRESULT=int;
 constexpr unsigned D3DTEXF_NONE=0;
 #define FAILED(x) ((x)<0)
 namespace NorthlightCelestial {struct Context {};}
@@ -44,14 +50,15 @@ bool readSkyPhase(char (&map)[64],float sign,Camera& out){
 }
 template<class... Args> void logf(const char*,Args...){}
 struct World {
-    struct Environment {bool skyValid=true;struct {float color[8][3]{};} sky;} skyEnvironment;
+    NorthlightForever::Frame skyEnvironment;
+    NorthlightQuality::Settings quality;
+    World(){skyEnvironment.skyValid=true;quality.celestialStyle=1;}
     bool valid=true,pipelineActive=true,failed=false,menu=false;unsigned fault=0;
     bool isMenu()const{return menu;}
     struct {float inverseView[16]={1};} context;
     float projection[3]={2,3,-1};struct {std::string map="Northrend";} lastRequest;
     bool hasContext()const{return valid&&!failed&&!workerFault();}
     unsigned workerFault()const{return fault;}
-    const Environment& atmosphereEnvironment()const{return skyEnvironment;}
     // PRODUCTION_CAMERA_METHOD
 };
 struct Device {
@@ -61,6 +68,14 @@ struct Device {
 };
 struct ExtensionDevice {struct RawScope {explicit RawScope(Device&) {}};};
 struct SavedState {bool ok=true;Surface* targets[1];SavedState(Device* d,int*):targets{&d->target}{}};
+namespace NorthlightLightingCapture {
+struct Capture {
+    template<class... Args> explicit Capture(Args&&...){}
+    void bindings(const char*,unsigned,HRESULT,Surface*,bool){}
+    void bindingSkip(const char*,const char*){}
+    void finish(bool){}
+};
+}
 struct Fixture {
     unsigned frame=1,skyBackgroundFrame=~0u,width=8,height=8,debugMode=0,worldDebug=0,drawCalls=0;
     bool enabled=true,failed=false,applied=false,full=true,back=true,resourceOk=true,menuScene=false;
@@ -69,10 +84,12 @@ struct Fixture {
     Surface* sceneSurface=&device.copy;Texture* scene=&texture;Texture texture;
     struct Layers {bool available=true;Texture image;Texture* textureAt(){return available?&image:nullptr;}Texture* texture(unsigned){return textureAt();}} skyLayers;
     World worldStorage;World* world=&worldStorage;
+    struct {const std::string* auditDirectory(unsigned)const{return nullptr;}} frameParity;
     struct Celestial {
         unsigned draws=0;bool menuDraw=false;
-        bool renderSkyBackground(Surface* target,Texture*,Texture* depth,Texture*,unsigned,unsigned,const float*,const float*,const float[8][3],bool menu=false){
-            assert(!depth);target->color=20;++draws;menuDraw=menu;return true;
+        bool renderSkyBackground(Surface* target,Texture*,Texture* depth,Texture*,unsigned,unsigned,const float*,const float*,const float[8][3],bool menu,
+                                 void (*audit)(void*,HRESULT),void* context){
+            assert(!depth);target->color=20;++draws;menuDraw=menu;if(audit)audit(context,0);return true;
         }
     } celestialStorage;Celestial* celestialDiscs=&celestialStorage;
     bool fullViewport(D3DSURFACE_DESC&,D3DVIEWPORT9* out,bool){*out=vp;return full;}
@@ -127,6 +144,7 @@ int main(){
     // Menu has no world sky-layer capture. Its native luminous backdrop is
     // drawn after opaque models and does not write depth; it must survive.
     Fixture menu;menu.skyLayers.available=false;menu.menuScene=true;menu.vp={0,1};
+    menu.worldStorage.quality.celestialStyle=0;
     menu.composeSkyBackground();assert(!menu.celestialStorage.draws);
     menu.worldStorage.menu=true;menu.worldStorage.valid=false;
     menu.composeSkyBackground();assert(!menu.celestialStorage.draws);
@@ -136,7 +154,16 @@ int main(){
     menu.composeSkyBackground();assert(menu.device.target.color==90);
     menu.applied=true;menu.composeSkyBackground();assert(menu.device.target.color==90);
     ++f.frame;f.applied=false;f.composeSkyBackground();assert(f.celestialStorage.draws==2);
-    std::puts("PASS sky camera independent of draw order; current camera, map guard, world ownership, foreground latch and native fallback");
+    // Live mode changes use the same loaded zone palette and keep native sky in Default.
+    ++f.frame;f.device.target.color=10;f.worldStorage.quality.celestialStyle=0;
+    assert(!f.worldStorage.celestialSkyPalette());
+    f.composeSkyBackground();assert(f.celestialStorage.draws==2&&f.device.target.color==10);
+    ++f.frame;f.worldStorage.quality.celestialStyle=1;
+    assert(f.worldStorage.celestialSkyPalette()==&f.worldStorage.skyEnvironment.sky);
+    f.composeSkyBackground();assert(f.celestialStorage.draws==3&&f.device.target.color==20);
+    f.worldStorage.quality.celestialEffects=0;
+    assert(!f.worldStorage.celestialSkyPalette());
+    std::puts("PASS Default and Forever sky selection, camera, map guard, menu, foreground latch and native fallback");
 }
 '''
 fixture = fixture.replace('    // PRODUCTION_CAMERA_METHOD', camera_method)

@@ -6,11 +6,13 @@ Signatures (format, aspect 1:16 / 1:2, widths 8/16/32), address reuse (a re-crea
 candidate, generation bumps, hot cleared), volume/cube forget, reset, per-kind table slots (rain 2, snow 4; never-drawn first, lookalike flood), hot
 rotation on every frame without draws, the tall-texture log, and the hook: stage 0 unknown / UI phase (applied) / no hot = no count, a match
 accumulates primitives and draws. Windows x86 O0/O2; native ASan/UBSan elsewhere. No device or game."""
+
+from source_units import source_text
 import sys; from pathlib import Path; sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root
 import northlight_paths as fp
 import os,subprocess,tempfile
 
-r=fp.src('renderer.cpp').read_text()
+r=source_text(fp.src('renderer.cpp'))
 hook=[l for l in r.split('\n') if l.strip().startswith('if(weatherDetect.hot&&mirrorState')]
 assert len(hook)==1,'the draw hook comparison must exist exactly once'
 mistline=[l for l in r.split('\n') if l.strip().startswith('else if(weatherDetect.mistArmed)')]
@@ -34,6 +36,7 @@ SRC=r'''
 #include <unordered_map>
 using namespace NorthlightWeatherDetect;using NorthlightWeather::Kind;
 typedef unsigned UINT;typedef unsigned DWORD;typedef long HRESULT;
+constexpr HRESULT S_OK=0,E_FAIL=-1;
 #define TRUE 1
 #define SUCCEEDED(h) ((h)>=0)
 #define FALSE 0
@@ -103,6 +106,15 @@ struct VsClass{bool world=false,skinned=false;};
 struct World{bool on=true;bool rainBlendSetting()const{return on;}};
 namespace NorthlightWeather{}
 struct SavedState{Ext* d;Surface* rt;D3DVIEWPORT9 vp;bool ok=true;static inline bool fail=false;SavedState(Ext* e,void*):d(e),rt(e->rt),vp(e->vp){ok=!fail;}~SavedState(){d->rt=rt;d->vp=vp;}};
+namespace NorthlightLightingCapture {
+struct Capture {
+    unsigned samplers=0;
+    HRESULT draw=E_FAIL;
+    const char* skipped=nullptr;
+    void bindings(const char* entry,unsigned mask,HRESULT result){assert(std::strcmp(entry,"RainScrub")==0);samplers=mask;draw=result;}
+    void bindingSkip(const char* entry,const char* reason){assert(std::strcmp(entry,"RainScrub")==0);skipped=reason;}
+};
+}
 struct Hook{
     struct WaterStub{bool isMrtBound()const{return false;}void unbindMrt(){}};WaterStub* water=nullptr; /* 0.3.214 (water MRT): rainMrtUnbind also serves the water mask's target 1; never bound here */
     Mirror mirrorState;Detector weatherDetect;Sample weatherSample;bool applied=false,terrain=true,enabled=true,failed=false;UINT width=0,height=0;IDirect3DTexture9* rainMask=nullptr;Surface* rainMaskSurface=nullptr;Surface* rainMaskMS=nullptr;D3DMULTISAMPLE_TYPE rainMaskMsType=D3DMULTISAMPLE_NONE,rainMaskWantType=D3DMULTISAMPLE_NONE;DWORD rainMaskMsQuality=0,rainMaskWantQuality=0;bool rainMaskFailed=false,rainMaskCleared=false,rainMaskDrawn=false,rainMaskFrame=false,rainMaskOk=false,rainMaskMismatchLogged=false;unsigned rainMaskDraws=0;
@@ -336,14 +348,18 @@ int main(){
         {Hook h;mk(h);h.ext->createDepthFails=true;h.draw(10);assert(h.drawn==1&&h.rainMaskFailed&&h.rainMaskDraws==0&&h.rainDepth==nullptr&&h.rainMaskSurface==nullptr&&h.logs.size()==2&&h.logs[0].rfind("WEATHER rain mask disabled (rain depth",0)==0);} /* the rain depth texture refused: the mask is off, rain draws as before */
         {   // the full-screen scrub in renderEffects (rainMaskPrepare)
             Hook h;mk(h);h.draw(10);h.draw(10);assert(h.rainMrtBound);
-            IDirect3DTexture9* m=h.rainMaskPrepare();
+            NorthlightLightingCapture::Capture audit;
+            IDirect3DTexture9* m=h.rainMaskPrepare(&audit);
+            assert(audit.samplers==3&&audit.draw==S_OK&&!audit.skipped);
             assert(m==h.rainMask&&!h.rainMrtBound&&h.ext->rt1==nullptr&&h.quads==1&&h.effectStates==1&&h.ext->stretches==0); /* RT1 off first; no MSAA: no resolve */
             assert(h.quadRec.rt==&h.ext->maskTex.s&&h.quadRec.ps==&h.ext->psScrub&&h.quadTex0==h.depthTex&&h.quadTex1==h.rainDepth&&h.quadRec.colorWrite==D3DCOLORWRITEENABLE_RED&&h.ext->minFilter0==D3DTEXF_POINT&&h.ext->magFilter0==D3DTEXF_POINT&&h.quadRec.rt1==nullptr); /* final depth (s0) vs the snapshot (s1), POINT, alpha only */
             assert(h.ext->rt==&h.ext->gameRT&&h.ext->vp.X==3); /* its own SavedState brought the game's target back */
         }
         {Hook h;mk(h);h.ext->gameRT.desc.MultiSampleType=D3DMULTISAMPLE_4_SAMPLES;h.ext->gameRT.desc.MultiSampleQuality=2;h.ext->gameDS.desc.MultiSampleType=D3DMULTISAMPLE_4_SAMPLES;h.ext->gameDS.desc.MultiSampleQuality=2;h.draw(10);
             assert(h.rainMaskPrepare()==h.rainMask&&h.ext->stretches==1&&h.quads==1);
-            h.ext->stretchFails=true;h.quads=0;assert(h.rainMaskPrepare()==nullptr&&h.rainMaskResolveHr<0&&h.quads==0);} /* MSAA twin resolved once; a refused resolve = no mask */
+            h.ext->stretchFails=true;h.quads=0;NorthlightLightingCapture::Capture audit;
+            assert(h.rainMaskPrepare(&audit)==nullptr&&h.rainMaskResolveHr<0&&h.quads==0);
+            assert(audit.samplers==0&&std::strcmp(audit.skipped,"resolve-failed")==0);} /* MSAA twin resolved once; a refused resolve = no mask */
         {Hook h;mk(h);h.draw(10);h.quadFails=true;assert(h.rainMaskPrepare()==nullptr&&h.rainMaskResolveHr<0);}
         {Hook h;mk(h);h.draw(10);SavedState::fail=true;assert(h.rainMaskPrepare()==nullptr);SavedState::fail=false;}
         {Hook h;mk(h);h.bind(0,3);h.draw(10);assert(h.rainMaskPrepare()==nullptr&&h.quads==0);} /* no rain this frame: no pass */

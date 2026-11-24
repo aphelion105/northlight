@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 # northlight-test: requires=windows-gpu,zig,client,stormlib
 """Replay native transparent draws through production HDR sky ownership, offline."""
+
+from source_units import source_text
 import argparse
 import hashlib
 import json
@@ -21,7 +23,7 @@ args = parser.parse_args()
 out = args.output.resolve()
 out.mkdir(parents=True, exist_ok=True)
 renderer = args.renderer.read_text()
-scope_source = fp.src('renderer.cpp').read_text()
+scope_source = source_text(fp.src('renderer.cpp'))
 start = scope_source.index('    template<class Draw> HRESULT nativeEffectDraw(')
 scope = scope_source[start:scope_source.index('    bool hdrWorldAlphaDraw(', start)]
 start = renderer.index('    bool hdrWorldAlphaDraw(')

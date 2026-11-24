@@ -12,7 +12,14 @@ namespace NorthlightDxvkCompatibility {
 // DXVK_CONFIG is process-local and overrides only these file options. All other
 // file options and explicit inline overrides survive.
 inline std::string config(const std::string& existing,bool disableFse=false){
-    return "d3d9.customVendorId = 1002; d3d9.cachedDynamicBuffers = True; d3d9.cachedWriteOnlyBuffers = True; dxvk.enableDescriptorHeap = False; "+existing+
-        (disableFse?"; dxvk.allowFse = False; ":"");
+    constexpr char defaults[]="d3d9.customVendorId = 1002; d3d9.cachedDynamicBuffers = True; d3d9.cachedWriteOnlyBuffers = True; dxvk.enableDescriptorHeap = False; ";
+    constexpr char forceFseOff[]="; dxvk.allowFse = False; ";
+    // The process environment survives a proxy reload. DXVK 2.7.1 ignores
+    // DXVK_CONFIG at MAX_PATH, which two copies of these defaults can exceed.
+    std::string result=existing.compare(0,sizeof(defaults)-1,defaults)==0?existing:defaults+existing;
+    constexpr size_t suffixLength=sizeof(forceFseOff)-1;
+    if(disableFse&&result.compare(result.size()-suffixLength,suffixLength,forceFseOff)!=0)
+        result+=forceFseOff;
+    return result;
 }
 }

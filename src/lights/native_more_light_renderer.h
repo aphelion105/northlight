@@ -15,6 +15,24 @@ class NorthlightNativeMoreLightRenderer {
     IDirect3DDevice9* device;
     std::unordered_map<IDirect3DVertexShader9*,Kind> kinds;
     std::unordered_map<IDirect3DVertexShader9*,std::unique_ptr<Entry>> sources,derived;
+    static unsigned rgbOffset(bool terrain,unsigned slot){return terrain?12*slot+4:4*slot;}
+    static bool extraRgb(bool terrain,const float* bank,unsigned allowed){
+        for(unsigned slot=0;slot<allowed;++slot){
+            const float* rgb=bank+rgbOffset(terrain,slot);
+            if(rgb[0]!=0.f||rgb[1]!=0.f||rgb[2]!=0.f)return true;
+        }
+        return false;
+    }
+    template<class Mirror> static const float* mirroredBank(const Mirror* mirror,unsigned rows){
+        if(!mirror||!mirror->heldByThisThread()||!mirror->active())return nullptr;
+        for(unsigned i=236;i<236+rows;++i)if(!mirror->vsFloatKnown[i])return nullptr;
+        return mirror->vsFloat[236];
+    }
+    template<class Handoff> static void prepareBank(bool terrain,float* bank,unsigned allowed,unsigned count,
+                                                     Handoff& handoff,bool handoffActive){
+        for(unsigned slot=allowed;slot<count;++slot)std::fill_n(bank+rgbOffset(terrain,slot),3,0.f);
+        if(handoffActive)handoff(terrain,bank);
+    }
     Entry* prepare(IDirect3DVertexShader9* source,bool terrain,const DWORD* words=nullptr,size_t count=0,bool registration=false){
         auto old=sources.find(source);if(old!=sources.end())return old->second.get();
         if(!registration){auto found=derived.find(source);if(found!=derived.end())return found->second.get();}
@@ -43,6 +61,26 @@ public:
     Kind kind(IDirect3DVertexShader9* shader)const{const auto i=kinds.find(shader);return i==kinds.end()?Kind::None:i->second;}
     void limits(unsigned models,unsigned terrain){modelLimit=std::clamp(models,4u,8u);terrainLimit=std::clamp(terrain,3u,8u);}
     void deviceReset(){restoreFailed=false;}
+    // A four-light model uses its source program when the effective extra RGB
+    // is zero. An admitted particle pair can then keep the original bindings.
+    template<class Mirror,class Handoff> bool keepsModelState(IDirect3DVertexShader9* shader,const Mirror* mirror,Handoff handoff,bool handoffActive){
+        if(restoreFailed)return false;
+        const auto it=sources.find(shader);
+        if(it==sources.end()||it->second->kind!=Kind::Model)return false;
+        const bool expanded=it->second->expanded!=nullptr;
+        const unsigned allowed=modelLimit-4;
+        if(expanded&&!allowed)return true;
+        if(!expanded&&allowed==4&&!handoffActive)return true;
+        float before[44],after[44];
+        const float* bank=mirroredBank(mirror,11);
+        if(!bank){
+            if(FAILED(device->GetVertexShaderConstantF(236,before,11)))return false;
+            bank=before;
+        }
+        std::copy_n(bank,44,after);
+        prepareBank(false,after,allowed,4,handoff,handoffActive);
+        return expanded?!extraRgb(false,after,allowed):std::memcmp(bank,after,sizeof after)==0;
+    }
     template<class Mirror,class Handoff,class Draw> HRESULT draw(Kind expected,const Mirror* mirror,Handoff handoff,Draw submit,bool handoffActive=true){
         if(restoreFailed)return E_FAIL;
         if(expected==Kind::None)return submit();
@@ -57,18 +95,15 @@ public:
         if(!entry->expanded&&unchanged)return submit(); // Already eight: no constants or private binding needed.
         float before[60],after[60];unsigned first=0,last=0;
         const unsigned readCount=unchanged&&expected==Kind::Model?4:registers;
-        bool cached=mirror&&mirror->heldByThisThread()&&mirror->active();
-        if(cached)for(unsigned i=236;i<236+readCount;++i)cached=cached&&mirror->vsFloatKnown[i];
-        const float* bank=cached?mirror->vsFloat[236]:before;
+        const float* cached=mirroredBank(mirror,readCount);
+        const float* bank=cached?cached:before;
         if(!cached&&FAILED(device->GetVertexShaderConstantF(236,before,readCount)))return submit();
         if(!unchanged){if(cached)std::copy_n(bank,4*registers,before);std::copy_n(before,4*registers,after);
-            for(unsigned slot=allowed;slot<count;++slot)std::fill_n(after+(expected==Kind::Terrain?12*slot+4:4*slot),3,0.f);
-            if(handoffActive)handoff(expected==Kind::Terrain,after);bank=after;
+            prepareBank(expected==Kind::Terrain,after,allowed,count,handoff,handoffActive);bank=after;
             last=registers;while(first<last&&!std::memcmp(before+4*first,after+4*first,4*sizeof(float)))++first;
             while(last>first&&!std::memcmp(before+4*(last-1),after+4*(last-1),4*sizeof(float)))--last;
         }
-        bool lit=false;for(unsigned slot=0;slot<allowed&&!lit;++slot){const float* rgb=bank+(expected==Kind::Terrain?12*slot+4:4*slot);lit=rgb[0]!=0.f||rgb[1]!=0.f||rgb[2]!=0.f;}
-        if(entry->expanded&&!lit)return submit(); // No extra RGB survives limits/ownership: keep the source shader.
+        if(entry->expanded&&!extraRgb(expected==Kind::Terrain,bank,allowed))return submit();
         bool constantsSet=false;
         const auto retry=[](auto action){return SUCCEEDED(action())||SUCCEEDED(action());};
         const auto restore=[&]{bool ok=true;if(constantsSet)ok=retry([&]{return device->SetVertexShaderConstantF(236+first,before+4*first,last-first);});

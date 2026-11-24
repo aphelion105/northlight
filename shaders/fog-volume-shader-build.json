@@ -1,10 +1,21 @@
 {
   "sources": {
     "fog_volume.hlsl": "6ec1944eb348fd6ffb85c211b48cebf0d19b239f7bb016fc45d0e930346910b5",
-    "world_effects.hlsl": "de887b71d5fca06a51861adf0908810938624a09fc3087de07c37e0044bb3675",
-    "shadow_transition.hlsl": "571ba1c03b3e6c0e36965f2a5107526f16d29b07c23d934982030c0f45de96d1",
-    "auto_bump_normal.hlsl": "b5523a51dc6715f11ac2e7ba9ecb46a4973ba6aa23de159e308a8fd24d4e9ebc",
-    "world_view.hlsl": "6b1f5d511f44bb161a97f104fe1a523fccb5cb6194610b2d9ee75d273b3fcf24"
+    "world_effects.hlsl": "1fc010e15cadbd09dd529c66a285266c93544c13155e9774e0709d47216a632a",
+    "world_effects_fog_entries.hlsl": "3b7d098d6deea5caa37bc91641fa671ffb9d8fd19321a5fa0e206c15087dd8a1",
+    "world_effects_shadow_casters.hlsl": "1010ce53aa18acfa30f67ba59f4e68613b2223de21b4242ac551cfc37be538b9",
+    "world_effects_composite.hlsl": "d635239998ced922ecaee42e8cc93f5f5274eb13c52bec4b94c4b76d537756b0",
+    "world_effects_fog_filter.hlsl": "cf8b39c399f194674d10a05d270f3d91eb6606869c7ae2de93c12bbdb4a5bfd6",
+    "world_effects_fog_atmosphere.hlsl": "4049499475e7d8e9475f430b0b905281f2a5a863fb55c796d28e6d468d88968d",
+    "world_effects_temporal.hlsl": "4521156755f793644d8ef14acfe80f97847e7b1a9d8da39c1ca1876340a05767",
+    "world_effects_local_lighting.hlsl": "349c9490915f1f028adb742bd264b5eff3f9d74d65c5389e1b501de444cb3d93",
+    "world_effects_actor_shadows.hlsl": "4de52a0ed737310b5f0f12790a8af29a58e4a86731ef623f595df484fffd27c1",
+    "world_effects_lighting.hlsl": "51a3ce934b4257eba0897363e992a0d1f2d3ab1e5219d972906e4b63b660d093",
+    "world_effects_shadow_sampling.hlsl": "1d37ab9a61ba537abc4c44e7f5a19275ade126027eba6d36e8966e14b22a9a4f",
+    "world_effects_geometry.hlsl": "f01bcbac62d40279fafa7d6a6de1811ef3a152e712c95aea9a6cb98849ec7e12",
+    "auto_bump_normal.hlsl": "c2911ff97e9f2233a3f48085a129851292983cc4630bd1cf235564238b317715",
+    "world_view.hlsl": "bbcbc95ee157a8b196befc2ec01ff9d890b6ed349447c5aba582ac7aed919ce8",
+    "shadow_transition.hlsl": "8bd611b0b646eae536c1d36baccb2b3159fafbc522d43234f474b123e9a69dd9"
   },
   "compiler": "Microsoft d3dcompiler_47 10.0.17134.12 IEEE strict",
   "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",

@@ -33,6 +33,7 @@ with tempfile.TemporaryDirectory(prefix='stream-idle-attribution-') as directory
     root = Path(directory)
     (root / 'd3d9_stub.h').write_text('#ifndef FALSE\n#define FALSE 0\n#endif\n' + stream.stub())
     (root / 'cs_generated.inc').write_text(stream.generated_cpp())
+    stream.write_native_shadow_stub(root)
     for name, flags in [
         ('O2', ['-O2']), ('O0', ['-O0']),
         ('asan', ['-O1', '-g', '-fsanitize=address,undefined', '-fno-sanitize=vptr', '-fno-omit-frame-pointer']),

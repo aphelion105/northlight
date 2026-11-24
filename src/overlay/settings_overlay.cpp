@@ -20,6 +20,7 @@
 #include "imgui_impl_dx9.h"
 #include "overlay_font_roboto.h"
 #include "overlay_input.h"
+#include "stream_wait.h"
 #include "window_size_filter.h"
 #include "settings_panel.h"
 #include "performance_monitor.h"
@@ -70,6 +71,17 @@ struct WindowHook {
     In::MasterHotkey master;
     NorthlightWindowSize::Publication presentation;
     NorthlightWindowSize::DeliveredSize deliveredSize; // window thread only
+    struct SizeNotification {
+        std::uint64_t session=0;
+        WPARAM state=0;
+        LPARAM dimensions=0;
+    } deliveringSize; // window thread only
+    struct DeferredSize {
+        SizeNotification size;
+        WPARAM ticket=0;
+        bool queued=false;
+        unsigned logged=0;
+    } deferredSize; // window thread only
     std::atomic<Log> stabilityLog{nullptr};
     std::atomic<unsigned> suppressedSizes{0},sizeLogs{0},reportedSizes{0};
     std::atomic<bool> normalWindow{false};
@@ -77,6 +89,24 @@ struct WindowHook {
     std::atomic<unsigned> forwardedSizes{0},forwardedLogs{0},reportedForwards{0},forwardReason{0};
 };
 WindowHook hook;
+UINT deferredSizeMessage(){
+    static const UINT message=RegisterWindowMessageW(L"Northlight.D3D9.DeferredWindowSize");
+    return message;
+}
+
+bool deferSize(HWND window, std::uint64_t session, WPARAM state, LPARAM dimensions){
+    auto& pending=hook.deferredSize;
+    if(!pending.queued||pending.size.session!=session){
+        const UINT message=deferredSizeMessage();
+        const WPARAM ticket=pending.ticket+1;
+        if(!message||!PostMessageW(window,message,ticket,0))return false;
+        pending.ticket=ticket;
+        pending.queued=true;
+    }
+    pending.size={session,state,dimensions};
+    return true;
+}
+
 unsigned pack(const In::Hotkey& k){return k.vk|(k.mods.ctrl?1u<<8:0)|(k.mods.shift?1u<<9:0)|(k.mods.alt?1u<<10:0);}
 In::Hotkey unpack(unsigned v){In::Hotkey k;k.vk=v&0xFF;k.mods.ctrl=(v>>8)&1;k.mods.shift=(v>>9)&1;k.mods.alt=(v>>10)&1;return k;}
 
@@ -107,6 +137,15 @@ LRESULT CALLBACK windowProcedure(HWND window,UINT msg,WPARAM wparam,LPARAM lpara
     // The shared subclass may remain chained after an earlier device/window.
     // Never consume or mutate this window's state for another HWND.
     if(window!=hook.window.load(std::memory_order_acquire))return forward();
+    if(msg>=0xc000&&msg==deferredSizeMessage()){
+        auto& pending=hook.deferredSize;
+        const auto now=hook.presentation.snapshot();
+        if(!pending.queued||pending.ticket!=wparam||!now.owner||pending.size.session!=now.session)return 0;
+        msg=WM_SIZE;
+        wparam=pending.size.state;
+        lparam=pending.size.dimensions;
+        pending.queued=false;
+    }
     if(msg==WM_NCDESTROY){
         // The window is going away: unhook if nobody subclassed after us (the chain dies with the window anyway).
         const auto owner=hook.presentation.owner();
@@ -133,17 +172,39 @@ LRESULT CALLBACK windowProcedure(HWND window,UINT msg,WPARAM wparam,LPARAM lpara
         hook.normalWindow.store(false);hook.presentation.windowChanged();hook.deliveredSize.invalidate();
     }
     if(msg==WM_SIZE&&hook.presentation.owner()){
+        const bool nested=NorthlightStream::inPumpedWait;
+        if(!nested)hook.deferredSize.queued=false;
         if(wparam!=SIZE_RESTORED){hook.normalWindow.store(false);hook.presentation.windowChanged();hook.deliveredSize.invalidate();}
         const unsigned width=LOWORD(lparam),height=HIWORD(lparam);
         const auto before=sizeContext(window,width,height);
+        const auto delivered=hook.deliveringSize;
+        // Some backends echo WM_SIZE while executing the Reset that the
+        // outer WM_SIZE already requested. Keep that echo out of the queue.
+        if(nested&&before.attached&&delivered.session==before.session&&delivered.state==wparam&&delivered.dimensions==lparam){
+            if(before.geometry.usable)hook.deferredSize.queued=false;
+            return 0;
+        }
         if(!before.geometry.usable)hook.normalWindow.store(false,std::memory_order_release);
         const auto decision=hook.deliveredSize.begin(unsigned(wparam),before);
         if(decision.suppress){hook.suppressedSizes.fetch_add(1,std::memory_order_relaxed);return 0;}
+        // The game calls Reset synchronously from WM_SIZE. Its replay work
+        // must wait until the game thread has left the command-stream pump.
+        if(nested&&before.attached&&deferSize(window,before.session,wparam,lparam)){
+            hook.normalWindow.store(false,std::memory_order_release);
+            hook.presentation.windowChanged();
+            if(const auto log=hook.stabilityLog.load(std::memory_order_acquire);log&&hook.deferredSize.logged<8){
+                ++hook.deferredSize.logged;
+                log("WINDOW WM_SIZE deferred during a command-stream wait");
+            }
+            return 0;
+        }
         const unsigned reason=wparam!=SIZE_RESTORED?1:!before.geometry.usable?2:!before.ready?3:4;
         hook.forwardReason.store(reason,std::memory_order_relaxed);
         hook.forwardedSize.store(std::uint64_t(width)|(std::uint64_t(height)<<16)|(std::uint64_t(unsigned(wparam))<<32),std::memory_order_relaxed);
         hook.forwardedSizes.fetch_add(1,std::memory_order_release);
+        hook.deliveringSize={before.session,wparam,lparam};
         const LRESULT result=forward();
+        hook.deliveringSize=delivered;
         const auto after=sizeContext(window,width,height);
         if(hook.deliveredSize.delivered(decision.token,unsigned(wparam),before.session,after))hook.normalWindow.store(true,std::memory_order_release);
         return result;

@@ -8,6 +8,7 @@ import argparse,hashlib,json,os,shutil,struct,subprocess,sys
 from pathlib import Path
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 import northlight_paths as fp
+from scripts.shaders.shader_sources import source_files, world_source_bytes
 from validate_removal_distance_gpu import fixture,image
 
 ap=argparse.ArgumentParser(description=__doc__)
@@ -33,8 +34,9 @@ if args.base_hdr:
 candidate_name=lambda entry:'WorldBaseCompositeHdr' if args.base_hdr else entry
 if args.base_hdr and args.candidate_directory==fp.COMPILED.resolve():
  manifest=json.loads((fp.SHADERS/'world-shader-build.json').read_text())
- assert manifest['shaders']['WorldBaseCompositeHdr']['source_sha256']==sha(fp.SHADERS/'world_effects.hlsl'),'Recompile WorldBaseCompositeHdr before validating the changed source'
-inputs={str(p):sha(p) for p in [fp.TESTS/'composite_distance_gpu.cpp',fp.TESTS/'removal_distance_gpu.cpp',fp.SHADERS/'world_effects.hlsl',fp.SHADERS/'world-shader-build.json',fp.src('world_renderer.h'),fp.src('legacy_fog.h'),*(args.candidate_directory/(candidate_name(e)+'.bin') for e in entries),*(args.reference_directory/(e+'.bin') for e in entries)]}
+ source_sha=hashlib.sha256(world_source_bytes(fp.SHADERS/'world_effects.hlsl')).hexdigest()
+ assert manifest['shaders']['WorldBaseCompositeHdr']['source_sha256']==source_sha,'Recompile WorldBaseCompositeHdr before validating the changed source'
+inputs={str(p):sha(p) for p in [fp.TESTS/'composite_distance_gpu.cpp',fp.TESTS/'removal_distance_gpu.cpp',*source_files(fp.SHADERS/'world_effects.hlsl'),fp.SHADERS/'world-shader-build.json',fp.src('world_renderer.h'),fp.src('legacy_fog.h'),*(args.candidate_directory/(candidate_name(e)+'.bin') for e in entries),*(args.reference_directory/(e+'.bin') for e in entries)]}
 binary=out/'composite-work.exe'
 subprocess.run([str(fp.zig()),'c++','-target','x86-windows-gnu','-O2','-UNDEBUG','-Wall','-Wextra','-Werror',str(fp.TESTS/'composite_distance_gpu.cpp'),'-luser32','-o',str(binary)],env=fp.zig_env(),check=True)
 rows=[]

@@ -1,5 +1,6 @@
 #pragma once
 #include "particle_light_proof.h"
+#include "particle_draw_state.h"
 #include "particle_texture_stats.h"
 #include "particle_uploads.h"
 #include "particle_lights.h"
@@ -31,13 +32,18 @@ class Capture {
     std::unordered_map<IDirect3DVertexShader9*,Vertex> vertices_;
     std::unordered_map<IDirect3DPixelShader9*,NorthlightParticleLightProof::Pixel> pixels_;
     std::uint64_t clock_=0;
-    static bool readBuffer(const void* key,std::uint64_t offset,unsigned size,void* out){
-        if(offset+size>UINT32_MAX)return false;
-        if(NorthlightParticleUploads::cache().read(key,offset,size,out))return true;
-        NorthlightReplayCopies::Slot* pin=nullptr;
-        const auto* bytes=NorthlightReplayCopies::read(key,UINT(offset),size,pin);
-        if(!bytes)return false;
-        std::memcpy(out,bytes,size);NorthlightReplayCopies::unpin(*pin);return true;
+    using RenderStates=bool(*)(void*,const D3DRENDERSTATETYPE*,unsigned,DWORD*);
+    using SamplerStates=bool(*)(void*,DWORD,unsigned,DWORD*);
+    void* stateContext_=nullptr;
+    RenderStates renderStates_=nullptr;
+    SamplerStates samplerStates_=nullptr;
+    static bool readBuffer(const void* key,std::uint64_t offset,unsigned size,void* out,bool& missingBuffer){
+        if(offset>UINT32_MAX-size)return false;
+        bool uploadPresent=false,replayCopyPresent=false;
+        if(NorthlightParticleUploads::cache().read(key,offset,size,out,&uploadPresent))return true;
+        if(NorthlightReplayCopies::copy(key,UINT(offset),size,out,&replayCopyPresent))return true;
+        missingBuffer=!uploadPresent&&!replayCopyPresent;
+        return false;
     }
     Vertex* vertex(IDirect3DVertexShader9* shader){
         auto family=families_.find(shader);if(family==families_.end()||!family->second)return nullptr;
@@ -54,7 +60,52 @@ class Capture {
     }
 public:
     NorthlightEmission::Catalog catalog;
+    void setStateSource(void* context,RenderStates render,SamplerStates sampler){
+        stateContext_=context;renderStates_=render;samplerStates_=sampler;
+    }
+    unsigned emission(const NorthlightParticleTextures::View& image)const{
+        return catalog.identify(image.uploadHash,image.width,image.height,image.format)|
+            catalog.identify(image.rgbaHash,image.width,image.height,0);
+    }
     bool known(IDirect3DVertexShader9* shader)const{return families_.count(shader)!=0;}
+    template<class Mirror> bool route(Mirror& mirror,unsigned* classifications=nullptr)const{
+        using Shaders=NorthlightParticleDraw::State::Shaders;
+        auto& state=mirror.particleDraw;
+        if(!mirror.active()||state.writes||mirror.targetWrites)return true;
+        if(state.rejectedBlend)return false;
+        if(state.shaders==Shaders::Dirty){
+            const bool vs=mirror.vertexShaderKnown,ps=mirror.pixelShaderKnown;
+            auto* vertex=mirror.vertexShader;auto* pixel=mirror.pixelShader;
+            const auto found=ps&&pixel?pixels_.find(pixel):pixels_.end();
+            const bool reject=(vs&&vertex&&!known(vertex))||
+                (ps&&pixel&&found==pixels_.end())||(vs&&ps&&bool(vertex)!=bool(pixel));
+            state.shaders=reject?Shaders::Reject:Shaders::Inspect;
+            state.samplers=0;
+            if(!reject&&vs&&ps){
+                if(!pixel)state.samplers=1; // Fixed function samples stage zero.
+                else{
+                    const auto& material=found->second;
+                    state.samplers=1u<<material.sampler;
+                    if(material.samples==2)state.samplers|=1u<<material.secondSampler;
+                }
+            }
+            if(classifications)++*classifications;
+        }
+        return state.shaders!=Shaders::Reject;
+    }
+    // Reject only when every sampled mip and its binding are already proven.
+    template<class Mirror> bool mayEmit(const Mirror& mirror,unsigned emissionMask)const{
+        using Shaders=NorthlightParticleDraw::State::Shaders;
+        const auto& state=mirror.particleDraw;
+        if(!mirror.active()||state.writes||mirror.targetWrites||state.shaders!=Shaders::Inspect||!state.samplers)return true;
+        for(unsigned stage=0,samplers=state.samplers;samplers;++stage,samplers>>=1){
+            if(!(samplers&1))continue;
+            NorthlightParticleTextures::View image;
+            if(!mirror.textureKnown[stage]||!NorthlightParticleTextures::cache().decodedView(mirror.textures[stage],image)||
+               (emission(image)&emissionMask))return true;
+        }
+        return false;
+    }
     void registerVertex(IDirect3DVertexShader9* shader,unsigned family){
         vertices_.erase(shader);
         if(family==1||family==2||family==3)families_[shader]=family;else families_.erase(shader);
@@ -69,24 +120,32 @@ public:
                      const float* projection,NorthlightParticleLights::Frame& frame,bool sky=false){
         using namespace NorthlightSpellLayer;Prepared result;std::memcpy(result.camera,camera,12);result.sky=sky;
         const bool fixed=!vs&&!ps;
-        if((!fixed&&(!vs||!ps||!families_.count(vs)))||!args.primCount||unsigned(args.prim)<4||unsigned(args.prim)>6)return result;
+        if((!fixed&&(!vs||!ps||!families_.count(vs)))||!NorthlightParticleDraw::supported(args.prim,args.primCount))return result;
+        enum RenderSlot {Blend,Source,Destination,Operation,Alpha,AlphaFunction,AlphaReference,ColorMask,DepthEnabled,RenderCount};
+        constexpr D3DRENDERSTATETYPE renderKeys[RenderCount]={D3DRS_ALPHABLENDENABLE,D3DRS_SRCBLEND,D3DRS_DESTBLEND,D3DRS_BLENDOP,
+            D3DRS_ALPHATESTENABLE,D3DRS_ALPHAFUNC,D3DRS_ALPHAREF,D3DRS_COLORWRITEENABLE,D3DRS_ZENABLE};
+        const bool mirroredDevice=device==stateContext_;
+        DWORD renderValues[RenderCount];
+        const bool knownRender=mirroredDevice&&renderStates_&&renderStates_(stateContext_,renderKeys,RenderCount,renderValues);
+        const auto renderState=[&](RenderSlot slot,DWORD& value){
+            if(knownRender){value=renderValues[slot];return true;}
+            return SUCCEEDED(device->GetRenderState(renderKeys[slot],&value));
+        };
         DWORD blend=0,src=0,dst=0,op=0,alpha=0,mask=0,z=0;
-        if(FAILED(device->GetRenderState(D3DRS_ALPHABLENDENABLE,&blend))||!blend||
-           FAILED(device->GetRenderState(D3DRS_SRCBLEND,&src))||(src!=D3DBLEND_ONE&&src!=D3DBLEND_SRCALPHA)||
-           FAILED(device->GetRenderState(D3DRS_DESTBLEND,&dst))||(dst!=D3DBLEND_ONE&&dst!=D3DBLEND_INVSRCALPHA))return result;
+        if(!renderState(Blend,blend)||!blend||!renderState(Source,src)||!NorthlightParticleDraw::sourceBlend(src)||
+           !renderState(Destination,dst)||!NorthlightParticleDraw::destinationBlend(dst))return result;
         const bool particle=fixed||families_.at(vs)!=3;
         using F=NorthlightParticleLights::Frame;
-        if(FAILED(device->GetRenderState(D3DRS_BLENDOP,&op))||op!=D3DBLENDOP_ADD){frame.refuse(F::BlendOp);return result;}
+        if(!renderState(Operation,op)||op!=D3DBLENDOP_ADD){frame.refuse(F::BlendOp);return result;}
         // The game keeps its alpha test on for additive particles (ALPHAREF 1,
         // GREATEREQUAL: only alpha 0 is dropped). A low reference is applied to
         // every sample below, the same test the draw itself makes.
         DWORD alphaFunc=D3DCMP_ALWAYS,alphaRef=0;
-        if(FAILED(device->GetRenderState(D3DRS_ALPHATESTENABLE,&alpha))||(alpha&&(
-           FAILED(device->GetRenderState(D3DRS_ALPHAFUNC,&alphaFunc))||FAILED(device->GetRenderState(D3DRS_ALPHAREF,&alphaRef))||
+        if(!renderState(Alpha,alpha)||(alpha&&(!renderState(AlphaFunction,alphaFunc)||!renderState(AlphaReference,alphaRef)||
            (alphaFunc!=D3DCMP_GREATER&&alphaFunc!=D3DCMP_GREATEREQUAL&&alphaFunc!=D3DCMP_ALWAYS)||alphaRef>MaxAlphaRef))){frame.refuse(F::AlphaTest);return result;}
         if(!alpha)alphaFunc=D3DCMP_ALWAYS;
-        if(FAILED(device->GetRenderState(D3DRS_COLORWRITEENABLE,&mask))||(mask&7)!=7){frame.refuse(F::ColorWrite);return result;}
-        if(FAILED(device->GetRenderState(D3DRS_ZENABLE,&z))||(!z&&!sky)){frame.refuse(F::Depth);return result;}
+        if(!renderState(ColorMask,mask)||(mask&7)!=7){frame.refuse(F::ColorWrite);return result;}
+        if(!renderState(DepthEnabled,z)||(!z&&!sky)){frame.refuse(F::Depth);return result;}
         auto pixel=pixels_.find(ps);Vertex* program=!fixed&&pixel!=pixels_.end()?vertex(vs):nullptr;
         if(!fixed&&(pixel==pixels_.end()||!program)){++frame.shaderMiss;return result;}
         NorthlightParticleLightProof::Pixel material=fixed?NorthlightParticleLightProof::Pixel{1,1,0,true,false,true}:pixel->second;
@@ -124,29 +183,43 @@ public:
                 if(miss.type==D3DRTYPE_TEXTURE){D3DSURFACE_DESC d{};auto* t=static_cast<IDirect3DTexture9*>(texture.p);miss.levels=t->GetLevelCount();
                     if(SUCCEEDED(t->GetLevelDesc(0,&d))){miss.width=d.Width;miss.height=d.Height;miss.format=unsigned(d.Format);miss.pool=unsigned(d.Pool);miss.usage=unsigned(d.Usage);}}
                 frame.missTexture(miss);return result;}
-            sourceKind|=catalog.identify(image.uploadHash,image.width,image.height,image.format)|catalog.identify(image.rgbaHash,image.width,image.height,0);
+            sourceKind|=emission(image);
         }
         if(sky&&!(sourceKind&NorthlightEmission::SkyLightning))return result;
         if(dst!=D3DBLEND_ONE&&(!sourceKind||src!=D3DBLEND_SRCALPHA))return result;
         const bool potentialFlash=sky||(sourceKind&NorthlightEmission::Lightning);
         bool flash=sky;
         if(potentialFlash&&!frame.takeFlashProbe())return result;
-        if(!potentialFlash&&!frame.takeProbe())return result;
-        DWORD srgb[2]{},au[2]{},av[2]{},mag[2]{},min[2]{};
-        for(unsigned i=0;i<material.samples;++i){const unsigned sampler=i?material.secondSampler:material.sampler;
-            if(FAILED(device->GetSamplerState(sampler,D3DSAMP_SRGBTEXTURE,srgb+i))||
-               FAILED(device->GetSamplerState(sampler,D3DSAMP_ADDRESSU,au+i))||
-               FAILED(device->GetSamplerState(sampler,D3DSAMP_ADDRESSV,av+i))||
-               FAILED(device->GetSamplerState(sampler,D3DSAMP_MAGFILTER,mag+i))||
-               FAILED(device->GetSamplerState(sampler,D3DSAMP_MINFILTER,min+i))){frame.refuse(F::Sampler);return result;}
+        if(!potentialFlash){
+            if(!frame.takeProbe())return result;
+            if(frame.drawBudgetSpent(particle)){++frame.dropped;return result;}
         }
+        DWORD srgb[2]{},au[2]{},av[2]{},mag[2]{},min[2]{};
         float constants[1024];
-        if(fixed)std::memcpy(constants+8,fixedProjection,64);
-        else if(FAILED(device->GetVertexShaderConstantF(0,constants,256))){frame.refuse(F::Projection);return result;}
         const float* q=constants+8;
-        for(unsigned i=0;i<16;++i)if(!std::isfinite(q[i])){frame.refuse(F::Projection);return result;}
-        if(std::fabs(q[0]-projection[0])>.005f||std::fabs(q[5]-projection[1])>.005f||
-           std::fabs(q[14]-projection[2])>.005f||std::fabs(q[15])>.001f){frame.refuse(F::Projection);return result;}
+        const auto samplingState=[&]{
+            constexpr unsigned samplerMask=(1u<<(D3DSAMP_SRGBTEXTURE-1))|(1u<<(D3DSAMP_ADDRESSU-1))|
+                (1u<<(D3DSAMP_ADDRESSV-1))|(1u<<(D3DSAMP_MAGFILTER-1))|(1u<<(D3DSAMP_MINFILTER-1));
+            for(unsigned i=0;i<material.samples;++i){const unsigned sampler=i?material.secondSampler:material.sampler;
+                DWORD values[D3DSAMP_DMAPOFFSET];
+                if(mirroredDevice&&samplerStates_&&samplerStates_(stateContext_,sampler,samplerMask,values)){
+                    srgb[i]=values[D3DSAMP_SRGBTEXTURE-1];au[i]=values[D3DSAMP_ADDRESSU-1];av[i]=values[D3DSAMP_ADDRESSV-1];
+                    mag[i]=values[D3DSAMP_MAGFILTER-1];min[i]=values[D3DSAMP_MINFILTER-1];
+                    continue;
+                }
+                if(FAILED(device->GetSamplerState(sampler,D3DSAMP_SRGBTEXTURE,srgb+i))||
+                   FAILED(device->GetSamplerState(sampler,D3DSAMP_ADDRESSU,au+i))||
+                   FAILED(device->GetSamplerState(sampler,D3DSAMP_ADDRESSV,av+i))||
+                   FAILED(device->GetSamplerState(sampler,D3DSAMP_MAGFILTER,mag+i))||
+                   FAILED(device->GetSamplerState(sampler,D3DSAMP_MINFILTER,min+i))){frame.refuse(F::Sampler);return false;}
+            }
+            if(fixed)std::memcpy(constants+8,fixedProjection,64);
+            else if(FAILED(device->GetVertexShaderConstantF(0,constants,256))){frame.refuse(F::Projection);return false;}
+            for(unsigned i=0;i<16;++i)if(!std::isfinite(q[i])){frame.refuse(F::Projection);return false;}
+            if(std::fabs(q[0]-projection[0])>.005f||std::fabs(q[5]-projection[1])>.005f||
+               std::fabs(q[14]-projection[2])>.005f||std::fabs(q[15])>.001f){frame.refuse(F::Projection);return false;}
+            return true;
+        };
         NorthlightDrawSnapshot::Ref<IDirect3DVertexDeclaration9> declaration;
         D3DVERTEXELEMENT9 elements[65];UINT elementCount=65;
         if(FAILED(device->GetVertexDeclaration(declaration.out()))||!declaration.p||
@@ -203,6 +276,13 @@ public:
         if(indexed&&(!indexSize||(up&&!args.indexData))){++frame.geometryMiss;return result;}
         NorthlightParticleLights::Draw draw{indexed,up?0:args.baseVertex,args.minIndex,args.numVertices,up?0:args.first};
         struct Point {Four position,color;float uv[2],uv1[2];};
+        // Strips, fans and indexed triangles share vertices. The captured
+        // streams, palette and declaration stay fixed throughout this draw.
+        struct VertexSample {std::uint64_t index;Point point;};
+        VertexSample vertexSamples[8];unsigned sampledVertices=0;
+        // Required streams stay fixed while sampling this draw on the replay
+        // thread. Only a missing buffer can end the search for a usable range.
+        bool missingBuffer=false,samplingReady=false,samplingFailed=false;
         const auto load=[&](std::uint64_t relative,Point& point){
             std::uint32_t index=0;
             if(indexed){
@@ -210,28 +290,37 @@ public:
                 unsigned char bytes[4];
                 if(at+indexSize>UINT32_MAX)return false;
                 if(up)std::memcpy(bytes,static_cast<const unsigned char*>(args.indexData)+std::size_t(at),indexSize);
-                else if(!readBuffer(indices.p,at,indexSize,bytes)){++frame.bufferMiss;return false;}
+                else if(!readBuffer(indices.p,at,indexSize,bytes,missingBuffer)){++frame.bufferMiss;return false;}
                 if(indexSize==2){std::uint16_t small;std::memcpy(&small,bytes,2);index=small;}else std::memcpy(&index,bytes,4);
             }
             std::uint64_t vertexIndex=0;if(!draw.vertex(relative,index,vertexIndex))return false;
+            const unsigned slot=unsigned(vertexIndex)&7;
+            auto& sample=vertexSamples[slot];
+            if((sampledVertices&(1u<<slot))&&sample.index==vertexIndex){std::memcpy(&point,&sample.point,sizeof point);return true;}
             Four inputs[16]{};std::array<std::array<unsigned char,256>,4> data;bool read[4]{};
             for(unsigned i=0;i<bindingCount;++i){const auto& b=bindings[i];const unsigned s=b.element.Stream;
                 if(!read[s]){
                     const std::uint64_t at=std::uint64_t(offsets[s])+vertexIndex*strides[s];
                     if(at+strides[s]>UINT32_MAX)return false;
                     if(up)std::memcpy(data[s].data(),static_cast<const unsigned char*>(args.vertexData)+std::size_t(at),strides[s]);
-                    else if(!readBuffer(streams[s].p,at,strides[s],data[s].data())){++frame.bufferMiss;return false;}
+                    else if(!readBuffer(streams[s].p,at,strides[s],data[s].data(),missingBuffer)){++frame.bufferMiss;return false;}
                     read[s]=true;
                 }
                 if(!NorthlightActorDeformation::decodeElement(data[s].data()+b.element.Offset,b.element.Type,inputs[b.reg]))return false;
             }
+            // The draw needs sampler and shader state only once it has a vertex to evaluate.
+            if(!samplingReady){
+                if(!samplingState()){samplingFailed=true;return false;}
+                samplingReady=true;
+            }
             if(fixed){
                 point.position={};for(unsigned j=0;j<4;++j)for(unsigned k=0;k<4;++k)point.position[j]+=inputs[0][k]*fixedMatrix[k*4+j];
-                point.color=inputs[1];point.uv[0]=inputs[2][0];point.uv[1]=inputs[2][1];return true;
-            }
-            return NorthlightActorDeformation::evaluateFast<true>(program->position,inputs,constants,point.position)&&
-                NorthlightParticleLightProof::evaluateVertex(program->material,inputs,constants,point.color,point.uv,
-                    material.uv==1||(material.samples==2&&material.secondUv==1)?point.uv1:nullptr);
+                point.color=inputs[1];point.uv[0]=inputs[2][0];point.uv[1]=inputs[2][1];
+            }else if(!NorthlightActorDeformation::evaluateFast<true>(program->position,inputs,constants,point.position)||
+                !NorthlightParticleLightProof::evaluateVertex(program->material,inputs,constants,point.color,point.uv,
+                    material.uv==1||(material.samples==2&&material.secondUv==1)?point.uv1:nullptr))return false;
+            sample.index=vertexIndex;std::memcpy(&sample.point,&point,sizeof point);sampledVertices|=1u<<slot;
+            return true;
         };
         const unsigned samples=std::min(args.primCount,NorthlightParticleLights::TrianglesPerDraw);
         const float bary[4][3]={{1.f/3,1.f/3,1.f/3},{.6f,.2f,.2f},{.2f,.6f,.2f},{.2f,.2f,.6f}};
@@ -239,7 +328,7 @@ public:
         std::array<bool,NorthlightParticleLights::TrianglesPerDraw> boltLoaded{};
         float flashLo[3]={INFINITY,INFINITY,INFINITY},flashHi[3]={-INFINITY,-INFINITY,-INFINITY};
         if(potentialFlash){
-            for(unsigned sample=0;sample<samples;++sample){
+            for(unsigned sample=0;sample<samples&&!missingBuffer&&!samplingFailed;++sample){
                 std::uint64_t refs[3];if(!NorthlightParticleLights::triangleIndices(unsigned(args.prim),std::uint64_t(sample)*args.primCount/samples,refs))continue;
                 auto* points=boltPoints.data()+sample*3;
                 if(!load(refs[0],points[0])||!load(refs[1],points[1])||!load(refs[2],points[2]))continue;
@@ -250,6 +339,7 @@ public:
                     flashLo[j]=std::min(flashLo[j],world);flashHi[j]=std::max(flashHi[j],world);
                 }
             }
+            if(samplingFailed)return result;
             float extent2=0;for(unsigned j=0;j<3;++j)extent2+=(flashHi[j]-flashLo[j])*(flashHi[j]-flashLo[j]);
             flash=sky||(std::isfinite(extent2)&&extent2>=32.f*32.f);
             if(!flash&&!frame.takeProbe())return result;
@@ -257,7 +347,7 @@ public:
         // Place the draw by its first loadable triangle before it takes a sampling slot:
         // beyond the lights' reach, or with no loadable bytes, it can add no light.
         bool placed=false;unsigned placedSample=samples;Point probe[3];
-        for(unsigned sample=0;sample<samples&&!placed;++sample){
+        for(unsigned sample=0;sample<samples&&!placed&&!samplingFailed&&(potentialFlash||!missingBuffer);++sample){
             std::uint64_t references[3];if(!NorthlightParticleLights::triangleIndices(unsigned(args.prim),std::uint64_t(sample)*args.primCount/samples,references))continue;
             Point points[3];
             if(potentialFlash){if(!boltLoaded[sample])continue;std::copy_n(boltPoints.data()+sample*3,3,points);}

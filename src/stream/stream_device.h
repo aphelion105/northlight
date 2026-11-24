@@ -14,6 +14,7 @@
 #include "shader_tags.h"
 #include "native_shadow_control_windows.h"
 #include "m2_draw_12340.h"
+#include "world_batch_12340.h"
 #include "replay_constants.h"
 
 // Redundant-state filtering (a repeated Set of the value the game last set is not recorded) can be compiled out for the tests that need
@@ -85,12 +86,18 @@ public:
     // here. This is outside the allocation/IO/wait-free completion contract.
     using SnapshotObserved=SnapshotCompleted;
     struct Options {
+#ifdef NORTHLIGHT_WATER
+        std::function<WaterHostFrameRef(const D3DVIEWPORT9&)> captureWater;
+#endif
         std::size_t budget=BudgetBytes;
         bool (*capture)(GameSnapshot&,Trigger,std::uint64_t)=nullptr;   // game_snapshot.h capture() in the DLL; null = no snapshots
         SnapshotCompleted snapshotCompleted=nullptr;void* snapshotSink=nullptr;
         SnapshotObserved snapshotObserved=nullptr;
         std::function<void()> threadStart;                              // runs on the replay thread first (owner handoff)
         std::function<void(const char*)> log;
+        std::function<void(bool,bool,bool)> indexedPair;
+        std::function<bool(const NorthlightOrderedParticles::Window*)> particlePair;
+        bool indexedRanges=false;
         void (*queryCaller)(std::uint64_t,void*,void*)=nullptr;
         // Direct replay: the ExtensionDevice (same real device and mirror as the Device) and the resolver of a Device-level object to the backend
         // object the Device would unwrap it to (null: not provably a pure unwrap). Both null / directReplay off: everything goes through the Device.
@@ -303,15 +310,30 @@ public:
         onDraw(primitives);
         NorthlightM2Draw::Section section;
         const NorthlightM2Draw::Section* matched=nullptr;
-        if(nativeM2Requested&&!recording&&type==D3DPT_TRIANGLELIST&&
-           st.vsKnown&&st.vs&&st.streams[0].known&&st.streams[0].vb&&st.indicesKnown&&st.indices&&
-           st.rs[D3DRS_ALPHABLENDENABLE].known&&!st.rs[D3DRS_ALPHABLENDENABLE].v&&
-           st.rs[D3DRS_ALPHATESTENABLE].known&&!st.rs[D3DRS_ALPHATESTENABLE].v){
-            const bool audit=m2Sections.ordinary%16==0;
-            if(NorthlightM2Draw::readSection(__builtin_frame_address(0),base,minimum,vertices,start,primitives,st.vsF,audit,section,m2Sections))
-                matched=&section;
+        NorthlightAdtBounds::Evidence terrain;
+        bool terrainMatched=false;
+        if(nativeM2Requested&&!recording&&type==D3DPT_TRIANGLELIST){
+            const auto& alpha=st.rs[D3DRS_ALPHATESTENABLE];
+            const auto& blend=st.rs[D3DRS_ALPHABLENDENABLE];
+            const bool bindings=st.vsKnown&&st.vs&&st.streams[0].known&&st.streams[0].vb&&st.indicesKnown&&st.indices;
+            const auto* frame=__builtin_frame_address(0);
+            NorthlightM2Draw::observeGrouped(frame,{base,minimum,vertices,start,primitives},
+                                             bindings,alpha.known&&alpha.v,st.vsF,m2Grouped);
+            const unsigned worldTags=st.vsKnown&&st.vs&&st.vs->kind==Kind::VertexShader?
+                static_cast<const StreamVertexShader*>(st.vs)->tags&NorthlightShaderTags::kTriggerWorld:0;
+            terrainMatched=NorthlightWorldBatch12340::observe(frame,{base,minimum,vertices,start,primitives},worldTags,bindings,worldBatches,terrain);
+            if(terrainMatched)terrain.producerFrame=core.frameNo;
+            else if(bindings&&blend.known&&!blend.v&&alpha.known&&!alpha.v){
+                const bool audit=m2Sections.ordinary%16==0;
+                const auto begin=nowNs();
+                if(NorthlightM2Draw::readSection(frame,base,minimum,vertices,start,primitives,st.vsF,audit,section,m2Sections)){
+                    section.producerFrame=core.frameNo;
+                    matched=&section;
+                }
+                m2Sections.decodeNs+=nowNs()-begin;
+            }
         }
-        record_Device_DrawIndexedPrimitive(streamQueue(),type,base,minimum,vertices,start,primitives,matched);
+        record_Device_DrawIndexedPrimitive(streamQueue(),type,base,minimum,vertices,start,primitives,matched,terrainMatched?&terrain:nullptr);
         return D3D_OK;
     }
     // GPU-side writes: the destination's CPU-side lock knowledge no longer holds
@@ -466,12 +488,49 @@ public:
         }
         if(core.timing&&callerLog&&core.frameNo%127==0){
             char msg[256];
-            std::snprintf(msg,sizeof msg,"NATIVE_M2 producerFrame=%llu gxDraws=%u ordinary=%u matched=%u rangeMismatch=%u paletteChecks=%u paletteMismatch=%u",
-                (unsigned long long)core.frameNo,m2Sections.candidates,m2Sections.ordinary,m2Sections.matched,m2Sections.mismatch,m2Sections.paletteChecks,m2Sections.paletteMismatch);
+            std::snprintf(msg,sizeof msg,"NATIVE_M2 producerFrame=%llu gxDraws=%u ordinary=%u matched=%u rangeMismatch=%u paletteChecks=%u paletteMismatch=%u decodeUs=%.3f",
+                (unsigned long long)core.frameNo,m2Sections.candidates,m2Sections.ordinary,m2Sections.matched,m2Sections.mismatch,m2Sections.paletteChecks,m2Sections.paletteMismatch,
+                double(m2Sections.decodeNs)/1000.0);
             callerLog(msg);
+            if(nativeM2Requested&&NorthlightM2Draw::verifiedGroupedClient){
+                char grouped[320];
+                std::snprintf(grouped,sizeof grouped,
+                    "NATIVE_M2 grouped producerFrame=%llu shaderDraws=%u softwareDraws=%u alphaTested=%u matched=%u multiInstance=%u instances=%u triangles=%llu rangeMismatch=%u paletteUnavailable=%u paletteMismatch=%u",
+                    (unsigned long long)core.frameNo,m2Grouped.shaderDraws,m2Grouped.softwareDraws,m2Grouped.alphaTested,
+                    m2Grouped.matched,m2Grouped.multiInstance,m2Grouped.instances,(unsigned long long)m2Grouped.triangles,
+                    m2Grouped.rangeMismatch,m2Grouped.paletteUnavailable,m2Grouped.paletteMismatch);
+                callerLog(grouped);
+            }
+            if(nativeM2Requested&&(NorthlightWorldBatch12340::verifiedWmo||NorthlightWorldBatch12340::verifiedAdt)){
+                char world[240];
+                std::snprintf(world,sizeof world,
+                    "NATIVE_WORLD_BATCH producerFrame=%llu wmo=%u wmoRanges=%u wmoBounds=%u adt=%u adtRanges=%u adtOrigins=%u unattributed=%u adtBounds=%u",
+                    (unsigned long long)core.frameNo,worldBatches.wmo,worldBatches.wmoRanges,worldBatches.wmoBounds,
+                    worldBatches.adt,worldBatches.adtRanges,worldBatches.adtOrigins,worldBatches.unattributed,worldBatches.adtBounds);
+                callerLog(world);
+                if(worldBatches.adt!=worldBatches.adtBounds&&NorthlightWorldBatch12340::verifiedAdtBounds){
+                    using Reject=NorthlightWorldBatch12340::AdtRejection;
+                    const auto& reasons=worldBatches.adtRejected;
+                    std::snprintf(world,sizeof world,"NATIVE_ADT_REJECT producerFrame=%llu draw=%u sources=%u mcvt=%u finite=%u origin=%u height=%u",
+                        (unsigned long long)core.frameNo,reasons[unsigned(Reject::Draw)],reasons[unsigned(Reject::Sources)],
+                        reasons[unsigned(Reject::Mcvt)],reasons[unsigned(Reject::Finite)],reasons[unsigned(Reject::Origin)],reasons[unsigned(Reject::Height)]);
+                    callerLog(world);
+                    if(reasons[unsigned(Reject::Height)]){
+                        const auto& height=worldBatches.adtHeightMismatch;
+                        std::snprintf(world,sizeof world,"NATIVE_ADT_HEIGHT_MISMATCH producerFrame=%llu origin=(%.9g %.9g %.9g) native=(%.9g %.9g) mcvt=(%.9g %.9g)",
+                            (unsigned long long)core.frameNo,height.x,height.y,height.altitude,height.low,height.high,height.minOffset,height.maxOffset);
+                        callerLog(world);
+                    }
+                }
+            }
         }
         m2Sections={};
+        m2Grouped={};
+        worldBatches={};
         policy.onPresent();takeReplayFailure();
+#ifdef NORTHLIGHT_WATER
+        worldWaterFrame={};
+#endif
         UINT dirtyBytes=0;
         if(dirty){dirtyBytes=dirty->rdh.dwSize+dirty->rdh.nCount*UINT(sizeof(RECT));if(sizeof(PresentArgs)+dirtyBytes>MaxInlinePayload)dirtyBytes=0;}
         auto* a=static_cast<PresentArgs*>(q.reserve((std::uint16_t)(swap?Cmd::SwapPresent:Cmd::Present),std::uint32_t(sizeof(PresentArgs)+dirtyBytes),kFlagWaitTarget));   // 0.3.196 (task 12): the next Present waits for this one's seq
@@ -745,12 +804,22 @@ private:
         for(unsigned i=1;i<StreamState::kRTs;++i)if(!st.rtKnown[i]||st.rt[i])return true;
         return false;}
 
+#ifdef NORTHLIGHT_WATER
+    std::function<WaterHostFrameRef(const D3DVIEWPORT9&)> captureWaterFrame;
+    WaterHostFrameRef worldWaterFrame;
+#endif
     StreamDevice(IDirect3DDevice9* target,IDirect3D9* par,const D3DPRESENT_PARAMETERS* p,Options opt)
         :coreOwner(new StreamCore(opt.budget)),core(*coreOwner),replayer(core,SnapshotPool::capFor(clampFramesAhead(opt.framesAhead))),parent(par),framesAhead_(clampFramesAhead(opt.framesAhead)),capture(opt.capture),snapshotCompleted(opt.snapshotCompleted),snapshotSink(opt.snapshotSink),snapshotObserved(opt.snapshotObserved){
         core.target=target;core.game=this;core.framesAhead=framesAhead_;core.logLine=nullptr;core.callerModule=opt.callerModule;core.queryCaller=opt.queryCaller;core.occlusionLocal=opt.occlusionLocal;callerLog=opt.log;callerDiag=opt.diagnostics;core.readBackLock=opt.readBackLock;st.core=&core;
         if(opt.cursorApi)cursor=*opt.cursorApi;
+#ifdef NORTHLIGHT_WATER
+        captureWaterFrame = std::move(opt.captureWater);
+#endif
         core.queryThreadLog=opt.log;
         restoreOwner=opt.threadStart;replayer.frameSkip=opt.frameSkip!=0;replayer.threadStart=std::move(opt.threadStart);replayer.log=opt.log;replayer.diagnostics=opt.diagnostics;replayer.idleProfiling=opt.idleProfiling;filter=opt.filterRedundant;
+        replayer.indexedPair=std::move(opt.indexedPair);
+        replayer.particlePair=std::move(opt.particlePair);
+        replayer.indexedRanges=opt.indexedRanges;
         if(kDirectReplay&&opt.directReplay&&opt.extension&&opt.rawOf){core.ext=opt.extension;auto f=opt.rawOf;core.reg.rawOf=[f](IUnknown* e,Kind k){return f(e,unsigned(k));};}
         if(p)pp=*p;
         sc0=new StreamSwapChain(&core);sc0->baseline=1;sc0->pp=pp;
@@ -799,6 +868,8 @@ private:
         if(p)p->Release();
     }
     NorthlightM2Draw::ProducerStats m2Sections;
+    NorthlightM2Draw::GroupedStats m2Grouped;
+    NorthlightWorldBatch12340::Stats worldBatches;
     bool nativeM2Requested=false;
     void onDraw(unsigned){
         ++drawOrdinal;if(!capture)return;
@@ -831,6 +902,11 @@ private:
         const std::uint64_t t0=core.timing?nowNs():0;   // 0.3.204 (task 21): snapshot capture time (acquire + capture + record), Diagnostics only
         GameSnapshot* s=replayer.snapshots.acquire();if(!s)return;
         if(!capture(*s,t,drawOrdinal)){replayer.snapshots.release(s);if(t0)own(core.q.stats.snapNs,nowNs()-t0);return;}
+#ifdef NORTHLIGHT_WATER
+        if(t==Trigger::World&&captureWaterFrame&&st.viewport.known)
+            worldWaterFrame=captureWaterFrame(st.viewport.v);
+        if(t==Trigger::World||t==Trigger::Ui)s->waterFrame=worldWaterFrame;
+#endif
         if(snapshotCompleted)snapshotCompleted(snapshotSink,*s,reinterpret_cast<std::uintptr_t>(this),core.presentsRecorded.load(std::memory_order_relaxed),core.queryEpoch.load(std::memory_order_acquire),Replayer::currentTid());
         if(snapshotObserved)snapshotObserved(snapshotSink,*s,reinterpret_cast<std::uintptr_t>(this),core.presentsRecorded.load(std::memory_order_relaxed),core.queryEpoch.load(std::memory_order_acquire),Replayer::currentTid());
         Queue& q=core.q;auto* p=static_cast<GameSnapshot**>(q.reserve((std::uint16_t)Cmd::Snapshot,sizeof(GameSnapshot*)));*p=s;q.commit();

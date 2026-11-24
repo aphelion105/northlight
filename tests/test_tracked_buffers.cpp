@@ -305,7 +305,12 @@ static void copiesTests(){
   b.raw->readLocks=0;assert(readSame(b,16,100));assert(b.raw->readLocks==1&&m.copyFills.load()==1); // the fill: ONE read of the whole buffer
   const auto base=served();b.raw->readLocks=0;
   assert(readSame(b,0,4096)&&readSame(b,200,10)&&b.raw->readLocks==0&&served()==base+2);
+  unsigned char immediate[32];
+  assert(C::copy(b.raw,128,sizeof immediate,immediate)&&!std::memcmp(immediate,b.raw->mem.data()+128,sizeof immediate));
+  bool hasCopy=false;
+  assert(!C::copy(b.raw,4090,sizeof immediate,immediate,&hasCopy)&&hasCopy);
   replayWrite(b,128,64,D3DLOCK_NOOVERWRITE,2);assert(readSame(b,0,4096)&&b.raw->readLocks==0);
+  assert(C::copy(b.vb,128,sizeof immediate,immediate)&&!std::memcmp(immediate,b.raw->mem.data()+128,sizeof immediate));
   replayWrite(b,1000,500,0,3);assert(readSame(b,990,520)&&b.raw->readLocks==0);
   replayWrite(b,0,0,D3DLOCK_DISCARD,4);assert(readSame(b,0,4096)&&b.raw->readLocks==0); // size 0 = to the end
   replayWrite(b,4000,96,0,5);assert(readSame(b,3990,106)&&b.raw->readLocks==0);
@@ -315,6 +320,17 @@ static void copiesTests(){
   std::vector<unsigned char> at(b.raw->mem);assert(readSame(b,0,4096)&&!std::memcmp(at.data(),b.raw->mem.data(),4096));
   // out of range: an ordinary lock (the backend decides)
   const auto f0=fallback();{C::Reader<IDirect3DVertexBuffer9> r(b.raw);void* p=nullptr;assert(r.lock(4090,100,&p)==S_OK&&r.unlock()==S_OK);}assert(fallback()==f0+1&&b.raw->readLocks==1);
+  freeVB(b);}
+ // Small requests in two frames alone cannot justify a full regular copy.
+ // A quiet period discards old demand. A dense recent sequence still fills.
+ {const UINT bytes=512u<<10,threshold=bytes/4;
+  VB b=makeVB(owner,bytes);const auto fills=m.copyFills.load();
+  assert(readSame(b,0,threshold)&&b.raw->readLocks==1&&m.copyFills.load()==fills);
+  for(unsigned frame=0;frame<=C::kRecentFrames;++frame)C::advanceFrame();
+  assert(readSame(b,0,4096));C::advanceFrame();assert(readSame(b,0,4096)&&m.copyFills.load()==fills);
+  assert(readSame(b,4096,threshold-8193)&&m.copyFills.load()==fills);
+  assert(readSame(b,threshold,1)&&m.copyFills.load()==fills+1&&b.raw->readLocks==5);
+  assert(readSame(b,0,8192)&&b.raw->readLocks==5);
   freeVB(b);}
  // the stream's own replayed write names its source bytes (UnlockSourceScope): the copy is fed from them, not read back from the mapped pointer. The two are made to
  // differ here (a real replay writes the same bytes to both) so the test can tell which one the copy took; a pass-through write outside a scope reads the mapped pointer.
@@ -332,6 +348,8 @@ static void copiesTests(){
  // a write lock outstanding (pass-through): not served; the pointer the game writes through is mirrored at Unlock
  {VB b=makeVB(owner,1024);replayWrite(b,0,1024,0,7);assert(readSame(b,0,8));b.raw->readLocks=0;
   void* p=nullptr;assert(b.vb->Lock(100,50,&p,0)==S_OK);std::memset(p,0x5a,50);
+  unsigned char immediate=0xff;
+  assert(!C::copy(b.raw,100,sizeof immediate,&immediate)&&immediate==0xff);
   const auto f0=fallback();{C::Reader<IDirect3DVertexBuffer9> r(b.raw);void* q=nullptr;assert(r.lock(0,8,&q)==S_OK&&r.unlock()==S_OK);}assert(fallback()==f0+1&&b.raw->readLocks==1);
   // the read-back lock goes to the RAW buffer (invisible to the wrapper), so the pending write is closed by its own Unlock and mirrored exactly: the copy stays valid
   assert(b.vb->Unlock()==S_OK);b.raw->readLocks=0;assert(readSame(b,90,70)&&b.raw->readLocks==0&&readSame(b,90,70)&&b.raw->readLocks==0);
@@ -388,11 +406,11 @@ static void copiesTests(){
  // eviction (LRU by last read, cap 16 MiB), thrash guard, per-buffer limit, pressure shrink, pins
  {const UINT big=3u<<20;std::vector<VB> v;for(int i=0;i<6;++i){v.push_back(makeVB(owner,big));replayWrite(v.back(),0,4096,0,10+i);}
   const auto ev=m.copyEvictions.load();
-  for(auto& b:v){assert(readSame(b,0,64)&&readSame(b,0,64));assert(b.raw->readLocks==2);} // a big buffer is not filled for a small range within one frame
-  C::advanceFrame();for(auto& b:v){assert(readSame(b,0,64));C::advanceFrame();} // a read in a second frame fills it
+  for(auto& b:v){assert(readSame(b,0,big/16)&&readSame(b,0,big/16));assert(b.raw->readLocks==2);} // the first frame accumulates demand
+  C::advanceFrame();for(auto& b:v){assert(readSame(b,0,big/8));C::advanceFrame();} // a read in a second frame fills it once it reaches the threshold
   assert(m.copyResidentBytes.load()<=C::kCapBytes&&m.copyEvictions.load()>ev&&m.copyResidentBuffers.load()==5);
   // the evicted one (the first, least recently read) is back on the ordinary lock; it fills again on its second read after the oldest of the rest is evicted
-  v[0].raw->readLocks=0;assert(readSame(v[0],0,64)&&v[0].raw->readLocks==1);C::advanceFrame();assert(readSame(v[0],0,64));assert(m.copyResidentBytes.load()<=C::kCapBytes);
+  v[0].raw->readLocks=0;assert(readSame(v[0],0,big/8)&&v[0].raw->readLocks==1);C::advanceFrame();assert(readSame(v[0],0,big/8));assert(m.copyResidentBytes.load()<=C::kCapBytes);
   for(auto& b:v)replayWrite(b,100,10,0,99);for(auto& b:v)assert(readSame(b,0,big)); // every copy stayed exact through the eviction churn
   // pins: a Reader holding a copy keeps it through a pressure shrink; the bytes stay valid (ASan)
   {VB& b=v[5];assert(readSame(b,0,64));C::Reader<IDirect3DVertexBuffer9> r(b.raw);void* p=nullptr;assert(r.lock(0,128,&p)==S_OK);
@@ -453,16 +471,38 @@ static void copiesTests(){
   assert(served()==s0+5&&fallback()==f0&&b.raw->readLocks==0);
   // an index buffer, raw as well
   freeVB(b);}
+ // A large copy can retire while the game writes. Regular entries, pins and useful comparisons stay.
+ {constexpr UINT bytes=8u<<20;const auto ordinary=m.copyResidentBytes.load(),large=m.copyLargeBytes.load();
+  VB idle=makeVB(owner,bytes),pinned=makeVB(owner,bytes),matched=makeVB(owner,bytes);
+  VB small=makeVB(owner,4096);assert(readSame(small,0,64));
+  for(unsigned i=0;i<2;++i){
+   assert(readSame(idle,0,64)&&readSame(pinned,0,64)&&readSame(matched,0,64));C::advanceFrame();}
+  assert(m.copyLargeBytes.load()==large+3*bytes);
+  C::Slot* pinnedSlot=nullptr;const auto* held=C::read(pinned.raw,0,64,pinnedSlot);assert(held&&pinnedSlot);
+  C::Slot* matchedSlot=nullptr;assert(C::read(matched.raw,0,64,matchedSlot)&&matchedSlot);C::unpin(*matchedSlot);
+  for(unsigned f=0;f<C::kUnusedCopyFrames+C::kUnusedCopySweepFrames;++f){
+   replayWrite(idle,0,64,D3DLOCK_NOOVERWRITE,f);
+   assert(C::unchangedWrite(*matchedSlot,0,64,matched.raw->mem.data()));
+   C::advanceFrame();}
+  assert(m.copyLargeBytes.load()==large+2*bytes&&!std::memcmp(held,pinned.raw->mem.data(),64));
+  assert(m.copyResidentBytes.load()==ordinary+4096);
+  C::unpin(*pinnedSlot);
+  for(unsigned f=0;f<C::kUnusedCopySweepFrames;++f)C::advanceFrame();
+  assert(m.copyLargeBytes.load()==large+bytes);
+  idle.raw->readLocks=0;assert(readSame(idle,0,64)&&idle.raw->readLocks==1);
+  C::advanceFrame();assert(readSame(idle,0,64)&&idle.raw->readLocks==2&&m.copyLargeBytes.load()==large+2*bytes);
+  freeVB(idle);freeVB(pinned);freeVB(matched);freeVB(small);
+  assert(m.copyLargeBytes.load()==large&&m.copyResidentBytes.load()==ordinary);}
  // R2: a working set above the cap does not refill every frame: fills per frame are bounded, the rest takes the small-range locks
  {C::setPressure(true);const UINT big=1u<<20;std::vector<VB> v;for(int i=0;i<12;++i){v.push_back(makeVB(owner,big));replayWrite(v.back(),0,4096,0,30+i);} // 12 MiB > the 8 MiB pressure cap; each is <= cap/4
   const auto fills0=m.copyFills.load(),fb0=fallback();unsigned frames=100,maxPerFrame=0;
-  for(unsigned f=0;f<frames;++f){const auto fillsBefore=m.copyFills.load();for(auto& b:v){assert(readSame(b,0,64)&&readSame(b,4096,64));}
+  for(unsigned f=0;f<frames;++f){const auto fillsBefore=m.copyFills.load();for(auto& b:v){assert(readSame(b,0,big/16)&&readSame(b,4096,big/16));}
    const auto n=m.copyFills.load()-fillsBefore;if(n>maxPerFrame)maxPerFrame=unsigned(n);C::advanceFrame();}
   const auto fills=m.copyFills.load()-fills0;std::printf("  thrash: fills=%llu max/frame=%u fallbackLocks=%llu\n",(unsigned long long)fills,maxPerFrame,(unsigned long long)(fallback()-fb0));
-  assert(fills<=v.size()*(1+C::kMaxStrikes)+v.size()*frames/C::kBackoffFrames+8&&fills<frames); // far fewer fills than frames (a refill-per-frame policy would give ~frames*12/2)
+  assert(fills>0&&fills<=v.size()*(1+C::kMaxStrikes)+v.size()*frames/C::kBackoffFrames+8&&fills<frames); // far fewer fills than frames (a refill-per-frame policy would give ~frames*12/2)
   assert(fallback()-fb0>frames*4); // most reads are the small-range read-back locks
   // after the back-off the parked buffers are admitted again (frames pass, nothing is stuck)
-  for(unsigned f=0;f<C::kBackoffFrames+10;++f)C::advanceFrame();const auto f1=m.copyFills.load();for(int i=0;i<3;++i){for(auto& b:v)assert(readSame(b,0,64));C::advanceFrame();}assert(m.copyFills.load()>f1);
+  for(unsigned f=0;f<C::kBackoffFrames+10;++f)C::advanceFrame();const auto f1=m.copyFills.load();for(int i=0;i<3;++i){for(auto& b:v)assert(readSame(b,0,big/8));C::advanceFrame();}assert(m.copyFills.load()>f1);
   C::setPressure(false);for(auto& b:v)freeVB(b);}
  // R3: a pin keeps the wrapper (and the slot inside it) alive: the game releasing it while the Reader holds bytes is safe, the last unpin destroys it
  {Device d2;auto* raw=new Raw<IDirect3DVertexBuffer9>;raw->desc.Size=4096;raw->desc.Usage=D3DUSAGE_DYNAMIC;raw->mem.assign(4096,0);IDirect3DVertexBuffer9* vb=raw;
@@ -474,10 +514,10 @@ static void copiesTests(){
  // 0.3.196 (task 12): a copy-cache miss is ONE store mutex acquisition (readOrBeginFill) and a fill that evicts a slot takes over its allocation when the size is close
  {auto slotOf=[&](VB& b){return C::store().registry.at(b.raw);};
   const UINT big=3u<<20;std::vector<VB> v;for(int i=0;i<5;++i){v.push_back(makeVB(owner,big));replayWrite(v.back(),0,4096,0,70+i);}
-  for(auto& b:v){assert(readSame(b,0,64));}C::advanceFrame();for(auto& b:v){assert(readSame(b,0,64));assert(slotOf(b)->state.load()==C::Slot::Valid);} // 5 x 3 MiB: fills, the oldest read first
+  for(auto& b:v){assert(readSame(b,0,big/8));}C::advanceFrame();for(auto& b:v){assert(readSame(b,0,big/8));assert(slotOf(b)->state.load()==C::Slot::Valid);} // 5 x 3 MiB: fills, the oldest read first
   assert(slotOf(v[0])->data.capacity()==big);
   // a 3 MiB - 4 KiB buffer (within 1/8): its fill evicts v[0] and keeps that allocation
-  VB near=makeVB(owner,big-4096);replayWrite(near,0,4096,0,80);assert(readSame(near,0,64));C::advanceFrame();assert(readSame(near,0,64));
+  VB near=makeVB(owner,big-4096);replayWrite(near,0,4096,0,80);assert(readSame(near,0,big/8));C::advanceFrame();assert(readSame(near,0,big/8));
   C::Slot* sn=slotOf(near);assert(sn->state.load()==C::Slot::Valid&&slotOf(v[0])->state.load()==C::Slot::None&&sn->data.size()==big-4096&&sn->data.capacity()==big);
   assert(readSame(near,0,big-4096)&&readSame(v[0],0,64)); // exact bytes in the recycled storage, and the evicted buffer reads fine through its fallback
   // a very different size does not inherit it: its capacity is its own size
@@ -539,6 +579,36 @@ static void spellHookTests(){
  raw->AddRef();vb->Release();assert(raw->refs==1);raw->Release();
  puts("PASS spell layer write hook: marked buffers only, non-READONLY only, before the real lock, raw key, usage and outstanding locks, unmark and removal");
 }
+template<class T> static void materialReadLeaseTests(){
+ using namespace NorthlightTrackedBuffers;
+ constexpr bool index=std::is_same<T,IDirect3DIndexBuffer9>::value;
+ Device owner;
+ auto* raw=new Raw<T>;raw->desc.Pool=D3DPOOL_MANAGED;raw->desc.Usage=0;raw->desc.Size=64;
+ T* buffer=raw;wrap<T,Forward<T>>(&buffer,&owner,index);
+ unsigned writes=0;
+ struct Context {
+  Raw<T>* raw;unsigned* writes;unsigned before;NorthlightCaptureMetadata::ReadLease lease{nullptr,nullptr};
+ } context{raw,&writes,0};
+ const MaterialWriteHook hook{+[](void* value){
+  auto& state=*static_cast<Context*>(value);
+  assert(state.raw->lockCalls==state.before&&materialWriter(state.raw).beforeWrite);
+  ++*state.writes;state.lease.reset();
+ },&context};
+ const unsigned exact=index?32:64;
+ assert(!guardMaterialRead(raw,!index,exact,hook)&&!guardMaterialRead(raw,index,exact+1,hook));
+ context.lease=guardMaterialRead(raw,index,exact,hook);assert(context.lease&&materialWriter(raw).beforeWrite);
+ void* data=nullptr;
+ assert(buffer->Lock(0,4,&data,D3DLOCK_READONLY)==S_OK&&writes==0);
+ assert(!guardMaterialRead(raw,index,exact,hook)&&buffer->Unlock()==S_OK);
+ context.before=raw->lockCalls;
+ assert(buffer->Lock(0,4,&data,0)==S_OK&&writes==1&&!materialWriter(raw).beforeWrite&&buffer->Unlock()==S_OK);
+ context.lease=guardMaterialRead(raw,index,exact,hook);assert(context.lease);
+ buffer->Release();assert(owner.refs==1&&materialWriter(raw).beforeWrite);
+ buffer=raw;raw->AddRef();wrap<T,Forward<T>>(&buffer,&owner,index);
+ context.before=raw->lockCalls;
+ assert(buffer->Lock(0,4,&data,0)==S_OK&&writes==2&&!materialWriter(raw).beforeWrite&&buffer->Unlock()==S_OK);
+ buffer->Release();assert(owner.refs==1);
+}
 template<class T> static void managedResetTests(){
  using namespace NorthlightTrackedBuffers;Device owner;constexpr bool index=std::is_same<T,IDirect3DIndexBuffer9>::value;
  for(unsigned kind=0;kind<3;++kind){auto* raw=new Raw<T>;raw->desc.Pool=kind==0?D3DPOOL_DEFAULT:D3DPOOL_MANAGED;raw->desc.Usage=0;raw->failDesc=kind==2;T* buffer=raw;wrap<T,Forward<T>>(&buffer,&owner,index);
@@ -554,8 +624,11 @@ template<class T> static void rangeRevisionTests(){
  auto range=[&](uint64_t begin,uint64_t bytes){const NorthlightCaptureMetadata::Request request{raw,index,begin,bytes};NorthlightCaptureMetadata::Info result;captureMetadata(&request,&result,1);return result.revision;};
  unsigned serial=0;
  auto write=[&](UINT offset,UINT size,DWORD flags){void* ptr=nullptr;assert(buffer->Lock(offset,size,&ptr,flags)==S_OK);assert(!range(128,512));std::memset(ptr,int(++serial*97),size?size:raw->desc.Size-offset);assert(buffer->Unlock()==S_OK);};
- const auto first=range(128,512);assert(first);
+ assert(range(128,512)&&NorthlightBufferRanges::residentBytes.load()==charged);
+ write(0,raw->desc.Size,0);
+ const auto first=range(128,512);assert(first&&NorthlightBufferRanges::residentBytes.load()==charged);
  write(3*4096,128,D3DLOCK_NOOVERWRITE);assert(range(128,512)==first&&version(raw,index)!=first);
+ assert(NorthlightBufferRanges::residentBytes.load()>charged);
  write(0,4,0);const auto samePage=range(128,512);assert(samePage!=first); // Conservative even outside the exact bytes.
  const auto across=range(4096-4,8);write(4096,4,0);assert(range(4096-4,8)!=across&&range(128,512)==samePage);
  if constexpr(index){
@@ -611,8 +684,12 @@ int main(){using namespace NorthlightTrackedBuffers;Device owner;
  puts("PASS buffer COM ownership, VB/IB identity, normal/DISCARD/NOOVERWRITE writes, READONLY, nested failed lock, failed unlock, ProcessVertices invalidation and reset");
  metadataTests();mirrorExposure();discardMeterTests();copiesTests();unchangedWriteTests<IDirect3DVertexBuffer9>();unchangedWriteTests<IDirect3DIndexBuffer9>();skippedUploadTests<IDirect3DVertexBuffer9>();skippedUploadTests<IDirect3DIndexBuffer9>();spellHookTests();
  managedResetTests<IDirect3DVertexBuffer9>();managedResetTests<IDirect3DIndexBuffer9>();
+ materialReadLeaseTests<IDirect3DVertexBuffer9>();materialReadLeaseTests<IDirect3DIndexBuffer9>();
  rangeRevisionTests<IDirect3DVertexBuffer9>();rangeRevisionTests<IDirect3DIndexBuffer9>();
  {Device device;auto* raw=new Raw<IDirect3DIndexBuffer9>;raw->desc.Format=D3DFMT_INDEX32;raw->desc.Size=8192;IDirect3DIndexBuffer9* buffer=raw;wrap<IDirect3DIndexBuffer9,ForwardIDirect3DIndexBuffer9>(&buffer,&device,true);
+  const auto before=rangeStats();
   NorthlightCaptureMetadata::Request queries[]={{raw,true,1024,1,true},{raw,true,4096,4}};NorthlightCaptureMetadata::Info result[2];captureMetadata(queries,result,2);assert(result[0].revision==result[1].revision&&result[0].revision);
-  void* ptr=nullptr;assert(buffer->Lock(4096,4,&ptr,0)==S_OK&&buffer->Unlock()==S_OK);captureMetadata(queries,result,2);assert(result[0].revision==result[1].revision&&result[0].revision);buffer->Release();}
+  void* ptr=nullptr;assert(buffer->Lock(4096,4,&ptr,0)==S_OK&&buffer->Unlock()==S_OK);captureMetadata(queries,result,2);assert(result[0].revision==result[1].revision&&result[0].revision);
+  const auto after=rangeStats();assert(after.queries==before.queries+4&&after.preserved==before.preserved&&after.fallbacks==before.fallbacks);
+  buffer->Release();}
 }

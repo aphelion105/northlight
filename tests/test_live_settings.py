@@ -1,11 +1,13 @@
 # northlight-test: requires=zig
 """Run the production frame-boundary settings method with observed resource lifetimes."""
+
+from source_units import source_text
 from pathlib import Path
 import subprocess,sys,tempfile
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 import northlight_paths as fp
 import os
-source=fp.src('world_renderer.h').read_text(encoding='utf-8')
+source=source_text(fp.src('world_renderer.h'), encoding='utf-8')
 start=source.index('    void applyLiveSettings(');end=source.index('{',start)+1;depth=1
 while depth:
     depth+=(source[end]=='{')-(source[end]=='}');end+=1
@@ -38,7 +40,9 @@ void logf(const char*,...){}
 struct World {
     NorthlightQuality::Settings quality;
     NorthlightCelestialProfiles::Table celestialProfiles;
-    bool settingsRequestDirty=false,paletteFrameValid=true,temporalValid=true,fogHistoryValid=true,shadowsComposited=true,shadowFrameReady=true;
+    bool settingsRequestDirty=false,paletteFrameValid=true,shadowsComposited=true,shadowFrameReady=true;
+    struct {bool valid=true;void invalidateHistory(){valid=false;}} fogScreen;
+    struct {bool valid=true;void invalidate(){valid=false;}} history;
     struct {bool valid=true;} fogVolume;
     unsigned minSkinnedShadowTriangles=0,captureBudgetMiB=0,actorShadowBudgetMiB=0;
     bool shadowFateDiagnostics=false;

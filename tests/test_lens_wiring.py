@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Check the lens pass follows weather shelter and pre-UI composition gates."""
+
+from source_units import source_text
 from pathlib import Path
 root=Path(__file__).resolve().parents[1]
-r=(root/'src/proxy/renderer.cpp').read_text(encoding='utf-8')
+r=source_text(root/'src/proxy/renderer.cpp')
 s=(root/'src/water/surface_renderer.h').read_text(encoding='utf-8')
 surface=r[r.index('    void surfaceWeather(){'):r.index('    void renderEffects() {')]
 assert 'world->weatherSetting()' in surface and 'memoryGuard.capsHalved()' in surface

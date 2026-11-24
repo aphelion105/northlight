@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# northlight-test: requires=cxx
+# northlight-test: requires=zig
 """0.3.214 (task 42): the heavy CPU upload payload (paged vertex/index copy, cutout textures) is owned
 by UploadPayload, held by the plan through UploadPayloadHandle, and discarded by the render thread right
 after the mesh commit. Native test of the production handle (seal() moves pages/materials in, cpuBytes
@@ -7,6 +7,8 @@ counts the payload only while it exists, copies share it, discard frees it once 
 drops, a worker thread reading cpuBytes()/live() while the render thread discards -- also under TSan);
 plus a source audit of the render-thread wiring (release after commit, rebuild request instead of
 re-upload when the payload is gone, no per-frame spin, reaper-side free)."""
+
+from source_units import source_text
 import sys; from pathlib import Path; sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root
 import northlight_paths as fp
 import subprocess,tempfile
@@ -65,28 +67,40 @@ int main(){
     std::puts("PASS upload payload: seal moves pages/materials, accounting, shared copies, last-reference free, concurrent discard");
 }
 '''
-w=fp.src('world_renderer.h').read_text()
+w=source_text(fp.src('world_renderer.h'))
 def method(signature,text=w):
     start=text.index(signature);end=text.index('\n    }\n',start);return text[start:end]
-upload=method('    bool upload(NorthlightStreaming::Budget& streamBudget){');retire=method('    void retirePendingCpu(){');rebuild=method('    void requestPayloadRebuild(){');orphan=method('    void releaseOrphanedPending(const char* site){')
+upload=w[w.index('    std::optional<bool> beginMeshStaging(){'):w.index('    bool probeAtlasReady(')];retire=method('    void retirePendingCpu(){');rebuild=method('    void requestPayloadRebuild(){');orphan=method('    void releaseOrphanedPending(const char* site){')
 builder=w[w.index('    void work() {'):w.index('\n    bool check(HRESULT h,const char* s)')]
 plan=fp.src('world_mesh_plan.h').read_text();pagesH=fp.src('world_mesh_pages.h').read_text()
 commit=upload[upload.index('auto phase=streamingPhases.measure(NorthlightStreaming::PhaseProfile::Commit);'):]
-release=w[w.index('    void releaseGPU(bool keepMesh=false){'):w.index('\n',w.index('    void releaseGPU(bool keepMesh=false){'))]
+release=w[w.index('    void releaseGPU(bool keepMesh=false){'):w.index('\n    }\n',w.index('    void releaseGPU(bool keepMesh=false){'))]
+composite=fp.src('world_composite.h').read_text()
+history=fp.src('world_light_history.h').read_text()
+geometry=fp.src('world_geometry_resources.inl').read_text()
+live_indices=fp.src('live_terrain_indices.h').read_text()
 resetFn=method('    void reset(bool preserveCaptureSources=false){');recoverFn=method('    void recover(){');resources=fp.src('world_screen_resources.inl').read_text()
 checks={
  'Reset (failed or not) and resolution change keep the uploaded MANAGED mesh':
   resetFn.index('failed=false;') < resetFn.index('releaseGPU(true);') and 'releaseGPU(true);width=w;height=h;' in resources,
- 'recover() keeps the MANAGED mesh; only the destructor releases it':'releaseGPU(true);' in recoverFn and w.index('worker.join();',w.index('~WorldRenderer()')) < w.index('releaseGPU();',w.index('~WorldRenderer()')),
+ 'recover() keeps the MANAGED mesh; only the destructor releases it':'releaseGPU(true);' in recoverFn and w.index('stopWorker();',w.index('~WorldRenderer()')) < w.index('releaseGPU();',w.index('~WorldRenderer()')),
  'releaseGPU(keepMesh) guards exactly the mesh state: pool, pending packet, clearMesh, map, fixed set + bits, covered owners':
   'if(!keepMesh){pendingMesh.reset();clearMesh();}' in release and 'if(!keepMesh){releaseMeshPool();uploadedMap.clear();}' in release
   and 'if(!keepMesh){fixedTerrain.reset();fixedTerrainBits.reset();}' in release and 'if(!keepMesh)uploadedStaticOwners.reset();' in release
   and 'staticOwnerGeneration=UINT64_MAX;staticCasters.reset();' in release,
  'DEFAULT-pool state is still released on a keepMesh Reset (targets, live terrain, index ring, queries, caches)':
-  all(x in release for x in ('liveTerrainGPU.clear();','drop(liveIndicesGPU);','queries.drop();','stateBlocks.clear();','uploadedTerrain.clear();','drop(color);','invalidateShadowCache();','retiredMaterials.clear();')),
+  all(x in release for x in ('releaseLiveTerrainBuffers();','stateBlocks.clear();','uploadedTerrain.clear();','composite.reset();','history.reset();','releaseShadowMapsOnReset();','retiredMaterials.clear();'))
+  and all(x in geometry for x in ('liveTerrainGPU.clear();','liveTerrainIndices.release(fence());','invalidateShadowCache();'))
+  and live_indices.index('NorthlightDynamicRing::reset(ring_,0,queries);',live_indices.index('void release('))<live_indices.index('queries.drop();')<live_indices.index('dropBuffer();',live_indices.index('void release('))
+  and 'void reset(){\n        releaseScratch();' in composite
+  and 'void releaseScratch(){drop(colorSurface_);drop(color_);}' in composite
+  and all(x in history for x in ('drop(slot.light.texture);drop(slot.light.surface);',
+                                  'drop(slot.distance.texture);drop(slot.distance.surface);')),
  'DEFAULT pages release before Reset; resident staging is freed, pressure staging retained':
   'pagingOptions.deviceLocal=true;' in builder and 'payload.pages->defaultPool()?D3DPOOL_DEFAULT:D3DPOOL_MANAGED' in upload
-  and w.count('D3DPOOL_DEFAULT:D3DPOOL_MANAGED,&next.partialTexture')==1 and 'D3DPOOL_SYSTEMMEM,&next.partialStaging' in w
+  and 'next.materialUpload.begin(d,m,shadowTextureFormat.value,payload.pages->defaultPool())' in upload
+  and 'deviceLocal?D3DPOOL_DEFAULT:D3DPOOL_MANAGED,&texture_' in fp.src('world_mesh_material_upload.h').read_text()
+  and 'D3DPOOL_SYSTEMMEM,&staging_' in fp.src('world_mesh_material_upload.h').read_text()
   and resetFn.index('releaseDefaultMesh();')<resetFn.index('releaseGPU(true);')
   and 'payload.pages->temporary?0:plan.payload.discard()' in commit,
  'the rebuild request has one caller: the upload() missing-payload fallback':w.count('requestPayloadRebuild()')==2 and upload.count('requestPayloadRebuild()')==1,
@@ -106,8 +120,8 @@ checks={
   'if(pending.payload){if(pending.plan&&!pending.plan->payload.live())retirementBacklog.retireOrFree(NorthlightStreaming::cpuRetirement(),pending.payload,size_t(pending.payload->bytes));else pending.payload.reset();}' in retire,
  'a superseded pending plan is released with its packet':'pendingMesh->plan!=active->meshPlan)pendingMesh->plan->payload.discard();' in orphan and orphan.index('payload.discard()')<orphan.index('retirePendingCpu();'),
  'rebuild is requested once per bvh (15 s re-ask), logged, and consumed by the worker under the existing lock':
-  'DWORD(now-payloadRebuildTick)<15000u' in rebuild and 'deferLogf("WORLD mesh upload payload was released' in rebuild and 'geometryRebuild=true;pending=true;' in rebuild
-  and 'if(r.enabled&&geometryRebuild){geometryRebuild=false;geometryWanted=true;}' in builder,
+  'DWORD(now-payloadRebuildTick)<15000u' in rebuild and 'deferLogf("WORLD mesh upload payload was released' in rebuild and 'enqueuePayloadRebuild();' in rebuild and 'geometryRebuild=true;pending=true;' in fp.src('world_publication.h').read_text()
+  and 'takeRequest(r,builtGeometry,adopted,geometryWanted)' in builder and 'if(next.enabled&&geometryRebuild){geometryRebuild=false;geometryWanted=true;}' in fp.src('world_publication.h').read_text(),
 }
 bad=[k for k,v in checks.items() if not v]
 for k,v in checks.items():print(('PASS ' if v else 'FAIL ')+k)

@@ -14,6 +14,7 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT), str(ROOT / 'scripts/shaders')]
 import northlight_paths as fp
+from scripts.shaders.shader_sources import world_source_at_ref, world_source_bytes
 
 
 def sha(path):
@@ -53,6 +54,7 @@ def source_snapshot(root=ROOT):
     names = {p.relative_to(root).as_posix() for p in (root / 'src').rglob('*') if p.is_file()}
     names.update(('northlight_paths.py', 'scripts/build_environment.py',
                   'scripts/shaders/shader_compiler.py', 'scripts/shaders/compile_shaders.cpp',
+                  'scripts/shaders/shader_sources.py',
                   'tests/regional_fog_cache_gpu.cpp', 'tests/build_regional_fog_fixture.cpp',
                   'tests/removal_distance_gpu.cpp', 'tests/validate_regional_fog_cache_gpu.py'))
     return file_records(root, names)
@@ -70,8 +72,11 @@ def fog_names(mpq):
 def request_identity(args):
     baseline = subprocess.check_output(['git', 'rev-parse', args.baseline_ref + '^{commit}'],
                                        cwd=ROOT, text=True).strip()
+    sources = file_records(args.source.parent, ('auto_bump_normal.hlsl',))
+    source = world_source_bytes(args.source)
+    sources[args.source.name] = {'bytes': len(source), 'sha256': hashlib.sha256(source).hexdigest()}
     return {'baseline_ref': baseline, 'source': str(args.source.resolve()),
-            'shader_sources': file_records(args.source.parent, (args.source.name, 'auto_bump_normal.hlsl')),
+            'shader_sources': sources,
             'output': str(args.output.resolve()), 'mpq': str(args.mpq.resolve()),
             'mpq_manifest_sha256': sha(args.mpq / 'manifest.json'),
             'fog_metadata': str(args.fog_metadata.resolve()),
@@ -151,8 +156,9 @@ def main():
             directory = out / variant
             directory.mkdir()
             for name in ('world_effects.hlsl', 'auto_bump_normal.hlsl'):
-                raw = (subprocess.check_output(['git', 'show', f'{report["baseline_ref"]}:shaders/{name}'], cwd=ROOT)
-                       if variant == 'old' else (args.source if name == 'world_effects.hlsl' else args.source.with_name(name)).read_bytes())
+                raw = (world_source_at_ref(ROOT, report['baseline_ref'], name)
+                       if variant == 'old' else world_source_bytes(
+                           args.source if name == 'world_effects.hlsl' else args.source.with_name(name)))
                 (directory / name).write_bytes(raw)
                 report['shader_inputs'][f'{variant}/{name}'] = {'bytes': len(raw), 'sha256': hashlib.sha256(raw).hexdigest()}
                 if variant == 'new':

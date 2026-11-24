@@ -1,12 +1,30 @@
 #pragma once
+#include <algorithm>
 #include <atomic>
 #include <cstring>
+#include <limits>
 #include "shadow_alpha.h"
 
 // Valid only during one uninterrupted model-replay loop on the real device.
 // Never shadows game state or survives a StateBlock/other rendering pass.
 // DrawPrimitive/DrawIndexedPrimitive do not mutate these bindings.
 namespace NorthlightReplayDrawState {
+struct Range {UINT start,count,min,vertices;};
+inline bool appendIndexPart(Range& run,const Range& next,UINT primitiveLimit){
+    if(!next.count)return false;
+    const uint64_t count=uint64_t(run.count)+next.count;
+    const uint64_t nextEnd=uint64_t(next.min)+next.vertices;
+    const uint64_t high=run.count?std::max(uint64_t(run.min)+run.vertices,nextEnd):nextEnd;
+    if(count>std::numeric_limits<UINT>::max()||high>std::numeric_limits<UINT>::max()||
+       (primitiveLimit&&count>primitiveLimit))return false;
+    run.min=run.count?std::min(run.min,next.min):next.min;
+    run.vertices=UINT(high-run.min);
+    run.count=UINT(count);
+    return true;
+}
+inline bool appendAdjacent(Range& run,const Range& next,UINT primitiveLimit){
+    return run.count&&uint64_t(run.start)+3ull*run.count==next.start&&appendIndexPart(run,next,primitiveLimit);
+}
 // A negative cutoff bypasses alpha testing in both replay shaders. The first
 // material still binds; later opaque draws may retain its texture/addressing.
 // Native shader cutouts have a nonnegative cutoff and never take this shortcut.
@@ -32,16 +50,17 @@ public:
     struct Counts {unsigned declarations=0,streams=0,indices=0,shaders=0,textures=0,samplers=0,cutoffs=0,legacyTextures=0,legacySamplers=0,opaqueKept=0;} counts;
     explicit BasicCache(IDirect3DDevice9* device):d_(device),skip_(Skip&&skipOpaque()){}
     bool skipping()const{return skip_;}
-    void invalidate(){geometry_=material_=legacy_=false;}
     void beginMaterialPass(){material_=legacy_=false;skip_=Skip&&skipOpaque();}
-    template<class Replay> HRESULT geometry(const Replay& p){
+    void invalidate(){geometry_=material_=legacy_=false;}
+    template<class Replay> HRESULT geometry(const Replay& p,IDirect3DIndexBuffer9* indexOverride=nullptr){
         HRESULT hr;
         if(!geometry_||declaration_!=p.decl){hr=d_->SetVertexDeclaration(p.decl);if(FAILED(hr)){geometry_=false;return hr;}declaration_=p.decl;++counts.declarations;}
         for(unsigned s=0;s<4;++s)if(!geometry_||streams_[s]!=p.stream[s]||offsets_[s]!=p.offset[s]||strides_[s]!=p.stride[s]){
             hr=d_->SetStreamSource(s,p.stream[s],p.offset[s],p.stride[s]);if(FAILED(hr)){geometry_=false;return hr;}
             streams_[s]=p.stream[s];offsets_[s]=p.offset[s];strides_[s]=p.stride[s];++counts.streams;
         }
-        if(!geometry_||index_!=p.index){hr=d_->SetIndices(p.index);if(FAILED(hr)){geometry_=false;return hr;}index_=p.index;++counts.indices;}
+        auto* index=indexOverride?indexOverride:p.index;
+        if(!geometry_||index_!=index){hr=d_->SetIndices(index);if(FAILED(hr)){geometry_=false;return hr;}index_=index;++counts.indices;}
         if(!geometry_||shader_!=p.shader){hr=d_->SetVertexShader(p.shader);if(FAILED(hr)){geometry_=false;return hr;}shader_=p.shader;++counts.shaders;}
         geometry_=true;return D3D_OK;
     }

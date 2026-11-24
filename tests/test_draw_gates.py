@@ -15,6 +15,8 @@ game's draw, Release, log lines including the fault's stage) must be the same an
 order, with the same results and end state. Static checks retain the historical
 adapter arguments and enforce the current shared route and latch boundaries.
 Windows x86 O2; native ASan/UBSan elsewhere. No device or game."""
+
+from source_units import source_text
 import sys; from pathlib import Path; sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root
 import northlight_paths as fp
 import os,re,subprocess,tempfile
@@ -66,7 +68,7 @@ OLD_DRAWS = r'''
     HRESULT STDMETHODCALLTYPE DrawIndexedPrimitiveUP(D3DPRIMITIVETYPE t,UINT min,UINT vertices,UINT count,const void* indices,D3DFORMAT fmt,const void* data,UINT stride) override { Guard mirrorLock(mirrorState.gate);prepareDraw([&](IDirect3DVertexShader9* vs){world->captureUP(t,min,vertices,count,indices,fmt,data,stride,true,vs,frame%120==0,NorthlightRenderThreadProbe::sampleFrame(frame));captureWater(vs,NorthlightWaterRenderer::UserVerticesAndIndices,[&]{return ext->DrawIndexedPrimitiveUP(t,min,vertices,count,indices,fmt,data,stride);});},count);bool claimed=false;extensionWork("native sky claim",[&]{if(celestialDiscs&&enabled&&!applied&&count<=4&&celestialDiscs->nativeClaimPossible(t,count)){D3DSURFACE_DESC desc;if(fullViewport(desc)){claimed=celestialDiscs->claimNativeGlare(t,count);if(!claimed)claimed=celestialDiscs->claimNativeDraw(t,count,true,[&](const char* map,const float* camera){return world->celestialPalette(map,camera);});}}});if(!claimed&&blobFilterActive())extensionWork("blob shadow filter",[&]{claimed=blobClaim(count);if(claimed&&blobSignatureReports<4){++blobSignatureReports;IDirect3DVertexShader9* bvs=nullptr;IDirect3DPixelShader9* bps=nullptr;ext->GetVertexShader(&bvs);ext->GetPixelShader(&bps);auto vi=vsHashes.find(bvs);auto pi=psHashes.find(bps);logf("SHADOWBLOB draw signature vs=%016llx ps=%016llx primitives=%u",(unsigned long long)(vi==vsHashes.end()?0:vi->second),(unsigned long long)(pi==psHashes.end()?0:pi->second),count);drop(bvs);drop(bps);}});HRESULT hr=terrainShadowDraw(claimed,[&]{return ext->DrawIndexedPrimitiveUP(t,min,vertices,count,indices,fmt,data,stride);});if(!claimed)extensionWork("native sky observation",[&]{if(celestialDiscs&&enabled&&!applied&&count<=4&&celestialDiscs->nativeObservePossible(hr,t,count)){D3DSURFACE_DESC desc;if(fullViewport(desc))celestialDiscs->observeNativeDraw(hr,t,count,true);}});return hr;}
 '''
 HERE=Path(__file__).resolve().parent
-live_renderer=fp.src('renderer.cpp').read_text()
+live_renderer=source_text(fp.src('renderer.cpp'))
 renderer=live_renderer
 # HDR sky storage has separate exact native/GPU tests; these legacy hook
 # comparisons retain their non-HDR call shape.
@@ -117,9 +119,9 @@ gates_block=gates_block[:_a]+'    void rainMrtUnbind(){if(rainMrtBound){rainMrtB
 particle_start=gates_block.find('    NorthlightParticleCapture::Capture particleCapture;')
 if particle_start>=0:
     particle_end=gates_block.index('    template<class Capture,class Draw> HRESULT drawHook(',particle_start)
-    gates_block=gates_block[:particle_start]+"    bool particleOn=false;NorthlightParticleCapture::Prepared prepareParticleDraw(bool){return {};}void submitParticleDraw(const NorthlightParticleCapture::Prepared&,bool,bool){}\n"+gates_block[particle_end:]
+    gates_block=gates_block[:particle_start]+"    bool particleOn=false;bool mayPrepareParticleDraw(D3DPRIMITIVETYPE,UINT,bool)const{return particleOn;}NorthlightParticleCapture::Prepared prepareParticleDraw(bool){return {};}void submitParticleDraw(const NorthlightParticleCapture::Prepared&,bool,bool){}\n"+gates_block[particle_end:]
 new_members='\n'.join([member(renderer,'template<class Work> bool extensionWork('),
-    renderer[renderer.index('    // 0.3.196 (task 12): one-entry per-draw vertex shader classification'):renderer.index('    std::unordered_map<IDirect3DPixelShader9*, uint64_t> psHashes;')],
+    renderer[renderer.index('    std::unordered_map<IDirect3DVertexShader9*,NorthlightNativeShadow::Proof> nativeShadowProofs;'):renderer.index('    std::unordered_map<IDirect3DPixelShader9*, uint64_t> psHashes;')],
     member(renderer,'void planTerrainShadowSwap('),member(renderer,'void dropTerrainShadowSwap('),member(renderer,'template<class Draw> HRESULT terrainShadowDraw('),
     (member(renderer,'template<class Draw> HRESULT materialNativeDraw(') if 'template<class Draw> HRESULT materialNativeDraw(' in renderer else ''),
     member(renderer,'template<class Draw> HRESULT submitGameDraw('),
@@ -228,6 +230,7 @@ HARNESS=r'''
 #include <cstdint>
 #include <cstdio>
 #include <map>
+#include <memory>
 #include <new>
 #include <random>
 #include <string>
@@ -275,11 +278,13 @@ struct MockExt{
     HRESULT GetRenderTarget(DWORD,IDirect3DSurface9**){return HRESULT(-1);}HRESULT SetRenderTarget(DWORD,IDirect3DSurface9*){return D3D_OK;}HRESULT GetDepthStencilSurface(IDirect3DSurface9**){return HRESULT(-1);}HRESULT GetViewport(D3DVIEWPORT9*){return D3D_OK;}HRESULT SetViewport(const D3DVIEWPORT9*){return D3D_OK;}HRESULT GetScissorRect(RECT*){return D3D_OK;}HRESULT SetScissorRect(const RECT*){return D3D_OK;}HRESULT Clear(DWORD,const D3DRECT*,DWORD,D3DCOLOR,float,DWORD){return D3D_OK;}HRESULT CreateTexture(UINT,UINT,UINT,DWORD,D3DFORMAT,D3DPOOL,IDirect3DTexture9**,void*){return HRESULT(-1);}HRESULT CreateRenderTarget(UINT,UINT,D3DFORMAT,D3DMULTISAMPLE_TYPE,DWORD,int,IDirect3DSurface9**,void*){return HRESULT(-1);}
     HRESULT GetRenderState(D3DRENDERSTATETYPE,DWORD* v){*v=0;return D3D_OK;}HRESULT SetRenderState(D3DRENDERSTATETYPE,DWORD){return D3D_OK;}
     HRESULT GetVertexShader(IDirect3DVertexShader9** out){env->call("GetVertexShader");*out=&vs;return D3D_OK;}
+    bool peekVertexShader(IDirect3DVertexShader9*&){return false;}
     HRESULT SetVertexShader(IDirect3DVertexShader9*){return D3D_OK;}HRESULT GetPixelShaderConstantF(UINT,float*,UINT){return D3D_OK;}HRESULT SetPixelShaderConstantF(UINT,const float*,UINT){return D3D_OK;}
     HRESULT DrawPrimitive(D3DPRIMITIVETYPE t,UINT s,UINT c){env->call("DrawPrimitive "+drawName(t,s,c));return env->bit("draw failure",6)?HRESULT(-2005530516):D3D_OK;}
 };
 struct MockWorld{
     bool wantsWaterMask(bool,bool)const{return false;}
+    bool authoredLightingShader(IDirect3DVertexShader9*,bool,bool)const{return false;}
     bool nativeExtra=false;void requestNativeExtra(bool value){nativeExtra=value;}bool ownsNativeExtra()const{return false;}void nativeExtraRgb(bool,float*){}
     unsigned sceneTraceCalls=0;template<class Draw> HRESULT captureNativeSceneDraw(unsigned,unsigned,Draw draw){++sceneTraceCalls;return draw();}
     Env* env=nullptr;bool context=true,actorShadows=true,shadows=true,composited=true;IDirect3DPixelShader9 replacement{9,nullptr};
@@ -297,7 +302,7 @@ struct MockWorld{
     bool shadowsRequested()const{return shadows;}
     bool terrainShadowActive()const{return shadows&&composited;}
     bool frameDrawGates()const{return true;}
-    bool recognizesWmo(IDirect3DVertexShader9*)const{return false;}bool isWorldShader(IDirect3DVertexShader9*)const{return false;}bool isSkinnedShader(IDirect3DVertexShader9*)const{return false;}
+    bool recognizesWmo(IDirect3DVertexShader9*)const{return false;}bool isWorldShader(IDirect3DVertexShader9*)const{return false;}bool isSkinnedShader(IDirect3DVertexShader9*)const{return false;}bool terrainShader(IDirect3DVertexShader9*)const{return false;}
     template<class... A> bool terrainShadowCoverage(A&&...){return false;}
     IDirect3DPixelShader9* terrainShadowReplacement(IDirect3DPixelShader9* p){env->call("terrainShadowReplacement "+psName(p),"fault replacement");return env->bit("replacement")?&replacement:nullptr;}
     void capture(D3DPRIMITIVETYPE t,INT base,UINT min,UINT vertices,UINT start,UINT count,bool indexed,IDirect3DVertexShader9*,bool a,bool b){
@@ -310,7 +315,7 @@ struct MockSky{
     bool earlyValid=false;unsigned earlyWidth=0,earlyHeight=0;
     bool nativeClaimPossible(D3DPRIMITIVETYPE t,UINT c){env->call("nativeClaimPossible "+drawName(t,0,c),"fault claim gate");const bool r=env->bit("claim possible");if(!r)++claimGate;return r;}
     bool claimNativeGlare(D3DPRIMITIVETYPE,UINT){env->call("claimNativeGlare","fault glare");return env->bit("glare",4);}
-    template<class Palette> bool claimNativeDraw(D3DPRIMITIVETYPE,UINT,bool skyPhase,Palette palette,bool skyboxTrigger=false,bool forever=false){assert(!skyboxTrigger&&!forever);env->call("claimNativeDraw "+std::to_string(skyPhase),"fault claim draw");if(env->bit("palette"))palette("map",nullptr);return env->bit("claim draw",3);}
+    template<class Palette> bool claimNativeDraw(D3DPRIMITIVETYPE,UINT,bool skyPhase,Palette palette,bool skyboxTrigger=false,bool forever=false,bool replaceBackground=false){assert(!skyboxTrigger&&!forever&&!replaceBackground);env->call("claimNativeDraw "+std::to_string(skyPhase),"fault claim draw");if(env->bit("palette"))palette("map",nullptr);return env->bit("claim draw",3);}
     bool nativeObservePossible(HRESULT hr,D3DPRIMITIVETYPE,UINT){env->call("nativeObservePossible "+std::to_string(hr));return SUCCEEDED(hr)&&env->bit("observe possible");}
     void observeNativeDraw(HRESULT hr,D3DPRIMITIVETYPE,UINT,bool){env->call("observeNativeDraw "+std::to_string(hr),"fault observe");}
 };
@@ -332,6 +337,7 @@ struct Gate{int drawTid=7;void noteFirst(int){}};
 struct MirrorStateMock{Gate gate;IDirect3DVertexShader9* vertexShader=nullptr;std::uint64_t forwarded=0;bool textureKnown[1]={};void* textures[1]={};bool viewportKnown=false;struct{float MinZ=0,MaxZ=1;}viewport;};
 namespace NorthlightNativeMoreLightShader {enum class Kind{None,Model,Terrain};}
 struct MoreLightsMock {bool restoreFailed=false;unsigned draws=0;NorthlightNativeMoreLightShader::Kind kind(IDirect3DVertexShader9*)const{return NorthlightNativeMoreLightShader::Kind::Model;}
+    template<class... Args> bool keepsModelState(Args&&...)const{return false;}
     template<class Mirror,class Handoff,class Draw> HRESULT draw(NorthlightNativeMoreLightShader::Kind,const Mirror*,Handoff handoff,Draw submit,bool=false){++draws;float bank[60]{};handoff(false,bank);return submit();}};
 struct WeatherDetectMock{const void* hot=nullptr;NorthlightWeather::Kind hotKind=NorthlightWeather::Kind::None;bool mistArmed=false;bool isMist(const void*)const{return false;}void proveMist(const void*){}};struct WeatherSampleMock{unsigned primitives=0,draws=0;}; /* 0.3.198 (rain): drawHook's one comparison; hot stays null here (test_weather_detect drives it) */
 struct Guard{explicit Guard(Gate&){}};
@@ -342,29 +348,39 @@ template<class T> static void drop(T*& p){if(p){p->Release();p=nullptr;}}
 struct Keys{struct{bool shadows=true;}settings;};
 struct GateCounts{unsigned blobCalls=0,blobTextures=0,blobClaimed=0;};
 namespace NorthlightParticleCapture{struct Prepared{};}
+namespace NorthlightDrawSnapshot{struct Draw{};}
 namespace NorthlightAutoDisplacement{struct Args{struct{D3DPRIMITIVETYPE t;INT base;UINT min,vertices,start,count;bool indexed;}draw;};}
 struct ExtensionDevice{struct RawScope{explicit RawScope(MockExt&){}};};
 namespace NorthlightM2Draw {inline std::atomic<bool> requested{false};}
-struct BumpMock{bool active()const{return false;}void beginDraw(){}void beforeNativeDraw(){}template<class... A> void capture(A&&...){}template<class Draw> HRESULT geometryDraw(Draw draw,bool){return draw();}template<class Draw,class Submit> HRESULT geometryDraw(Draw draw,bool,Submit){return draw();}template<class Draw> HRESULT nativeDraw(Draw draw,IDirect3DVertexShader9*,IDirect3DPixelShader9*){return draw();}};
+struct BumpMock{bool active()const{return false;}void beginDraw(){}void beforeNativeDraw(){}template<class... A> void capture(A&&...){}template<class Draw> HRESULT geometryDraw(Draw draw,bool){return draw();}template<class Draw,class Submit> HRESULT geometryDraw(Draw draw,bool,Submit){return draw();}template<class Draw> HRESULT nativeDraw(Draw draw,IDirect3DVertexShader9*,IDirect3DPixelShader9*){return draw();}
+    void endNativeMaterialDraw(){}
+    template<class Draw> HRESULT submitNativeMaterial(Draw draw,const void*){return draw();}
+    bool nativePOM()const{return false;}bool nativeDisplacement()const{return false;}};
+using NorthlightAutoBump=BumpMock;
 struct Base{
     MoreLightsMock* nativeMoreLights=nullptr;
+    struct ParticlePairMock{bool atlasEnabled()const{return false;}};ParticlePairMock* gameParticlePair=nullptr;
+    bool particlePairGate=false;
     struct NormalStub{unsigned begins=0;void beginNativeDraw(){++begins;}};NormalStub* modelNormals=nullptr;
     virtual ~Base()=default;
     virtual HRESULT DrawPrimitive(D3DPRIMITIVETYPE,UINT,UINT)=0;
     Trace trace;Env env;MockExt extObj;MockWorld worldObj;MockSky skyObj;MockBlobs blobsObj;
     MockExt* ext=&extObj;MockWorld* world=&worldObj;MockSky* celestialDiscs=nullptr;MockBlobs* shadowBlobs=nullptr;
     MirrorStateMock mirrorState;
-    BumpMock* autoBump=nullptr;struct{bool capsHalved()const{return false;}}memoryGuard;
+    std::unique_ptr<BumpMock> autoBump;struct{bool capsHalved()const{return false;}}memoryGuard;
+    struct{const void* nativePixel()const{return nullptr;}}effectCoverage;
     template<class Draw> HRESULT hdrDraw(Draw draw){return draw();}
     template<class Draw> HRESULT nativeLocalSubmit(Draw draw,bool=false,IDirect3DVertexShader9* =nullptr){return draw();}
-    bool effectCoverageNative=false,hdrRainDraw=false;template<class Draw> HRESULT effectCoverageDraw(Draw draw,bool=false,bool=false,bool* =nullptr){return draw();}template<class Draw> HRESULT aoActorNativeDraw(Draw draw){return draw();}
-    struct{bool active=false;}hdr;bool diagnostics()const{return true;}HRESULT hdrResumeWorld(){return D3D_OK;}bool hdrSkyAdmission(){return false;}template<class Draw> void hdrReplaySky(bool,bool,Draw){}
+    template<class Draw> HRESULT submitCanopy(const Draw& draw){return draw();} // Canopy shading is outside the draw-gate model.
+    bool effectCoverageNative=false,hdrRainDraw=false;template<class Draw> HRESULT effectCoverageDraw(Draw draw,bool=false,bool=false,bool* =nullptr,const NorthlightDrawSnapshot::Draw* =nullptr){return draw();}template<class Draw> HRESULT aoActorNativeDraw(Draw draw){return draw();}
+    struct{bool active=false;}hdr;bool diagnostics()const{return true;}HRESULT hdrResumeWorld(){return D3D_OK;}bool hdrSkyAdmission(){return false;}bool hdrSkyHasEmission()const{return false;}template<class Draw> void hdrReplaySky(bool,bool,Draw){}
     template<class Draw> HRESULT projectedDraw(UINT,unsigned,Draw draw){return draw();}
     struct GpuScene{struct{bool currentFrame(unsigned)const{return true;}}native;void setFrame(unsigned){}};GpuScene* gpuScene=nullptr;
     struct {void invalidate(){}} skyLayers;
-    struct {void clear(){}} skyPlanet;void prepareSkyPlanet(){}
+    struct {void clear(){}bool ready()const{return false;}} skyPlanet;void prepareSkyPlanet(){}
     void skyLayersBefore(D3DPRIMITIVETYPE,UINT,NorthlightSkyComposition::Role&){}
     void composeSkyBackground(){}
+    bool replacesWorldSkyBackground()const{return false;}
     template<class Draw> void skyLayersReplay(NorthlightSkyComposition::Role,bool,Draw){}
     bool auroraDrawProven=false;std::array<float,3> auroraDrawScale{};float auroraDrawIntensity=1;
     template<class Draw> HRESULT auroraNativeDraw(Draw draw){return draw();} // Aurora is inactive in this gate fixture.

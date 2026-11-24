@@ -40,6 +40,42 @@ int main(){Device d;Frame frame;Mesh a,b;Diagnostics why;Draw draw{D3DPT_TRIANGL
  assert(a.streams[0].bytes[4]==d.vb[0].bytes[8+4*24+4]);assert(a.streams[1].bytes[0]==d.vb[1].bytes[4+4*8]);
  auto old=a.streams[0].bytes;d.vb[0].bytes[8+4*24+4]^=123;d.indices({999,8,7,9},true);
  assert(frame.read(&d,&d.decl,draw,b,&why));assert(a.streams[0].bytes==old&&b.streams[0].bytes!=old&&b.indices==std::vector<std::uint32_t>({1,0,2}));
+ {
+  Device bound;bound.decl.e.erase(bound.decl.e.begin()+1);
+  static Device* current=nullptr;current=&bound;
+  static std::uint64_t vbRevision=1,ibRevision=1;
+  auto identity=+[](void* p,bool){return std::uint64_t(reinterpret_cast<std::uintptr_t>(p));};
+  Frame resident;resident.setIdentityProvider(identity);resident.setChargeResidentHits(false);
+  resident.setVersionProvider(+[](void*,bool index){return index?ibRevision:vbRevision;});
+  resident.setMetadataProvider(+[](const NorthlightCaptureMetadata::Request* request,NorthlightCaptureMetadata::Info* out,unsigned count){
+   for(unsigned i=0;i<count;++i){out[i]={};const auto& r=request[i];if(!r.buffer)continue;
+    const auto key=std::uint64_t(reinterpret_cast<std::uintptr_t>(r.buffer));
+    if(r.index&&r.buffer==&current->ib)out[i]={key,ibRevision,UINT(current->ib.bytes.size()),current->ib.desc.Usage,current->ib.desc.Format,true};
+    else if(!r.index&&r.buffer==&current->vb[0])out[i]={key,vbRevision,UINT(current->vb[0].bytes.size()),current->vb[0].desc.Usage,{},true};
+   }
+  });
+  const UINT extent[]={16,0,0,0};
+  std::shared_ptr<const Mesh> owned,borrowed;Mesh copy;
+  auto hit=[&]{return resident.readResidentIndexed(&bound.decl,draw,extent,&bound.vb[0],8,24,&bound.ib,borrowed);};
+  assert(!hit()&&resident.read(&bound,&bound.decl,draw,copy,nullptr,false,&owned)&&owned);
+  Draw alternate=draw;alternate.vertices=4;
+  std::shared_ptr<const Mesh> alternateMesh;
+  assert(resident.read(&bound,&bound.decl,alternate,copy,nullptr,false,&alternateMesh)&&alternateMesh!=owned);
+  const auto bytes=resident.bytesRead();
+  assert(hit()&&borrowed==owned);
+  assert(resident.readResidentIndexed(&bound.decl,alternate,extent,&bound.vb[0],8,24,&bound.ib,borrowed)&&borrowed==alternateMesh);
+  assert(resident.residentIndexedPlanHits()==1&&resident.bytesRead()==bytes&&bound.vb[0].locks==2&&bound.ib.locks==2);
+  ++vbRevision;bound.vb[0].bytes[8+4*24+4]^=123;borrowed.reset();
+  assert(!hit()&&!borrowed&&resident.read(&bound,&bound.decl,draw,copy,nullptr,false,&borrowed));
+  assert(resident.residentIndexedPlanHits()==1);
+  assert(borrowed!=owned&&borrowed->streams[0].bytes!=owned->streams[0].bytes);
+  assert(hit()&&bound.vb[0].locks==3&&bound.ib.locks==3);
+  ibRevision=0;borrowed.reset();assert(!hit()&&!borrowed);
+  ibRevision=2;bound.indices({999,8,7,9},true);
+  assert(!hit()&&resident.read(&bound,&bound.decl,draw,copy,nullptr,false,&borrowed)&&hit());
+  assert(borrowed->indices==std::vector<std::uint32_t>({1,0,2}));
+  resident.clearIndexCache();borrowed.reset();assert(!hit()&&!borrowed);
+ }
  // Dynamic storage alone cannot consume the reservation for audited skeletal draws.
  {Device staticDevice;for(auto& vb:staticDevice.vb)vb.desc.Usage=0;staticDevice.ib.desc.Usage=0;Frame reserved(240,120);Mesh copy;
   assert(reserved.read(&staticDevice,&staticDevice.decl,draw,copy));
@@ -95,6 +131,9 @@ int main(){Device d;Frame frame;Mesh a,b;Diagnostics why;Draw draw{D3DPT_TRIANGL
     assert(f.read(&st,&st.decl,draw,copy,nullptr,true)&&f.read(&st,&st.decl,draw,copy,nullptr,true)&&f.captureExhausted(true)==false);
     Draw other=draw;other.start=0;other.minimum=0;other.vertices=11;other.base=0;st.indices({7,8,9,999},false);st.ib.desc.Usage=0; /* indices() marks the IB DYNAMIC */
     const size_t before=f.bytesRead();assert(f.read(&st,&st.decl,other,copy,&why,true,&shared,true)&&shared);charged[pass]=f.bytesRead()-before;st.indices({999,7,9,8});st.ib.desc.Usage=0;
+    assert(shared->hasCheckedIndices()&&!copy.hasCheckedIndices());
+    Mesh editable=*shared;editable.indices[0]=editable.vertexCount;assert(!editable.hasCheckedIndices());
+    editable=*shared;assert(!editable.hasCheckedIndices());
     assert(f.snapshotCacheHits()==pass);}
    assert(charged[0]==charged[1]&&charged[0]>0&&f.bytesRead()>200);}
  }

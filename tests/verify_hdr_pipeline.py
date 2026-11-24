@@ -18,6 +18,7 @@ import time
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import northlight_paths as fp
+from scripts.shaders.shader_sources import source_files
 from windows_gpu_guard import processes
 
 
@@ -78,7 +79,7 @@ def main():
             run('build', [sys.executable, fp.REPO/'scripts/build_renderer.py'])
         report['renderer_sha256'] = sha(fp.dll())
         for path in [fp.src('hdr_frame.h'), fp.src('hdr_quad.h'), fp.src('hdr_color.h'), fp.src('renderer.cpp'),
-                     fp.SHADERS/'hdr_effects.hlsl', fp.SHADERS/'world_effects.hlsl', fp.TESTS/'hdr_pipeline_gpu.cpp']:
+                     fp.SHADERS/'hdr_effects.hlsl', *source_files(fp.SHADERS/'world_effects.hlsl'), fp.TESTS/'hdr_pipeline_gpu.cpp']:
             report['source_sha256'][str(path.relative_to(fp.REPO))] = sha(path)
         for test in ['test_hdr_boundary.py', 'test_ui_boundary.py']:
             run(Path(test).stem, [sys.executable, fp.TESTS/test])

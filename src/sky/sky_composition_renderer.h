@@ -63,8 +63,9 @@ public:
     void invalidate(){valid_=false;target_=nullptr;}
     void targetSet(std::uintptr_t){} // temporary offscreen passes do not erase main-sky coverage
     void colorWrite(std::uintptr_t target){if(reinterpret_cast<std::uintptr_t>(target_)==target)invalidate();}
+    bool ready(unsigned frame)const{return valid_&&!native_&&frame_==frame;}
     IDirect3DTexture9* texture(unsigned frame){
-        if(!valid_||native_||frame_!=frame)return nullptr;
+        if(!ready(frame))return nullptr;
         if(msaa_&&dirty_){if(FAILED(device_->StretchRect(msaa_,nullptr,surface_,nullptr,D3DTEXF_NONE))){invalidate();return nullptr;}dirty_=false;}
         return mask_;
     }

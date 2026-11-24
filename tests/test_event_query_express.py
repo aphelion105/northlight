@@ -16,6 +16,7 @@ with tempfile.TemporaryDirectory(prefix='event-boundary-') as directory:
     root = Path(directory)
     (root / 'd3d9_stub.h').write_text('#ifndef FALSE\n#define FALSE 0\n#endif\n' + stream.stub())
     (root / 'cs_generated.inc').write_text(stream.generated_cpp())
+    stream.write_native_shadow_stub(root)
     for name, flags, mode in [
         ('ordered-control', ['-O2'], 'baseline'),
         ('immediate-mailbox-control', ['-O2'], 'ungated'),
@@ -27,12 +28,13 @@ with tempfile.TemporaryDirectory(prefix='event-boundary-') as directory:
     ]:
         overlay = root / name
         overlay.mkdir()
-        for header in fp.src('stream_proxies.h').parent.glob('*.h'):
-            shutil.copyfile(header, overlay / header.name)
+        for header in fp.src('stream_proxies.h').parent.iterdir():
+            if header.suffix in {'.h', '.inl'}:
+                shutil.copyfile(header, overlay / header.name)
         if mode == 'baseline':
             # Disable only the new boundary branch. The production body still
             # uses the original ordered runTask path and the same COM pin.
-            header = overlay / 'stream_proxies.h'
+            header = overlay / 'stream_query_proxy.inl'
             text = header.read_text()
             guard = 'if(event&&!inPumpedWait&&epoch==core->queryEpoch.load()'
             assert text.count(guard) == 1
@@ -40,13 +42,13 @@ with tempfile.TemporaryDirectory(prefix='event-boundary-') as directory:
         elif mode == 'ungated':
             # The previous candidate serves the mailbox immediately, before
             # its captured END is guaranteed to have replayed.
-            header = overlay / 'stream_proxies.h'
+            header = overlay / 'stream_query_proxy.inl'
             text = header.read_text()
             readiness = '[](void* p){return (*static_cast<Work*>(p)->canRun)();}'
             assert text.count(readiness) == 1
             header.write_text(text.replace(readiness, 'nullptr'))
         elif mode == 'local-pending':
-            header = overlay / 'stream_proxies.h'
+            header = overlay / 'stream_query_proxy.inl'
             text = header.read_text()
             guard = 'if(!done&&flags==D3::kGetDataFlush){'
             assert text.count(guard) == 1

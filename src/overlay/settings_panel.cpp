@@ -36,7 +36,13 @@ const ImVec4 Accent{0.40f,0.70f,1.00f,1.f},Edited{1.00f,0.74f,0.32f,1.f},Muted{0
 
 // ---- Words (from the retired Lua menu) ----
 const std::map<std::string,const char*> Labels={
-    {"CelestialStyle","Celestial placement & size"},
+    {"WaveStrength","Wave strength"},{"WaveSpeed","Wave speed"},{"WaveCrestShape","Crest shape"},
+    {"WaveCrestSharpness","Crest sharpness"},{"RippleStrength","Ripple strength"},
+    {"FoamStrength","Foam strength"},{"OpenWaterCrestFoam","Foam on open-water crests"},
+    {"ReflectionScenery","Reflections"},{"ReflectionResolution","Reflection resolution"},{"ShortReflectionDistance","Reflection distance"},{"Clarity","Water clarity"},{"Reflection","Reflection strength"},{"NearReflection","Near reflection strength"},
+    {"Underwater","Underwater effects"},{"UnderwaterVisibility","Visibility (yards)"},{"UnderwaterScenery","Underwater scenery"},
+    {"Slime","Slime surface"},{"Lava","Magma and fel magma surfaces"},
+    {"CelestialStyle","Sky style"},
     {"CelestialEffects","Enhanced sun, moon & sky"},{"Godrays","Sun & moon godrays"},
     {"NativeLightStay","Keep off-screen lights"},
     {"NativeMoreLights","Expand native light slots"},{"NativeModelLightLimit","Lights per model / building"},{"NativeTerrainLightLimit","Lights per terrain chunk"},
@@ -49,7 +55,7 @@ const std::map<std::string,const char*> Labels={
     {"AutoParallaxDepth","POM depth (%)"},{"AutoParallaxDistance","POM distance (yards)"},{"AutoParallaxSteps","POM trace steps"},
     {"AutoParallaxShadows","POM self-shadowing"},{"AutoParallaxShadowStrength","Self-shadow strength (%)"},{"AutoParallaxShadowSteps","Self-shadow trace steps"},
     {"AutoCavity","Cavity shading"},{"AutoCavityStrength","Cavity strength (%)"},
-    {"AutoHeightPolarity","Height interpretation"},{"AutoHeightDetails","Colored height detail (%)"},
+    {"AutoHeightPolarity","Height interpretation"},{"AutoHeightDetails","Colored height detail (%)"},{"AutoNormalFilter","Material normal filter"},
     {"Preset","Quality preset"},{"Effects","All Northlight effects"},{"WorldShadows","World shadows"},{"WorldFog","Atmospheric fog"},{"LocalLights","Local light illumination"},{"GI","Global illumination"},{"GIStrength","GI influence (120 = full)"},{"GIBrightness","GI brightness adjustment (%)"},{"GIPrelitMix","GI / baked lighting blend (%)"},{"AuroraStrength","Northrend aurora (%)"},
     {"ShadowStrength","Shadow strength (%)"},{"ShadowSoftness","Penumbra size (%)"},{"ShadowContactRadius","Contact filter radius (0.01 texel)"},
     {"SoftShadows","Contact-hardening shadows"},{"ActorShadows","Character shadows"},{"ActorShadowDetail","Detailed character shadows"},{"GrassShadows","Grass shadows"},{"ActorShadowRadius","Character shadow distance"},
@@ -63,7 +69,7 @@ const std::map<std::string,const char*> Labels={
     {"ShadowRefreshCpuMs","Shadow map refresh target (ms)"},
     {"CaptureBudgetMiB","Capture memory (MiB)"},{"ActorShadowBudgetMiB","Character shadow memory (MiB)"},{"MinSkinnedTriangles","Minimum character triangles"},{"LocalLightLimit","Total local lights (0 = off)"},{"GpuBudgetMs","GPU effect budget (ms)"},{"ActorShadowCpuMs","Shadow CPU budget (ms)"},
     {"CommandStream","Separate render thread"},{"StreamFramesAhead","Buffered frames"},{"StreamFrameSkip","Skip delayed frames"},{"StreamOcclusionLocal","Local occlusion results"},{"ReplayJobs","Parallel effect preparation"},{"FrameDrawGates","Skip inactive draw work"},
-    {"PointShadowLimit","Of these, shadowed lights"},{"PointShadowDistance","Shadow distance (yd)"},{"PointShadows","Local light shadows"},{"PointShadowRefreshMs","Shadow update interval (ms)"},{"PointShadowFacesPerFrame","Faces updated per light"},{"BlobShadows","Round ground shadows"},{"ShadowProvider","Directional shadow renderer"},{"DisableOriginalTerrainShadows","Disable original terrain shadows"},{"BlobShadowStrength","Ground shadow strength (%)"},
+    {"PointShadowLimit","Of these, shadowed lights"},{"PointShadowDistance","Shadow distance (yd)"},{"PointShadows","Local light shadows"},{"PointShadowRefreshMs","Shadow update interval (ms)"},{"PointShadowFacesPerFrame","Faces updated per light"},{"PointShadowAdaptiveRefresh","Adaptive lamp shadow updates"},{"BlobShadows","Round ground shadows"},{"ShadowProvider","Directional shadow renderer"},{"DisableOriginalTerrainShadows","Disable original terrain shadows"},{"BlobShadowStrength","Ground shadow strength (%)"},
     {"FarShadowInterval","Distant shadow interval (frames)"},{"NearShadowInterval","Near environment shadow interval (frames)"},{"StaticCacheSlices","Static cache update slices"},{"ShadowDirectionSteps","Shadow direction precision"},{"ShadowPivotCorrection","Correct shadow pivot"},
     {"GIDistance","GI distance (yards)"},{"GIChunkRadius","GI geometry chunk radius"},{"GIProbeAhead","GI look-ahead (yards)"},{"GIRays","GI rays per probe"},{"GIBounces","GI light bounces"},{"GIThreads","GI solver threads"},{"GIFastBVH","Fast geometry tracing"},{"GIProbeMoveStep","GI update movement step"},{"GIDynamicProbes","Dynamic GI probes"},
     {"SpellLayer","Separate spell effects"},{"SpellLayerClasses","Spell blend types (mask)"},{"SpellFog","Fog on spell effects"},{"NameMask","Protect unit names"},{"DepthFuncAware","Respect draw depth tests"},{"terrain_radius","Terrain shadow reach (yards)"},
@@ -82,7 +88,7 @@ const std::map<std::string,const char*> CelestialLabels={
 const std::map<std::string,std::vector<const char*>> Help={
     {"CelestialEffects",{"Replaces the sun, moon, glare and sky background independently of AO, shadows and other effects. Off preserves the native sky and skips Northlight sky capture and composition. HDR output remains separate."}},
     {"Godrays",{"Directional sunlight and moonlight scattered through atmospheric fog. Off skips directional fog shading, shadow sampling and extra source passes while retaining fog density, ambient scattering and local lights. Requires Atmospheric fog."}},
-    {"CelestialStyle",{"Default follows the game. Forever uses imported daily orbit and horizon size curves for the sun and primary moon; light, shadows and rays follow the selected placement. Applies to every region."}},
+    {"CelestialStyle",{"Default uses the game's sky colors and celestial placement. Forever uses imported colors in Eastern Kingdoms and Kalimdor and approximated regional sky colors in Northrend and Outland. Northrend shares the Forever sun and moon curves. Outland keeps its native sun visibility and skybox planets."}},
     {"RainRivulets",{"Falling drops and their wet trails collect nearby beads into longer curved streams, conserving water. Off keeps drops independent."}},
     {"SnowFrost",{"Crystalline ice grows from the screen edges with accumulated snow and storm intensity. Nearby fire melts it. Independent of Snow on camera; requires Enhanced weather."}},
     {"SandLens",{"Dust grains and sparse deposits on the camera lens. They stay in glass coordinates, ignore scene geometry and receive optional inertial forces during camera turns. Shelter hides the effect."}},
@@ -113,6 +119,7 @@ const std::map<std::string,std::vector<const char*>> Help={
     {"RainLens",{"Moving refractive droplets; Merge drops into rivulets lets them collect water along their wet paths. Heavier rain increases their speed. Requires Enhanced weather; the effect disappears under shelter."}},
     {"SnowLens",{"Crystalline snowflakes adhere and collect into clumps. Nearby classified flames melt them into moving droplets; walls block this heat. Requires Enhanced weather; the effect disappears under shelter."}},
     {"PointShadowLimit",{"Of the total local lights, how many eligible lamps may cast shadows. The smaller of this value and Total local lights is used; this never adds more lights. Higher limits increase shadow rendering and map memory. Extra static maps can be retained in unused slots of this same budget."}},
+    {"PointShadowAdaptiveRefresh",{"Alternate whole-cube updates for small lamps when the light stays still or moves slightly. Shadows can briefly lag."}},
     {"PointShadowDistance",{"How far from the camera local lights can cast shadows: 8 to 192 yards; 48 by default. Measured to the edge of each light's influence, so large lights can cast shadows from farther away.",
         "Higher distances can increase rendering cost; Of these, shadowed lights still limits how many lights cast shadows."}},
     {"HDRContrast",{"1.00 is neutral. Adjusts world contrast around middle grey; UI brightness is unchanged."}},
@@ -153,6 +160,7 @@ const std::map<std::string,std::vector<const char*>> Help={
     {"LocalLightLimit",{"Total budget for nearby lights illuminating the scene and fog, including shadowed lights and equipment. Shadow settings cannot increase this value. Higher values increase rendering work. Outgoing lights can briefly remain while fading out. 0 disables local illumination and its capture."}},
     {"EquipmentLights",{"Adds local lighting from supported equipped items, mounts and effects. Uses their light records and supported particle emitters; a glowing texture alone does not guarantee a light. Shares the local light limit."}},
     {"AutoBumpDistance",{"How far generated surface normals remain visible. Larger distances add detail to more surfaces and increase the number of pixels that need material shading."}},
+    {"AutoNormalFilter",{"Selects how normals are generated from diffuse textures on terrain, walls, grass and models. Both choices work with the selected material modes."}},
     {"AutoBumpModels",{"Applies material detail to model objects, including characters, creatures and props. Normal maps change lighting; POM adds apparent texture depth; displacement changes nearby geometry. Higher modes can exaggerate painted texture details."}},
     {"AutoParallaxDepth",{"Apparent depth of texture relief when using Normal maps + POM. 0 looks flat; high values can stretch or distort textures at shallow viewing angles. Does not change the object's silhouette."}},
     {"AutoParallaxDistance",{"How far POM texture relief remains visible before fading out. Larger distances shade more pixels with POM and cost more GPU time. Normal map distance is controlled separately."}},
@@ -246,13 +254,13 @@ const std::map<std::string,std::vector<const char*>> Help={
 struct Group { const char* id; const char* title; const char* master; const char* fields; const char* advanced; };
 struct Section { const char* id; const char* title; const char* keys; std::vector<Group> groups; bool open; };
 const std::vector<Section> QualitySections={
-    {"lighting","Lighting & AO","GI GIStrength GIBrightness GIPrelitMix GIRays GIBounces GIProbeMoveStep GIDynamicProbes GIThreads GIFastBVH GIDistance GIChunkRadius GIProbeAhead NightBrightness ContactAO AOMethod AOQuality AOStrength AORadius LocalLights LocalLightLimit EquipmentLights PointShadows PointShadowLimit PointShadowDistance PointShadowRefreshMs PointShadowFacesPerFrame",{
+    {"lighting","Lighting & AO","GI GIStrength GIBrightness GIPrelitMix GIRays GIBounces GIProbeMoveStep GIDynamicProbes GIThreads GIFastBVH GIDistance GIChunkRadius GIProbeAhead NightBrightness ContactAO AOMethod AOQuality AOStrength AORadius LocalLights LocalLightLimit EquipmentLights PointShadows PointShadowLimit PointShadowDistance PointShadowRefreshMs PointShadowFacesPerFrame PointShadowAdaptiveRefresh",{
         {"gi","Global illumination","GI","GIStrength GIBrightness GIPrelitMix GIDistance GIChunkRadius GIBounces","GIRays GIProbeMoveStep GIDynamicProbes GIThreads GIFastBVH GIProbeAhead"},
         {"ao","Ambient occlusion","ContactAO","AOMethod AOQuality AOStrength AORadius",""},
         {"ambient","Environment",nullptr,"NightBrightness",""},
-        {"local","Local illumination","LocalLights","LocalLightLimit PointShadows PointShadowLimit EquipmentLights","PointShadowDistance PointShadowRefreshMs PointShadowFacesPerFrame"}},true},
-    {"materials","Materials & parallax","AutoBump AutoBumpTerrain AutoBumpWalls AutoBumpGrass AutoBumpModels AutoBumpStrength AutoBumpDistance AutoParallaxDepth AutoParallaxDistance AutoParallaxSteps AutoParallaxShadows AutoParallaxShadowStrength AutoParallaxShadowSteps AutoCavity AutoCavityStrength AutoMaterialOcclusionDistance AutoDisplacementStrength AutoDisplacementDistance AutoDisplacementDetail AutoHeightBalance AutoModelDisplacementStrength AutoModelDisplacementDistance AutoModelDisplacementDetail",{
-        {"bump","Material modes","AutoBump","AutoBumpTerrain AutoBumpWalls AutoBumpGrass AutoBumpModels AutoBumpStrength AutoBumpDistance",""},
+        {"local","Local illumination","LocalLights","LocalLightLimit PointShadows PointShadowLimit EquipmentLights","PointShadowDistance PointShadowRefreshMs PointShadowFacesPerFrame PointShadowAdaptiveRefresh"}},true},
+    {"materials","Materials & parallax","AutoBump AutoBumpTerrain AutoBumpWalls AutoBumpGrass AutoBumpModels AutoNormalFilter AutoBumpStrength AutoBumpDistance AutoParallaxDepth AutoParallaxDistance AutoParallaxSteps AutoParallaxShadows AutoParallaxShadowStrength AutoParallaxShadowSteps AutoCavity AutoCavityStrength AutoMaterialOcclusionDistance AutoDisplacementStrength AutoDisplacementDistance AutoDisplacementDetail AutoHeightBalance AutoModelDisplacementStrength AutoModelDisplacementDistance AutoModelDisplacementDetail",{
+        {"bump","Material modes","AutoBump","AutoBumpTerrain AutoBumpWalls AutoBumpGrass AutoBumpModels AutoNormalFilter AutoBumpStrength AutoBumpDistance",""},
         {"geometry","Terrain and object displacement",nullptr,"AutoDisplacementStrength AutoDisplacementDistance AutoDisplacementDetail AutoHeightBalance",""},
         {"models","Model displacement",nullptr,"AutoModelDisplacementStrength AutoModelDisplacementDistance AutoModelDisplacementDetail",""},
         {"occlusionrange","Near material shading",nullptr,"AutoMaterialOcclusionDistance",""},
@@ -298,11 +306,11 @@ struct Preset { const char* key; const char* text; };
 const Preset Presets[3]={{"Quality","Maximum effect detail."},{"Balanced","Quality with a moderate effect budget."},{"Performance","Less work spent on effects."}};
 const char* const QuickKeys="Effects GI WorldShadows WorldFog LocalLights ContactAO AutoBump Weather CelestialEffects Godrays ActorShadows FogClouds";
 // Sidebar pages, in order. quality: the QualitySections id a Quality page draws.
-enum class Page { Overview, Lighting, Materials, Shadows, Atmosphere, Celestial, ShadowRange, Spells, Renderer, Performance, Diagnostics, Count };
+enum class Page { Overview, Lighting, Materials, Shadows, Atmosphere, Water, Celestial, ShadowRange, Spells, Renderer, Performance, Diagnostics, Count };
 struct PageInfo { Page page; const char* title; const char* quality; };
 const PageInfo Pages[]={
     {Page::Overview,"Overview",nullptr},{Page::Lighting,"Lighting & AO","lighting"},{Page::Materials,"Materials & parallax","materials"},
-    {Page::Shadows,"Shadows","shadows"},{Page::Atmosphere,"Atmosphere & weather","atmosphere"},{Page::Celestial,"Sun & moon",nullptr},
+    {Page::Shadows,"Shadows","shadows"},{Page::Atmosphere,"Atmosphere & weather","atmosphere"},{Page::Water,"Water",nullptr},{Page::Celestial,"Sun & moon",nullptr},
     {Page::ShadowRange,"Shadow range",nullptr},{Page::Spells,"Spells & names","spells"},{Page::Renderer,"Renderer & HDR","rendering"},
     {Page::Performance,"Performance",nullptr},{Page::Diagnostics,"Diagnostics","diagnostics"},
 };
@@ -322,6 +330,7 @@ std::string celestialName(const std::string& key,std::string* body){
     return {};
 }
 std::string fieldLabel(const Field& f){
+    if(f.file==NorthlightSettings::WaterHostFile)return "Use Tideglass";
     if(const char* l=find(Labels,f.key))return l;
     std::string body;const auto name=celestialName(f.key,&body);if(!name.empty())return body+": "+name;
     return f.key;
@@ -337,7 +346,15 @@ std::string regionLabel(const std::string& section){
     return section;
 }
 std::string optionLabel(const Field& f,const std::string& value){
+    if(f.file==NorthlightSettings::WaterFile){
+        if(f.key=="ReflectionScenery")return value=="0"?"Sky only":"Scenery + sky";
+        if(f.key=="ShortReflectionDistance")return value=="0"?"Standard":"Short";
+        if(f.key=="ReflectionResolution")return value+"%";
+    }
+    if(value=="HBAOPlus")return "HBAO+ (D3D9)";
+
     if(f.file==D::Quality&&f.key=="ShadowProvider")return value=="0"?"Game":"Northlight";
+    if(f.file==D::Quality&&f.key=="AutoNormalFilter")return value=="0"?"Legacy":"Filtered";
     if(D::modeField(f))return value=="0"?"Off":value=="1"?"Normal maps":value=="2"?"Normal maps + POM":"Displacement + normals";
     if(value=="HBAOPlus")return "HBAO+ (D3D9)";
     if(f.file==D::Renderer&&f.key=="Backend"){
@@ -349,8 +366,7 @@ std::string optionLabel(const Field& f,const std::string& value){
     return value;
 }
 const char* fileName(unsigned file){
-    static const char* const names[]={"northlight-quality.ini","northlight-renderer.ini","celestial-profiles.ini","shadow-range-profiles.ini"};
-    return file<4?names[file]:"?";
+    return file<NorthlightSettings::FileCount?NorthlightSettings::FileNames[file]:"?";
 }
 const char* originText(const std::string& origin){
     if(origin=="f"||origin=="override")return "set in the file";
@@ -480,7 +496,8 @@ struct SettingsPanel::State {
         ImGui::Text("Factory: %s   Inherits: %s",f.factory.c_str(),inherited.c_str());
         ImGui::TextColored(Color::Muted,"Source: %s%s",originText(f.origin),draft.overrides(f)?"":" - not written to the file");
         ImGui::Spacing();
-        if(f.apply=="R")ImGui::TextColored(Color::Restart,draft.restartPending(f)?"Requires a game restart: the running renderer still uses %s.":"Requires a game restart.%s",draft.restartPending(f)?f.active.c_str():"");
+        if(f.apply=="S")ImGui::TextColored(Color::Good,"Takes effect when you save.");
+        else if(f.apply=="R")ImGui::TextColored(Color::Restart,draft.restartPending(f)?"Requires a game restart: the running renderer still uses %s.":"Requires a game restart.%s",draft.restartPending(f)?f.active.c_str():"");
         else ImGui::TextColored(Color::Good,"Applies live: previewed while you edit, kept when you save.");
         if(block==D::Block::Unavailable)ImGui::TextColored(Color::Bad,"Not available in this installation.");
         else if(block==D::Block::NeedsHdr)ImGui::TextColored(Color::Bad,"Enable HDR first.");
@@ -622,6 +639,11 @@ struct SettingsPanel::State {
     }
     // The fields a page shows (Sun & moon: every region), for its sidebar markers and Defaults.
     std::vector<const Field*> pageFields(Page p)const{
+        if(p==Page::Water){
+            auto rows=fields(NorthlightSettings::WaterHostFile);
+            const auto tuning=fields(NorthlightSettings::WaterFile);
+            rows.insert(rows.end(),tuning.begin(),tuning.end());return rows;
+        }
         std::vector<const Field*> out;
         if(p==Page::Overview){if(const Field* f=draft.quality("Preset"))out.push_back(f);for(auto& k:words(QuickKeys))if(const Field* f=draft.quality(k))out.push_back(f);return out;}
         if(p==Page::Celestial){out=fields(D::Celestial);for(const char* key:{"CelestialEffects","CelestialStyle"})if(const Field* f=draft.quality(key))out.push_back(f);return out;}
@@ -890,9 +912,50 @@ struct SettingsPanel::State {
             ImGui::TreePop();
         }
     }
+    void waterPage(){
+        ImGui::TextWrapped("Save to apply water settings. Restart the game after switching Tideglass on or off.");
+        titled("Renderer",fields(NorthlightSettings::WaterHostFile));
+        auto waterRows=[&](const char* title,const char* keys){
+            std::vector<const Field*> rows;
+            for(const auto& key:words(keys)){
+                if(const Field* f=draft.field(NorthlightSettings::WaterFile,"Water",key))rows.push_back(f);
+            }
+            titled(title,rows);
+        };
+        const auto water=[&](const char* key){return draft.field(NorthlightSettings::WaterFile,"Water",key);};
+        const Field* scenery=water("ReflectionScenery");
+        const Field* resolution=water("ReflectionResolution");
+        const Field* distance=water("ShortReflectionDistance");
+        if(scenery && resolution && distance){
+            struct Tier { const char* name; const char* scenery; const char* resolution; const char* distance; };
+            static constexpr Tier tiers[]={{"Quality","1","100","0"},{"Balanced","1","75","0"},{"Performance","0","50","1"}};
+            const char* current="Custom";
+            for(const auto& tier:tiers)
+                if(draft.effective(*scenery)==tier.scenery && draft.effective(*resolution)==tier.resolution &&
+                   draft.effective(*distance)==tier.distance)current=tier.name;
+            ImGui::TextColored(Color::Heading,"Performance");ImGui::Separator();
+            ImGui::BeginDisabled(locked());
+            if(ImGui::BeginCombo("Water preset",current)){
+                for(const auto& tier:tiers){
+                    const bool selected=std::string(current)==tier.name;
+                    if(ImGui::Selectable(tier.name,selected)){
+                        set(*scenery,tier.scenery);set(*resolution,tier.resolution);set(*distance,tier.distance);
+                    }
+                }
+                ImGui::EndCombo();
+            }
+            ImGui::EndDisabled();
+            loose("water-performance",{scenery,resolution,distance});
+        }
+        waterRows("Waves and foam","WaveStrength WaveSpeed WaveCrestShape WaveCrestSharpness RippleStrength FoamStrength OpenWaterCrestFoam");
+        waterRows("Reflections","Reflection NearReflection");
+        waterRows("Clarity and underwater","Clarity Underwater UnderwaterVisibility UnderwaterScenery");
+        waterRows("Other liquids","Slime Lava");
+    }
     void drawPage(){
         switch(page){
         case Page::Overview:overviewPage();break;
+        case Page::Water:waterPage();break;
         case Page::Celestial:celestialTab();break;
         case Page::ShadowRange:shadowRangeTab();break;
         case Page::Renderer:rendererPage();break;
@@ -905,6 +968,7 @@ struct SettingsPanel::State {
     void sidebar(){
         const float h=ImGui::GetFrameHeight(),r=std::max(2.5f,h*0.14f);
         for(const auto& info:Pages){
+            if(info.page==Page::Water&&!draft.field(NorthlightSettings::WaterHostFile,"WaterIntegration","Enable"))continue;
             bool edited=false,restart=false;
             for(const Field* f:pageFields(info.page)){edited|=draft.edited(*f);restart|=draft.restartPending(*f);}
             if(ImGui::Selectable(info.title,page==info.page,0,ImVec2(0,h)))page=info.page;

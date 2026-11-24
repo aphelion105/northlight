@@ -5,10 +5,11 @@ The mask (RainMask, s13, alpha = streak alpha, 0 without rain) is read once insi
 toward the unfogged colour; every other compiled entry stays byte-identical to HEAD~ (0.3.200)."""
 import sys; from pathlib import Path; sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root
 import northlight_paths as fp
+from scripts.shaders.shader_sources import world_source_text
 import json
 import re
 
-h=(fp.SHADERS/'world_effects.hlsl').read_text()
+h=world_source_text(fp.SHADERS/'world_effects.hlsl')
 manifest=json.loads((fp.SHADERS/'world-shader-build.json').read_text())['shaders']
 checks={}
 

@@ -65,6 +65,18 @@ int main(){
  modelBank[4]+=.1f;assert(lightingOverride(modelBank,ambient,direct,true));
  assert(!lightingOverride(bank,ambient,direct));bank[3]=NAN;assert(!lightingOverride(bank,ambient,direct));
  bank[0]=NAN;assert(!lightingOverride(bank,ambient,direct));bank[0]=-1;assert(!lightingOverride(bank,ambient,direct));
+ const float bannerRoom[]={.823529f,.745098f,.784313f,0,.376471f,.341177f,.356863f,0};
+ assert(roomAmbientLevel(bannerRoom)==RoomSharedTint&&RoomAmbientShare[RoomSharedTint]==.8f);
+ const float strawRoom[]={1.f,.780392f,.780392f,0,.376471f,.294118f,.294118f,0};
+ assert(roomAmbientLevel(strawRoom)==RoomSharedTint);
+ const float mixedRoom[]={.823529f,.745098f,.784313f,0,.376471f,.341177f,.275f,0};
+ assert(roomAmbientLevel(mixedRoom)==RoomAmbientQuarter&&RoomAmbientShare[RoomAmbientQuarter]==.25f);
+ const float brighterDirect[]={4,1,1,0,1,1,1,0};
+ assert(roomAmbientLevel(brighterDirect)==0);
+ assert(roomStencilMask(1u<<RoomAmbientQuarter)==(AuthoredBit|PrelitBit|Bit));
+ assert(roomStencilMask(1u<<RoomSharedTint)==(PrelitBit|Bit));
+ for(const auto& s:receiverMark(5+RoomAmbientQuarter))if(s.state==StencilRef)assert(s.value==RoomRef[RoomAmbientQuarter]);
+ for(const auto& s:receiverMark(5+RoomSharedTint))if(s.state==StencilRef)assert(s.value==RoomRef[RoomSharedTint]);
  assert(stencilFormat(75,123)&&stencilFormat(81,123)&&stencilFormat(123,123));
  assert(!stencilFormat(79,123)&&!stencilFormat(73,123)&&!stencilFormat(77,123));
  assert((Bit&NorthlightNameStencil::kBit)==0&&(PrelitBit&(Bit|NorthlightNameStencil::kBit))==0);

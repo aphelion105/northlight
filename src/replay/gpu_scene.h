@@ -3,8 +3,7 @@
 #include "static_shadow_gpu.h"
 #include "live_terrain_gpu.h"
 #include "terrain_capture_bounds.h"
-#include "mesh_buffer_store.h"
-#include "mesh_pool_trim.h"
+#include "world_mesh_pool.h"
 #include <stdexcept>
 
 class NorthlightAutoNormalCache;
@@ -21,10 +20,7 @@ struct Scene {
  NorthlightDrawSnapshot::Frame::SharedSources captureSources;
  NativeClient materials{native,Consumer::Material},shadows{native,Consumer::Shadow};
  StaticShadow::GpuCache staticCasters;
- struct MeshBuffers {IDirect3DVertexBuffer9* vb=nullptr;IDirect3DIndexBuffer9* ib=nullptr;D3DPOOL vbPool=D3DPOOL_MANAGED,ibPool=D3DPOOL_MANAGED;bool vbFresh=false,ibFresh=false;};
- NorthlightMeshBufferStore::Store meshStore;
- std::vector<MeshBuffers> meshBuffers;
- NorthlightMeshPoolTrim::State meshPoolTrim;
+ NorthlightWorldMeshPool meshPages;
  NorthlightLiveTerrainGPU::Cache<NorthlightTerrainCapture::MeshSnapshot,StaticShadow::Vertex> terrain;
  NorthlightTerrainCapture::FrameCache terrainSources;
  std::shared_ptr<NorthlightGI::SceneSourceCache> decodedSources;
@@ -39,7 +35,6 @@ struct Scene {
   ~MaterialTargets(){if(target)target->Release();if(height)height->Release();if(depth)depth->Release();if(occlusionTarget)occlusionTarget->Release();if(occlusion)occlusion->Release();}
  } materialTargets;
  explicit Scene(IDirect3DDevice9* d):device(d){}
- ~Scene(){for(auto& page:meshBuffers){if(page.vb)page.vb->Release();if(page.ib)page.ib->Release();}}
  Scene(const Scene&)=delete;Scene& operator=(const Scene&)=delete;
  bool attach(NorthlightDrawSnapshot::Frame& frame){if(!captureSources){captureSources=frame.sharedSources();return true;}return frame.joinSnapshotPool(captureSources);}
  // One policy for every consumer, including standalone render/test scenes.

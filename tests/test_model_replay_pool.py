@@ -78,6 +78,36 @@ int main(){WorldRenderer owner;ModelRef shader,texture;Device device;WorldRender
  {auto p=owner.acquireReplay();assert(owner.pooledSnapshotBytes==0&&p->elements.capacity()>=65);owner.recycleReplay(p.release());}
  owner.freeReplays.clear();owner.pooledSnapshotBytes=0;owner.poolLimit=sizeof(WorldRenderer::Replay)+1;
  {auto p=owner.acquireReplay();p->elements.reserve(65);owner.recycleReplay(p.release());}assert(owner.freeReplays.empty()&&owner.pooledSnapshotBytes==0);
+ using Banks=NorthlightReplayCaptureConstants::SharedFloatBanks;
+ using Replay=WorldRenderer::Replay;
+ owner.poolLimit=48u*1024u*1024u;
+ auto book=owner.acquireReplay();
+ assert(!book->constantBank&&book->retainedBytes()==0&&book->constants[31*4]==0.f);
+ book->constantUsage.floats={31,1};book->constantUsage.booleans={2,1};book->constantUsage.integers={3,1};
+ book->writableConstants()[31*4]=2.f;book->boolStorage[2]=1;book->intStorage[12]=7;
+ auto held=owner.acquireReplay();held->constantUsage=book->constantUsage;
+ Banks::begin(*held);Banks::reuse(*held,*book,true);
+ assert(held->constants==book->constants&&held->bools!=book->bools&&held->ints!=book->ints);
+ assert(held->bools[2]==1&&held->ints[12]==7);
+ owner.recycleReplay(book.release());
+ assert(owner.pooledSnapshotBytes==0&&held->constants[31*4]==2.f);
+ book=owner.acquireReplay();book->writableConstants()[31*4]=4.f;
+ assert(held->constants[31*4]==2.f&&held->constants!=book->constants);
+ auto repaired=owner.acquireReplay();repaired->constantUsage=held->constantUsage;
+ Banks::begin(*repaired);Banks::reuse(*repaired,*held,true);
+ auto audit=[](unsigned first,unsigned count,float* out){assert(first==31&&count==1);out[0]=-0.f;out[1]=out[2]=out[3]=0;return true;};
+ NorthlightReplayCaptureConstants::Stats stats;
+ assert(NorthlightReplayCaptureConstants::verify<Banks>(*repaired,audit,&stats));
+ assert(stats.selfCheckMismatches==1&&std::signbit(repaired->constants[31*4]));
+ assert(held->constants[31*4]==2.f&&repaired->constants!=held->constants);
+ repaired.reset();held.reset();
+ owner.recycleReplay(book.release());
+ assert(owner.pooledSnapshotBytes==sizeof(Replay::FloatBank));
+ book=owner.acquireReplay();assert(book->constantBank&&owner.pooledSnapshotBytes==0);
+ owner.poolLimit=sizeof(Replay);
+ owner.recycleReplay(book.release());
+ assert(owner.freeReplays.size()==1&&!owner.freeReplays[0]->constantBank&&owner.pooledSnapshotBytes==0);
+ std::puts("PASS lazy float bank, borrower survives owner recycle, self-check copies before repair, pooled banks charged and released under pressure");
  std::puts("Production replay pool: 10000 rejected draws, COM refs balanced, ownership transfer, record+snapshot cap, lowered cap and empty-record bound passed");
 }
 '''

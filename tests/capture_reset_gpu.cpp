@@ -13,12 +13,12 @@ struct ResetMeter:ForwardIDirect3DDevice9 {
 };
 struct PipelineOffTest {
  static std::vector<float> image(Device& proxy){
-  auto* d=proxy.ext;SavedState saved(d);assert(saved.ok);auto& w=*proxy.world;for(unsigned i=0;i<3;++i)w.prewarmPointShaders();assert(w.pointShadowVS&&w.pointShadowPS);
+  auto* d=proxy.ext;SavedState saved(d);assert(saved.ok);auto& w=*proxy.world;for(unsigned i=0;i<3;++i)w.prewarmPointShaders();assert(w.pointTargets.casterVertex()&&w.pointTargets.casterPixel());
   NorthlightDrawSnapshot::Ref<IDirect3DTexture9> texture;NorthlightDrawSnapshot::Ref<IDirect3DSurface9> target,read,depth;
   must(d->CreateTexture(64,64,1,D3DUSAGE_RENDERTARGET,D3DFMT_R32F,D3DPOOL_DEFAULT,texture.out(),nullptr));must(texture->GetSurfaceLevel(0,target.out()));must(d->CreateOffscreenPlainSurface(64,64,D3DFMT_R32F,D3DPOOL_SYSTEMMEM,read.out(),nullptr));must(d->CreateDepthStencilSurface(64,64,D3DFMT_D24S8,D3DMULTISAMPLE_NONE,0,FALSE,depth.out(),nullptr));
   for(unsigned i=1;i<4;++i)must(d->SetRenderTarget(i,nullptr));must(d->SetDepthStencilSurface(nullptr));must(d->SetRenderTarget(0,target.p));must(d->SetDepthStencilSurface(depth.p));D3DVIEWPORT9 viewport{0,0,64,64,0,1};must(d->SetViewport(&viewport));
   for(auto key:{D3DRS_ZENABLE,D3DRS_ZWRITEENABLE})must(d->SetRenderState(key,TRUE));for(auto key:{D3DRS_ALPHABLENDENABLE,D3DRS_ALPHATESTENABLE,D3DRS_SCISSORTESTENABLE,D3DRS_STENCILENABLE,D3DRS_SRGBWRITEENABLE,D3DRS_FOGENABLE,D3DRS_CLIPPLANEENABLE})must(d->SetRenderState(key,0));must(d->SetRenderState(D3DRS_CULLMODE,D3DCULL_NONE));must(d->SetRenderState(D3DRS_COLORWRITEENABLE,15));must(d->SetRenderState(D3DRS_ZFUNC,D3DCMP_LESSEQUAL));
-  const float matrix[]={1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1},material[]={0,0,0,-1},sphere[]={100,1.f/64,0,0};must(d->SetVertexShaderConstantF(0,matrix,4));must(d->SetPixelShaderConstantF(0,material,1));must(d->SetPixelShaderConstantF(1,sphere,1));must(d->SetVertexShader(w.pointShadowVS));must(d->SetPixelShader(w.pointShadowPS));
+  const float matrix[]={1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1},material[]={0,0,0,-1},sphere[]={100,1.f/64,0,0};must(d->SetVertexShaderConstantF(0,matrix,4));must(d->SetPixelShaderConstantF(0,material,1));must(d->SetPixelShaderConstantF(1,sphere,1));must(d->SetVertexShader(w.pointTargets.casterVertex()));must(d->SetPixelShader(w.pointTargets.casterPixel()));
   D3DVERTEXELEMENT9 elements[]={{0,0,D3DDECLTYPE_FLOAT3,0,D3DDECLUSAGE_POSITION,0},{0,12,D3DDECLTYPE_FLOAT3,0,D3DDECLUSAGE_NORMAL,0},{0,24,D3DDECLTYPE_FLOAT2,0,D3DDECLUSAGE_TEXCOORD,0},D3DDECL_END()};NorthlightDrawSnapshot::Ref<IDirect3DVertexDeclaration9> decl;must(d->CreateVertexDeclaration(elements,decl.out()));must(d->SetVertexDeclaration(decl.p));
   const float triangle[]={-.6f,-.6f,.5f,0,0,1,0,0,.6f,-.6f,.5f,0,0,1,1,0,0,.6f,.5f,0,0,1,.5f,1};must(d->Clear(0,nullptr,D3DCLEAR_TARGET|D3DCLEAR_ZBUFFER,0xffffffff,1,0));must(d->BeginScene());must(d->DrawPrimitiveUP(D3DPT_TRIANGLELIST,1,triangle,32));must(d->EndScene());must(d->GetRenderTargetData(target.p,read.p));D3DLOCKED_RECT lock{};must(read->LockRect(&lock,nullptr,D3DLOCK_READONLY));std::vector<float> result(4096);for(unsigned y=0;y<64;++y)std::memcpy(result.data()+y*64,static_cast<char*>(lock.pBits)+y*lock.Pitch,256);must(read->UnlockRect());assert(std::count_if(result.begin(),result.end(),[](float z){return z<1.f;})>256);return result;
  }
@@ -35,23 +35,25 @@ struct PipelineOffTest {
   float bank[1024]={},inverse[16]={};for(unsigned i=0;i<4;++i){bank[(2+i)*4+i]=1;inverse[i*5]=1;}bank[31*4]=bank[32*4+1]=bank[33*4+2]=1;bank[11*4+3]=1;
   auto capture=[&]{frame.clearFrame();NorthlightDrawSnapshot::Mesh scratch;std::shared_ptr<const NorthlightDrawSnapshot::Mesh> source;assert(frame.read(d,decl,draw,scratch,nullptr,false,&source)&&source&&source->sourceIdentity);return source;};
   auto source=capture();const auto identity=source->sourceIdentity;std::weak_ptr<const NorthlightDrawSnapshot::Mesh> weak=source;
-  auto bounds=[&](const auto& mesh,bool readyOnly,unsigned& built){w.replayBoundsCache.beginFrame(false,1);NorthlightReplayBounds::Budget budget;budget.maxVertices=100000;budget.maxOperations=1000000;NorthlightReplayBounds::Bounds box;
+  auto bounds=[&](const auto& mesh,bool readyOnly,unsigned& built){
+   // This fixture checks ownership across Reset independently of host scheduling.
+   w.replayBoundsCache.beginFrame(false,1,false,true,true);NorthlightReplayBounds::Budget budget;budget.maxVertices=100000;budget.maxOperations=1000000;NorthlightReplayBounds::Bounds box;
    const auto status=readyOnly?w.replayBoundsCache.calculateReady(program,*mesh,mesh,layout,6,bank,inverse,budget,box):w.replayBoundsCache.calculatePhase(program,*mesh,mesh,layout,6,bank,inverse,budget,box,NorthlightReplayBounds::EnvelopeCache::Stage::All);built=unsigned(w.replayBoundsCache.envelopeStats().buildVertices);return std::make_pair(status,box);};
-  unsigned built=0;const auto first=bounds(source,false,built);assert(first.first==NorthlightReplayBounds::Status::Valid&&built);source.reset();assert(w.pointSoftShaders());auto* oldSoftLight=w.pointSoftLightingPS;const auto beforeImage=image(proxy);auto* oldVS=w.pointShadowVS;auto* oldPS=w.pointShadowPS;
+  unsigned built=0;const auto first=bounds(source,false,built);assert(first.first==NorthlightReplayBounds::Status::Valid&&built);source.reset();assert(w.pointLighting.ensureSoft(w.d,[] {}));auto* oldSoftLight=w.pointLighting.softShader();const auto beforeImage=image(proxy);auto* oldVS=w.pointTargets.casterVertex();auto* oldPS=w.pointTargets.casterPixel();
   const auto revision=NorthlightTrackedBuffers::version(vb,false);assert(revision);const auto entries=frame.snapshotCacheEntries(),sourceBytes=frame.sharedSourceBytes();assert(entries&&sourceBytes);
   if(!preserve){proxy.releaseResources();w.reset();w.releasePointGPU();NorthlightTrackedBuffers::invalidateAll();assert(weak.expired());}
   auto bad=base;bad.SwapEffect=static_cast<D3DSWAPEFFECT>(0x7fffffff);assert(FAILED(proxy.Reset(&bad)));assert(frame.snapshotCacheEntries()==(preserve?entries:0));
   for(unsigned retry=0;retry<2;++retry){auto pp=base;must(proxy.Reset(&pp));bind();
    ModelNormalPacketTestAccess::targets(*proxy.modelNormals); // First post-Reset target creation must keep shared sources.
-   assert((NorthlightTrackedBuffers::version(vb,false)==revision)==preserve);if(preserve){assert(!weak.expired()&&frame.sharedSourceBytes()==sourceBytes&&w.pointShadowVS==oldVS&&w.pointShadowPS==oldPS);}else assert(!w.pointShadowVS&&!w.pointShadowPS||retry);
-   if(preserve&&!retry)assert(w.pointSoftTried&&w.pointSoftLightingPS==oldSoftLight);
-   if(preserve&&retry){assert(!w.pointSoftTried&&!w.pointSoftLightingPS);assert(w.pointSoftShaders());}
+   assert((NorthlightTrackedBuffers::version(vb,false)==revision)==preserve);if(preserve){assert(!weak.expired()&&frame.sharedSourceBytes()==sourceBytes&&w.pointTargets.casterVertex()==oldVS&&w.pointTargets.casterPixel()==oldPS);}else assert(!w.pointTargets.casterVertex()&&!w.pointTargets.casterPixel()||retry);
+   if(preserve&&!retry)assert(w.pointLighting.softTried_&&w.pointLighting.softShader()==oldSoftLight);
+   if(preserve&&retry){assert(!w.pointLighting.softTried_&&!w.pointLighting.softShader());assert(w.pointLighting.ensureSoft(w.d,[] {}));}
    source=capture();const bool same=NorthlightSourceIdentity::same(identity,source->sourceIdentity);assert(same==preserve);
    auto current=bounds(source,true,built);assert((current.first==NorthlightReplayBounds::Status::Valid)==(preserve||retry));
    if(!preserve&&!retry){current=bounds(source,false,built);assert(current.first==NorthlightReplayBounds::Status::Valid&&built);}else assert(!built);
    for(unsigned axis=0;axis<3;++axis)assert(current.second.low[axis]==first.second.low[axis]&&current.second.high[axis]==first.second.high[axis]);
    const auto creates=meter.vertexCreates+meter.pixelCreates;assert(image(proxy)==beforeImage);if(preserve)assert(meter.vertexCreates+meter.pixelCreates==creates);source.reset();
-   if(preserve&&!retry){drop(w.pointSoftLightingPS);w.pointSoftTried=true;} // A failed optional attempt may retry after Reset.
+   if(preserve&&!retry){drop(w.pointLighting.soft_);w.pointLighting.softTried_=true;} // A failed optional attempt may retry after Reset.
   }
   // New bytes and a new pose cannot borrow pre-Reset geometry/world bounds.
   vertices[0].xyz[0]-=.2f;must(vb->Lock(0,0,&bytes,0));std::memcpy(bytes,vertices,sizeof vertices);must(vb->Unlock());source=capture();assert(!NorthlightSourceIdentity::same(identity,source->sourceIdentity));

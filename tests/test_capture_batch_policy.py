@@ -18,16 +18,23 @@ harness=r'''#include <atomic>
 #include <cassert>
 #include <cstdio>
 #include <initializer_list>
-namespace NorthlightBackend {enum class Kind {Native,Dxvk,Dxvk2,Legacy};}
+namespace NorthlightBackend {
+enum class Kind {Native,Dxvk,Dxvk2,Legacy};
+bool isPackagedDxvk(Kind kind){return kind==Kind::Dxvk||kind==Kind::Dxvk2;}
+}
 namespace NorthlightStream {std::atomic<bool> streamActive{false};}
 namespace NorthlightUpload {std::atomic<bool> ReadBackNoOverwrite{false};unsigned readBackLock(){return 16u|(ReadBackNoOverwrite.load()?4096u:0u);}}
-struct Capture {bool deferred=false,guard=false;unsigned calls=0;void* context=nullptr;
+struct Capture {bool deferred=false,guard=false,bufferGuard=false,readOnlyDepth=false;unsigned calls=0;void* context=nullptr;
     void setDeferredCapture(bool on,void(*)(void*)=nullptr,void* ctx=nullptr){deferred=on;context=ctx;++calls;}
-    void setTextureWriteGuard(bool on,void(*)(void*),void* ctx){guard=on;context=ctx;++calls;}};
+    void setDeferredCapture(bool on,bool depthSafe){deferred=on;readOnlyDepth=depthSafe;++calls;}
+    void setTextureWriteGuard(bool on,void(*)(void*),void* ctx,void(*buffer)(void*)=nullptr){
+        guard=on;bufferGuard=on&&buffer;context=ctx;++calls;
+    }};
 struct Mirror {bool enabled=false;bool active()const{return enabled;}};
 struct Device {Capture material,normals;Capture* autoBump=&material;Capture* modelNormals=&normals;
     Mirror mirrorState;bool spellOn=false;NorthlightBackend::Kind selectedBackend=NorthlightBackend::Kind::Native;
     static void materialPendingChanged(void*){}
+    static void materialGuardBuffer(void*){}
     template<class... A> static void logf(const char*,A...){}
     void setup(){MATERIAL_SETUP
 GUARDED_SETUP
@@ -35,7 +42,8 @@ GUARDED_SETUP
 int main(){unsigned cases=0;for(unsigned backend=0;backend<4;++backend){for(bool readback:{false,true}){for(unsigned mask=0;mask<8;++mask){
     Device d;d.selectedBackend=NorthlightBackend::Kind(backend);d.spellOn=mask&1;d.mirrorState.enabled=mask&2;
     NorthlightStream::streamActive.store(mask&4);NorthlightUpload::ReadBackNoOverwrite.store(readback);const auto flags=NorthlightUpload::readBackLock();
-    d.setup();assert(d.material.deferred);const bool guarded=mask==7;assert(d.normals.deferred==guarded&&d.material.guard==guarded);
+    d.setup();assert(d.material.deferred&&d.material.readOnlyDepth==(backend==1||backend==2));
+    const bool guarded=mask==7;assert(d.normals.deferred==guarded&&d.material.guard==guarded&&d.material.bufferGuard==guarded);
     assert(d.material.calls==2&&d.normals.calls==1&&d.material.context==&d&&d.normals.context==&d);
     assert(NorthlightUpload::readBackLock()==flags&&NorthlightUpload::ReadBackNoOverwrite.load()==readback);++cases;
 }}}std::printf("CAPTURE_BATCH_POLICY_PASS cases=%u native=1 dxvk1=1 dxvk2=1 dxvk3=1 legacy=1 textureContract=preserved readBackFlags=unchanged\n",cases);}

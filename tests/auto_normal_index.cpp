@@ -46,6 +46,7 @@ struct IDirect3DSurface9:Ref {
 HRESULT IDirect3DTexture9::GetSurfaceLevel(unsigned,IDirect3DSurface9** out){try{*out=new IDirect3DSurface9(this);return 0;}catch(...){return E_FAIL;}}
 struct IDirect3DPixelShader9:Ref {bool model;explicit IDirect3DPixelShader9(bool m):model(m){}};
 static const DWORD kAutoNormalShader[]={0},kAutoNormalModelShader[]={1};
+static const DWORD kAutoNormalLegacyShader[]={2},kAutoNormalModelLegacyShader[]={3};
 struct IDirect3DDevice9 {
     IDirect3DSurface9* target=nullptr;IDirect3DBaseTexture9* texture=nullptr;IDirect3DPixelShader9* shader=nullptr;
     float vertex[1024]={},pixel[8]={};bool failDraw=false;
@@ -59,7 +60,7 @@ struct IDirect3DDevice9 {
     HRESULT GetVertexShaderConstantF(unsigned first,float* p,unsigned count){std::memcpy(p,vertex+first*4,count*16);return 0;}
     HRESULT SetVertexShaderConstantF(unsigned first,const float* p,unsigned count){std::memcpy(vertex+first*4,p,count*16);return 0;}
     HRESULT SetPixelShaderConstantF(unsigned first,const float* p,unsigned count){std::memcpy(pixel+first*4,p,count*16);return 0;}
-    HRESULT CreatePixelShader(const DWORD* p,IDirect3DPixelShader9** out){try{*out=new IDirect3DPixelShader9(p[0]!=0);return 0;}catch(...){return E_FAIL;}}
+    HRESULT CreatePixelShader(const DWORD* p,IDirect3DPixelShader9** out){try{*out=new IDirect3DPixelShader9((p[0]&1)!=0);return 0;}catch(...){return E_FAIL;}}
     HRESULT CreateTexture(UINT w,UINT h,UINT, DWORD usage,D3DFORMAT format,unsigned pool,IDirect3DTexture9** out,void*){
         try{*out=new IDirect3DTexture9;(*out)->desc={w,h,usage,format,pool};return 0;}catch(...){return E_FAIL;}}
     HRESULT SetDepthStencilSurface(void*){return 0;}HRESULT SetViewport(const D3DVIEWPORT9*){return 0;}HRESULT SetRenderState(unsigned,DWORD){return 0;}
@@ -77,7 +78,7 @@ struct SavedState {
     ~SavedState(){d->SetRenderTarget(0,target);d->SetTexture(0,texture);d->SetPixelShader(shader);drop(target);drop(texture);drop(shader);}
 };
 static void logf(const char*,...){}
-namespace NorthlightQuality {struct Settings {unsigned autoHeightPolarity=0,autoHeightDetails=75,autoHeightBalance=50;};}
+namespace NorthlightQuality {struct Settings {unsigned autoHeightPolarity=0,autoHeightDetails=75,autoHeightBalance=50,autoNormalFilter=1;};}
 namespace NorthlightMaterialHeight {
 struct Image {};
 static std::uint64_t version(IDirect3DTexture9* p){return p->version;}
@@ -100,7 +101,7 @@ struct NorthlightMaterialMapPersistence {
     enum class Status {Skip,Pending,Miss,Hit};struct Probe {Status status=Status::Skip;std::array<float,4> profile{};};
     NorthlightMaterialMapPersistence(IDirect3DDevice9*,const std::filesystem::path&,const char*,const char* =nullptr,bool=false){}
     void reset(){}void endFrame(){}void report(){}void trimUploads(){}
-    Probe probe(IDirect3DTexture9*,const D3DSURFACE_DESC&,bool,unsigned,unsigned,unsigned,std::uint64_t=0){return {};}
+    Probe probe(IDirect3DTexture9*,const D3DSURFACE_DESC&,bool,unsigned,unsigned,unsigned,std::uint64_t=0,bool=true){return {};}
     bool upload(const Probe&,IDirect3DTexture9*,unsigned,unsigned){return false;}
     void capture(const Probe&,IDirect3DTexture9*,unsigned,unsigned){}
 };

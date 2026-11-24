@@ -1,4 +1,5 @@
 // Real capture and replay, partitioning a stock M2 into adjacent indexed draws.
+#include <tuple>
 struct ModelNormalMergeTest {
     using Normals=NorthlightModelNormals;
     template<class T> static auto programCache(T& n,int)->decltype((n.programs)){return n.programs;}
@@ -15,6 +16,15 @@ struct ModelNormalMergeTest {
     }
     template<class P>static auto& firstTexture(P& p,unsigned slot){
         if constexpr(CompactSamplers<P>::value)return p.sampled.front().texture;else return p.textures[slot];
+    }
+    template<class P,class=void>struct OptionalConstants:std::false_type{};
+    template<class P>struct OptionalConstants<P,std::void_t<decltype(std::declval<P&>().nonFloat)>>:std::true_type{};
+    template<class P>static auto integerAndBoolBanks(P& p){
+        if constexpr(OptionalConstants<P>::value){
+            using Storage=typename decltype(p.nonFloat)::element_type;
+            if(!p.nonFloat)p.nonFloat.reset(new Storage);
+            return std::tie(p.nonFloat->vertexInts,p.nonFloat->vertexBools,p.nonFloat->pixelInts,p.nonFloat->pixelBools);
+        }else return std::tie(p.intStorage,p.boolStorage,p.pi,p.pb);
     }
     static void controls(Normals& n){
         assert(n.pending.size()==16);auto& p=*n.pending[1];
@@ -46,10 +56,12 @@ struct ModelNormalMergeTest {
         // All integer/boolean banks and sampled inputs participate in equality.
         const auto vr=p.vertex->reads,pr=p.pixel->reads;
         assert(!vr.i&&!vr.b&&!pr.i&&!pr.b);
-        for(auto& q:n.pending){std::fill_n(q->intStorage,64,0);std::fill_n(q->boolStorage,16,FALSE);
-            std::fill_n(q->pi,64,0);std::fill_n(q->pb,16,FALSE);q->ints=q->intStorage;q->bools=q->boolStorage;}
+        for(auto& q:n.pending){auto [vi,vb,pi,pb]=integerAndBoolBanks(*q);
+            std::fill_n(vi,64,0);std::fill_n(vb,16,FALSE);
+            std::fill_n(pi,64,0);std::fill_n(pb,16,FALSE);q->ints=vi;q->bools=vb;}
         p.vertex->reads.i=p.vertex->reads.b=p.pixel->reads.i=p.pixel->reads.b=1;
-        change(p.intStorage[0],1);change(p.boolStorage[0],BOOL(TRUE));change(p.pi[0],1);change(p.pb[0],BOOL(TRUE));
+        auto [vi,vb,pi,pb]=integerAndBoolBanks(p);
+        change(vi[0],1);change(vb[0],BOOL(TRUE));change(pi[0],1);change(pb[0],BOOL(TRUE));
         p.vertex->reads=vr;p.pixel->reads=pr;
         const unsigned slot=pr.samplers?unsigned(__builtin_ctz(pr.samplers)):0;
         if(!pr.samplers){for(auto& q:n.pending)samplerControlStorage(*q,slot,true);p.pixel->reads.samplers=1u<<slot;}

@@ -305,7 +305,7 @@ public:
      // creations. Separate layouts still consume one group per mesh.
      if(attempts_[lane]>=AttemptLimit||((!batched||pending_[lane].empty())&&groups_[lane]>=GroupLimit)){++stats_[lane].uploadDeferred;++stats_[lane].attemptDeferred;return false;}
      if(bytes>UploadLimit-attempted_[lane]){++stats_[lane].uploadDeferred;++stats_[lane].uploadByteDeferred;return false;}
-     if(NorthlightReplayGPU::CreateTimeBudget&&!ignoreTime_[lane]&&groups_[lane]&&stats_[lane].createMs>=NorthlightReplayGPU::createBudgetMs()){++stats_[lane].uploadDeferred;++stats_[lane].timeDeferred;timeDeferred_[lane]=true;return false;}
+     if(NorthlightReplayGPU::useCreateTimeBudget()&&!ignoreTime_[lane]&&groups_[lane]&&stats_[lane].createMs>=NorthlightReplayGPU::createBudgetMs()){++stats_[lane].uploadDeferred;++stats_[lane].timeDeferred;timeDeferred_[lane]=true;return false;}
      return true;
     };
     flushFull();if(!allowed())return false;

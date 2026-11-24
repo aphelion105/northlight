@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Startup source identity follows build inputs, not private settings or line endings."""
+
+from source_units import source_text
 from pathlib import Path
 import sys
 import tempfile
@@ -33,7 +35,7 @@ with tempfile.TemporaryDirectory() as folder:
     before_assets=build.source_identity(root)
     (root/'scripts/build_renderer_assets.py').write_text('Resource pack generator')
     assert build.source_identity(root)!=before_assets
-source=fp.src('renderer.cpp').read_text()
+source=source_text(fp.src('renderer.cpp'))
 assert 'BUILD identity source=%s' in source and 'NORTHLIGHT_SOURCE_ID' in source
 assert '__DATE__' not in source and '__TIME__' not in source
 assert 'NORTHLIGHT_SOURCE_ID="' in (fp.SCRIPTS/'build_renderer.py').read_text()

@@ -4,8 +4,8 @@
 // D3D: the generated record/dispatch code (command_stream.inl) sits on top.
 //
 // Memory: 1 MiB chunks from a pool (no heap allocation on the hot path once warmed), plus pooled power-of-two Blocks for
-// payloads above MaxInlinePayload. Everything counts against one budget (chunks in use + live blocks + registered
-// shadow bytes); when a request would exceed it the producer publishes and waits until the consumer frees memory.
+// payloads above MaxInlinePayload. The queue budget covers live chunks and blocks.
+// When a request would exceed it the producer publishes and waits for replay to free space.
 //
 // Publishing: a committed command becomes visible to the consumer at publish(). commit() publishes immediately for a sleeping consumer, otherwise every 64
 // commands or 64 KiB, and a chunk switch publishes the closed chunk. Callers publish explicitly at BeginScene/EndScene/
@@ -38,13 +38,13 @@ constexpr std::size_t MaxInlinePayload=ChunkBytes/4;   // larger payloads travel
 // rings are freed after 60 idle frames, idle pools are kept small: kPoolMaxChunks, kMaxPooledBlockBytes, PoolTuner).
 // 0.3.216 (issue #66 follow-up): memory pressure never refuses a shadow, a large grant or a ring slice, never drops one and never waits for a slice: each of those turned a buffer lock into a synchronous round trip to the replay thread
 // (hundreds per frame, an unplayable game), which costs more than the memory. Pressure only halves the queue budget and frees pooled chunks, Blocks, scratch, spare level allocations and free ring slices. WORST CASE game-side under pressure
-// (every cap at its maximum at once, which no session approaches): buffer shadows 32 (adaptive regular max) + large allowance 36 + rings 20 (regular) + 36 (large) + texture shadows 16 + queue 16 (the halved 32) = 156 MiB, plus the replay-side
-// copies' 16+16 MiB (replay_copies.h; halved under pressure) = ~172-188 MiB. The same without pressure but with the queue at 32: 172 + 16.
+// (every cap at its maximum at once, which no session approaches): buffer shadows 32 (adaptive regular max) + large allowance 36 + rings 20 (regular) + 36 (large) + texture shadows 16 + queue 10 (the halved 20) = 150 MiB, plus the replay-side
+// copies' 16+16 MiB (replay_copies.h; halved under pressure).
 constexpr std::size_t BudgetBytes=std::size_t(16)<<20;
 // 0.3.200 (pipeline): StreamFramesAhead (1..kMaxFramesAhead) frames may be in flight; the queue budget grows by BudgetBytes per extra frame up to
-// kMaxBudgetBytes (32 MiB; halved under memory pressure). 1 = BudgetBytes, the 0.3.199 queue.
+// kMaxBudgetBytes (20 MiB; halved under memory pressure). 1 = BudgetBytes, the 0.3.199 queue.
 constexpr unsigned kMaxFramesAhead=3;
-constexpr std::size_t kMaxBudgetBytes=std::size_t(32)<<20;
+constexpr std::size_t kMaxBudgetBytes=std::size_t(20)<<20;
 constexpr unsigned clampFramesAhead(unsigned n){return n<1?1:n>kMaxFramesAhead?kMaxFramesAhead:n;}
 constexpr std::size_t budgetForFramesAhead(unsigned n){return BudgetBytes*clampFramesAhead(n)<kMaxBudgetBytes?BudgetBytes*clampFramesAhead(n):kMaxBudgetBytes;}
 constexpr std::size_t TextureShadowBudgetBytes=std::size_t(16)<<20;   // per-level texture shadows; not halved under pressure (0.3.216); evictable (LRU)
@@ -54,7 +54,8 @@ constexpr std::size_t TextureShadowBudgetBytes=std::size_t(16)<<20;   // per-lev
 // (and none in the first interval). Pressure changes nothing here (0.3.216). Growth is game-thread; the cap is read by any thread.
 constexpr std::size_t ShadowBudgetBytes=std::size_t(16)<<20;
 // 0.3.205: the ring budget of regular-cap buffers (live + retired slices; was ShadowBudgetBytes, 16 MiB): in crowds several skinning buffers of 2-3 MiB DISCARD many times a frame and the 16 MiB ring
-// made them wait for a slice the replay thread still read (waitWhy budget). Rings are dropped under memory pressure and freed after 60 idle frames, so the extra 4 MiB is only held while they are busy.
+// made them wait for a slice the replay thread still read (waitWhy budget). Regular rings can also borrow unused large-ring capacity.
+// Free slices are dropped under memory pressure and after 60 idle frames.
 constexpr std::size_t RingRegularBudgetBytes=std::size_t(20)<<20;
 constexpr std::size_t kShadowBudgetMaxBytes=std::size_t(32)<<20,kShadowGrowStep=std::size_t(4)<<20;
 constexpr std::uint64_t kShadowHotFrames=60,kShadowGrowFrames=60;
@@ -92,10 +93,14 @@ enum class WaitKind {Sync,Present,Backpressure};
 enum class ExpressKind {Readback,Query};
 
 // 0.3.206 (task 31): a unit of work for the replay thread's next command boundary (Queue::runExpress). Lives on the poster's stack.
-constexpr std::uint16_t kExpressIdle=0xFFFF;   // ExpressTask::behindCmd: the replay thread was idle (slept / empty queue) when the task was served
-// behindCmd / startNs are written by the replay thread before it clears the mailbox (the poster reads them after that handshake): the last command executed, and nowNs() at serve start (only when `timed`).
-struct ExpressTask {void (*fn)(void*);void* arg;bool (*ready)(void*);bool timed;std::uint16_t behindCmd;std::uint64_t startNs;};
-struct ExpressTimes {std::uint16_t behindCmd=kExpressIdle;std::uint64_t startNs=0;};   // what a timed runExpress hands back
+constexpr std::uint16_t kExpressIdle=0xFFFF;
+// The producer initializes this before posting and reads it after the mailbox
+// clears. Replay writes the boundaries between those two handshakes.
+struct ExpressTimes {
+    std::uint16_t behindCmd=kExpressIdle,seenBehindCmd=kExpressIdle;
+    std::uint64_t startNs=0,postedNs=0,seenNs=0,seenSeq=0,serveSeq=0;
+};
+struct ExpressTask {void (*fn)(void*);void* arg;bool (*ready)(void*);ExpressTimes* times;std::uint64_t afterSeq;};
 // Counts observations, not elapsed time: a held publication proves work existed
 // while replay was asleep; it does not make the whole queue-idle span avoidable.
 struct WakePublicationDiagnostics {std::uint64_t heldBatches=0,heldCommands=0,heldBytes=0,wakeSignals=0,partialBatches=0,partialCommands=0;};
@@ -128,7 +133,8 @@ class Queue {
     bool idleTracking_=false;   // configured by the producer before the consumer starts; immutable during replay
     // Consumer-private.
     alignas(kLine) Chunk* rchunk_;
-    std::uint32_t rpos_=0;
+    std::uint32_t rpos_=0,rpublished_=0;
+    std::uint64_t rseq_=0;
     std::uint64_t lastSignalledSeq_=0,bpSignalledRec_=~std::uint64_t(0);   // 0.3.196 (task 12): wakeWaiters' memory (consumer only)
 #ifdef NORTHLIGHT_STREAM_CHECK_WAIT
     std::atomic<unsigned> backstopSignals_{0};
@@ -235,15 +241,21 @@ class Queue {
         for(;;){
             const std::uint32_t e=rchunk_->end.load(std::memory_order_acquire);
             if(!e||rpos_<e)return;
-            Chunk* n=rchunk_->next.load(std::memory_order_acquire);recycle(rchunk_);rchunk_=n;rpos_=0;
+            Chunk* n=rchunk_->next.load(std::memory_order_acquire);recycle(rchunk_);rchunk_=n;rpos_=rpublished_=0;
             std::atomic_thread_fence(std::memory_order_seq_cst);   // 0.3.196 (task 12): once per chunk; the chunk is returned before bpWaiting_ is read (retire no longer fences per command)
             if(bpWaiting_.load())progress_.set();
         }
     }
+    // One acquire covers the entire immutable prefix. Replay and indexed
+    // lookahead need to reload only when they reach its end.
+    bool published(std::uint32_t offset){
+        if(offset<rpublished_)return true;
+        rpublished_=rchunk_->published.load(std::memory_order_acquire);
+        return offset<rpublished_;
+    }
     const CommandHeader* peek(){
         for(;;){
-            const std::uint32_t pub=rchunk_->published.load(std::memory_order_acquire);
-            if(rpos_<pub)return reinterpret_cast<const CommandHeader*>(rchunk_->data+rpos_);
+            if(published(rpos_))return reinterpret_cast<const CommandHeader*>(rchunk_->data+rpos_);
             const std::uint32_t e=rchunk_->end.load(std::memory_order_acquire);
             if(!e||rpos_<e)return nullptr;
             advance();
@@ -339,6 +351,12 @@ public:
             publishLazy(); // A sleeping replay needs the ready prefix, not a full batch.
         }
     }
+    // Producer only. A committed tail can be amended until it is published.
+    void* unpublishedTailPayload(std::uint16_t id){
+        if(open_||!openSize_||openSize_>wpos_-pubPos_)return nullptr;
+        auto* h=reinterpret_cast<CommandHeader*>(wchunk_->data+wpos_-openSize_);
+        return h->id==id&&!(h->flags&kFlagBlock)?h+1:nullptr;
+    }
     // Makes everything committed visible to the consumer and wakes it if it sleeps.
     void publish(){
         if(wpos_==pubPos_){if(lazyWake_)wake();return;}   // 0.3.200 (pipeline): an automatic publish held its wake back: this explicit one delivers it
@@ -395,15 +413,15 @@ public:
     // queue to drain: dependencies must already be replayed, or ready must defer until they are. A deferred task must leave published commands to make progress, or become ready on a drained queue.
     // One poster at a time (the game thread). Counted in syncNs (comparable with the
     // drain waits) and expressNs, with separate readback/query counters. The query caller owns syncCalls/census. Wake handshake: store the mailbox, fence, wake a sleeper (the consumer sets sleeping_, fences, re-checks the mailbox).
-    void runExpress(void (*fn)(void*),void* arg,ExpressTimes* times=nullptr,ExpressKind kind=ExpressKind::Readback,bool (*ready)(void*)=nullptr){   // times: Diagnostics only (the replay thread then reads the clock once at serve start)
-        ExpressTask t{fn,arg,ready,times!=nullptr,kExpressIdle,0};
+    void runExpress(void (*fn)(void*),void* arg,ExpressTimes* times=nullptr,ExpressKind kind=ExpressKind::Readback,bool (*ready)(void*)=nullptr,std::uint64_t afterSeq=0){
+        ExpressTask t{fn,arg,ready,times,afterSeq};
         const auto t0=nowNs();
+        if(times){*times={};times->postedNs=t0;}
         express_.store(&t,std::memory_order_release);
         std::atomic_thread_fence(std::memory_order_seq_cst);
         if(sleeping_.load()&&sleeping_.exchange(false))consumerEv_.set();
         while(express_.load(std::memory_order_acquire)!=nullptr)expressDone_.waitPumped(50);   // the timeout only bounds a missed wake
         const auto ns=nowNs()-t0;
-        if(times){times->behindCmd=t.behindCmd;times->startNs=t.startNs;}
         add(stats.syncNs,ns);add(stats.expressNs,ns);
         if(kind==ExpressKind::Query){add(stats.expressQueries);add(stats.queryExpressNs,ns);}
         else{add(stats.expressReadbacks);add(stats.readbackExpressNs,ns);}
@@ -418,12 +436,12 @@ public:
 #endif
     // A pooled Block of at least bytes (capacity is the power of two above), budgeted. nullptr when the request alone
     // exceeds the budget, or still does not fit once the consumer has drained: the caller takes the sync pass-through.
-    Block* tryAllocBlock(std::size_t bytes){
+    Block* tryAllocBlock(std::size_t bytes,bool wait=true){
         const unsigned k=blockClass(bytes?bytes:1);
         // The open write chunk is always in flight (inflight() counts it): a class that cannot fit beside it never fits, so refuse now instead of draining the whole queue first.
         if(k>=kBlockClasses||(std::size_t(1)<<(k+kMinBlockShift))+ChunkBytes>budget()){own(stats.blockRefused);return nullptr;}
         const std::size_t cap=std::size_t(1)<<(k+kMinBlockShift);
-        backpressure(cap);
+        if(wait)backpressure(cap);
         if(over(cap)){own(stats.blockRefused);return nullptr;}
         Block* b=nullptr;
         {std::lock_guard<std::mutex> l(pool_);auto& v=freeBlocks_[k];if(!v.empty()){b=v.back();v.pop_back();pooledBlockBytes_-=cap;stats.blockPoolBytes.fetch_sub(cap,std::memory_order_relaxed);}}
@@ -492,6 +510,7 @@ public:
         for(Block* x:b)::operator delete(x);
     }
     // Every byte the queue holds from the process: chunks (in use and pooled), live and pooled Blocks. (Shadows are accounted by their owners.)
+    std::size_t liveBytes()const{return inflight();}
     std::size_t reservedBytes()const{return std::size_t(get(stats.chunksHeap))*sizeof(Chunk)+std::size_t(get(stats.blockBytes))+std::size_t(get(stats.blockPoolBytes));}
 
     // ---- Consumer ----
@@ -555,12 +574,12 @@ public:
         const std::uint16_t fl=h->flags;   // h dies with its chunk (advance() below)
         if(fl&kFlagBlock)freeBlock(blockOf(h));
         rpos_+=h->size;
-        const std::uint64_t n=replayed_.load(std::memory_order_relaxed)+1;
+        const std::uint64_t n=++rseq_;
         // 0.3.196 (task 12): release store (the Present ring and everything the replay thread wrote for this command is visible to a producer that reads replayed_ seq_cst), no per-command locked
         // instruction. Dekker with waitReplayed (waitSeq_ store -> replayed_ load): only a command the producer may wait for pays the fence before it reads waitSeq_.
         replayed_.store(n,std::memory_order_release);
         if(fl&kFlagWaitTarget)std::atomic_thread_fence(std::memory_order_seq_cst);
-        advance();
+        if(rpos_>=rpublished_)advance();
         // 0.3.200 (pipeline): the signal is remembered (lastSignalledSeq_/bpSignalledRec_, as wakeWaiters does), so neither a later retire nor the idle backstop
         // signals the same wait again while the producer has not yet run (a SetEvent each); the backstop's forced pre-sleep signal stays.
         const std::uint64_t w=waitSeq_.load();
@@ -568,15 +587,36 @@ public:
         else if(bpWaiting_.load()){const std::uint64_t rec=recorded_.load();if(n>=rec&&rec!=bpSignalledRec_){bpSignalledRec_=rec;progress_.set();}}   // drained: nothing more to free, let the producer re-evaluate
     }
     std::uint64_t replayedSeq()const{return replayed_.load();}
+    // Consumer-only lookahead. Keep the run inside one published chunk so
+    // retiring its first command cannot invalidate the unretired tail.
+    const CommandHeader* publishedAfter(const CommandHeader* h){
+        const auto* next=reinterpret_cast<const unsigned char*>(h)+h->size;
+        const auto offset=static_cast<std::uint32_t>(next-rchunk_->data);
+        return published(offset)?reinterpret_cast<const CommandHeader*>(next):nullptr;
+    }
     // 0.3.206 (task 31): the replay loop, between two commands: runs a posted express task (one acquire load when none).
-    void serveExpress(std::uint16_t lastCmd){   // lastCmd: the command the replay loop executed last, or kExpressIdle when it slept since
+    template<class Barrier> void serveExpress(std::uint16_t lastCmd,Barrier barrier){
         ExpressTask* t=express_.load(std::memory_order_acquire);
-        if(!t||(t->ready&&!t->ready(t->arg)))return;
-        t->behindCmd=lastCmd;if(t->timed)t->startNs=nowNs();
+        if(!t)return;
+        auto* times=t->times;
+        if(times&&t->ready&&!times->seenNs){
+            times->seenNs=nowNs();times->seenSeq=rseq_;times->seenBehindCmd=lastCmd;
+        }
+        // A known predecessor needs only the consumer's retirement counter.
+        // Inspect query generation/device state once that command has run.
+        if(t->ready&&(t->afterSeq>rseq_||!t->ready(t->arg)))return;
+        // A posted task with an unreplayed predecessor does not observe the
+        // backend yet. Drain deferred draws only when the task can run.
+        barrier();
+        if(times){
+            times->behindCmd=lastCmd;times->startNs=nowNs();
+            if(t->ready)times->serveSeq=rseq_;
+        }
         t->fn(t->arg);
         express_.store(nullptr,std::memory_order_release);   // t dies with the poster's wait
         expressDone_.set();
     }
+    void serveExpress(std::uint16_t lastCmd){serveExpress(lastCmd,[]{});}
     // The Block of a kFlagBlock command and the caller part of its payload (after the slot).
     static Block* blockOf(const CommandHeader* h){Block* b=nullptr;if(h->flags&kFlagBlock)std::memcpy(&b,h+1,sizeof b);return b;}
     static const unsigned char* payload(const CommandHeader* h){return reinterpret_cast<const unsigned char*>(h+1)+((h->flags&kFlagBlock)?kBlockSlot:0);}

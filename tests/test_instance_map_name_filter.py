@@ -4,9 +4,11 @@
 (Zul'Gurub) and "Stratholme Raid" (Naxxramas) never got a world context. The filter now also accepts an
 apostrophe and a space (still nothing else: no path separator, dot or control character), and every
 key=value log line that carries a map name quotes it. Source wiring; writes nothing."""
+
+from source_units import source_text
 import re, sys; from pathlib import Path; sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root
 import northlight_paths as fp
-ctx=fp.src('world_context.h').read_text();w=fp.src('world_renderer.h').read_text();lights=fp.src('world_local_lights.h').read_text()
+ctx=fp.src('world_context.h').read_text();w=source_text(fp.src('world_renderer.h'));lights=fp.src('world_local_lights.h').read_text()
 read=ctx[ctx.index('inline bool readMapAndCamera('):];read=read[:read.index('\n}\n')]
 allowed=re.search(r"if\(!\((.*)\)\)return false;",read).group(1)
 def accepts(c):

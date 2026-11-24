@@ -44,10 +44,11 @@ static void limitsAndOwners(Sources& s){
     unsigned after=0;for(unsigned i=0;i<8;++i)after+=s.colliding[i]->descReads;assert(after-reads==8&&o.cache.attempts==8);
     const auto hits=o.cache.refusalHits;for(unsigned i=0;i<1000;++i)assert(!o.cache.resolve(s.colliding[i%8]));
     assert(o.cache.refusalHits-hits==1000&&o.cache.attempts==8);
-    auto* ninth=s.colliding[8];const auto previous=ninth->descReads;assert(!o.cache.resolve(ninth)&&ninth->descReads==previous&&ninth->refs==1);
+    auto* ninth=s.colliding[8];const auto previous=ninth->descReads;
+    assert(o.cache.cannotAdmit(ninth,true)&&!o.cache.resolve(ninth)&&ninth->descReads==previous&&ninth->refs==1);
     for(unsigned i=0;i<8;++i)assert(s.colliding[i]->refs==2);
     o.cache.endFrame();for(auto* t:s.colliding)assert(t->refs==1);
-    assert(!o.cache.resolve(ninth)&&ninth->descReads==previous+1);
+    assert(!o.cache.cannotAdmit(ninth,true)&&!o.cache.resolve(ninth)&&ninth->descReads==previous+1);
     auto* external=new IDirect3DTexture9;external->desc.Usage=D3DUSAGE_DEPTHSTENCIL;const auto objects=liveObjects;
     assert(!o.cache.resolve(external)&&external->refs==2);external->Release();assert(liveObjects==objects);
     o.cache.reset();assert(liveObjects==objects-1);
@@ -56,6 +57,21 @@ static void limitsAndOwners(Sources& s){
     auto* valid=new IDirect3DTexture9;valid->identity=72;o.device.failDraw=true;assert(!o.cache.resolve(valid));const auto desc=valid->descReads;
     assert(!o.cache.resolve(valid)&&valid->descReads==desc);o.cache.endFrame();assert(o.cache.resolve(valid));o.cache.reset();assert(valid->refs==1);valid->Release();
 }
+static void spentGenerationBudget(Sources& s){
+    Owner<CacheCurrent> o;
+    auto* source=new IDirect3DTexture9;
+    assert(!o.cache.cannotAdmit(source,true)&&o.cache.resolve(source,true));
+    auto* other=new IDirect3DTexture9;
+    assert(o.cache.resolve(other,false));
+    assert(o.cache.cannotAdmit(s.colliding[0],true)&&o.cache.cannotAdmit(source,false));
+    assert(!o.cache.cannotAdmit(source,true)&&!o.cache.cannotAdmit(other,false));
+    ++source->version; // Inspect live entries through the ordinary resolver.
+    assert(!o.cache.cannotAdmit(source,true)&&!o.cache.resolve(source,true));
+    assert(o.cache.cannotAdmit(source,true));
+    o.cache.reset();assert(o.cache.cannotAdmit(source,true));
+    o.cache.endFrame();assert(!o.cache.cannotAdmit(source,true));
+    source->Release();other->Release();
+}
 int main(){
     std::setvbuf(stdout,nullptr,_IONBF,0);
     {Sources sources;
@@ -63,7 +79,7 @@ int main(){
      collisionCase<CacheBaseline>(sources,false);
      collisionCase<CacheBaseline>(sources,false,false);
 #endif
-     collisionCase<CacheCurrent>(sources,true);collisionCase<CacheCurrent>(sources,true,false);exactKeys(sources);limitsAndOwners(sources);
+     collisionCase<CacheCurrent>(sources,true);collisionCase<CacheCurrent>(sources,true,false);exactKeys(sources);limitsAndOwners(sources);spentGenerationBudget(sources);
     }
     assert(!liveObjects);std::puts("MATERIAL_REFUSAL_PASS keys=source_model_revision attempts=8 refs=balanced frame_reset_retry=1 allocations_on_hits=0");
 }

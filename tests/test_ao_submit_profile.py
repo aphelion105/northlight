@@ -10,13 +10,15 @@ sys.path.insert(0, str(ROOT))
 import northlight_paths as fp
 
 source = fp.src('renderer.cpp').read_text()
-start = source.index('const bool timeAOBlur=')
-end = source.index('cpuAOBlurPending=true;}', start) + len('cpuAOBlurPending=true;}')
-region = source[start:end]
+contact = fp.src('contact_ao_pass.h').read_text()
+start = contact.index('const bool timeAOBlur=')
+end = contact.index('\n    }\n    return true;', start)
+region = contact[start:end]
+timing = contact[contact.index('struct BlurTiming {'):contact.index('struct Outputs {')]
 scope = source[source.index('struct CpuScope {'):source.index('static NorthlightMemoryDiagnostics::Sample')]
 assert 'logf(' not in region
 assert source.index('logf("AO_SUBMIT') > source.index('if(sampledFrame&&cpuFrequency.QuadPart>0)')
-folder = fp.out() / 'rotation-disabled-ao/cpu-submit'
+folder = fp.output_dir() / 'ao-submit-profile'
 folder.mkdir(parents=True, exist_ok=True)
 cpp = folder / 'actual-region.cpp'
 cpp.write_text('''
@@ -29,7 +31,7 @@ using LONGLONG=long long;using HRESULT=int;
 struct LARGE_INTEGER {LONGLONG QuadPart=0;};
 static unsigned clocks=0;
 static bool QueryPerformanceCounter(LARGE_INTEGER* value){value->QuadPart=++clocks;return true;}
-''' + scope + '''
+''' + scope + timing + '''
 struct GPU {
     bool on=false;std::vector<std::string> labels;
     bool recording()const{return on;}
@@ -47,28 +49,29 @@ enum class Bucket {AO};
 struct Buckets {unsigned marks=0;void mark(Bucket){++marks;}};
 struct Device {
     GPU gpu;GPU* gpuProfile=&gpu;Extension extension;Extension* ext=&extension;Buckets effectsBuckets;
-    LARGE_INTEGER cpuFrequency{1000000};
-    unsigned width=137,height=79,aoMethod=2,draws=0,bindings=0;bool failDraw=false;
+    unsigned width=137,height=79,aoMethod=2,draws=0,bindings=0;bool failDraw=false,cpuClockAvailable=true;
     int aoSurface=3,aoRaw=4,aoBlurPS=5,scene=6,waterMask=0,aoBlurNoWaterPS=0;
-    LONGLONG cpuAOBlurSetup=0,cpuAOBlurSubmit=0;std::uint64_t cpuAOBlurFrame=0;
-    unsigned cpuAOBlurMethod=0,cpuAOBlurWidth=0,cpuAOBlurHeight=0;bool cpuAOBlurPending=false,diagnosticAo=false;
+    BlurTiming blurTiming;
+    bool diagnosticAo=false;
     bool error(HRESULT hr,const char*){return hr<0;}
-    void bindLegacyFog(){++bindings;}
+    void bindBlurInputs(){++bindings;}
     HRESULT quad(unsigned w,unsigned h,bool viewport){assert(w==68&&h==39&&!viewport);++draws;return failDraw?-1:0;}
-    void run(){
+    bool run(){
 ''' + region + '''
+        return true;
     }
 };
 int main(){
     for(bool recording:{false,true})for(bool frequency:{false,true})for(bool targetFailure:{false,true})for(bool drawFailure:{false,true})for(bool water:{false,true})for(bool specialized:{false,true}){
-        Device d;d.gpu.on=recording;d.cpuFrequency.QuadPart=frequency?1000000:0;d.extension.fail=targetFailure;d.failDraw=drawFailure;
+        Device d;d.gpu.on=recording;d.cpuClockAvailable=frequency;d.extension.fail=targetFailure;d.failDraw=drawFailure;
         d.waterMask=water;d.aoBlurNoWaterPS=specialized?7:0;
-        clocks=0;CpuScope::reads=0;d.run();
+        clocks=0;CpuScope::reads=0;assert(d.run()==(!targetFailure&&!drawFailure));
         const bool timed=recording&&frequency;
         assert(clocks==(timed?(targetFailure?2u:4u):0u)&&CpuScope::reads==clocks);
         assert(d.draws==(targetFailure?0u:1u)&&d.bindings==(targetFailure?0u:1u));
-        assert(d.cpuAOBlurPending==(timed&&!targetFailure&&!drawFailure));assert(d.diagnosticAo==(!targetFailure&&!drawFailure));
-        if(d.cpuAOBlurPending){assert(d.cpuAOBlurFrame==9876&&d.cpuAOBlurMethod==2&&d.cpuAOBlurWidth==68&&d.cpuAOBlurHeight==39);assert(d.cpuAOBlurSetup==1&&d.cpuAOBlurSubmit==1);}
+        const auto& timing=d.blurTiming;
+        assert(timing.pending==(timed&&!targetFailure&&!drawFailure));assert(d.diagnosticAo==(!targetFailure&&!drawFailure));
+        if(timing.pending){assert(timing.frame==9876&&timing.method==2&&timing.width==68&&timing.height==39);assert(timing.setup==1&&timing.submit==1);}
         const int shader=!water&&specialized?2007:2005;
         const std::vector<int> states=targetFailure?std::vector<int>{300}:drawFailure?std::vector<int>{300,1402,1400,shader}:std::vector<int>{300,1402,1400,shader,1002,1600};
         assert(d.extension.calls==states);

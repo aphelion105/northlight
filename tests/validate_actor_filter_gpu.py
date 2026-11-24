@@ -6,6 +6,7 @@ from pathlib import Path
 ROOT=Path(__file__).resolve().parents[1]
 sys.path[:0]=[str(ROOT),str(ROOT/'scripts/shaders')]
 import northlight_paths as fp
+from scripts.shaders.shader_sources import world_source_at_ref, world_source_bytes
 from shader_compiler import Compiler,validate_assembly
 from validate_native_scene_trace import processes
 
@@ -16,7 +17,7 @@ def main():
  compiler=Compiler(allow_compatible_binary=True);metadata={}
  for mode in ('old','new'):
   folder=out/mode;folder.mkdir(exist_ok=True)
-  raw=(a.baseline_file.read_bytes() if a.baseline_file else subprocess.check_output(['git','show',a.baseline_ref+':shaders/world_effects.hlsl'],cwd=ROOT)) if mode=='old' else (fp.SHADERS/'world_effects.hlsl').read_bytes()
+  raw=(world_source_bytes(a.baseline_file) if a.baseline_file else world_source_at_ref(ROOT, a.baseline_ref)) if mode=='old' else world_source_bytes(fp.SHADERS/'world_effects.hlsl')
   (folder/'world_effects.hlsl').write_bytes(raw);(folder/'auto_bump_normal.hlsl').write_bytes((fp.SHADERS/'auto_bump_normal.hlsl').read_bytes())
   binary=folder/'ActorShadow.bin';compiler.compile(folder/'world_effects.hlsl','ActorShadow','ps_3_0',binary)
   metadata[mode]={'source_sha256':hashlib.sha256(raw).hexdigest(),'shader_sha256':hashlib.sha256(binary.read_bytes()).hexdigest(),**validate_assembly(Path(str(binary)+'.asm'),'ps_3_0')}

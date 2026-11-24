@@ -76,7 +76,7 @@ exe=out/'lightning-preview.exe'
 subprocess.run([str(fp.zig()),'c++','-target','x86-windows-gnu','-O2','-UNDEBUG','-std=c++17','-Wno-return-type',*fp.include_flags(),str(fp.TESTS/'lightning_preview_gpu.cpp'),'-luser32','-o',str(exe)],check=True,env=fp.zig_env())
 assets=Assets(without='z');result=[]
 try:
-    for stem,wanted,title in [('icecrown','icecrownsky.m2','Ледяная Корона'),('shadowmoon','shadowmoonillidan.m2','Долина Призрачной Луны'),('stormpeaks','stormpeaks_skya.m2','Грозовая Гряда — две текстуры')]:
+    for stem,wanted,title in [('icecrown','icecrownsky.m2','Icecrown'),('shadowmoon','shadowmoonillidan.m2','Shadowmoon Valley'),('stormpeaks','stormpeaks_skya.m2','The Storm Peaks (two textures)')]:
         candidates=[p for p in peaks if p['mode']=='0' and cases[int(p['packet'])]['model'].endswith('\\'+wanted)]
         peak=max(candidates,key=lambda p:max(float(p[k]) for k in ('r','g','b')));case=cases[int(peak['packet'])]
         folder=out/stem;folder.mkdir(exist_ok=True)
@@ -122,12 +122,12 @@ try:
         subprocess.run([str(exe),str(folder)+'/',str(fp.COMPILED/'LocalFlash.bin'),str(fp.client_root()/'renderer-backends/dxvk/dxvk_d3d9.dll')],check=True)
         period,frames=sky_frames(blob,batch);tick=int(peak['tick']);before=max((t for t,*c in frames if t<tick and c[3]==0),default=0);after=min((t for t,*c in frames if t>tick and c[3]==0),default=period)
         images=[];raw=[]
-        for phase,(label,stamp) in enumerate(zip(['До вспышки','Вспышка','После вспышки'],[before,tick,after])):
+        for phase,(label,stamp) in enumerate(zip(['Before the flash','Flash','After the flash'],[before,tick,after])):
             light=load_fgr(folder/f'light-{phase}.fgr');bolt=load_fgr(folder/f'bolt-{phase}.fgr')
             assert np.isfinite(light).all() and np.isfinite(bolt).all();linear=base+light[...,:3]*albedo+bolt[...,:3]
             raw.append(linear);toned=1-np.exp(-np.maximum(linear,0));display=np.where(toned<=.0031308,toned*12.92,1.055*np.power(toned,1/2.4)-.055)
             image=Image.fromarray(np.rint(np.clip(display,0,1)*255).astype(np.uint8));draw=ImageDraw.Draw(image);draw.rectangle((0,0,W,75),fill=(10,14,22))
-            draw.text((20,12),f'{title} · {label}',font=font,fill=(240,244,250));draw.text((20,44),f'Офлайн GPU-стенд · тестовая геометрия · игровой разряд · t={stamp} мс',font=small,fill=(160,180,200))
+            draw.text((20,12),f'{title} · {label}',font=font,fill=(240,244,250));draw.text((20,44),f'Offline GPU test · test geometry · in-game lightning · t={stamp} ms',font=small,fill=(160,180,200))
             image.save(out/f'{stem}-{phase}.png');images.append(image)
         assert np.array_equal(raw[0],raw[2]);assert np.max(raw[1]-raw[0])>.01
         unshadowed=load_fgr(folder/'unshadowed-1.fgr')[...,:3];shadowed=load_fgr(folder/'light-1.fgr')[...,:3]
@@ -135,7 +135,7 @@ try:
         # Same flash with/without its own caster maps: brightness and geometry identical.
         plain=base+unshadowed*albedo+load_fgr(folder/'bolt-1.fgr')[...,:3]
         toned=1-np.exp(-np.maximum(plain,0));display=np.where(toned<=.0031308,toned*12.92,1.055*np.power(toned,1/2.4)-.055)
-        plain_image=Image.fromarray(np.rint(np.clip(display,0,1)*255).astype(np.uint8));draw=ImageDraw.Draw(plain_image);draw.rectangle((0,0,W,75),fill=(10,14,22));draw.text((20,12),f'{title} · Вспышка без её теней',font=font,fill=(240,244,250));draw.text((20,44),'Офлайн GPU-стенд · тот же свет и та же геометрия',font=small,fill=(160,180,200))
+        plain_image=Image.fromarray(np.rint(np.clip(display,0,1)*255).astype(np.uint8));draw=ImageDraw.Draw(plain_image);draw.rectangle((0,0,W,75),fill=(10,14,22));draw.text((20,12),f'{title} · Flash with shadows disabled',font=font,fill=(240,244,250));draw.text((20,44),'Offline GPU test · same lighting and geometry',font=small,fill=(160,180,200))
         pair=Image.new('RGB',(W*2,H));pair.paste(plain_image,(0,0));pair.paste(images[1],(W,0));pair.resize((1920,540),Image.Resampling.LANCZOS).save(out/f'{stem}-shadows.png')
         overview=Image.new('RGB',(W*3,H));[overview.paste(im,(i*W,0)) for i,im in enumerate(images)];overview.resize((1920,360),Image.Resampling.LANCZOS).save(out/f'{stem}-comparison.png')
         result.append({'name':stem,'model':case['model'],'textures':case['textures'],'source_colour':rgb,'native_peak_tick':tick,'before_after_identical':True,'max_added_linear':float(np.max(raw[1]-raw[0]))})
@@ -158,7 +158,7 @@ float4 Compose(float2 uv:TEXCOORD0):COLOR0 {
         shutil.copy2(out/'Compose.bin',out/record['name']/'Compose.bin')
         command='@echo off\r\ncd /d "%~dp0"\r\nstart "" "%~dp0lightning-preview.exe" "%~dp0'+record['name']+'/" "%~dp0LocalFlash.bin" "%~dp0stand-backend.dll" --interactive\r\n'
         (out/(('START' if index==0 else record['name'])+'.cmd')).write_bytes(command.encode('ascii'))
-    (out/'README.txt').write_text('Northlight — молнии, офлайн GPU-стенд\n\nЗапуск: START.cmd (Ледяная Корона). Другие разряды: shadowmoon.cmd и stormpeaks.cmd.\nПробел — пауза. S — замедление в 4 раза. L — тени вкл/выкл. T — полный игровой цикл / повтор фрагмента. R — сначала. Esc — выход.\n\nПо умолчанию повторяется короткий фрагмент около разряда; длительность самой вспышки берётся из игровой анимации. T включает исходный полный цикл с длинными паузами.\nТестовая геометрия, настоящие игровые текстуры и покадровые значения цвета/прозрачности. Свет и тени рисуются production-шейдерами Northlight. WoW запускать не нужно.\n',encoding='utf-8')
+    (out/'README.txt').write_text('Northlight offline lightning GPU test\n\nRun START.cmd for Icecrown, shadowmoon.cmd for Shadowmoon Valley, or stormpeaks.cmd for the Storm Peaks.\nSpace pauses. S plays at quarter speed. L toggles shadows. T switches between the full game cycle and the excerpt. R restarts. Esc exits.\n\nBy default, the preview loops a short excerpt around the lightning strike and uses the flash duration from the game animation. T restores the original full cycle with its long pauses.\nThe preview uses test geometry, game textures, and per-frame color and opacity values. Northlight production shaders render the lights and shadows. The preview runs without WoW.\n',encoding='utf-8')
     (out/'stand-manifest.json').write_text(json.dumps({'controlled_geometry':True,'game_launched':False,'native_timeline_step_ms':1,'scenes':result},indent=2)+'\n',encoding='utf-8')
     print(out/'START.cmd');raise SystemExit(0)
 (out/'preview-manifest.json').write_text(json.dumps({'controlled_geometry':True,'game_screenshot':False,'light_shader':'shaders/compiled/LocalFlash.bin','shadow_shader':'shaders/compiled/FlashShadow.bin','caster_shaders':['ShadowVS.bin','ShadowPS.bin'],'source':'native material timeline + native texture/mask + Capture/Frame publication','previews':result},indent=2)+'\n',encoding='utf-8')

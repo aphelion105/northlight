@@ -65,6 +65,32 @@ public:
         }
         return view;
     }
+    // Stock M2's clip.w is signed view Z. Projection of a convex box with
+    // positive W attains its screen extrema at its corners. A guard band
+    // covers shader round-off and the raster footprint at the threshold.
+    static bool fitsScreen(const Bounds& view,const float* clip,double aspect,float pixels,float protectDepth){
+        if(!view.valid||!clip||!(aspect>0&&aspect<8)||!(pixels>2)||
+           clip[12]!=0||clip[13]!=0||clip[15]!=0||(clip[14]!=1&&clip[14]!=-1))return false;
+        for(unsigned i=0;i<3;++i)
+            if(!std::isfinite(view.low[i])||!std::isfinite(view.high[i])||view.low[i]>view.high[i])return false;
+        if((clip[14]>0?view.low[2]:-view.high[2])<=std::max(1.f,protectDepth)+.01f)return false;
+        for(unsigned i=0;i<12;++i)if(!std::isfinite(clip[i])||std::fabs(clip[i])>1000000)return false;
+        double low[2]={INFINITY,INFINITY},high[2]={-INFINITY,-INFINITY};
+        for(unsigned corner=0;corner<8;++corner){
+            const double x=corner&1?view.high[0]:view.low[0],y=corner&2?view.high[1]:view.low[1],z=corner&4?view.high[2]:view.low[2];
+            const double w=z*clip[14];
+            const double nearPlane=clip[8]*x+clip[9]*y+clip[10]*z+clip[11];
+            if(nearPlane<=.01)return false;
+            for(unsigned axis=0;axis<2;++axis){
+                const float* row=clip+4*axis;
+                const double a=row[0]*x,b=row[1]*y,c=row[2]*z,d=row[3];
+                const double ndc=(a+b+c+d)/w;
+                const double margin=32.*std::numeric_limits<float>::epsilon()*(std::fabs(a)+std::fabs(b)+std::fabs(c)+std::fabs(d)+1.)/w;
+                low[axis]=std::min(low[axis],ndc-margin);high[axis]=std::max(high[axis],ndc+margin);
+            }
+        }
+        return std::max((high[0]-low[0])*aspect,high[1]-low[1])*540.+2.<pixels;
+    }
     static float nearest(const Bounds& view){
         const float lo=view.low[2],hi=view.high[2];
         const float distance=lo>0?lo:hi<0?-hi:0;
@@ -74,4 +100,28 @@ public:
         const float distance=std::max(std::fabs(view.low[2]),std::fabs(view.high[2]));
         return NorthlightReplayBounds::detail::outwardNormal<true>(distance)+.001f;
     }
+    static bool belowDisplacementSize(double x,double y,double z){
+        // The box diagonal is an upper bound on the section's diameter.
+        constexpr double minimumDiameter=.5;
+        return x*x+y*y+z*z<minimumDiameter*minimumDiameter;
+    }
+    struct DisplacementLod {
+        float range;
+        bool small=false,outOfRange=false;
+
+        template<class T> void classify(const T* low,const T* high){
+            double extent[3],distanceSquared=0;
+            for(unsigned axis=0;axis<3;++axis){
+                const double lower=low[axis],upper=high[axis];
+                if(!std::isfinite(lower)||!std::isfinite(upper)||lower>upper)return;
+                extent[axis]=upper-lower;
+                const double nearest=std::max({lower,-upper,0.});
+                distanceSquared+=nearest*nearest;
+            }
+            small=belowDisplacementSize(extent[0],extent[1],extent[2]);
+            // Leave borderline draws to the exact displacement path.
+            const double limit=double(range)*1.0002+.001;
+            outOfRange=distanceSquared>limit*limit;
+        }
+    };
 };

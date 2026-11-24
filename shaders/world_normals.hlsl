@@ -64,8 +64,7 @@ float3 tangentAxis(float3 p,float3 a,float3 b,float3 a1,float3 b1,float2 c,float
 }
 sampler2D ModelNormals : register(s13); // skinned view normal.xyz and linear depth.w; WorldNormals only
 float4 ModelNormalInfo : register(c79);
-float4 worldNormalValue(float2 uv) {
-    float2 c=depthUV(uv);float d=normalizedDepth(c);float z=viewDistance(d);
+float4 worldNormalValue(float2 c,float d,float z) {
     if(d>=.99999)return float4(0,0,1,z);
     [branch]if(ModelNormalInfo.x>.5){
         float4 model=tex2Dlod(ModelNormals,float4(c,0,0));
@@ -106,12 +105,13 @@ float4 worldNormalValue(float2 uv) {
 }
 struct NormalDistanceOutput {float4 normal:COLOR0;float4 distance:COLOR1;};
 NormalDistanceOutput WorldNormals(float2 uv:TEXCOORD0) {
-    NormalDistanceOutput o;o.normal=worldNormalValue(uv);
-    // Match RemovalSmooth's half-res centre exactly, including raster interpolation and odd sizes.
-    float2 q=(floor(uv*ScreenSize.zw)+.5)/ScreenSize.zw;
-    o.distance=viewDistance(normalizedDepth(depthUV(q))).xxxx;
+    float2 c=halfDepthUV(uv);float d=normalizedDepth(c);float z=viewDistance(d);
+    NormalDistanceOutput o;o.normal=worldNormalValue(c,d,z);o.distance=z.xxxx;
     return o;
 }
 
 // No distance MRT is bound when no light source is drawn.
-float4 WorldNormalsNoDistance(float2 uv:TEXCOORD0):COLOR0 { return worldNormalValue(uv); }
+float4 WorldNormalsNoDistance(float2 uv:TEXCOORD0):COLOR0 {
+    float2 c=halfDepthUV(uv);float d=normalizedDepth(c);
+    return worldNormalValue(c,d,viewDistance(d));
+}

@@ -6,6 +6,7 @@
 // compacted and the cache is cleared (device reset). Built by test_replay_gpu_batches.py.
 #include "replay_gpu_batches.h"
 #include "replay_draw_state.h"
+#include "point_replay_indices.h"
 #include <cassert>
 #include <chrono>
 #include <cmath>
@@ -38,7 +39,7 @@ struct Device:IDirect3DDevice9{
     IDirect3DVertexDeclaration9* decl=nullptr;IDirect3DVertexBuffer9* vb[4]={};UINT offsets[4]={},strides[4]={};IDirect3DIndexBuffer9* ib=nullptr;float c0[4]={};
     bool fault(double p){return p>0&&std::uniform_real_distribution<double>(0,1)(faults)<p;}
     HRESULT CreateVertexBuffer(UINT n,DWORD usage,UINT,unsigned pool,IDirect3DVertexBuffer9** out,void*)override{assert(usage==D3DUSAGE_WRITEONLY&&pool==D3DPOOL_DEFAULT);++calls.creates;if(fault(createFailure))return E_POINTER;auto p=new VB(n);p->lockFailure=&lockFailure;*out=p;return D3D_OK;}
-    HRESULT CreateIndexBuffer(UINT n,DWORD usage,D3DFORMAT format,unsigned pool,IDirect3DIndexBuffer9** out,void*)override{assert(usage==D3DUSAGE_WRITEONLY&&pool==D3DPOOL_DEFAULT&&format==D3DFMT_INDEX32);++calls.creates;if(fault(createFailure))return E_POINTER;auto p=new IB(n);p->lockFailure=&lockFailure;*out=p;return D3D_OK;}
+    HRESULT CreateIndexBuffer(UINT n,DWORD usage,D3DFORMAT format,unsigned pool,IDirect3DIndexBuffer9** out,void*)override{assert(usage==D3DUSAGE_WRITEONLY&&pool==D3DPOOL_DEFAULT&&(format==D3DFMT_INDEX16||format==D3DFMT_INDEX32));++calls.creates;if(fault(createFailure))return E_POINTER;auto p=new IB(n);p->desc.Format=format;p->lockFailure=&lockFailure;*out=p;return D3D_OK;}
     HRESULT GetVertexShaderConstantF(UINT,float*,UINT)override{return E_POINTER;}HRESULT GetVertexDeclaration(IDirect3DVertexDeclaration9**)override{return E_POINTER;}HRESULT GetStreamSourceFreq(UINT,UINT*)override{return E_POINTER;}HRESULT GetStreamSource(UINT,IDirect3DVertexBuffer9**,UINT*,UINT*)override{return E_POINTER;}HRESULT GetIndices(IDirect3DIndexBuffer9**)override{return E_POINTER;}
     HRESULT SetVertexDeclaration(IDirect3DVertexDeclaration9* p)override{++calls.declarations;decl=p;return D3D_OK;}
     HRESULT SetStreamSource(UINT s,IDirect3DVertexBuffer9* p,UINT o,UINT stride)override{++calls.streams;vb[s]=p;offsets[s]=o;strides[s]=stride;return D3D_OK;}
@@ -64,8 +65,8 @@ struct Device:IDirect3DDevice9{
             if(c0[3]>=0&&(u-std::floor(u))+(v-std::floor(v))*.5f-c0[3]<0)continue; /* procedural alpha test */
             const uint32_t d=uint32_t(std::lround(double(z)*16777215.0));if(d<=image.depth[y*N+x]){image.depth[y*N+x]=d;image.colour[y*N+x]=z;}}
     }
-    void DrawIndexedPrimitive(INT base,UINT,UINT,UINT start,UINT primitives,Image& image){++calls.draws;auto* b=static_cast<const IB*>(ib);assert(b&&size_t(start+3*primitives)*4<=b->data.size());
-        for(UINT k=0;k<primitives;++k){std::array<float,5> t[3];for(unsigned j=0;j<3;++j){uint32_t index;std::memcpy(&index,b->data.data()+4*(start+3*k+j),4);t[j]=vertex(UINT(INT(index)+base));}triangle(t,image);}}
+    void DrawIndexedPrimitive(INT base,UINT,UINT,UINT start,UINT primitives,Image& image,unsigned width=4){++calls.draws;auto* b=static_cast<const IB*>(ib);assert(b&&size_t(start+3*primitives)*width<=b->data.size());
+        for(UINT k=0;k<primitives;++k){std::array<float,5> t[3];for(unsigned j=0;j<3;++j){uint32_t index=0;std::memcpy(&index,b->data.data()+width*(start+3*k+j),width);t[j]=vertex(UINT(INT(index)+base));}triangle(t,image);}}
     void DrawPrimitive(UINT start,UINT primitives,Image& image){++calls.draws;for(UINT k=0;k<primitives;++k){std::array<float,5> t[3];for(unsigned j=0;j<3;++j)t[j]=vertex(start+3*k+j);triangle(t,image);}}
 };
 struct Replay {
@@ -125,7 +126,100 @@ template<class C> struct World {
         maxCommitted=std::max(maxCommitted,cache.bytes());
     }
 };
+static void indexPairProof(){
+    using NorthlightReplayDrawState::Range;
+    using NorthlightReplayDrawState::appendAdjacent;
+    using NorthlightReplayDrawState::appendIndexPart;
+    Range planned{};
+    assert(appendIndexPart(planned,{0,3,17,9},8));
+    assert(appendIndexPart(planned,{41,2,5,4},8));
+    assert(appendIndexPart(planned,{47,2,31,3},8));
+    assert(planned.start==0&&planned.count==7&&planned.min==5&&planned.vertices==29);
+    assert(!appendIndexPart(planned,{53,2,0,99},8));
+    assert(!appendIndexPart(planned,{53,1,UINT_MAX,2},8));
+    assert(!appendAdjacent(planned,{53,1,0,99},8));
+    assert(planned.count==7&&planned.min==5&&planned.vertices==29);
+    for(const UINT secondMin:{7u,65536u}){
+        Device device;
+        auto first=std::make_shared<Mesh>(),second=std::make_shared<Mesh>();
+        for(auto* mesh:{first.get(),second.get()}){
+            mesh->vertexCount=3;
+            mesh->indices.resize(3);
+            for(unsigned i=0;i<3;++i)mesh->indices[i]=i;
+        }
+        const float vertices[2][3][5]={{{0,0,.6f,0,0},{40,0,.6f,0,0},{0,40,.6f,0,0}},
+                                       {{0,0,.3f,0,0},{30,0,.3f,0,0},{0,30,.3f,0,0}}};
+        VB page(size_t(secondMin+3)*sizeof(vertices[0][0]));
+        std::memcpy(page.data.data()+3*sizeof(vertices[0][0]),vertices[0],sizeof vertices[0]);
+        std::memcpy(page.data.data()+secondMin*sizeof(vertices[0][0]),vertices[1],sizeof vertices[1]);
+        IB separate(12*sizeof(uint32_t));
+        const uint32_t firstIndices[]={3,4,5},secondIndices[]={secondMin,secondMin+1,secondMin+2};
+        std::memcpy(separate.data.data(),firstIndices,sizeof firstIndices);
+        std::memcpy(separate.data.data()+9*sizeof(uint32_t),secondIndices,sizeof secondIndices);
+        device.SetVertexDeclaration(&singleDecl);
+        device.SetStreamSource(0,&page,0,sizeof(vertices[0][0]));
+        device.c0[3]=-1;
+        device.SetIndices(&separate);
+        Image original,paired;
+        device.DrawIndexedPrimitive(0,3,3,0,1,original);
+        device.DrawIndexedPrimitive(0,secondMin,3,9,1,original);
+        NorthlightPointShadow::ReplayIndexBatches cache;
+        unsigned admissions=0;
+        auto admit=[&](size_t){++admissions;return true;};
+        cache.begin(1);
+        auto* indices=cache.get(&device,first,3,second,secondMin,admit);
+        assert(indices&&cache.builds==1&&admissions==1);
+        const unsigned width=secondMin<65536?2:4;
+        assert(cache.uploaded()==6*width&&cache.bytes()==6*width&&
+               static_cast<IB*>(indices)->desc.Format==(width==2?D3DFMT_INDEX16:D3DFMT_INDEX32));
+        device.SetIndices(indices);
+        device.DrawIndexedPrimitive(0,3,secondMin,0,2,paired,width);
+        assert(original==paired&&original.colour[0]!=1.f);
+        cache.begin(2);
+        assert(cache.get(&device,first,3,second,secondMin,admit)==indices);
+        assert(cache.hits==1&&!cache.uploaded()&&admissions==1);
+        using IndexCache=NorthlightPointShadow::ReplayIndexBatches;
+        const Owner a=first,b=second;
+        Owner third=std::make_shared<Mesh>(*first);
+        const IndexCache::Parts parts{{{&a,3},{&b,secondMin},{&third,3},{&b,secondMin}}};
+        const uint32_t ordered[]={3,4,5,secondMin,secondMin+1,secondMin+2,3,4,5,secondMin,secondMin+1,secondMin+2};
+        for(unsigned count:{3u,4u}){
+            auto* batch=cache.get(&device,parts,count,admit);
+            assert(batch&&batch!=indices);
+            const auto& data=static_cast<IB*>(batch)->data;
+            assert(data.size()==3*count*width);
+            for(unsigned n=0;n<3*count;++n){
+                uint32_t word=0;
+                std::memcpy(&word,data.data()+n*width,width);
+                assert(word==ordered[n]);
+            }
+            Image grouped;
+            device.SetIndices(batch);
+            device.DrawIndexedPrimitive(0,3,secondMin,0,count,grouped,width);
+            assert(grouped==original);
+            assert(cache.get(&device,parts,count,admit)==batch);
+        }
+        assert(cache.builds==2&&cache.hits==3&&cache.uploaded()==21*width);
+        auto bad=std::make_shared<Mesh>(*first);
+        bad->indices.back()=bad->vertexCount;
+        const Owner invalid=bad;
+        const IndexCache::Parts invalidParts{{{&a,3},{&b,secondMin},{&invalid,3}}};
+        assert(!cache.get(&device,invalidParts,3,admit));
+        device.createFailure=1;
+        const IndexCache::Parts uncached{{{&b,secondMin},{&a,3},{&third,3}}};
+        assert(!cache.get(&device,uncached,3,admit));
+        assert(cache.builds==2&&cache.uploaded()==21*width&&cache.bytes()==27*width);
+        device.SetIndices(nullptr);
+        third.reset();
+        cache.begin(32);
+        assert(cache.bytes()==6*width);
+        assert(cache.clear()==6*width&&cache.bytes()==0);
+    }
+    assert(alive==0&&buffersAlive==0);
+    std::puts("PASS shared index batches: ordered two to four parts, 16/32-bit software depth and colour, warm reuse, mesh lifetime");
+}
 int main(){
+    indexPairProof();
     std::mt19937 rng(20260923);std::uniform_real_distribution<float> unit(0,1);
     // Models: consecutive submesh draws sharing one vertex layout; mostly 48-byte M2-like vertices.
     auto makeModel=[&](int i){std::vector<Owner> model;const float layout=unit(rng);const unsigned submeshes=1+unsigned(unit(rng)*9);

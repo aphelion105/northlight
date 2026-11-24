@@ -8,25 +8,28 @@ nor clears their frame-counted state, and nothing is committed from a frame with
 (freshReplays||!ActorShadows); both are freshReplays at ActorShadows=1 (test_actor_shadows_wiring.py)."""
 import sys; from pathlib import Path; sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root
 import northlight_paths as fp
+from source_units import source_text, world_render_path
 from pathlib import Path
 import re
 HERE=Path(__file__).resolve().parent
-w=fp.src('world_renderer.h').read_text();pt=fp.src('world_point_rendering.inl').read_text();ex=fp.src('world_shadow_experiment.inl').read_text();r=fp.src('renderer.cpp').read_text()
+w=source_text(fp.src('world_renderer.h'));pt=fp.src('world_point_rendering.inl').read_text();ex=fp.src('world_shadow_experiment.inl').read_text();r=fp.src('renderer.cpp').read_text()
 def once(text,needle,what):assert text.count(needle)==1,f'{what}: expected exactly one {needle!r}'
-render=w[w.index('    bool render(IDirect3DSurface9* targetSurface'):]
+render=world_render_path(w)
 # Skip only model capture, inside WorldRenderer: terrain branch, water mask and mirror audit untouched.
 once(w,'        if(modelCaptureSkipped())return; /* previous replays/actor packets are not needed this frame */\n        const CaptureShader* found=lookupShader(current).capture;if(!found){if(sample)++unknownCaptureCalls;return;}','model skip at captureModel entry')
 cap=w[w.index('    void capture(D3DPRIMITIVETYPE type'):w.index('    void releaseReplayGPU()')]
 assert cap.index('if(isTerrain)')<cap.index('captureModel('),'terrain capture precedes (and is independent of) the model skip'
 assert 'modelCaptureSkipped' not in r,'capture skip stays inside WorldRenderer'
-dip=r[r.index('    template<NorthlightWaterRenderer::UserPointer UserPointer,class Raw,class Draw> void captureGameDraw('):r.index('    template<class Draw> HRESULT terrainShadowDraw(')]
+dip=fp.src('draw_capture_route.h').read_text()
 once(dip,'auto captureWorld=', 'one shared world publisher')
 once(dip,'if(sharedTerrain)captureWorld(&positions);', 'shared terrain captured before materials')
 once(dip,'if(!sharedTerrain)captureWorld();', 'all other draws retain world capture')
-once(dip,'captureWater(vs,UserPointer,draw);', 'water capture retained after world')
+once(dip,'captureWater();', 'water capture retained after world')
+once(r,'captureWater(vs,UserPointer,draw);', 'Device retains the wrapped water draw adapter')
 assert '!userMemory&&args.indexed&&autoBump&&autoBump->active()' in dip
 assert dip.index('if(sharedTerrain)captureWorld(&positions);')<dip.index('autoBump->capture(')<dip.index('if(!sharedTerrain)captureWorld();')<dip.index('captureWater('),'DIP shares fresh terrain bounds without moving water before world capture'
 assert r.count('captureGameDraw<NorthlightWaterRenderer::')==4,'all four adapters use the same route'
+once(r,'NorthlightDrawCapture::capture<userMemory>', 'all production adapters reach the extracted owner')
 # test_shared_terrain_bounds compiles this production route and exercises every
 # material/terrain/ready combination, including failed capture and exact arguments.
 # Consumers of fresh replays on the render path.
@@ -34,7 +37,7 @@ for needle,what in [('if(replayShadows)selectShadowReplays();','selection histor
                     ('(replayShadows&&!timedReplay())','GPU cache LRU/probation clock'),
                     ('if(directionalShadows&&replayShadows){auto proofs','static dedup proofs require the selected directional provider'),
                     ('if(directionalReplayBounds)pointCalculateReplayBounds();','directional bounds cache resume cursors'),
-                    ('renderPointShadows(atmosphere.lights,replaysComplete,actorShadows,rendererFrame,directionalShadowTime)','point cube schedule'),
+                    ('renderPointShadows(atmosphere.lights,replaysComplete,actorShadows,rendererFrame,directionalResult.directionalShadowTime)','point cube schedule'),
                     ('if(!environmentReuse){if(splitNear||captureMode==CaptureFresh||!actorShadows)reuse.commit(interval,shadowPasses,matrices[cascade]);else captureDemand=true;}','cascade commit')]:
     once(render,needle,what)
 assert render.count('selectShadowReplays(')==1 and w.count('selectShadowReplays()')==1,'selection runs only from render'
@@ -48,7 +51,9 @@ assert 'const bool directionalReplayBounds=directionalShadows&&replayShadows&&(s
 assert 'if(directionalReplayBounds)replayBoundsKick();' in render
 flash=fp.src('world_flash_rendering.inl').read_text()
 flash=flash[flash.index('    void renderFlashShadows('):]
-assert flash.index('if(!fresh)')<flash.index('if(!flashResources(s))continue;')<flash.index('if(withReplays)replayBoundsRequest();')<flash.index('renderFlashMap('),'flash bounds follow fresh/resource guards'
+flash_owner=fp.src('world_flash_shadows.h').read_text()
+assert flash.index('if(!fresh)')<flash.index('flashShadows.render(')<flash.index('if(withReplays)replayBoundsRequest();')
+assert flash_owner.index('if(!flashResources(d,s,pipeline))return;')<flash_owner.index('prepare();')<flash_owner.index('s.ready=renderFlashMap('),'flash bounds follow fresh/resource guards'
 assert body.index('pointSlot().schedule.due(')<body.index('if(!fresh){')<body.index('for(unsigned face=0;face<6;++face)'), 'retain the refresh interval and return before cube writes'
 assert 'if(!pointSlot().schedule.usable||lightChanged)return false;' in body, 'only a compatible usable cube may be published without capture'
 assert 'pointSlot().schedule.due(updateAt,pointSlot().selected,meshGeneration,pointReplayCount' in body and 'if(fresh)pointReplayCount=withReplays?replays.size():0;' in body

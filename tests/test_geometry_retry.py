@@ -13,7 +13,7 @@ import northlight_paths as fp
 
 p=argparse.ArgumentParser();p.add_argument('--log',type=Path);args=p.parse_args()
 out=fp.output_dir()/'geometry-retry';out.mkdir(parents=True,exist_ok=False)
-header=fp.src('world_renderer.h');source=Path(__file__).with_suffix('.cpp')
+header=fp.src('world_build_pipeline.inl');source=Path(__file__).with_suffix('.cpp')
 text=header.read_text();begin=text.index('            auto deferBuild=');end=text.index('            // Issue #40:',begin);body=text[begin:end]
 current='return stopping||builderExit||!request.enabled||!NorthlightWorldStreaming::applicable(r.map,r.geometryCenter,request.map,request.camera);'
 old='return stopping||builderExit||!request.enabled||request.id!=r.id;'

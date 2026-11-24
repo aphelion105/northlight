@@ -20,7 +20,8 @@ struct GrassShadowTest {
   };
   for(unsigned mode=0;mode<5;++mode){FaultDevice device(d,mode);WorldRenderer w(&device);device.calls=0;
    w.registerShader(original,NorthlightShaderTags::fnv1a(raw.data(),raw.size()*4));
-   assert(w.shadowSliceCandidates==1&&w.shadowSliceCreated==unsigned(mode==0)&&w.shadowSliceFallback==unsigned(mode!=0));
+   const auto& work=w.shadowPrograms.captureWork();
+   assert(work.candidates==1&&work.compactCreated==unsigned(mode==0)&&work.fullFallback==unsigned(mode!=0));
    const auto lookup=w.lookupShader(original);assert(bool(lookup.capture)==(mode!=4));
    if(mode!=4){UINT size=0;must(lookup.capture->replacement->GetFunction(nullptr,&size));std::vector<uint32_t> actual(size/4);must(lookup.capture->replacement->GetFunction(actual.data(),&size));assert(actual==(mode?full:compact));
     const auto expected=NorthlightShaderConstants::analyze(reinterpret_cast<const uint32_t*>(raw.data()),raw.size(),lookup.capture->projectionKind);const auto& actualReads=lookup.capture->usage;

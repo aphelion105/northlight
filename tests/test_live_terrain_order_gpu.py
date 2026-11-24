@@ -24,9 +24,12 @@ sha=lambda f:hashlib.sha256(f.read_bytes()).hexdigest()
 inputs={str(f):sha(f) for f in [*fp.SRC.rglob('*.h'),*fp.SRC.rglob('*.cpp'),*fp.SRC.rglob('*.inl'),Path(__file__),ROOT/'tests/live_terrain_order_gpu.cpp',a.baseline_header.resolve(),*a.backend]}
 sources=['world_gi.cpp','world_mesh_plan.cpp','static_shadow_scene.cpp','settings_overlay.cpp','settings_panel.cpp','imgui.cpp','imgui_draw.cpp','imgui_tables.cpp','imgui_widgets.cpp','imgui_impl_dx9.cpp']
 env={**fp.zig_env(),'DISABLE_VULKAN_OBS_CAPTURE':'1','DXVK_LOG_PATH':str(out)}
-games=processes();executables={};results=[]
+games=processes();executables={};owners={};results=[]
 for label in ['baseline','current']:
-    exe=out/(label+'.exe');includes=['-I'+str(a.baseline_header.resolve().parent)] if label=='baseline' else []
+    header=a.baseline_header if label=='baseline' else fp.src('world_renderer.h')
+    exe=out/(label+'.exe');includes=['-I'+str(header.resolve().parent)] if label=='baseline' else []
+    owners[label]='#include "live_terrain_indices.h"' in header.read_text(encoding='utf-8')
+    if owners[label]:includes+=['-DNORTHLIGHT_LIVE_TERRAIN_INDEX_OWNER_TEST=1']
     command=[fp.zig(),'c++','-target','x86-windows-gnu','-O2','-UNDEBUG','-std=c++17','-Wno-microsoft-exception-spec','-DIMGUI_USER_CONFIG="northlight_imconfig.h"',*includes,*fp.test_include_flags(),ROOT/'tests/live_terrain_order_gpu.cpp',*(fp.src(s) for s in sources),'-luser32','-luuid','-o',exe]
     with (out/(label+'-compile.log')).open('w') as log:subprocess.run(list(map(str,command)),env=env,stdout=log,stderr=subprocess.STDOUT,check=True,timeout=300)
     executables[label]=exe
@@ -37,6 +40,7 @@ for index,backend in enumerate(a.backend):
         r=subprocess.run([str(exe),str(backend.resolve()),str(settings)+os.sep,str(image),'correctness'],capture_output=True,env=env,timeout=180)
         (out/(name+'.log')).write_bytes(r.stdout+r.stderr);print(name,(r.stdout+r.stderr).decode(errors='replace')[-600:],flush=True);r.check_returncode()
         assert b'TERRAIN_ORDER_GPU_PASS comparisons=224' in r.stdout
+        if owners[label]:assert b'LIVE_TERRAIN_INDEX_OWNER_PASS ' in r.stdout
         images[label]=image
     assert images['baseline'].read_bytes()==images['current'].read_bytes(),'Terrain depth or point bounds differ'
     result=dict(backend=str(backend.resolve()),backend_sha256=sha(backend),pixel_comparisons=224,pixel_sha256=sha(images['current']))

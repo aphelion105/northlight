@@ -20,8 +20,12 @@ if 'independentCaptureWrites' not in old:
  needle='            if(SUCCEEDED(hr)){P::Scope draw(profile,P::CaptureDraw,packet->tag);'
  assert old.count(needle)==1;old=old.replace(needle,'            if(SUCCEEDED(hr)&&FAILED(d->SetViewport(&packet->viewport)))return false;\n'+needle,1)
 (reference/'auto_bump_renderer.h').write_bytes(old.encode())
+if '#include "material_palette_replay.inl"' in old:
+ (reference/'material_palette_replay.inl').write_bytes(subprocess.check_output(['git','show',a.reference+':src/water/material_palette_replay.inl'],cwd=fp.REPO))
 if a.reference!='dbda9f3':
- (reference/'saved_state.h').write_bytes(subprocess.check_output(['git','show',a.reference+':src/proxy/saved_state.h'],cwd=fp.REPO))
+ saved_state=subprocess.check_output(['git','show',a.reference+':src/proxy/saved_state.h'],cwd=fp.REPO)
+ if saved_state!=fp.src('saved_state.h').read_bytes().replace(b'\r\n',b'\n'):
+  (reference/'saved_state.h').write_bytes(saved_state)
 source=out/'targets.hlsl';source.write_text('''struct Vertex {float4 position:POSITION;};Vertex VS(float4 p:POSITION){Vertex o;o.position=p;return o;}
 float4 Normal:register(c128);float4 Occlusion:register(c129);
 struct Outputs {float4 normal:COLOR0;float4 occlusion:COLOR1;};Outputs PS(){Outputs o;o.normal=Normal;o.occlusion=Occlusion;return o;}
@@ -34,12 +38,17 @@ for key,name in [('TEMP','temp'),('TMP','temp'),('ZIG_LOCAL_CACHE_DIR','zig-loca
  (out/name).mkdir(exist_ok=True);env[key]=str(out/name)
 (out/'dxvk.conf').write_text('dxvk.allowFse = False\nd3d9.presentInterval = 0\n');env.update(DISABLE_VULKAN_OBS_CAPTURE='1',DXVK_CONFIG_FILE=str(out/'dxvk.conf'),DXVK_LOG_PATH=str(out))
 backend=Path(os.environ.get('NORTHLIGHT_TEST_D3D9',fp.client_root()/'renderer-backends/dxvk/dxvk_d3d9.dll'));executables={};folders={};runs=[]
-watched=[header,fp.src('saved_state.h'),fp.TESTS/'material_capture_targets_gpu.cpp',Path(__file__)];inputs={str(p):sha(p) for p in watched}
+watched=[header,fp.src('material_palette_replay.inl'),fp.src('model_normal_palette.h'),fp.src('model_normal_palette_shader.h'),
+         fp.src('saved_state.h'),fp.TESTS/'material_capture_targets_gpu.cpp',fp.TESTS/'material_palette_targets.inc',Path(__file__)];inputs={str(p):sha(p) for p in watched}
 for name,include in [('reference',reference),('current',header.parent)]:
  folder=out/name;folder.mkdir(exist_ok=True);folders[name]=folder
  for binary in ['vs.bin','ps.bin']:(folder/binary).write_bytes((out/binary).read_bytes())
  exe=folder/'targets.exe';extra=['-DNORTHLIGHT_EXPECT_STATE_REUSE=1'] if name=='current' else [];subprocess.run([str(fp.zig()),'c++','-target','x86-windows-gnu','-O2','-UNDEBUG','-Wno-microsoft-exception-spec','-std=c++17',*extra,'-I',str(include),'-I',str(out),*fp.test_include_flags(),str(fp.TESTS/'material_capture_targets_gpu.cpp'),'-luser32','-o',str(exe)],env=env,check=True);executables[name]=exe
  guard.processes();r=subprocess.run([str(exe),str(backend),str(folder)+'/', 'exact'],cwd=folder,env=env,text=True,capture_output=True,timeout=240);(folder/'exact.log').write_text(r.stdout+r.stderr);r.check_returncode();assert 'CAPTURE_TARGET_GPU_PASS' in r.stdout
+ if name=='current':
+  assert 'MATERIAL_PALETTE_GPU_PASS' in r.stdout
+  assert r.stdout.count('MATERIAL_GAME_GEOMETRY_GPU_PASS')==3
+  assert 'MATERIAL_SOURCE_PALETTE_GPU_PASS' in r.stdout
 files=list(folders['reference'].glob('*.pixels'));assert len(files)==108,len(files)
 for file in files:assert file.read_bytes()==(folders['current']/file.name).read_bytes(),file.name
 rows=[]

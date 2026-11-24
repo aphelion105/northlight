@@ -82,7 +82,7 @@ STREAM = {
     'IDirect3DPixelShader9': {'custom': _UNK, 'local': 'GetDevice GetFunction'},
     'IDirect3DVertexDeclaration9': {'custom': _UNK, 'local': 'GetDevice GetDeclaration'},
     'IDirect3DStateBlock9': {'custom': _UNK, 'local': 'GetDevice', 'state': 'Capture Apply'},
-    'IDirect3DQuery9': {'custom': _UNK + ' GetData', 'local': 'GetDevice GetType GetDataSize', 'state': 'Issue'},   # observed: counts the END issue the polled result belongs to
+    'IDirect3DQuery9': {'custom': _UNK + ' GetData', 'local': 'GetDevice GetType GetDataSize', 'customrec': 'Issue'},
 }
 _RECT = 'sizeof(RECT)'
 SPECS = {
@@ -253,7 +253,7 @@ def encoder(m):
     params = ', '.join(['Queue& q'] + [p.decl for p in fields])
     section = m.enum == 'Device_DrawIndexedPrimitive'
     if section:
-        params += ', const NorthlightM2Draw::Section* section=nullptr'
+        params += ', const NorthlightM2Draw::Section* section=nullptr, const NorthlightAdtBounds::Evidence* terrain=nullptr'
     out.append(f'inline void record_{m.enum}({params}) {{')
     out.append(f'    constexpr std::size_t _base={"((sizeof(Args_%s)+7u)&~7u)" % m.enum if fields else "0u"};')
     terms = []
@@ -262,7 +262,7 @@ def encoder(m):
             out.append(f'    const std::size_t _n_{p.name}={p.name}?(std::size_t)({m.spec[p.name]}):0;')
             terms.append(f'((_n_{p.name}+7u)&~7u)')
     if section:
-        terms.append('(section?sizeof(*section):0)')
+        terms.append('(section?sizeof(*section):terrain?sizeof(*terrain):0)')
     out.append('    const std::size_t _total=' + '+'.join(['_base'] + terms) + ';')
     out.append('    if(_total>MaxInlinePayload){own(q.stats.oversizeDrops);return;}   // a garbage count: D3D would fail the call; drop it and count')
     if fields:
@@ -277,6 +277,7 @@ def encoder(m):
         out.append(f'    q.reserve((std::uint16_t)Cmd::{m.enum},0);')
     if section:
         out.append('    if(section)std::memcpy(reinterpret_cast<unsigned char*>(_a)+_base,section,sizeof(*section));')
+        out.append('    else if(terrain)std::memcpy(reinterpret_cast<unsigned char*>(_a)+_base,terrain,sizeof(*terrain));')
     out += ['    q.commit();', '}']
     return out
 
@@ -299,7 +300,9 @@ def dispatch_case(m):
         out.append(f'        const auto* _a=reinterpret_cast<const Args_{m.enum}*>(h+1);const auto* _b=reinterpret_cast<const unsigned char*>(_a);(void)_b;')
     if m.enum == 'Device_DrawIndexedPrimitive':
         out.append('        constexpr auto base=(sizeof(*_a)+7u)&~7u;')
+        out.append('        static_assert(sizeof(NorthlightM2Draw::Section)!=sizeof(NorthlightAdtBounds::Evidence));')
         out.append('        NorthlightM2Draw::Scope native(h->size==sizeof(*h)+base+sizeof(NorthlightM2Draw::Section)?reinterpret_cast<const NorthlightM2Draw::Section*>(_b+base):nullptr);')
+        out.append('        NorthlightAdtBounds::Scope terrain(h->size==sizeof(*h)+base+sizeof(NorthlightAdtBounds::Evidence)?reinterpret_cast<const NorthlightAdtBounds::Evidence*>(_b+base):nullptr);')
     if m.iface == DEVICE:
         target = 'tr.device()'
     else:
@@ -431,7 +434,7 @@ def stream_text(text):
            '// syncGet(tag,[proxy,]args...), local(tag,args...), syncCall(tag,[proxy,]args...); the proxy argument is passed for non-device interfaces.',
            '// Every generated body starts with `auto _scope=this->callScope(id);` (0.3.204: the sampled game-thread recording timer, per command id; the host returns a scope object).',
            '// The device class also provides bool redundant(tag,args...) (true: a repeated Set the game side does not record; see REDUNDANT).',
-           '#include "m2_draw_section.h"',
+           '#include "m2_draw_section.h"', '#include "adt_draw_bounds.h"',
            '#ifndef NORTHLIGHT_STREAM_DIRECT', '#define NORTHLIGHT_STREAM_DIRECT 1', '#endif',
            '#define NORTHLIGHT_STREAM_TAG(X) ::NorthlightStream::CmdTag<::NorthlightStream::Cmd::X>{}',
            'namespace NorthlightStream {']

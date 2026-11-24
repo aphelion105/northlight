@@ -2,13 +2,14 @@
 """Offline palette relighting and shadow-filter regression; no device/game."""
 import sys; from pathlib import Path; sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root
 import northlight_paths as fp
+from scripts.shaders.shader_sources import world_source_text
 import json
 import math
 import random
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
-shader = fp.src('world_effects.hlsl').read_text()
+shader = world_source_text(fp.src('world_effects.hlsl'))
 assert 'float3 sun=DirectLight.rgb*saturate(dot(detailNormal,LegacyDirection.xyz))*sunVisibility;' in shader and 'float visibility=lerp(1,shadow,GridInfo.z);' in shader # 0.3.198 (rain): sunVisibility = visibility unless c59.z softens it
 assert 'lerp(sun,moon,SunDirection.w)' in shader
 assert 'if(shadows&&dot(DirectLight.rgb,1)>0){' in shader and 'else shadow=directionalShadow' in shader and 'shadow=min(shadow,SunDirection.w>.5?actor.g:actor.r);}' in shader # Soft and ordinary directional shadows both retain actor visibility.

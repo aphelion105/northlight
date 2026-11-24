@@ -4,10 +4,12 @@
 checked in test_quality_docs), the version banner, and that every hook outside src/stream/ is inert while the stream is inactive
 (no active snapshot, null innerOf, null upIdentity, no core subtracted) so CommandStream=0 keeps the direct
 path. DllMain still creates no thread. Source-text checks only; the behaviour is tested in test_game_snapshot."""
+
+from source_units import source_text
 import sys; from pathlib import Path; sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root
 import northlight_paths as fp
 import re
-q=fp.src('quality_settings.h').read_text();r=fp.src('renderer.cpp').read_text();w=fp.src('world_renderer.h').read_text()
+q=fp.src('quality_settings.h').read_text();r=source_text(fp.src('renderer.cpp'));w=source_text(fp.src('world_renderer.h'))
 hooks=fp.src('stream_hooks.h').read_text();ctx=fp.src('world_context.h').read_text();disc=fp.src('celestial_disc_native.h').read_text()
 gpu=fp.src('static_shadow_gpu.h').read_text();exp=fp.src('world_shadow_experiment.inl').read_text()
 checks={}
@@ -38,14 +40,18 @@ create=r[r.index('HRESULT STDMETHODCALLTYPE CreateDevice(UINT adapter'):];create
 device=r[r.index('class Device final'):r.index('class Factory final')]
 checks['CreateDevice: stream flag read before the real create, streamActive before the Device, MULTITHREADED added only when streaming']=(
     'unsigned framesAhead=1,frameSkip=0;bool nameMaskWanted=false,occlusionLocal=false,contactAOWanted=false;const bool stream=NorthlightStream::commandStreamRequested(rootPath,&framesAhead,&frameSkip,&nameMaskWanted,&occlusionLocal,&contactAOWanted);' in create
-    and create.index('streamActive.store(true')<create.index('real->CreateDevice(adapter,type,window,flags,pp,out)')<create.index('new Device(*out,this,presentation)')
+    and create.index('real->CreateDevice(adapter,type,window,flags,pp,out)')<create.index('streamSetup(stream&&SUCCEEDED(hr)&&out&&*out)')<create.index('new Device(*out,this,presentation)')
     and 'if(stream)flags|=D3DCREATE_MULTITHREADED;' in create)
 checks['CreateDevice: any stream failure logs CSTREAM disabled and returns the Device unchanged']=(
-    'logf("CSTREAM disabled reason=%s",reason);return device;' in r and 'streamActive.store(false' in r and 'catch(...){reason="exception";}' in r)
+    'logf("CSTREAM disabled reason=%s",reason);return device;' in r and 'catch(...){reason="exception";}' in r
+    and '~StreamSetup(){rollback();}' in create
+    and 'streamActive.store(previousActive' in create and 'enabled.store(previousCopies' in create
+    and create.index('streamSetup.rollback()')<create.index('->disableHdrStream()'))
 checks['the Device has no CommandStream branch (the stream sits in front of it)']=('commandStream' not in device.lower() and 'NorthlightStream::StreamDevice' not in device)
 checks['the owner handoff runs on the replay thread through the one Device method']=('options.threadStart=[target]{target->adoptOwnerThread();};' in r and r.count('void adoptOwnerThread(){mirrorState.gate.ownerTid=MirrorGuard::threadId();}')==1)
 checks['memory pressure reaches the stream only through the hook atomic']=('NorthlightStream::memoryPressure.store(memoryCaps==1' in r and 'inline std::atomic<bool> memoryPressure{false};' in hooks)
-checks['the stream\'s buffer read-backs use NorthlightUpload::readBackLock (NOOVERWRITE only on DXVK >= 3) and keep READONLY as the fallback']=('options.readBackLock=&NorthlightUpload::readBackLock;' in r and 'c.readBackLock?c.readBackLock():D3::kLockReadOnly' in ''.join(fp.src('stream_proxies.h').read_text().split()))
+sp=source_text(fp.src('stream_proxies.h'))
+checks['the stream\'s buffer read-backs use NorthlightUpload::readBackLock (NOOVERWRITE only on DXVK >= 3) and keep READONLY as the fallback']=('options.readBackLock=&NorthlightUpload::readBackLock;' in r and 'c.readBackLock?c.readBackLock():D3::kLockReadOnly' in ''.join(sp.split()))
 # 0.3.200 (pipeline): StreamFramesAhead: 1..3, presets 2/2/2, read by the early reader with CommandStream (1 when unreadable) and handed to the
 # stream with the bounded queue budget.
 checks['StreamFramesAhead: key 1..3 2/2/2, read with CommandStream, passed with budgetForFramesAhead']=(
@@ -66,7 +72,6 @@ checks['StreamOcclusionLocal: key 0..1 1/1/1, read with CommandStream, passed to
     re.search(r'\{\s*"StreamOcclusionLocal"\s*,\s*&Settings::streamOcclusionLocal\s*,\s*0\s*,\s*1\s*,\s*\{\s*1\s*,\s*1\s*,\s*1\s*\}\s*\}',q) is not None and 'unsigned streamOcclusionLocal=1;' in q
     and 'if(occlusionLocal)*occlusionLocal=s.streamOcclusionLocal!=0;' in hooks and hooks.count('if(occlusionLocal)*occlusionLocal=false;')==2
     and 'options.occlusionLocal=occlusionLocal;' in r and 'bool occlusionLocal=true;' in sd and 'core.occlusionLocal=opt.occlusionLocal;' in sd)
-sp=fp.src('stream_proxies.h').read_text()
 checks['image proxies free a still-staged lock Block at destruction (surface, 3 texture kinds)']=(
     'inline void dropSubStage(StreamCore& c,SubRes& s){if(c.idleImages.enabled())c.idleImages.retire(std::uint64_t(reinterpret_cast<std::uintptr_t>(&s)));if(s.stage){c.q.freeBlock(s.stage);s.stage=nullptr;}}' in sp
     and 'dropSubShadow(*core,own);dropSubStage(*core,own);' in sp and sp.count('for(auto& s:subs){dropSubShadow(*core,s);dropSubStage(*core,s);}')==3)

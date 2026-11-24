@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 # northlight-test: requires=zig
 """Bounded native-light bridge: executable checks and actual renderer wiring."""
+
+from source_units import source_text
 from pathlib import Path
 import subprocess
 import sys
@@ -23,8 +25,8 @@ with tempfile.TemporaryDirectory(prefix='northlight-equipment-') as tmp:
                            check=True, env=fp.zig_env())
             subprocess.run([str(exe)], check=True)
 
-renderer = fp.src('renderer.cpp').read_text()
-world = fp.src('world_renderer.h').read_text()
+renderer = source_text(fp.src('renderer.cpp'))
+world = source_text(fp.src('world_renderer.h'))
 assert 'world->registerNativePointShader(*out,(m2ShaderFamily(h)==3||world->recognizesWmo(*out)||contains(kTerrainVS,h))?words.data():nullptr,(m2ShaderFamily(h)==3||world->recognizesWmo(*out)||contains(kTerrainVS,h))?words.size():0,m2ShaderFamily(h)==3)' in renderer
 assert 'if(world->equipmentLightsOn())world->captureEquipmentLights(vs,worldDepth);' in renderer
 capture = world[world.index('    void captureEquipmentLights('):world.index('    unsigned spellLayerSetting()')]
@@ -33,7 +35,9 @@ assert 'const bool actor=isSkinnedShader(shader)' in capture
 assert 'equipmentLights.admit(bank,it->second,actor)' in capture
 assert capture.index('ds.p!=mainDepth') < capture.index('GetVertexShaderConstantF(17,readBank,11)')
 assert capture.index('std::isfinite(q[i])') < capture.index('GetVertexShaderConstantF(17,readBank,11)')
-assert 'equipmentLights.output.data()' in world and 'equipmentLights.publish(GetTickCount(),' in world
+assert 'equipmentLights.output.data()' in world and 'equipmentLights.publish(visualTime(),' in world
+assert 'equipmentLights.observe(values[i],now,' in capture and 'const auto now=visualTime();' in capture
 assert 'GetRenderTargetData' not in capture and 'LockRect' not in capture
-assert 'actorCandidates=%u' in world and 'domainRejected=%u' in world and 'selfYards=%.2f' in world
+bank = fp.src('world_frame_constants.inl').read_text()
+assert 'actorCandidates=%u' in bank and 'domainRejected=%u' in bank and 'selfYards=%.2f' in bank
 print('actual renderer: cached live banks without admission cutoff, main depth/projection gates, bounded native fallback, source diagnostics, existing local/fog batches, no texture/GPU readback PASS')

@@ -20,6 +20,7 @@
 // Every generated body starts with `auto _scope=this->callScope(id);` (0.3.204: the sampled game-thread recording timer, per command id; the host returns a scope object).
 // The device class also provides bool redundant(tag,args...) (true: a repeated Set the game side does not record; see REDUNDANT).
 #include "m2_draw_section.h"
+#include "adt_draw_bounds.h"
 #ifndef NORTHLIGHT_STREAM_DIRECT
 #define NORTHLIGHT_STREAM_DIRECT 1
 #endif
@@ -805,9 +806,9 @@ struct Args_Device_DrawIndexedPrimitive {
     UINT startIndex;
     UINT primCount;
 };
-inline void record_Device_DrawIndexedPrimitive(Queue& q, D3DPRIMITIVETYPE arg0, INT BaseVertexIndex, UINT MinVertexIndex, UINT NumVertices, UINT startIndex, UINT primCount, const NorthlightM2Draw::Section* section=nullptr) {
+inline void record_Device_DrawIndexedPrimitive(Queue& q, D3DPRIMITIVETYPE arg0, INT BaseVertexIndex, UINT MinVertexIndex, UINT NumVertices, UINT startIndex, UINT primCount, const NorthlightM2Draw::Section* section=nullptr, const NorthlightAdtBounds::Evidence* terrain=nullptr) {
     constexpr std::size_t _base=((sizeof(Args_Device_DrawIndexedPrimitive)+7u)&~7u);
-    const std::size_t _total=_base+(section?sizeof(*section):0);
+    const std::size_t _total=_base+(section?sizeof(*section):terrain?sizeof(*terrain):0);
     if(_total>MaxInlinePayload){own(q.stats.oversizeDrops);return;}   // a garbage count: D3D would fail the call; drop it and count
     auto* _a=static_cast<Args_Device_DrawIndexedPrimitive*>(q.reserve((std::uint16_t)Cmd::Device_DrawIndexedPrimitive,(std::uint32_t)_total));
     std::uint32_t _o=(std::uint32_t)_base;(void)_o;
@@ -818,6 +819,7 @@ inline void record_Device_DrawIndexedPrimitive(Queue& q, D3DPRIMITIVETYPE arg0, 
     _a->startIndex=startIndex;
     _a->primCount=primCount;
     if(section)std::memcpy(reinterpret_cast<unsigned char*>(_a)+_base,section,sizeof(*section));
+    else if(terrain)std::memcpy(reinterpret_cast<unsigned char*>(_a)+_base,terrain,sizeof(*terrain));
     q.commit();
 }
 struct Args_Device_ProcessVertices {
@@ -1574,7 +1576,9 @@ template<class Tr> inline bool dispatchGenerated(const CommandHeader* h, Tr& tr)
     case Cmd::Device_DrawIndexedPrimitive: {
         const auto* _a=reinterpret_cast<const Args_Device_DrawIndexedPrimitive*>(h+1);const auto* _b=reinterpret_cast<const unsigned char*>(_a);(void)_b;
         constexpr auto base=(sizeof(*_a)+7u)&~7u;
+        static_assert(sizeof(NorthlightM2Draw::Section)!=sizeof(NorthlightAdtBounds::Evidence));
         NorthlightM2Draw::Scope native(h->size==sizeof(*h)+base+sizeof(NorthlightM2Draw::Section)?reinterpret_cast<const NorthlightM2Draw::Section*>(_b+base):nullptr);
+        NorthlightAdtBounds::Scope terrain(h->size==sizeof(*h)+base+sizeof(NorthlightAdtBounds::Evidence)?reinterpret_cast<const NorthlightAdtBounds::Evidence*>(_b+base):nullptr);
         tr.result(Cmd::Device_DrawIndexedPrimitive,tr.device()->DrawIndexedPrimitive(_a->arg0, _a->BaseVertexIndex, _a->MinVertexIndex, _a->NumVertices, _a->startIndex, _a->primCount));
         return true;
     }
@@ -2498,5 +2502,4 @@ template<class Tr> inline bool executeSync(SyncCall& sc, Tr& tr) {
 #define NORTHLIGHT_STREAM_QUERY_METHODS \
     HRESULT STDMETHODCALLTYPE GetDevice(struct IDirect3DDevice9** ppDevice) override { [[maybe_unused]] auto _scope=this->callScope((std::uint16_t)::NorthlightStream::Cmd::Query_GetDevice);return this->local(NORTHLIGHT_STREAM_TAG(Query_GetDevice), ppDevice); } \
     D3DQUERYTYPE STDMETHODCALLTYPE GetType() override { [[maybe_unused]] auto _scope=this->callScope((std::uint16_t)::NorthlightStream::Cmd::Query_GetType);return this->local(NORTHLIGHT_STREAM_TAG(Query_GetType)); } \
-    DWORD STDMETHODCALLTYPE GetDataSize() override { [[maybe_unused]] auto _scope=this->callScope((std::uint16_t)::NorthlightStream::Cmd::Query_GetDataSize);return this->local(NORTHLIGHT_STREAM_TAG(Query_GetDataSize)); } \
-    HRESULT STDMETHODCALLTYPE Issue(DWORD dwIssueFlags) override { [[maybe_unused]] auto _scope=this->callScope((std::uint16_t)::NorthlightStream::Cmd::Query_Issue);this->observe(NORTHLIGHT_STREAM_TAG(Query_Issue), dwIssueFlags);::NorthlightStream::record_Query_Issue(this->streamQueue(), this, dwIssueFlags);return D3D_OK; }
+    DWORD STDMETHODCALLTYPE GetDataSize() override { [[maybe_unused]] auto _scope=this->callScope((std::uint16_t)::NorthlightStream::Cmd::Query_GetDataSize);return this->local(NORTHLIGHT_STREAM_TAG(Query_GetDataSize)); }

@@ -48,7 +48,7 @@ print('PASS packaged parent ownership: bundled StormLib, clean configuration, co
 scratch = fp.output_dir()
 scratch.mkdir(parents=True, exist_ok=True)
 with tempfile.TemporaryDirectory(dir=scratch) as folder:
-    client = Path(folder) / 'Игра 世界 🎮'
+    client = Path(folder) / 'Spiel 世界 🎮'
     (client / 'Data/enUS').mkdir(parents=True)
     payload = art.owned_payload({'DBFilesClient\\Light.dbc': b'our lighting', 'world\\lamp.m2': b'our model'})
     for name in ['Data/patch-z.mpq', 'Data/enUS/patch-enus-z.mpq']:

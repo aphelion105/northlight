@@ -53,17 +53,17 @@ inline void decodeSkybox(const Snapshot& s,float& cover,bool& nativePlanets){
 // only after cover < Leave with native planets has held for Hold ms, so a fading or blending skybox cannot flap the two draw paths.
 struct FrameMode {
     static constexpr float Enter=.02f,Leave=.005f;static constexpr uint32_t Hold=250;
-    bool state=false,frameDecided=false,calm=false;uint32_t calmSince=0;unsigned switches=0;
+    bool state=false,frameDecided=false,calm=false,replacingBackground=false;uint32_t calmSince=0;unsigned switches=0;
     bool decided()const{return frameDecided;}
-    bool skybox()const{return frameDecided&&state;}
-    bool decide(const Context& c,uint32_t now){
-        if(frameDecided)return state;
-        frameDecided=true;
+    bool skybox()const{return frameDecided&&(state||replacingBackground);}
+    bool decide(const Context& c,uint32_t now,bool replaceBackground=false){
+        if(frameDecided)return skybox();
+        frameDecided=true;replacingBackground=replaceBackground;
         const bool on=!c.nativePlanets||c.skyboxCover>Enter,quiet=c.nativePlanets&&c.skyboxCover<Leave;
         if(!state){if(on){state=true;calm=false;++switches;}}
         else if(quiet){if(!calm){calm=true;calmSince=now;}else if(now-calmSince>=Hold){state=false;calm=false;++switches;}}
         else calm=false;
-        return state;
+        return skybox();
     }
     void endFrame(){frameDecided=false;}
     void reset(){*this=FrameMode{};}
@@ -163,7 +163,9 @@ inline void clampLightElevation(float* direction){
 // Keep decode() faithful to the audited records for diagnostics/native use.
 inline bool luminousAppearance(const Body& body){return body.nativeAppearance&&std::max({body.nativeTint[0],body.nativeTint[1],body.nativeTint[2]})>1.f/255;}
 inline void applyRendererPolicy(Context& c,const float* direct){
-    c.sun.alpha=1;c.moon.alpha=c.lunarBody?1.f:0.f;
+    if(c.lunarBody)c.sun.alpha=1;
+    else if(!c.nativePlanets||c.skyboxCover>.99f)c.sun.alpha=0;
+    c.moon.alpha=c.lunarBody?1.f:0.f;
     c.sun.emission=3.5f;c.moon.emission=1.1f;
     const float tint[2][3]={{1,.96f,.88f},{.94f,.97f,1}};
     for(unsigned i=0;i<3;++i){c.sun.tint[i]=luminousAppearance(c.sun)?c.sun.nativeTint[i]:tint[0][i];c.moon.tint[i]=tint[1][i];}
@@ -182,7 +184,10 @@ inline NorthlightCelestialOrbit::Result resolveRendererSky(Context& c,const floa
     if(!std::isfinite(c.dayFraction)||c.dayFraction<0||c.dayFraction>=1)return orbit;
     c.sun.angularRadius=c.sun.nativeAngularRadius;
     c.moon.angularRadius=c.moon.nativeAngularRadius;
-    if(forever){
+    c.lunarBody=!map||std::strcmp(map,"Expansion01")!=0;
+    // Outland's skyboxes decide whether a native solar billboard is present.
+    // Keep its original trajectory and leave skybox planets on their own meshes.
+    if(forever&&c.lunarBody){
         const auto imported=NorthlightForeverSky::evaluate(c.dayFraction);
         std::copy_n(imported.sun.direction,3,c.sun.direction);std::copy_n(imported.moon.direction,3,c.moon.direction);
         c.sun.angularRadius=NorthlightForeverSky::sunRadius(c.dayFraction);
@@ -193,7 +198,6 @@ inline NorthlightCelestialOrbit::Result resolveRendererSky(Context& c,const floa
     orbit.sun.elevation=NorthlightCelestialOrbit::elevationDegrees(c.sun.direction[2]);
     orbit.moon.elevation=NorthlightCelestialOrbit::elevationDegrees(c.moon.direction[2]);
     orbit.valid=true;
-    c.lunarBody=!map||std::strcmp(map,"Expansion01")!=0;
     applyRendererPolicy(c,direct);return orbit;
 }
 

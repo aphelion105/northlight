@@ -13,11 +13,11 @@ scratch = fp.output_dir()
 scratch.mkdir(parents=True, exist_ok=True)
 with tempfile.TemporaryDirectory(prefix='northlight-utf8-', dir=scratch) as folder:
     root = Path(folder)
-    unicode_root = root / 'Игра Ä 世界 🎮'
+    unicode_root = root / 'Spiel Ä 世界 🎮'
     unicode_root.mkdir()
-    source = unicode_root / 'данные.txt'
+    source = unicode_root / 'données.txt'
     source.write_bytes(b'Unicode MPQ round trip')
-    archive = unicode_root / 'архив.mpq'
+    archive = unicode_root / 'archivé.mpq'
     with Archive(archive, create=True) as mpq:
         mpq.add(source, 'test.txt')
     with Archive(archive) as mpq:

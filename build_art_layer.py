@@ -158,7 +158,7 @@ def read_archive(path):
         return {n: archive.read(n) for n in archive.names() if not n.startswith('(')}
 
 
-def build(client, output, world_cache, locale=None, letter='z', archives='all'):
+def build(client, output, world_cache, locale=None, letter='z', archives='all', tideglass=False):
     locale = client_archives.detect_locale(client, locale)
     fog = world_cache / 'fog'
     assets = Assets(client, archives, locale, without=letter)
@@ -226,6 +226,11 @@ def build(client, output, world_cache, locale=None, letter='z', archives='all'):
         # 0.3.198 (rain): after the sky steps, so their skybox edits are kept: private storm profiles, then the weather textures.
         final = {n: DBC(payload[DBC_NAME.format(n)]) for n in build_lighting.TABLES}
         storm = build_lighting.stormify(final, stock)
+        if tideglass:
+            liquid = DBC(assets.read(DBC_NAME.format('LiquidType')))
+            report['steps'].append({'step': 'underwater_daylight',
+                                    **build_lighting.underwater_daylight(final['Light'], liquid)})
+            payload[DBC_NAME.format('LiquidType')] = liquid.bytes()
         payload.update({DBC_NAME.format(n): t.bytes() for n, t in final.items()})
         report['steps'].append({'step': 'storm', **storm})
         textures = build_weather_textures.weather_textures()
@@ -268,6 +273,7 @@ def build(client, output, world_cache, locale=None, letter='z', archives='all'):
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     client_archives.add_arguments(ap)
+    ap.add_argument('--tideglass', action='store_true', help='use daylight lighting with Tideglass underwater shading')
     ap.add_argument('--world-cache', type=Path, help="the client's world cache, for its fog zones (default: <client>/world-cache)")
     ap.add_argument('--output', type=Path, required=True, help='staging folder; gets <Data>/... archives and a manifest')
     ap.add_argument('--letter', default='z', help='patch letter of the art layer (default z)')
@@ -279,7 +285,7 @@ def main():
     if output == client or client in output.parents:
         ap.error('--output must be a staging folder outside the client')
     output.mkdir(parents=True, exist_ok=True)
-    report = build(client, output, (args.world_cache or client / 'world-cache').resolve(), args.locale, args.letter, args.archives)
+    report = build(client, output, (args.world_cache or client / 'world-cache').resolve(), args.locale, args.letter, args.archives, tideglass=args.tideglass)
     print(json.dumps({'steps': report['steps'], 'files': len(report['files']), 'targets': report['targets']}, indent=2))
 
 

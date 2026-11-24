@@ -1,6 +1,7 @@
 // Production point-pass batching and offscreen static retention; no game.
 #undef NDEBUG
 #include "../src/proxy/renderer.cpp"
+#include "fixtures/replay_float_bank.h"
 #include <cassert>
 #include <chrono>
 #include <fstream>
@@ -121,8 +122,8 @@ struct PointTerrainCoverageTest {
 #endif
   w.pointIndex=0;w.active=std::make_shared<WorldRenderer::Snapshot>();w.active->map="terrain-memo";
   auto& slot=w.pointSlot();slot.map=w.active->map;slot.cacheValid=true;slot.cacheSource=slot.selected.sourceId;
-  w.keepPointSlot(slot,1);assert(w.pointKeeps[0].slot.terrainMemo.masks.empty());
-  w.releasePointGPU();for(const auto& p:w.pointSlots)assert(p.terrainMemo.masks.empty());
+  w.keepPointSlot(slot,1);assert(w.pointTargets.keeps()[0].slot.terrainMemo.masks.empty());
+  w.releasePointGPU();for(const auto& p:w.pointTargets.slots())assert(p.terrainMemo.masks.empty());
   std::puts("POINT_TERRAIN_CANDIDATES_PASS reference=exact partialFaces=exact meshLightRangeMutation=exact fallback=exact boundedKiB=4096 keeps=empty reset=empty");
  }
 #endif
@@ -159,11 +160,11 @@ struct PointTerrainCoverageTest {
   WarmDevice meter(d);WorldRenderer w(&meter);w.active=std::make_shared<WorldRenderer::Snapshot>();w.active->map="prewarm";
   w.quality.pointShadowLimit=2;w.quality.pointShadowDistance=48;w.quality.pointShadows=w.quality.localLights=1;w.quality.localLightLimit=64;w.effects.shadows=true;
   NorthlightLocalLightSelection::Selection lights;lights.count=3;for(unsigned i=0;i<3;++i)lights.sources[i]={{float(i)*3,0,4},{1,.4f,.1f},1,12,100+i,3,NorthlightLocalLights::CastShadow};
-  auto resident=[&]{unsigned n=0;for(const auto& p:w.pointSlots)n+=p.cube!=nullptr;return n;};
+  auto resident=[&]{unsigned n=0;for(const auto& p:w.pointTargets.slots())n+=p.cube!=nullptr;return n;};
   auto step=[&](const std::string& map="prewarm"){const unsigned before=meter.creates;const auto selection=w.pointSelection;
    NorthlightStreaming::Budget budget(4u<<20,1000);w.prewarmPointResources(lights,map,budget);assert(meter.creates-before<=1);
    assert(w.pointSelection.initialized==selection.initialized&&w.pointSelection.updatedAt==selection.updatedAt);
-   for(unsigned i=0;i<w.pointSlots.size();++i){const auto& p=w.pointSlots[i];assert(!p.ready&&!p.schedule.usable&&!p.retryAt&&!p.cacheValid);for(auto* f:p.cacheFace)assert(!f);
+   for(unsigned i=0;i<w.pointTargets.slots().size();++i){const auto& p=w.pointTargets.slots()[i];assert(!p.ready&&!p.schedule.usable&&!p.retryAt&&!p.cacheValid);for(auto* f:p.cacheFace)assert(!f);
     assert(w.pointSelection.entries[i].id==selection.entries[i].id&&w.pointSelection.entries[i].gain==selection.entries[i].gain&&w.pointSelection.entries[i].occupied==selection.entries[i].occupied);}
   };
   NorthlightStreaming::Budget exhausted(0,1000);w.prewarmPointResources(lights,"prewarm",exhausted);assert(!meter.creates);
@@ -171,20 +172,20 @@ struct PointTerrainCoverageTest {
 #ifdef NORTHLIGHT_POINT_UNION_REFERENCE
   constexpr unsigned creates=8;
 #else
-  constexpr unsigned creates=7;assert(!w.pointEmpty);
+  constexpr unsigned creates=7;assert(!w.pointTargets.empty());
 #endif
   assert(meter.creates==creates&&w.pointCold.cubes==2); // Three shaders, shared targets, two desired cubes.
-  assert(w.pointSlots[0].selected.sourceId==100&&w.pointSlots[1].selected.sourceId==101);for(unsigned i=0;i<8;++i)step();assert(meter.creates==creates);
+  assert(w.pointTargets.slots()[0].selected.sourceId==100&&w.pointTargets.slots()[1].selected.sourceId==101);for(unsigned i=0;i<8;++i)step();assert(meter.creates==creates);
   w.quality.pointShadowLimit=1;step();assert(resident()==1);
-  lights.sources[0].position[0]=1000;step();assert(resident()==1&&w.pointSlots[0].selected.sourceId==101);
+  lights.sources[0].position[0]=1000;step();assert(resident()==1&&w.pointTargets.slots()[0].selected.sourceId==101);
   w.memoryPressure=true;step();assert(!resident());w.memoryPressure=false;
   step();assert(resident()==1);w.active->map="other";step();assert(!resident());step("other");assert(resident()==1);
-  w.releasePointGPU();assert(!resident()&&!w.pointScratch&&!w.pointDepth&&!w.pointEmpty);
+  w.releasePointGPU();assert(!resident()&&!w.pointTargets.scratch()&&!w.pointTargets.depth()&&!w.pointTargets.empty());
   for(unsigned i=0;
 #ifdef NORTHLIGHT_POINT_UNION_REFERENCE
-      !w.pointEmpty;
+      !w.pointTargets.empty();
 #else
-      !w.pointDepth;
+      !w.pointTargets.depth();
 #endif
       ++i){assert(i<8);step("other");}
   meter.failCube=true;step("other");assert(!resident()&&!meter.failCube&&!w.pointFailures); // Failure cannot delay the next live allocation.
@@ -196,11 +197,11 @@ struct PointTerrainCoverageTest {
   WorldRenderer reference(d),staged(d);
   for(auto* w:{&reference,&staged})assert(w->resources(64,64,D3DFMT_A8R8G8B8));
   auto resources=[](WorldRenderer& w){std::vector<IDirect3DResource9*> r;
-   for(auto* p:w.shadow)r.push_back(p);for(auto* p:w.shadowCache)r.push_back(p);
-   for(auto* p:w.actorShadow)r.push_back(p);for(auto* p:w.actorTiles)r.push_back(p);
-   for(auto* p:w.probe)r.push_back(p);
-   for(auto* p:{w.probePrev,w.shadowScratch,w.actorTilesMid,w.actorVisibility})r.push_back(p);
-   for(auto* p:{w.shadowDepth,w.shadowCacheDepth})r.push_back(p);return r;
+   for(unsigned slot=0;slot<4;++slot){r.push_back(w.directionalMaps.current(slot).texture);r.push_back(w.directionalMaps.cache(slot).texture);}
+   w.actorMaps.forEachTexture([&](auto* p){r.push_back(p);});
+   for(unsigned i=0;i<5;++i)r.push_back(w.probeAtlas.channel(i));
+   for(auto* p:{w.probeAtlas.previous(),w.directionalMaps.scratch().texture})r.push_back(p);
+   for(auto* p:{w.directionalMaps.depth(),w.directionalMaps.cacheDepth()})r.push_back(p);return r;
   };
   NorthlightStreaming::Budget exhausted(0,2);assert(!staged.geometryResources(64,64,&exhausted));
   auto before=resources(staged);assert(std::none_of(before.begin(),before.end(),[](auto* p){return p!=nullptr;}));
@@ -217,7 +218,7 @@ struct PointTerrainCoverageTest {
    else{must(static_cast<IDirect3DSurface9*>(expected[i])->GetDesc(&a));must(static_cast<IDirect3DSurface9*>(actual[i])->GetDesc(&b));}
    assert(a.Width==b.Width&&a.Height==b.Height&&a.Format==b.Format&&a.Pool==b.Pool&&a.Usage==b.Usage&&a.MultiSampleType==b.MultiSampleType);
   }
-  for(unsigned i=0;i<3;++i)staged.prewarmPointShaders();assert(staged.pointShadowVS&&staged.pointShadowPS&&staged.pointLightingPS);
+  for(unsigned i=0;i<3;++i)staged.prewarmPointShaders();assert(staged.pointTargets.casterVertex()&&staged.pointTargets.casterPixel()&&staged.pointLighting.hardShader());
   std::printf("GEOMETRY_PREWARM_GPU_PASS frames=%u allocationsPerFrame=1 exhausted_no_allocation=1 partial_reset=1 complete_resources=1 point_shaders=1\n",frames);
  }
  struct UnionMeter:ForwardIDirect3DDevice9 {
@@ -247,7 +248,7 @@ struct PointTerrainCoverageTest {
   assert(w.meshStore.beginStaging({NorthlightMeshPageKey::keyOf(vertices,sizeof vertices,indices.data(),indices.size()*2)}));w.meshStore.commit();w.meshBuffers.resize(w.meshStore.entries().size());auto& page=w.meshBuffers[w.meshStore.bufferOf(0)];
   must(d->CreateVertexBuffer(sizeof vertices,0,0,D3DPOOL_MANAGED,&page.vb,nullptr));must(d->CreateIndexBuffer(UINT(indices.size()*2),0,D3DFMT_INDEX16,D3DPOOL_MANAGED,&page.ib,nullptr));
   void* data=nullptr;must(page.vb->Lock(0,0,&data,0));std::memcpy(data,vertices,sizeof vertices);must(page.vb->Unlock());must(page.ib->Lock(0,0,&data,0));std::memcpy(data,indices.data(),indices.size()*2);must(page.ib->Unlock());w.vertices=page.vb;w.indices=page.ib;
-  const D3DVERTEXELEMENT9 elements[]={{0,0,D3DDECLTYPE_FLOAT3,0,D3DDECLUSAGE_POSITION,0},{0,24,D3DDECLTYPE_FLOAT2,0,D3DDECLUSAGE_TEXCOORD,0},D3DDECL_END()};must(d->CreateVertexDeclaration(elements,&w.shadowDecl));must(d->CreatePixelShader(kShadowUnionShader,&w.unionPS));
+  const D3DVERTEXELEMENT9 elements[]={{0,0,D3DDECLTYPE_FLOAT3,0,D3DDECLUSAGE_POSITION,0},{0,24,D3DDECLTYPE_FLOAT2,0,D3DDECLUSAGE_TEXCOORD,0},D3DDECL_END()};must(d->CreateVertexDeclaration(elements,&w.shadowPrograms.worldLayout_));must(d->CreatePixelShader(kShadowUnionShader,&w.shadowPrograms.union_));
   w.materials.push_back(nullptr);w.uploadedAlphaCutoffs.push_back(-1);
   for(unsigned i=0;i<triangles;++i){WorldRenderer::Batch b{};b.page=0;b.start=3*i;b.count=1;b.minVertex=i%2?3:0;b.vertexCount=3;b.boundsLow={-1,-1,i%2?8.f:0.f};b.boundsHigh={1,1,i%2?8.f:0.f};w.batches.push_back(b);}
   const std::pair<D3DRENDERSTATETYPE,DWORD> states[]={{D3DRS_ZENABLE,TRUE},{D3DRS_ZWRITEENABLE,TRUE},{D3DRS_ZFUNC,D3DCMP_LESSEQUAL},{D3DRS_CULLMODE,D3DCULL_NONE},{D3DRS_ALPHATESTENABLE,FALSE},{D3DRS_ALPHABLENDENABLE,FALSE},{D3DRS_FOGENABLE,FALSE},{D3DRS_STENCILENABLE,FALSE},{D3DRS_SCISSORTESTENABLE,FALSE},{D3DRS_CLIPPLANEENABLE,0},{D3DRS_SRGBWRITEENABLE,FALSE},{D3DRS_DEPTHBIAS,0},{D3DRS_SLOPESCALEDEPTHBIAS,0},{D3DRS_FILLMODE,D3DFILL_SOLID}};
@@ -363,7 +364,7 @@ struct PointTerrainCoverageTest {
    // Use the actual upload route: stable owners keep the revision, changed,
    // removed and reintroduced captures invalidate even without a mesh swap.
    const D3DVERTEXELEMENT9 liveElements[]={{0,0,D3DDECLTYPE_FLOAT3,0,D3DDECLUSAGE_POSITION,0},{0,12,D3DDECLTYPE_FLOAT2,0,D3DDECLUSAGE_TEXCOORD,0},D3DDECL_END()};
-   must(d->CreateVertexDeclaration(liveElements,&w.liveTerrainDecl));
+   must(d->CreateVertexDeclaration(liveElements,&w.shadowPrograms.liveLayout_));
    auto live=std::make_shared<NorthlightTerrainCapture::MeshSnapshot>();
    live->positions={{-2,-2,2},{2,-2,2},{-2,2,2}};live->indices={0,1,2};
    live->bounds.low[0]=live->bounds.low[1]=-2;live->bounds.high[0]=live->bounds.high[1]=2;live->bounds.low[2]=live->bounds.high[2]=2;
@@ -393,7 +394,7 @@ struct PointTerrainCoverageTest {
   w.releasePointGPU();w.localScissorView={};
   NorthlightLocalLightSelection::Selection selection;selection.count=1;selection.sources[0]=light;
   auto pool=[&](bool fresh=true){must(d->BeginScene());w.renderPointShadows(selection,fresh,false);must(d->EndScene());drain();w.pointIndex=0;};
-  auto keeps=[&](){unsigned n=0;for(const auto& keep:w.pointKeeps){n+=keep.slot.cacheValid;assert(!keep.slot.cube);for(auto* face:keep.slot.faces)assert(!face);}return n;};
+  auto keeps=[&](){unsigned n=0;for(const auto& keep:w.pointTargets.keeps()){n+=keep.slot.cacheValid;assert(!keep.slot.cube);for(auto* face:keep.slot.faces)assert(!face);}return n;};
   pool();const auto original=image();auto* retained=w.pointSlot().cacheFace[5];assert(retained);
   const auto toggle=[&](){auto effects=w.effects;effects.shadows=false;w.setEffects(effects);w.releaseStateCache(true);effects.shadows=true;w.setEffects(effects);assert(w.effects.shadows&&!w.pointReady);};
   toggle();assert(w.pointSlot().cacheValid&&!w.pointSlot().schedule.usable&&!w.pointSlot().ready);
@@ -424,7 +425,7 @@ struct PointTerrainCoverageTest {
   selection.count=9;for(unsigned i=0;i<9;++i){selection.sources[i]=light;selection.sources[i].sourceId=100+i;}
   pool();selection.count=0;pool();assert(keeps()==8);
   w.quality.pointShadowLimit=1;pool();assert(keeps()<=1);selection.count=1;pool();assert(!keeps());
-  w.quality.pointShadowLimit=0;pool();assert(!keeps());for(const auto& slot:w.pointSlots)assert(!slot.cube);
+  w.quality.pointShadowLimit=0;pool();assert(!keeps());for(const auto& slot:w.pointTargets.slots())assert(!slot.cube);
   w.releasePointGPU();assert(!keeps());
   std::puts("POINT_STATIC_KEEP_GPU_PASS unchangedReentry=exact freshDynamic=required geometryLightMapMutation=exact pressureLimitInvalidation=cleared lruMax=8");
   // A replacement source can overwrite the same storage, but no previous face,
@@ -464,7 +465,7 @@ struct PointTerrainCoverageTest {
   w.releasePointGPU();pool();assert(image()==recovered);
   for(unsigned reset=0;reset<2;++reset){if(reset)w.active->map=w.uploadedMap="recycle-map";else w.memoryPressure=true;
    ++selection.sources[0].sourceId;w.pointSelection.reset();const unsigned before=meter.cubes;pool();assert(meter.cubes==before+1);w.memoryPressure=false;}
-  w.quality.pointShadowLimit=0;pool();for(const auto& slot:w.pointSlots)assert(!slot.cube);assert(!keeps());w.releasePointGPU();
+  w.quality.pointShadowLimit=0;pool();for(const auto& slot:w.pointTargets.slots())assert(!slot.cube);assert(!keeps());w.releasePointGPU();
   w.quality.pointShadowFacesPerFrame=6;
   std::printf("POINT_RECYCLE_GPU_PASS switches=8 cubeCreates=%u sixFaces=coldExact changedLight=1 staticKeeps=1 staleCapture=unpublished partialCycle=reset failedFace=unpublished coldRecovery=exact pressureMapLimit=reset\n",switchCreates);
 #ifdef NORTHLIGHT_POINT_PREPARATION_REFERENCE
@@ -485,7 +486,7 @@ struct PointTerrainCoverageTest {
     assert(w.pointWork.selected==count&&w.pointIndex==0&&meter.cubes==cubes&&meter.quads==quads);
     assert(w.pointCold.cubes==0&&w.pointWork.statics==0&&w.pointWork.terrain==0&&w.pointWork.replay==0);
     if(count)assert(w.pointSlot().ready&&image()==pixels);
-    for(const auto& p:w.pointSlots)if(!p.cube&&p.map.empty()){
+    for(const auto& p:w.pointTargets.slots())if(!p.cube&&p.map.empty()){
      assert(!p.cacheValid&&!p.prewarmed&&!p.retryAt&&!p.schedule.usable);
      for(unsigned f=0;f<6;++f)assert(!p.faces[f]&&!p.cacheFace[f]&&!p.cacheSurface[f]);
     }
@@ -494,8 +495,8 @@ struct PointTerrainCoverageTest {
   }
   w.releasePointGPU();w.quality.pointShadowLimit=64;w.quality.pointShadowRefreshMs=0;
   // A cube without a map and a failed mapped slot still require retirement.
-  selection.count=0;must(w.pointCubeResource(w.pointSlots[63]));w.pointSlots[62].map=w.active->map;w.pointSlots[62].retryAt=GetTickCount()+1000;
-  pool();assert(!w.pointSlots[63].cube&&w.pointSlots[62].map.empty()&&!w.pointSlots[62].retryAt);
+  selection.count=0;must(w.pointCubeResource(w.pointTargets.slots()[63]));w.pointTargets.slots()[62].map=w.active->map;w.pointTargets.slots()[62].retryAt=GetTickCount()+1000;
+  pool();assert(!w.pointTargets.slots()[63].cube&&w.pointTargets.slots()[62].map.empty()&&!w.pointTargets.slots()[62].retryAt);
   std::puts("POINT_PREPARATION_PASS counts=0,1,4,16,64 warmGpuWork=0 pixels=exact partialCubeAndRetry=retired emptyResources=checked");
 #endif
   // Consecutive native model packets can share one exact draw after upload.
@@ -508,7 +509,7 @@ struct PointTerrainCoverageTest {
    0x03000009,0xe0040000,0xa0e40004,0x90e40000,0x03000009,0xe0080000,0xa0e40005,0x90e40000,
    0x02000001,0xe0030001,0x90e40001,0xffff};
   std::vector<uint32_t> patched;assert(NorthlightShadowShader::patch(shaderSource,sizeof shaderSource/4,patched));IDirect3DVertexShader9* shader=nullptr;must(d->CreateVertexShader(reinterpret_cast<const DWORD*>(patched.data()),&shader));
-  for(unsigned i=0;i<32;++i){auto p=std::make_unique<WorldRenderer::Replay>();p->shader=shader;shader->AddRef();p->decl=w.shadowDecl;w.shadowDecl->AddRef();p->stream[0]=page.vb;page.vb->AddRef();p->stride[0]=sizeof(NorthlightGI::WorldVertex);p->index=page.ib;page.ib->AddRef();
+  for(unsigned i=0;i<32;++i){auto p=std::make_unique<WorldRenderer::Replay>();p->shader=shader;shader->AddRef();p->decl=w.shadowPrograms.worldLayout();w.shadowPrograms.worldLayout()->AddRef();p->stream[0]=page.vb;page.vb->AddRef();p->stride[0]=sizeof(NorthlightGI::WorldVertex);p->index=page.ib;page.ib->AddRef();
    p->type=D3DPT_TRIANGLELIST;p->indexed=true;p->base=0;p->min=0;p->vertices=6;p->start=3*i*64;p->count=64;p->projectionKind=2;p->constantUsage.floats={2,4};p->pointBounds.valid=true;
    const float low[]={-1,-1,0},high[]={1,1,9};std::memcpy(p->pointBounds.low,low,12);std::memcpy(p->pointBounds.high,high,12);w.replays.push_back(std::move(p));}
   shader->Release();
@@ -698,8 +699,9 @@ struct PointTerrainCoverageTest {
   const std::vector<size_t> adjacent={0,1};
   auto& next=*w.replays[1];const auto& firstReplay=*w.replays[0];
   for(unsigned reason=0;reason<10;++reason){
-   if(reason==1||reason==9)++next.constantGroup;
-   if(reason==9){w.replays[0]->constantUsage.floats={2,5};next.constantUsage.floats={2,5};next.constantStorage[24]=1.f;}
+   // Group IDs must agree with the captured pose and register ranges.
+   if(reason==1||reason==6||reason==9)++next.constantGroup;
+   if(reason==9){w.replays[0]->constantUsage.floats={2,5};next.constantUsage.floats={2,5};replayFixtureFloats(next)[24]=1.f;}
    if(reason==2)++next.stride[0];if(reason==3)++next.start;if(reason==4)next.type=D3DPT_TRIANGLESTRIP;
    if(reason==5)next.cutoff=-1;if(reason==6)next.constantUsage.booleans={0,1};if(reason==7)next.offset[0]=4;
    if(reason==8){next.min=UINT_MAX;next.vertices=2;}
@@ -710,7 +712,7 @@ struct PointTerrainCoverageTest {
    const bool merged=reason<=1;
 #endif
    assert(at==(merged?2u:1u)&&run.count==(merged?128u:64u));
-   if(reason==9){w.replays[0]->constantUsage.floats={2,4};next.constantUsage.floats={2,4};next.constantStorage[24]=0.f;}
+   if(reason==9){w.replays[0]->constantUsage.floats={2,4};next.constantUsage.floats={2,4};replayFixtureFloats(next)[24]=0.f;}
    next.constantGroup=firstReplay.constantGroup;next.stride[0]=firstReplay.stride[0];next.start=192;next.type=firstReplay.type;next.cutoff=firstReplay.cutoff;next.constantUsage=firstReplay.constantUsage;next.offset[0]=0;next.min=0;next.vertices=6;
   }
   w.replays.clear();cutout->Release();
@@ -731,7 +733,7 @@ struct PointTerrainCoverageTest {
   IDirect3DVertexBuffer9* coldVB=nullptr;must(d->CreateVertexBuffer(UINT(coldVertices.size()*sizeof(coldVertices[0])),0,0,D3DPOOL_MANAGED,&coldVB,nullptr));must(coldVB->Lock(0,0,&data,0));std::memcpy(data,coldVertices.data(),coldVertices.size()*sizeof(coldVertices[0]));must(coldVB->Unlock());
   IDirect3DIndexBuffer9* coldIB=nullptr;std::vector<WORD> coldIndices(sourceVertices);for(unsigned k=0;k<sourceVertices;++k)coldIndices[k]=WORD(k);must(d->CreateIndexBuffer(UINT(coldIndices.size()*2),0,D3DFMT_INDEX16,D3DPOOL_MANAGED,&coldIB,nullptr));must(coldIB->Lock(0,0,&data,0));std::memcpy(data,coldIndices.data(),coldIndices.size()*2);must(coldIB->Unlock());
   for(unsigned i=0;i<coldPackets;++i){auto p=std::make_unique<WorldRenderer::Replay>();auto source=std::make_shared<NorthlightDrawSnapshot::Mesh>();source->sourceIdentity=NorthlightSourceIdentity::make({0x525354u,scenario,i});source->vertexCount=sourceVertices;source->primitiveCount=sourceVertices/3;source->indexed=true;source->indices.assign(coldIndices.begin(),coldIndices.end());source->streams[0].stride=sizeof(coldVertices[0]);source->streams[0].bytes.resize(sourceVertices*sizeof(coldVertices[0]));std::memcpy(source->streams[0].bytes.data(),coldVertices.data()+sourceVertices*i,source->streams[0].bytes.size());p->shared=source;
-   p->originalShader=coldOriginal;coldOriginal->AddRef();p->shader=shader;shader->AddRef();p->decl=w.shadowDecl;w.shadowDecl->AddRef();p->stream[0]=coldVB;coldVB->AddRef();p->stride[0]=sizeof(coldVertices[0]);p->index=coldIB;coldIB->AddRef();p->type=D3DPT_TRIANGLELIST;p->indexed=true;p->base=INT(i*sourceVertices);p->min=0;p->vertices=sourceVertices;p->start=0;p->count=sourceVertices/3;p->projectionKind=2;p->constantUsage.floats={2,4};p->cutoff=-1;w.replays.push_back(std::move(p));}
+   p->originalShader=coldOriginal;coldOriginal->AddRef();p->shader=shader;shader->AddRef();p->decl=w.shadowPrograms.worldLayout();w.shadowPrograms.worldLayout()->AddRef();p->stream[0]=coldVB;coldVB->AddRef();p->stride[0]=sizeof(coldVertices[0]);p->index=coldIB;coldIB->AddRef();p->type=D3DPT_TRIANGLELIST;p->indexed=true;p->base=INT(i*sourceVertices);p->min=0;p->vertices=sourceVertices;p->start=0;p->count=sourceVertices/3;p->projectionKind=2;p->constantUsage.floats={2,4};p->cutoff=-1;w.replays.push_back(std::move(p));}
   coldVB->Release();coldIB->Release();w.pointPrimitiveLimit=caps.MaxPrimitiveCount;w.pointSlot().cacheValid=false;
   std::vector<float> coldImage;unsigned coldBefore=0,coldAfter=0;
   for(unsigned mode=0;mode<2;++mode){w.pointWork={};if(!mode)unboundedReference();if(mode){
@@ -755,7 +757,7 @@ struct PointTerrainCoverageTest {
   w.releaseGPU(true);assert(w.replayBoundsCache.envelopeEntries()==envelopeEntries);
   for(auto& p:w.replays){std::weak_ptr<const NorthlightDrawSnapshot::Mesh> old=p->shared;
    p->shared=std::make_shared<NorthlightDrawSnapshot::Mesh>(*p->shared);assert(old.expired());p->pointBounds={};p->boundsPrepared.reset();}
-  must(d->CreateVertexDeclaration(elements,&w.shadowDecl));must(d->CreatePixelShader(kShadowUnionShader,&w.unionPS));
+  must(d->CreateVertexDeclaration(elements,&w.shadowPrograms.worldLayout_));must(d->CreatePixelShader(kShadowUnionShader,&w.shadowPrograms.union_));
   w.replayBoundsBegin();w.pointCalculateReplayBounds();assert(w.pointBoundsValid==coldPackets&&!w.pointBoundVertices);
   w.pointWork={};must(d->BeginScene());assert(w.renderPointShadow(light,true,true));must(d->EndScene());drain();assert(image()==coldImage);
   assert(w.pointWork.replay==coldAfter/9);
@@ -801,20 +803,21 @@ struct PointTerrainCoverageTest {
     p->originalShader=skinOriginal;skinOriginal->AddRef();p->shader=skinShader;skinShader->AddRef();p->decl=skinDecl;skinDecl->AddRef();
     p->stream[0]=vb;vb->AddRef();p->stride[0]=sizeof(SkinVertex);p->index=ib;ib->AddRef();p->type=D3DPT_TRIANGLELIST;p->indexed=true;
     p->min=p->start=3*i;p->vertices=3;p->count=1;p->projectionKind=2;p->constantUsage=skinUsage;p->cutoff=-1;p->gpuCached=true;
-    std::fill(std::begin(p->constantStorage),std::end(p->constantStorage),0.f);
-    for(unsigned bone=0;bone<75;++bone){p->constantStorage[4*(31+3*bone)]=1;p->constantStorage[4*(32+3*bone)+1]=1;p->constantStorage[4*(33+3*bone)+2]=1;}
-    p->constantStorage[4*(33+3*12)+3]=-1.5f;w.replays.push_back(std::move(p));
+    std::fill_n(replayFixtureFloats(*p),4*256,0.f);
+    for(unsigned bone=0;bone<75;++bone){replayFixtureFloats(*p)[4*(31+3*bone)]=1;replayFixtureFloats(*p)[4*(32+3*bone)+1]=1;replayFixtureFloats(*p)[4*(33+3*bone)+2]=1;}
+    replayFixtureFloats(*p)[4*(33+3*12)+3]=-1.5f;w.replays.push_back(std::move(p));
    }
    vb->Release();ib->Release();w.pointPrimitiveLimit=caps.MaxPrimitiveCount;
    auto& second=*w.replays[1];
-   {
+   for(unsigned gap:{0u,3u}){
+    second.start=3+gap;
     w.replayBoundsBegin();w.pointCalculateReplayBounds();assert(w.pointBoundsValid==2);
     assert(w.replays[0]->boundsWork.weightedPaletteEnd==4&&second.boundsWork.weightedPaletteEnd==13);
     const auto render=[&]{
      const float poison[12]={};must(d->SetVertexShaderConstantF(31+3*12,poison,3));
-     w.pointWork={};w.pointCold={};w.pointSlot().schedule.invalidate();
+     w.pointWork={};w.pointCold={};w.pointIndexedPairDraws=0;w.pointSlot().schedule.invalidate();
      must(d->BeginScene());assert(w.renderPointShadow(light,true,true));must(d->EndScene());drain();
-     assert(w.pointWork.replayMerged);
+     assert(w.pointWork.replayMerged&&bool(w.pointIndexedPairDraws)==bool(gap));
      return image();
     };
     w.replays[0]->constantUsage.weightedFloats={};const auto expected=render();const auto fullBytes=w.pointCold.constantBytes;
@@ -824,7 +827,7 @@ struct PointTerrainCoverageTest {
     const auto compactBytes=w.pointCold.constantBytes;
     second.boundsWork.weightedPaletteEnd=0;
     assert(render()==expected&&!w.pointCold.weightedConstantDraws&&w.pointCold.constantBytes==fullBytes);
-    std::printf("POINT_MERGED_SKIN_GPU_PASS fullBytes=%llu compactBytes=%llu exactFaces=6\n",(unsigned long long)fullBytes,(unsigned long long)compactBytes);
+    std::printf("POINT_MERGED_SKIN_GPU_PASS gap=%u fullBytes=%llu compactBytes=%llu exactFaces=6\n",gap,(unsigned long long)fullBytes,(unsigned long long)compactBytes);
    }
    w.replays.clear();w.replayBoundsCache.clear();
   }
@@ -840,7 +843,7 @@ struct PointTerrainCoverageTest {
 #ifdef NORTHLIGHT_POINT_OVERLAP_TEST
     p->constantUsage=skinUsage;p->gpuCached=true;
 #endif
-    std::fill(std::begin(p->constantStorage),std::end(p->constantStorage),0.f);for(unsigned bone=0;bone<75;++bone){p->constantStorage[4*(31+3*bone)]=1;p->constantStorage[4*(32+3*bone)+1]=1;p->constantStorage[4*(33+3*bone)+2]=1;}w.replays.push_back(std::move(p));}
+    std::fill_n(replayFixtureFloats(*p),4*256,0.f);for(unsigned bone=0;bone<75;++bone){replayFixtureFloats(*p)[4*(31+3*bone)]=1;replayFixtureFloats(*p)[4*(32+3*bone)+1]=1;replayFixtureFloats(*p)[4*(33+3*bone)+2]=1;}w.replays.push_back(std::move(p));}
    skinVB->Release();skinIB->Release();w.replayBoundsCache.clear();w.pointSlot().cacheValid=false;
    // Seed an interrupted immutable source, which must remain unbounded.
    auto& first=*w.replays[0];const auto prepared=NorthlightReplayBounds::EnvelopeCache::prepareProgram(*skinProgram,skinElements,4);assert(prepared);
@@ -849,7 +852,7 @@ struct PointTerrainCoverageTest {
    unsigned before=0,after=0;
    for(unsigned pose=0;pose<3;++pose){
     const float angle=float(pose)*.71f;w.context.inverseView[0]=w.context.inverseView[5]=std::cos(angle);w.context.inverseView[1]=std::sin(angle);w.context.inverseView[4]=-std::sin(angle);w.context.inverseView[12]=float(pose)*.25f;
-    for(auto& p:w.replays){p->pointBounds={};for(unsigned bone=0;bone<4;++bone)p->constantStorage[4*(31+3*bone)+3]=float(pose)*.35f;}
+    for(auto& p:w.replays){p->pointBounds={};for(unsigned bone=0;bone<4;++bone)replayFixtureFloats(*p)[4*(31+3*bone)+3]=float(pose)*.35f;}
     for(unsigned l=0;l<4;++l){unboundedReference();auto target=light;target.position[0]=float(l)*.25f;target.sourceId=7000+l;w.pointWork={};w.pointSlot().schedule.invalidate();must(d->BeginScene());assert(w.renderPointShadow(target,true,true));must(d->EndScene());drain();const auto expected=image();assert(std::any_of(expected.begin(),expected.end(),[](float v){return v<.99f;}));if(!pose&&!l)before=w.pointWork.replay;
      // A real clock may defer work under driver contention. Every partial
      // result must produce the same image; eventual completion is mandatory.
@@ -888,13 +891,13 @@ struct PointTerrainCoverageTest {
    std::vector<WORD> ix(v.size());for(unsigned k=0;k<ix.size();++k)ix[k]=WORD(k);IDirect3DIndexBuffer9* ib=nullptr;must(d->CreateIndexBuffer(UINT(ix.size()*2),0,D3DFMT_INDEX16,D3DPOOL_MANAGED,&ib,nullptr));must(ib->Lock(0,0,&data,0));std::memcpy(data,ix.data(),ix.size()*2);must(ib->Unlock());
    auto p=std::make_unique<WorldRenderer::Replay>();auto source=std::make_shared<NorthlightDrawSnapshot::Mesh>();source->vertexCount=UINT(v.size());source->primitiveCount=groups;source->indexed=true;source->indices.assign(ix.begin(),ix.end());source->streams[0].stride=sizeof(SkinVertex);source->streams[0].bytes.resize(v.size()*sizeof(SkinVertex));std::memcpy(source->streams[0].bytes.data(),v.data(),source->streams[0].bytes.size());p->shared=source;
    p->originalShader=skinOriginal;skinOriginal->AddRef();p->shader=skinShader;skinShader->AddRef();p->decl=skinDecl;skinDecl->AddRef();p->stream[0]=vb;p->stride[0]=sizeof(SkinVertex);p->index=ib;p->type=D3DPT_TRIANGLELIST;p->indexed=true;p->vertices=UINT(v.size());p->count=groups;p->projectionKind=2;p->constantUsage.floats={0,256};p->cutoff=-1;
-   std::fill(std::begin(p->constantStorage),std::end(p->constantStorage),0.f);for(unsigned bone=0;bone<75;++bone){p->constantStorage[4*(31+3*bone)]=1;p->constantStorage[4*(32+3*bone)+1]=1;p->constantStorage[4*(33+3*bone)+2]=1;}
+   std::fill_n(replayFixtureFloats(*p),4*256,0.f);for(unsigned bone=0;bone<75;++bone){replayFixtureFloats(*p)[4*(31+3*bone)]=1;replayFixtureFloats(*p)[4*(32+3*bone)+1]=1;replayFixtureFloats(*p)[4*(33+3*bone)+2]=1;}
    const auto prepared=NorthlightReplayBounds::EnvelopeCache::prepareProgram(*oneProgram,skinElements,4);NorthlightReplayBounds::Budget seed;NorthlightReplayBounds::Bounds b;w.replayBoundsCache.beginFrame(false,1595);
    assert(w.replayBoundsCache.calculatePreparedPhase(*prepared,*source,source,p->constants,w.context.inverseView,seed,b,NorthlightReplayBounds::EnvelopeCache::Stage::All)==NorthlightReplayBounds::Status::Valid);w.replays.push_back(std::move(p));
   }
   unsigned unboundedDraws=0,boundedDraws=0;
   for(unsigned pose=0;pose<3;++pose){const float angle=pose*.6f;w.context.inverseView[0]=w.context.inverseView[5]=std::cos(angle);w.context.inverseView[1]=std::sin(angle);w.context.inverseView[4]=-std::sin(angle);
-   for(auto& p:w.replays)for(unsigned bone=0;bone<21;++bone)p->constantStorage[4*(31+3*bone)+3]=pose*.2f;
+   for(auto& p:w.replays)for(unsigned bone=0;bone<21;++bone)replayFixtureFloats(*p)[4*(31+3*bone)+3]=pose*.2f;
    for(unsigned l=0;l<14;++l){unboundedReference();auto target=light;target.sourceId=8000+l;target.position[0]=float(l)*.01f;for(auto& p:w.replays)p->pointBounds={};w.pointWork={};w.pointSlot().schedule.invalidate();must(d->BeginScene());assert(w.renderPointShadow(target,true,true));must(d->EndScene());drain();const auto expected=image();if(!pose)unboundedDraws+=w.pointWork.replay;
     for(unsigned attempt=0;attempt<128;++attempt){w.replayBoundsBegin();w.pointCalculateReplayBounds();w.pointWork={};w.pointSlot().schedule.invalidate();must(d->BeginScene());assert(w.renderPointShadow(target,true,true));must(d->EndScene());drain();assert(image()==expected);if(w.pointBoundsValid==59)break;assert(attempt<127);}
     assert(w.pointBoundsValid==59&&!w.pointBoundVertices);if(!pose)boundedDraws+=w.pointWork.replay;

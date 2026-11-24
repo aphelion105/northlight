@@ -2,6 +2,7 @@
 #include <atomic>
 #include <cstdint>
 #include <cstddef>
+#include <cstdlib>
 #include <type_traits>
 
 namespace NorthlightStream {
@@ -18,13 +19,54 @@ inline EventPendingKind eventPendingKind(HRESULT hr,std::int32_t payload){
     if(hr!=S_FALSE)return EventPendingKind::Other;
     return payload==EventPayloadMarker?EventPendingKind::Untouched:payload==0?EventPendingKind::FalsePayload:EventPendingKind::Other;
 }
-// An untouched audited DXVK payload means its CPU command thread has not run
-// END yet. Give a fast CPU completion 200 us before sleeping: the native timer
-// can oversleep a 20 us request by hundreds of microseconds. Longer spinning
-// competes with our producer. GPU pending and unaudited backends keep 2 ms.
+inline bool legacyEventGpuSpin(){
+#ifdef NORTHLIGHT_REPLAY_STAND
+    static const bool legacy=[]{
+        const char* value=std::getenv("NORTHLIGHT_RETRACE_LEGACY_EVENT_SPIN");
+        return !(value&&value[0]=='0'&&value[1]=='\0');
+    }();
+    return legacy;
+#else
+    return true;
+#endif
+}
+inline bool adaptiveEventSpin(){
+    static const bool enabled=[]{
+        const char* value=std::getenv("NORTHLIGHT_EVENT_ADAPTIVE");
+#ifdef NORTHLIGHT_REPLAY_STAND
+        return !(value&&value[0]=='0'&&value[1]=='\0');
+#else
+        // Live Dalaran A/B favored the regular wait at p95 and p99.
+        return value&&value[0]=='1'&&value[1]=='\0';
+#endif
+    }();
+    return enabled;
+}
+// Shorten the initial spin only after three consecutive slow generations.
+// A quick generation or a new device epoch clears the history.
+struct EventSpinHistory {
+    void observePending(std::uint64_t pendingNs){
+        // A wait can finish well within its trip and still outlast the 2 ms spin.
+        slowGeneration_|=pendingNs>=3000000;
+    }
+    void next(bool sameEpoch,bool expired){
+        if(!sameEpoch||(!expired&&!slowGeneration_))slowEnds_=0;
+        else if(slowEnds_<3)++slowEnds_;
+        slowGeneration_=false;
+    }
+    bool sustained()const{return slowEnds_==3;}
+private:
+    unsigned char slowEnds_=0;
+    bool slowGeneration_=false;
+};
+// On audited DXVK, an untouched payload means END is still queued on the
+// CPU. Use a short grace so the command thread can run. The longer GPU grace
+// avoids delaying ready results on hosts where short timer waits overshoot.
 template<class ShortPause,class LongPause>
-inline void pauseEventQuery(EventPendingKind backend,bool expired,std::uint64_t left,std::uint64_t elapsed,ShortPause& shortPause,LongPause& longPause){
-    if((backend==EventPendingKind::Untouched&&elapsed>=200000)||expired||elapsed>=2000000)longPause(left,elapsed);
+inline void pauseEventQuery(EventPendingKind backend,bool expired,std::uint64_t left,std::uint64_t elapsed,
+                            ShortPause& shortPause,LongPause& longPause,bool legacyGpuSpin=true){
+    const bool knownPending=backend==EventPendingKind::Untouched||(!legacyGpuSpin&&backend==EventPendingKind::FalsePayload);
+    if(expired||elapsed>=(knownPending?200000u:2000000u))longPause(left,elapsed);
     else shortPause(left,elapsed);
 }
 // Flush once to submit the fence, then periodically for runtimes that need
@@ -55,6 +97,22 @@ struct EventPauseProfile {
         if(other.maxOvershootNs>maxOvershootNs)maxOvershootNs=other.maxOvershootNs;
     }
 };
+// Partition the successful express path from GetData entry to its real poll.
+// The command count covers only work retired after replay first saw the post.
+struct EventQueueProfile {
+    unsigned samples=0,drained=0;
+    std::uint64_t publishNs=0,handoffNs=0,drainNs=0,entryNs=0;
+    std::uint64_t queuedCommands=0,retiredCommands=0,maxHandoffNs=0;
+    unsigned maxHandoffBehind=0xffff;
+    void record(std::uint64_t tripStart,std::uint64_t posted,std::uint64_t seen,std::uint64_t served,std::uint64_t poll,
+                std::uint64_t queued,std::uint64_t retired,unsigned behind){
+        if(!posted||posted<tripStart||seen<posted||served<seen||poll<served)return;
+        ++samples;drained+=retired!=0;
+        publishNs+=posted-tripStart;handoffNs+=seen-posted;drainNs+=served-seen;entryNs+=poll-served;
+        queuedCommands+=queued;retiredCommands+=retired;
+        if(seen-posted>maxHandoffNs){maxHandoffNs=seen-posted;maxHandoffBehind=behind;}
+    }
+};
 // Game-thread diagnostics. The replay timestamps return through the existing
 // synchronous task; these spans partition one trip and never imply GPU cost.
 struct QueryWaitProfile {
@@ -65,6 +123,7 @@ struct QueryWaitProfile {
     // Final backend observation per synchronous trip, not all polls in it.
     std::uint64_t backendUntouched=0,backendFalse=0,backendReady=0,backendOther=0;
     std::uint64_t fenceCalls=0,fenceNs=0,fenceTimeouts=0;
+    std::uint64_t eventCpuCycles=0,eventCpuSamples=0,eventShortGpuTrips=0;
     // Several bounded EVENT trips can stall one frame even though each trip
     // stays below the slow-report threshold. Use the frame's accumulated time.
     bool frameReportDue(bool sampled)const{return calls&&(sampled||tripNs>=20000000);}

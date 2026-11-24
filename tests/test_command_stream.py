@@ -2,6 +2,8 @@
 # northlight-test: requires=cxx,zig
 """Command-stream queue, wait and generated record/dispatch/sync code: native tests against an SDK stub, and a compile
 check of the generated code against the real d3d9.h with zig (x86-windows-gnu)."""
+
+from source_units import source_text
 import sys; from pathlib import Path; sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root
 import northlight_paths as fp
 import re, subprocess, tempfile
@@ -38,7 +40,7 @@ for never in ('DrawPrimitive', 'DrawIndexedPrimitive', 'DrawPrimitiveUP', 'DrawI
               'CreateVertexShader', 'CreatePixelShader', 'CreateTexture', 'CreateVertexBuffer', 'CreateIndexBuffer', 'ProcessVertices', 'StretchRect',
               'ColorFill', 'UpdateSurface', 'UpdateTexture', 'SetRenderTarget', 'SetDepthStencilSurface', 'BeginStateBlock', 'EndStateBlock', 'ShowCursor', 'SetCursorPosition', 'SetCursorProperties'):
     assert ('IDirect3DDevice9', never) not in gf.DIRECT, never
-RENDERER = fp.src('renderer.cpp').read_text()
+RENDERER = source_text(fp.src('renderer.cpp'))
 DEVICE_SRC = RENDERER[RENDERER.index('class Device final'):RENDERER.index('class Factory final')]
 GUARDED = fp.src('mirror_guarded_device.h').read_text()
 MIRROR_SRC = fp.src('device_mirror.h').read_text()
@@ -68,7 +70,7 @@ for _, name in sorted(gf.DIRECT):
               r'if\(buffer&&!wrapped\)mirrorState\.disable\("raw(?:vertex|index)bufferinput"\);returnext->' + name + r'\([\w,]*\);\}')
     assert re.fullmatch(pure, body) or re.fullmatch(buffer, body), (name, body)   # anything more than unwrap + forward must not be direct
 # The replay thread attaches no input queue: the cursor is the game thread's own Win32 state (StreamDevice does it at the call).
-assert 'AttachThreadInput(' not in ''.join(f.read_text() for f in (fp.src('replay_thread.h'), fp.src('stream_device.h'), fp.src('stream_proxies.h')))
+assert 'AttachThreadInput(' not in ''.join(source_text(fp.src(name)) for name in ('replay_thread.h', 'stream_device.h', 'stream_proxies.h'))
 print('direct audit ok:', len(gf.DIRECT), 'methods')
 
 # ---- the SDK stub: every type the 14 interfaces mention, and the interfaces with default (non-pure) methods ----
@@ -256,10 +258,14 @@ def generated_cpp():
     return '\n'.join(out) + '\n'
 
 
-def compile_run(tmp, name, flags, args=(), expect_fail=False, source="test_command_stream.cpp"):
+def write_native_shadow_stub(directory):
     # The process-local Windows shadow setting has no host SDK implementation.
-    (Path(tmp) / 'native_shadow_control_windows.h').write_text(
+    (Path(directory) / 'native_shadow_control_windows.h').write_text(
         '#pragma once\nnamespace NorthlightNativeShadowControl { inline void producerPresent(){} }\n')
+
+
+def compile_run(tmp, name, flags, args=(), expect_fail=False, source="test_command_stream.cpp"):
+    write_native_shadow_stub(tmp)
     exe = Path(tmp) / name
     command = ['clang++', '-std=c++17', '-Wall', '-Wextra', '-Werror', '-pthread', '-DNL_STUB', *flags, '-I', str(tmp), *fp.test_include_flags(),
                str(HERE / source), '-o', str(exe)]

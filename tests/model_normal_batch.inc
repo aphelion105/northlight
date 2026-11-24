@@ -44,7 +44,8 @@ static void normalRange(IDirect3DVertexShader9* shader){
                 const bool known=static_cast<ExtensionDevice*>(static_cast<IDirect3DDevice9*>(context))->knownSamplerStates(stage,mask,out);normalSamplerBatches+=known;return known;});
             normals->endFrame();producerRange.beginFrame();normals->testRange(enabled);ok(extension.SetRenderState(D3DRS_CLIPPING,!noClip));ok(extension.SetRenderState(D3DRS_FILLMODE,wireframe?D3DFILL_WIREFRAME:D3DFILL_SOLID));ok(extension.Clear(0,nullptr,D3DCLEAR_TARGET|D3DCLEAR_ZBUFFER,0,1,0));
             float bank[256][4]={};bank[2][0]=bank[3][1]=bank[4][2]=bank[5][2]=1;bank[4][3]=-.5f;bank[28][3]=1;
-            auto capture=[&](float z,bool anchor,unsigned unknown=256){
+            enum class RangeBank { None, Current, Stale, Partial };
+            auto capture=[&](float z,bool anchor,unsigned unknown=256,RangeBank mode=RangeBank::None){
                 // Disjoint screen halves and constant projected size: the near
                 // anchor cannot conceal an incorrectly retained far candidate.
                 for(unsigned bone=0;bone<75;++bone){const unsigned first=31+3*bone;bank[first][0]=bank[first+1][1]=z;bank[first+2][2]=1;bank[first][3]=z*(anchor?-.5f:.5f);bank[first+1][3]=0;bank[first+2][3]=z;}
@@ -65,7 +66,13 @@ static void normalRange(IDirect3DVertexShader9* shader){
                     if(promoted)proof.outsideRange=proof.outside(source.get(),shader,declaration.p,stamp);
                     if(stale)ok(extension.SetVertexShaderConstantF(31,bank[31],1));
                 }
-                normals->capture(shader,[&]{return extension.DrawPrimitiveUP(D3DPT_TRIANGLELIST,1,source->streams[0].bytes.data(),48);},true,&geometry,nullptr,D3DFMT_UNKNOWN,nullptr,0,&source,declaration.p,(kind==Envelope||proof.outsideRange)?&proof:nullptr);
+                NorthlightConstantEpoch::BankHandoff loan;
+                if(mode!=RangeBank::None){
+                    NorthlightConstantEpoch::Stamp stamp;stamp.requestHeld=true;assert(extension.constantStamp(stamp)&&stamp.held);
+                    loan={bank[0],stamp.reset,stamp.floats,stamp.booleans,stamp.integers,0,mode==RangeBank::Partial?6u:256u};
+                    if(mode==RangeBank::Stale)ok(extension.SetVertexShaderConstantF(31,bank[31],1));
+                }
+                normals->capture(shader,[&]{return extension.DrawPrimitiveUP(D3DPT_TRIANGLELIST,1,source->streams[0].bytes.data(),48);},true,&geometry,nullptr,D3DFMT_UNKNOWN,nullptr,0,&source,declaration.p,(kind==Envelope||proof.outsideRange)?&proof:nullptr,nullptr,nullptr,false,loan.bank?&loan:nullptr);
             };
             if(viewport&&enabled&&!stale&&!noClip&&!wireframe){
                 ok(extension.BeginScene());capture(side==4?-20.f:20.f,false);
@@ -114,6 +121,13 @@ static void normalRange(IDirect3DVertexShader9* shader){
             if(enabled&&scenario==0&&kind==Single){
                 normals->endFrame();ok(extension.BeginScene());capture(80,false,257);
                 assert(normals->testRangeCulled()==1&&normals->testRangeRegisters()==7&&normals->finishCaptures());ok(extension.EndScene());
+            }
+            if(enabled&&scenario==0&&kind!=Envelope)for(auto mode:{RangeBank::Current,RangeBank::Stale,RangeBank::Partial}){
+                normals->endFrame();ok(extension.BeginScene());capture(2,true,256,mode);
+                assert(normals->testPendingPackets()==1&&!normals->testRangeCulled());
+                assert((normals->testRangeRegisters()==0)==(mode==RangeBank::Current));
+                assert(normals->finishCaptures());ok(extension.EndScene());
+                assert(capturedPixels(normals->texture(),W,H)==anchorOnly);
             }
         }++cases;viewportCases+=viewport;
     }

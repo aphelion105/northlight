@@ -10,10 +10,11 @@ import sys
 sys.path[:0] = [str(Path(__file__).resolve().parents[1]),
                str(Path(__file__).resolve().parents[1]/'scripts/shaders')]
 import northlight_paths as fp
+from scripts.shaders.shader_sources import source_files, world_source_text
 from shader_compiler import Compiler
 
 out = fp.output_dir()
-world = (fp.SHADERS/'world_effects.hlsl').read_text().replace(
+world = world_source_text(fp.SHADERS/'world_effects.hlsl').replace(
     '"auto_bump_normal.hlsl"', '"'+(fp.SHADERS/'auto_bump_normal.hlsl').as_posix()+'"')
 query = '''
 float4 ReceiverNormal:register(c116);
@@ -54,7 +55,7 @@ for i, backend in enumerate(backends):
     result.check_returncode()
     assert 'GI_RESIDENCY_PASS' in result.stdout
     runs.append(dict(backend=str(backend), result=result.stdout))
-inputs = [Path(__file__), fp.TESTS/'gi_residency_gpu.cpp', fp.SHADERS/'world_effects.hlsl',
+inputs = [Path(__file__), fp.TESTS/'gi_residency_gpu.cpp', *source_files(fp.SHADERS/'world_effects.hlsl'),
           fp.src('probe_activation.h'), fp.src('probe_texture_upload.h')]
 (out/'validation.json').write_text(json.dumps(dict(pass_=True, timing_valid=False, runs=runs,
     sha256={str(p): hashlib.sha256(p.read_bytes()).hexdigest() for p in inputs}), indent=2)+'\n')

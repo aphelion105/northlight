@@ -2,10 +2,11 @@
 """Analytic wall/ground normal-confidence regression; no GPU or game."""
 import sys; from pathlib import Path; sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root
 import northlight_paths as fp
+from scripts.shaders.shader_sources import world_source_text
 import json,math
 from pathlib import Path
 r=Path(__file__).resolve().parent
-shader=fp.src('world_effects.hlsl').read_text()
+shader=world_source_text(fp.src('world_effects.hlsl'))
 assert 'correction=min(correction,0)+max(correction,0)*smoothNormal.w;' in shader
 assert 'directionalShadow(p+n*(.08*smoothNormal.w),n,smoothNormal.w)' in shader
 

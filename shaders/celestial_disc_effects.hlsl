@@ -11,8 +11,9 @@ sampler2D DiscWater : register(s2);
 sampler2D DiscHaloVisibility : register(s3); // current halo, previous 1x1 value in visibility pass
 sampler2D DiscTerrain : register(s4); // viewer-ray coverage of already loaded terrain
 sampler2D DiscSkyLayers : register(s6); // RGB: attenuated background; A: cloud transmission
-float4 DiscSkyComposition : register(c49); // enabled, surface emission, surface opacity, solar cloud visibility ready
+float4 DiscSkyComposition : register(c49); // enabled, surface emission, surface opacity, replacement sky (visibility pass: cloud mask ready)
 float4 DiscSurfaceTint : register(c50);
+float4 SkyGradient[6] : register(c51);
 sampler2D DiscRingVisibility : register(s5); // 1x1 visibility of the 2-4R ring (sun), else the halo value
 float4 DiscTerrainPolicy : register(c46); // ready, mask extent in body radii, body texture LOD, glare mode (0 late tail, 1 sky-phase compact core, 2 late full glare in a skybox frame)
 float4 DiscImage : register(c0); // inv fullWidth/Height, world depthMin, inverse depthRange
@@ -144,6 +145,13 @@ float4 CelestialHaloVisibilityPS(float2 uv:TEXCOORD0):COLOR0 {
     }
     return saturate(value).xxxx;
 }
+float3 skyGradient(float h){
+    float3 sky=lerp(SkyGradient[5].rgb,SkyGradient[4].rgb,saturate((h+.1)*10));
+    sky=lerp(sky,SkyGradient[3].rgb,saturate(h/.087156));
+    sky=lerp(sky,SkyGradient[2].rgb,saturate((h-.087156)/.171663));
+    sky=lerp(sky,SkyGradient[1].rgb,saturate((h-.258819)/.241181));
+    return lerp(sky,SkyGradient[0].rgb,saturate((h-.5)/.366025));
+}
 float4 CelestialDiscPS(float2 uv:TEXCOORD0):COLOR0 {
     float2 dimensions=floor(1/DiscImage.xy+.5);
     float2 depthUV=(clamp(floor(uv*dimensions),0,dimensions-1)+.5)*DiscImage.xy;
@@ -223,8 +231,14 @@ float4 CelestialDiscPS(float2 uv:TEXCOORD0):COLOR0 {
         // Equivalent to inserting the surface and screen-blended halo behind
         // the native foreground layers. Their colour is already in the scene.
         // HDR uses additive emission and needs only the transmission channel.
+        float3 background=layers.rgb;
+        if(DiscSkyComposition.w>.5){
+            float3 palette=skyGradient(normalize(ray).z);
+            if(DiscPolicy.x>.5)palette=discDecode(palette);
+            background=layers.a*palette;
+        }
         float3 contribution=DiscPolicy.x>1.5?layers.a*(surface+halo):
-            layers.a*surface*(1-halo)+halo*(layers.a-min(layers.rgb,layers.aaa));
+            layers.a*surface*(1-halo)+halo*(layers.a-min(background,layers.aaa));
         return float4(contribution,1);
     }
     return float4(outputColor(encoded),alpha);
@@ -268,21 +282,22 @@ float4 CelestialTerrainPS():COLOR0 {return 1;}
 
 // Replace the captured background, preserving native cloud colour/transmission.
 // Add a signed linear delta to HDR so existing celestial residual is untouched.
-float4 SkyGradient[6] : register(c51);
 float4 CelestialSkyPS(float2 uv:TEXCOORD0):COLOR0 {
     if(DiscPolicy.w>.5&&tex2Dlod(DiscDepth,float4(uv,0,0)).r<1.0-1.0/16777216.0)clip(-1);
-    float3 ray=normalize(discRay(uv));float h=ray.z;
-    float3 sky=lerp(SkyGradient[5].rgb,SkyGradient[4].rgb,saturate((h+.1)*10));
-    sky=lerp(sky,SkyGradient[3].rgb,saturate(h/.087156));
-    sky=lerp(sky,SkyGradient[2].rgb,saturate((h-.087156)/.171663));
-    sky=lerp(sky,SkyGradient[1].rgb,saturate((h-.258819)/.241181));
-    sky=lerp(sky,SkyGradient[0].rgb,saturate((h-.5)/.366025));
+    float3 sky=skyGradient(normalize(discRay(uv)).z);
     float3 native=tex2Dlod(DiscTexture,float4(uv,0,0)).rgb;
     float4 layers=tex2Dlod(DiscSkyLayers,float4(uv,0,0));
     // Seed menus before their native backdrop draws; hardware depth protects
     // earlier geometry, including individual MSAA samples at its silhouette.
     if(DiscPolicy.z>.5)layers=float4(native,1);
-    float3 replacement=max(native-layers.rgb,0)+sky*saturate(layers.a);
+    float transmission=saturate(layers.a);
+    // The procedural legacy sky can already contain its gradient in the
+    // blended native colour, leaving only transmission in the layer capture.
+    // Cross-fade that sky to the authored palette where there is no captured
+    // background colour to subtract. Opaque clouds retain their native colour.
+    float3 replacement=any(layers.rgb>0)
+        ? max(native-layers.rgb,0)+sky*transmission
+        : lerp(native,sky,transmission);
     // A menu sky is an early background fill. Write absolute linear colour in
     // HDR: subtracting resolved native colour would mix covered MSAA samples
     // into the uncovered samples at an existing silhouette.

@@ -123,6 +123,8 @@ int main(int argc,char** argv){
             std::fill(image.begin(),image.end(),0);std::fill(encoded.begin(),encoded.end(),0);
             Block output{};for(unsigned i=0;i<3;++i){assert(context.read(nullptr,firstAddress,output.data(),output.size())&&output==first);assert(context.read(nullptr,secondAddress,output.data(),output.size())&&output==second);}
             assert(context.valid()&&NorthlightStandStatus(status,8)&&status[0]==1&&status[1]==1&&status[3]==6&&!status[6]&&!status[7]);
+            assert(!context.readObservedCode(firstAddress,output.data(),8)&&output==second&&context.valid()&&!context.missingReads);
+            assert(context.readObservedCode(firstAddress,output.data(),output.size())&&output==first&&context.staticReads==7);
             const auto bytes=packet();assert(NorthlightStandSnapshot(bytes.data(),unsigned(bytes.size()),1,1)&&NorthlightStandApi::beforeApi());
             assert(original.size()>C::HeaderBytes);
         }

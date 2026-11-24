@@ -77,7 +77,8 @@ APP_FILES = [
 PAYLOAD_COMMON = {'celestial-profiles.ini': 'client-config/celestial-profiles.ini',
                   'shadow-range-profiles.ini': 'client-config/shadow-range-profiles.ini',
                   'northlight-quality.ini': 'renderer/windows-package/northlight-quality.ini'}
-PRESERVE = set(PAYLOAD_COMMON)
+WATER_SETTINGS = ('water.ini', 'water-host.ini')
+PRESERVE = set(PAYLOAD_COMMON) | set(WATER_SETTINGS)
 DXVK_BACKEND = 'renderer-backends/dxvk/dxvk_d3d9.dll'
 DXVK2_BACKEND = 'renderer-backends/dxvk2/dxvk2_d3d9.dll'
 ATMOSPHERE = 'forever-atmosphere.bin'
@@ -115,6 +116,9 @@ CACHE_MEMBER = re.compile(r"^([A-Za-z0-9_ ']{1,63}/\d+_\d+\.fg3|models/[0-9a-f]+
 MARKER = re.compile(rb'Northlight renderer (\d+\.\d+\.\d+);')
 DEV_MARKER = b'NORTHLIGHT DEV TUNING BUILD'  # embedded by build_renderer.py --dev-tuning; never ships
 STAND_MARKER = b'NORTHLIGHT STAND REPLAY BUILD'
+TIDEGLASS_MARKER = re.compile(rb'Tideglass (\d+\.\d+\.\d+);')
+CLOCK_MARKER = b'TIDEGLASS VISUAL CLOCK BUILD'
+CODE_WRITE_IMPORTS = {'FlushInstructionCache', 'WriteProcessMemory'}
 
 
 def sha(path):
@@ -180,6 +184,26 @@ def check_dll(data):
     if b'NORTHLIGHT PROFILING BUILD' in data:
         raise SystemExit('the renderer DLL is a profiling build; rebuild without --profile-symbols for release packages')
     return MARKER.search(data).group(1).decode()
+
+
+def check_water_core(core, host):
+    if pe_machine(core) != 0x14c or b'WaterHostGetAPI' not in core or b'WaterHostGetAPI' not in host:
+        raise SystemExit('The combined package requires a cooperative host and 32-bit Tideglass core')
+    if CLOCK_MARKER in core:
+        raise SystemExit('the Tideglass core is a development build with the picture clock; build it with scripts/build_combo.py')
+    imports = {n for names in build_stormlib.pe_info(core)['imports'].values() for n in names}
+    if imports & CODE_WRITE_IMPORTS:
+        raise SystemExit('the Tideglass core can change the client\'s code (imports ' +
+                         ', '.join(sorted(imports & CODE_WRITE_IMPORTS)) + '); a player core must not')
+    found = TIDEGLASS_MARKER.search(core)
+    if not found:
+        raise SystemExit('the Tideglass core does not state its version')
+    return found.group(1).decode()
+
+
+def combo_version(northlight, tideglass):
+    """A combined package's label: both parts' own versions, so it names exactly what it holds."""
+    return f'{northlight}-tideglass-{tideglass}'
 
 
 def commit_time():
@@ -361,7 +385,7 @@ def launchers(platform, version):
             'Uninstall Northlight.command': command('uninstall', 'uninstall')}
 
 
-def build(platform, version, dll, variants, out, stormlib_dir, atmosphere=None):
+def build(platform, version, dll, variants, out, stormlib_dir, atmosphere=None, core=None):
     atmosphere_info = atmosphere_metadata(atmosphere) if atmosphere is not None else None
     for manifest in variants.values():
         check_variant_sources(manifest)
@@ -373,6 +397,16 @@ def build(platform, version, dll, variants, out, stormlib_dir, atmosphere=None):
         tree.add('app/' + name, fp.REPO / name)
     dll_data = dll.read_bytes()
     dll_version = check_dll(dll_data)
+    water_info = None
+    if core is not None:
+        from tideglass_source import verify
+        revision = verify()['revision']
+        water_version = check_water_core(core, dll_data)
+        expected_version = combo_version(dll_version, water_version)
+        if version != expected_version:
+            raise SystemExit(f'This package must use --version {expected_version}')
+        water_info = {'version': water_version, 'source_revision': revision,
+                      'core_sha256': hashlib.sha256(core).hexdigest()}
     resources = build_renderer_assets.built_path(dll).read_bytes()
     resource_identity = build_renderer_assets.verify_pair(dll_data, resources)
     lib = build_stormlib.build(platform, stormlib_dir / platform)
@@ -383,6 +417,12 @@ def build(platform, version, dll, variants, out, stormlib_dir, atmosphere=None):
     {'windows': windows_runtime, 'mac': mac_runtime, 'linux': linux_runtime}[platform](tree, runtime_pin, lib)
     payload = {n: (fp.REPO / src).read_bytes() for n, src in PAYLOAD_COMMON.items()}
     payload[build_renderer_assets.FILENAME] = resources
+    if water_info:
+        payload['water-core.dll'] = core
+        for name in WATER_SETTINGS:
+            payload[name] = (fp.REPO / 'client-config' / name).read_bytes()
+        tree.add('LICENSES/Tideglass.txt', fp.REPO / 'tideglass/LICENSE')
+        tree.add('LICENSES/Tideglass-archive.txt', fp.REPO / 'licenses/tideglass-archive.txt')
     if atmosphere is not None:
         payload[ATMOSPHERE] = atmosphere
     if platform in PROXY_PLATFORMS:
@@ -405,6 +445,11 @@ def build(platform, version, dll, variants, out, stormlib_dir, atmosphere=None):
     tree.add('LICENSES/StormLib-NOTICES.txt', build_stormlib.notices(build_stormlib.source_root()).encode('utf-8'))
     readme = fp.RENDERER / f'{platform}-package' / 'README.txt'
     text = readme.read_text(encoding='utf-8').replace('__RELEASE_VERSION__', version)
+    if water_info:
+        text += ('\nTideglass adds scenery reflections, water waves and foam, slime, magma, '
+                 'and an underwater view in SDR and HDR, including with multisampling. '
+                 'Open Water in the Northlight settings to tune it. To return to native water, '
+                 'clear Use Tideglass, save, and restart the game.\n')
     tree.add('README.txt', text.replace('\n', '\r\n').encode('utf-8') if platform == 'windows' else text.encode('utf-8'))
     for name, data in launchers(platform, version).items():
         tree.add(name, data, executable=True)
@@ -418,6 +463,8 @@ def build(platform, version, dll, variants, out, stormlib_dir, atmosphere=None):
             'dxvk_fallback': {k: PINS['dxvk2'][k] for k in ('version', 'url', 'sha256')} if platform in PROXY_PLATFORMS else None,
             'variants': {n: {'cache_digest': m['cache_digest'], 'files': len(m['files'])} for n, m in sorted(variants.items())},
             'app_files': {n: sha(fp.REPO / n) for n in APP_FILES}}
+    if water_info:
+        info['tideglass'] = water_info
     info['cache_versions'] = dict(install_world_cache.CACHE_VERSIONS)
     if atmosphere_info is not None:
         info['forever_atmosphere'] = atmosphere_info
@@ -443,6 +490,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('--platform', choices=[*PLATFORMS, 'all'], default='all')
     ap.add_argument('--version', required=True, help='package label, e.g. 0.3.162')
+    ap.add_argument('--water-core', type=Path, help='include the cooperative Tideglass DLL and settings')
     ap.add_argument('--dll', type=Path, help='renderer build (default: renderer/frd9.dll or NORTHLIGHT_DLL)')
     ap.add_argument('--variant-manifest', type=Path, action='append', default=[],
                     help="a variant's northlight-cache.json (repeatable); the installer matches clients against it")
@@ -482,9 +530,10 @@ def main():
         reports.append({'platform': 'any', 'file': name, 'sha256': sha(out / name), 'bytes': (out / name).stat().st_size,
                         'variant': manifest['variant'], 'cache_digest': manifest['cache_digest']})
     dll = args.dll or fp.dll()
+    core = args.water_core.read_bytes() if args.water_core else None
     atmosphere = args.forever_atmosphere.read_bytes() if args.forever_atmosphere else None
     for platform in list(PLATFORMS) if args.platform == 'all' else [args.platform]:
-        reports.append(build(platform, args.version, dll, variants, out, fp.out() / 'stormlib', atmosphere))
+        reports.append(build(platform, args.version, dll, variants, out, fp.out() / 'stormlib', atmosphere, core))
         print('Built', reports[-1]['file'], reports[-1]['bytes'], 'bytes', flush=True)
     (out / 'packages.json').write_text(json.dumps({'version': args.version, 'packages': reports}, indent=2) + '\n')
     return 0

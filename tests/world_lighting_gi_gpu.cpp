@@ -128,9 +128,8 @@ int main(int argc,char** argv){
    }
    ps->Release();++darkRoomCases;
   }
-  // Different receiver baselines can carry very different corrections for
-  // the same fully shadowed surface. Neither spatial nor history RGB may
-  // cross that boundary. The standalone temporal pass reads s9 as its input.
+  // Keep variation in GI on a planar receiver, even in full shadow and with
+  // eligible history. The standalone temporal pass reads s9 as its input.
   auto raw=[&](unsigned x,unsigned){return std::array<float,4>{x%2?-.4f:-.2f,-.3f,-.2f,0};};
   bind(8,W,H,raw);solid(12,{.4f,.3f,.2f,0});c[57][0]=.9f;
   c[3][0]=c[4][1]=c[5][2]=c[53][0]=c[54][1]=c[55][2]=1;
@@ -144,6 +143,49 @@ int main(int argc,char** argv){
    for(unsigned x=2;x<W-2;++x)assert(std::fabs(half(values[((H/2)*W+x)*4])-raw(x,0)[0])<.001f);
    ps->Release();++darkRoomCases;
   }
+  // Two projected planes meet at a diagonal. Only neighbouring samples on
+  // the fold may blend, and the correction must follow the local baseline.
+  const auto fold=[](float x,float y){return x-.6f*y-32.f;};
+  const auto foldLight=[&](unsigned x,unsigned y){
+   const float light=fold(float(x),float(y))<0?-.3f:-.2f;
+   return std::array<float,4>{light,light,light,0};
+  };
+  bind(8,W,H,foldLight);bind(9,W,H,foldLight);
+  bind(12,W,H,[&](unsigned x,unsigned y){
+   const float baseline=fold(float(x),float(y))<0?.4f:.8f;
+   return std::array<float,4>{baseline,baseline,baseline,1};
+  });
+  c[0][0]=.5f/W;c[0][1]=.5f/H;c[33][0]=2*W;c[33][1]=2*H;c[57][0]=0;
+  for(bool gap:{false,true}){
+   bind(1,2*W,2*H,[&](unsigned x,unsigned y){
+    const float edge=fold((float(x)-1)*.5f,(float(y)-1)*.5f);
+    const float depth=.975f+std::max(edge,0.f)*.00009f+(gap&&edge>=0?.004f:0.f);
+    return std::array<float,4>{depth,0,0,0};
+   });
+   for(bool water:{false,true}){
+    c[30][0]=water;c[20][1]=1;c[30][1]=c[30][2]=1;
+    solid(11,{4,1,0,0});
+    ok(d->SetPixelShaderConstantF(0,c[0],128));
+    std::vector<uint16_t> reference;
+    for(const char* name:{"TemporalLight","TemporalLightMerged","TemporalLightMergedZeroWeight"}){
+     auto ps=shader(d,proto+"/"+name+".bin");
+     ok(d->SetPixelShader(ps));ok(d->BeginScene());quad();ok(d->EndScene());
+     auto values=image(light);ps->Release();
+     if(reference.empty())reference=values;else assert(values==reference);
+     unsigned softened=0;
+     for(unsigned y=1;y<H-1;++y)for(unsigned x=1;x<W-1;++x){
+      const float edge=fold(float(x),float(y));
+      const auto i=(y*W+x)*4;
+      const float delta=half(values[i])-foldLight(x,y)[0];
+      assert(values[i+3]==0);
+      if(gap||water||std::fabs(edge)>1)assert(std::fabs(delta)<.001f);
+      else if(std::fabs(delta)>.01f){assert(edge<0?delta>0:delta<0);++softened;}
+     }
+     if(!gap&&!water)assert(softened>H);
+    }
+   }
+  }
+  printf("GI_CREASE_PASS diagonal=1 silhouette=1 water=1 alphaExact=1 variantsExact=1\n");
   printf("GI_DARK_ROOM_PASS cases=%u fullAmbientRemoval=1 mixedDirectional=1 receiverHistory=1 lampsPreserved=1\n",darkRoomCases);
  }
  assert(timing||darkPixels);printf("FUSED_GI_PASS cases=%u maxAbs=%.9f baselineAlphaExact=1 prelitCases=%u darkPixels=%u mix0_50_100=1 ordinaryUnaffected=1\n",cases,maximum,prelitCases,darkPixels);return 0;

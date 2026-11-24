@@ -1,4 +1,5 @@
 #include "replay_capture_constants.h"
+#include "point_rigid_pose_rows.h"
 #include <cassert>
 #include <cstdio>
 #include <cstring>
@@ -43,6 +44,28 @@ static void equal(const Packet& a,const Packet& b){
 static bool get(Packet& p,const Packet* previous,Source& source,Stats* stats=nullptr){
     return capture(p,previous,&source,Source::reader,[&]{return source.fetch(p);},stats);
 }
+static void rigidPointPose(){
+    using NorthlightPointShadow::RigidPoseRows;
+    // mov o0, c6; mov o1, c2. Cube replay replaces c2.
+    const std::uint32_t vertex[]={0xfffe0300,0x02000001,0xe00f0000,0xa0e40006,
+        0x02000001,0xe00f0001,0xa0e40002,0x0000ffff};
+    const auto rows=RigidPoseRows::fromProgram(vertex,std::size(vertex));
+    Packet a,b;
+    a.constantUsage.floats=b.constantUsage.floats={0,8};
+    assert(rows.sameBanks(a,b));
+    b.constantStorage[8]=2;
+    b.constantStorage[28]=3;
+    assert(rows.sameBanks(a,b));
+    b.constantStorage[24]=-0.0f;
+    assert(!rows.sameBanks(a,b));
+    b.constantStorage[24]=0.0f;
+    b.constantUsage.floats={2,4};
+    assert(!rows.sameBanks(a,b));
+    b.constantUsage.floats={2,5};
+    assert(rows.sameBanks(a,b));
+    assert(!RigidPoseRows::fromProgram(vertex,std::size(vertex)-1).sameBanks(a,b));
+    std::puts("POINT_RIGID_POSE_PASS overwritten and unread rows, signed zero, short banks and unknown bytecode");
+}
 static void edges(){
     Source s;Packet first,next,rejected;Stats stats;
     assert(get(first,nullptr,s,&stats));assert(s.reads==1);
@@ -84,10 +107,10 @@ static void edges(){
 // 0.3.179 Reader overload (unchanged, the reference) on one randomized mirror.
 struct Mirror {
     NorthlightConstantEpoch::Clock constantEpoch;
-    bool enabled=true,recording=false;std::size_t rawDepth=0;
+    bool enabled=true,recording=false,held=true;std::size_t rawDepth=0;
     float floats[1024]={};int booleans[16]={},integers[64]={};
     bool active()const{return enabled&&!recording&&!rawDepth;}
-    bool heldByThisThread()const{return true;}
+    bool heldByThisThread()const{return held;}
     static bool reader(void* context,NorthlightConstantEpoch::Stamp& out){
         auto& m=*static_cast<Mirror*>(context);out=m.constantEpoch.stamp(m.active());return out.valid;
     }
@@ -266,9 +289,63 @@ static void detached(){
     assert(captureBlocks(q,&p,ClockSource<Mirror>{},[&]{return m.fetch(q);},[&](unsigned f,unsigned c,float* out){return m.fetchFloats(f,c,out);},&stats,true,check));
     assert(!p.constantStamp.valid&&!q.constantStamp.valid&&q.constants==q.constantStorage&&!stats.tests&&!stats.hits&&!stats.blockTests);
 }
+static void bankLoans(){
+    Mirror m;
+    ClockSource<Mirror> source{&m.constantEpoch,&m};
+    const auto stamp=source.snapshot();
+    const NorthlightConstantEpoch::BankHandoff bank{m.floats,stamp.reset,stamp.floats,stamp.booleans,stamp.integers,2,6};
+    assert(source.borrow(&bank,2,4)==m.floats+8&&source.borrow(&bank,4,4)==m.floats+16);
+    assert(!source.borrow(&bank,0,4)&&!source.borrow(&bank,5,4)&&!source.borrow(nullptr,2,4));
+    assert(!ClockSource<Mirror>{}.borrow(&bank,2,4));
+    m.held=false;assert(!source.borrow(&bank,2,4));
+    m.held=true;m.recording=true;assert(!source.borrow(&bank,2,4));
+    m.recording=false;m.constantEpoch.writeFloat(2,1);assert(!source.borrow(&bank,2,4));
+    auto current=bank;current.floats=source.live().floats;
+    assert(source.borrow(&current,2,4));
+    m.constantEpoch.invalidate();assert(!source.borrow(&current,2,4));
+}
+static void packetBankLoans(){
+    namespace E=NorthlightConstantEpoch;
+    Mirror m;ClockSource<Mirror> source{&m.constantEpoch,&m};
+    float material[1024]={};
+    const auto certify=[&]{
+        const auto s=source.snapshot();
+        return E::BankHandoff{material,s.reset,s.floats,s.booleans,s.integers,2,32};
+    };
+    auto bank=certify();
+    unsigned loans=0,gets=0,checks=0;
+    Stats stats;SelfCheck check{0,&stats};
+    const auto getter=[&](unsigned first,unsigned count,float* out){
+        ++checks;return m.fetchFloats(first,count,out);
+    };
+    auto capturePacket=[&](Packet& p,const Packet* previous){
+        p.constantUsage.floats={2,32};
+        const auto captureRows=[&](unsigned first,unsigned count,float* out){
+            if(source.copy(&bank,first,count,out)){++loans;return true;}
+            ++gets;return m.fetchFloats(first,count,out);
+        };
+        return captureBlocks(p,previous,source,[&]{
+            return captureRows(2,32,p.constantStorage+8);
+        },captureRows,&stats,true,check,getter);
+    };
+    Packet first,dirty,stale;
+    assert(capturePacket(first,nullptr)&&loans==1&&gets==0&&first.constants==first.constantStorage);
+    const float newRows[4]={5,6,7,8};
+    m.writeFloats(20,1,newRows);
+    bank=certify(); // Negative control: a falsely certified scratch lane.
+    material[80]=-5;
+    check.serial=SelfCheckInterval-1;
+    assert(capturePacket(dirty,&first)&&loans==2&&gets==0&&checks==1);
+    assert(stats.selfCheckMismatches==1&&!dirty.constantStamp.valid);
+    assert(!std::memcmp(dirty.constants+80,newRows,16)&&first.constants[80]==0);
+    m.constantEpoch.invalidate();
+    assert(capturePacket(stale,&dirty)&&loans==2&&gets==1);
+    assert(!std::memcmp(stale.constants+80,newRows,16));
+    std::puts("SHADOW_PACKET_BANK_PASS owned_copy=1 stale_fallback=1 independent_repair=1");
+}
 int main(int argc,char** argv){
     if(argc>1){const std::string mode=argv[1];race(mode=="c2-race-block");std::puts("race not detected");return 0;}
-    detached();sources();
+    rigidPointPose();detached();sources();bankLoans();packetBankLoans();
     edges();std::mt19937 random(127);Source source;Stats stats;
     size_t frames=100,draws=300,legacyBytes=0,accepted=0;
     for(size_t frame=0;frame<frames;++frame){

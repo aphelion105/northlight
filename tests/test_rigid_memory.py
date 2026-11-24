@@ -25,26 +25,27 @@ checks['observed before retainSelected, injected right after it, both inside the
 render=w[w.index('    bool render(IDirect3DSurface9* targetSurface'):]
 checks['injection before the bounds kick and the replay upload']=render.index('if(replayShadows)selectShadowReplays();')<render.index('replayBoundsKick();')<render.index('return uploadReplay();')
 inject=m[m.index('    void rigidMemoryInject(){'):]
-checks['copies own their constant bank (constants==constantStorage), rebased bone rows, unique groups']=('NorthlightReplayCaptureConstants::reset(*p);' in inject
-    and 'std::memcpy(p->constantStorage,c.constants.data(),sizeof p->constantStorage);' in inject and 'std::memcpy(p->constantStorage+4*(31+3*e.payload.bone),rows,sizeof rows);' in inject
-    and 'NorthlightRigidMemory::rebase(e.world,context.inverseView,rows)' in inject and 'p->constantGroup=++group;' in inject and 'p->constantStamp' not in inject.replace('reset(*p)',''))
+checks['copies own their constant bank, rebase bone rows and publish a complete group']=('p->resetConstantCapture();float* owned=p->writableConstants();if(!owned){replays.resize(firstReplay);captureShortfall=true;return;}' in inject
+    and 'std::memcpy(owned,c.constants.data(),sizeof c.constants);' in inject and 'std::memcpy(owned+4*(31+3*e.payload.bone),rows,sizeof rows);' in inject
+    and 'NorthlightRigidMemory::rebase(e.world,context.inverseView,rows)' in inject and 'p->constantGroup=++group;' in inject and 'p->constantStamp' not in inject)
 checks['opaque copies hold no texture; no game VB/IB is held']=('c.texture.reset(p.cutoff>=0?p.texture:nullptr);' in m and re.search(r'(p|c)(\.|->)(stream|index)\b',m) is None)
 checks['at most 4096 replays, outside quota/radius/fate']=('if(replays.size()+e.payload.draws.size()>=4096' in inject and 'p->fateSlot=-1;' in inject
     and 'p->shadowSkinned=p->shadowSelected=true;' in inject)
-checks['cleared in releaseGPU (reset() calls it), trimMemory, on a map change and with shadows off']=('staticCasters.settle();rigidMemoryClear();' in w
+checks['cleared in releaseGPU (reset() calls it), trimMemory, on a map change and with shadows off']=('staticCasters.settle();\n        rigidMemoryClear();' in w
     and re.search(r'void reset\(bool preserveCaptureSources=false\)\{[^\n]*releaseGPU\(true\);',w) is not None and 'rigidMemoryClear(); /* 0.3.172' in g[g.index('MemoryTrim trimMemory('):g.index('void setMemoryPressure')]
     and 'if(lastRequest.map!=rigidMap){rigidMemoryClear();' in m and 'if(!effects.shadows){rigidMemoryClear();return;}' in m)
 checks['never the static cache']=all(n not in m for n in ('staticCasters','shadowCacheKey','invalidateShadowCache','staticSignature'))
 checks['observes every captured skinned group; bodies are the non-rigid ones; identity by mixShape']=('if(!p.shadowSkinned)continue;' in m and 'rigidBodies.insert(' in m
     and 'NorthlightRigidMemory::mixShape(shape,p.originalShader,p.decl,p.mesh().vertexCount,p.mesh().primitiveCount,p.mesh().byteSize());' in m and 'shared.get()' not in m)
-checks['shortfall frames record and draw; only the despawn test needs a complete frame']='!captureShortfall,' in m and m.count('captureShortfall')==1
+checks['shortfall frames record and draw; only the despawn test needs a complete frame']='!captureShortfall,' in m and m[:m.index('    void rigidMemoryInject(){')].count('captureShortfall')==1
 checks['logged on sampled frames']='if(captureSampled){const auto& s=rigidMemory.stats();' in inject and 'deferLogf("RIGID memory tracks=%zu entries=%zu injected=%u seen=%zu held=%zu static=%zu mobile=%zu droppedInView=' in inject
 capture=w[w.index('    void captureModel(D3DPRIMITIVETYPE type,'):w.index('    // One directional replay draw in the 0.3.142 order')]
 drawn='if(!rigidDrawKeys.empty()&&rigidDrawKeys.contains(current,count))rigidMemoryDrawn(current,count);'
 # 0.3.196 (task 12): captureModel's shader lookup goes through lookupShader(), so metadata is `*found`.
 checks['0.3.173 drawn test: only with entries, right after the shader lookup, before the 4096 cap, budget, blend and projection checks']=(capture.count(drawn)==1
     and capture.index('const auto& metadata=*found;')<capture.index(drawn)<capture.index('if(replays.size()>=4096)')<capture.index('if(replaySnapshots.captureExhausted(priority))')
-    and capture.index(drawn)<capture.index('D3DRS_ALPHABLENDENABLE')<capture.index('kind==1?4:2,q,4'))
+    and capture.index(drawn)<capture.index('D3DRS_ALPHABLENDENABLE')<capture.index('constantEpochSource.borrow(bank,first,4)')
+    <capture.index('GetVertexShaderConstantF(first,projectionScratch,4)'))
 checks['drawn test reuses the mirror-answered palette rows of drawRoot (one read site), bone 0 at c31']=(w.count('GetVertexShaderConstantF(UINT(program->second->paletteBase),rows,3)')==1
     and 'float rows[12];const auto* program=paletteRows(shader,rows);if(!program)return false;' in w and 'const auto* program=paletteRows(shader,rows);' in m and 'program->paletteBase!=31' in m)
 observe=m[m.index('    void rigidMemoryObserve(){'):m.index('    void rigidMemoryInject(){')]

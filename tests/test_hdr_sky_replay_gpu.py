@@ -1,5 +1,7 @@
 # northlight-test: requires=windows-gpu,zig manual
 """Compare the production sky replay scope with the previous full-state wrapper."""
+
+from source_units import source_text
 import argparse, hashlib, json, os, subprocess, sys
 from pathlib import Path
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
@@ -12,7 +14,7 @@ def main():
     args=parser.parse_args();out=args.output.resolve()
     if fp.is_client(out):parser.error('Use an isolated test output directory.')
     out.mkdir(parents=True,exist_ok=False)
-    source=fp.src('renderer.cpp').read_text(encoding='utf-8')
+    source=source_text(fp.src('renderer.cpp'), encoding='utf-8')
     start=source.index('    template<class Draw> void hdrReplaySky(')
     method=source[start:source.index('    template<class Capture,class Draw> HRESULT drawHook(',start)]
     adapter=r'''

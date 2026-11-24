@@ -38,26 +38,27 @@ public:
     size_t offset()const{return offset_;}
     Step step()const{return step_;}
 
-    // Exactly one backend operation per call. The outer renderer may call again
-    // while its shared byte/time budget permits; each call rechecks that budget.
+private:
+    // Each operation rechecks the shared budget. A sub-vertex byte remainder
+    // cannot move the cursor, even if the budget still reports availability.
     // perform(step,page,offset,bytes) returns success; Create may reuse a pooled
     // buffer, and Preload uses the full page size. Budget implements available(),
     // chunk(desired), consume(bytes). Only successful copies consume byte budget.
     // The time limit remains soft: an individual driver call cannot be preempted.
     template<class Perform,class Budget>
-    Result advance(Perform&& perform,Budget& budget){
-        if(result_!=Result::Pending||!begun_||!budget.available())return result_;
+    bool advanceOne(Perform& perform,Budget& budget){
+        if(result_!=Result::Pending||!begun_||!budget.available())return false;
         const auto& p=pages_[page_];
         const bool vertex=step_==Step::CreateVertices||step_==Step::CopyVertices||step_==Step::PreloadVertices;
         const bool copy=step_==Step::CopyVertices||step_==Step::CopyIndices;
         const size_t total=vertex?p.vertexBytes:p.indexBytes;
         size_t bytes=copy?budget.chunk(std::min(CopyChunkBytes,total-offset_)):total;
         if(copy&&vertex&&p.vertexStride)bytes-=bytes%p.vertexStride;
-        if(!bytes)return result_;
-        if(!perform(step_,page_,copy?offset_:0,bytes)){result_=Result::Failed;return result_;}
+        if(!bytes)return false;
+        if(!perform(step_,page_,copy?offset_:0,bytes)){result_=Result::Failed;return false;}
         if(copy){
             budget.consume(bytes);offset_+=bytes;
-            if(offset_<total)return result_;
+            if(offset_<total)return true;
             offset_=0;
         }
         switch(step_){
@@ -71,6 +72,17 @@ public:
             if(page_==pages_.size())result_=Result::Ready;
             break;
         }
+        return true;
+    }
+public:
+    template<class Perform,class Budget>
+    Result advance(Perform&& perform,Budget& budget){
+        advanceOne(perform,budget);
+        return result_;
+    }
+    template<class Perform,class Budget>
+    Result advanceAvailable(Perform&& perform,Budget& budget){
+        while(advanceOne(perform,budget)){}
         return result_;
     }
 };

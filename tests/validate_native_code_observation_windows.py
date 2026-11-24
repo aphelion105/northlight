@@ -20,6 +20,7 @@ spec = importlib.util.spec_from_file_location('observer_process_guard', fp.TESTS
 guard = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(guard)
 WRAPPER_SHA256 = 'fdb77d7b79418034a56310ad73035821928cdf12eff34a130f1bc315b5ea00cd'
+MODES = ('no-opt-in', 'prefix', 'match', 'duplicate-patch', 'concurrent')
 
 
 def pe(path):
@@ -145,7 +146,7 @@ def main():
         executable_hash = digest(exe)
         report['executable_sha256'] = executable_hash
         report['helper_pe'] = {'fixed_base': 0x400000, 'aslr_disabled': True, 'large_address_aware': True}
-        for mode in ('no-opt-in', 'prefix', 'match', 'duplicate-patch'):
+        for mode in MODES:
             folder = out / mode
             folder.mkdir()
             capture, downstream = folder / 'capture', folder / 'downstream'
@@ -185,12 +186,14 @@ def main():
                 result['actual_snapshot_status'] = snapshots
                 result['actual_capture_host'] = host
                 result['code_status'] = status
-                if mode == 'match':
+                if mode in ('match', 'concurrent'):
+                    observations = 2050 if mode == 'concurrent' else 2
+                    assert result['self_read_calls'] == observations
                     proof = (entries[0] / 'client-code.nlcode').read_bytes()
                     assert status['complete'] and status['sha256'] == digest(entries[0] / 'client-code.nlcode')
                     assert status['bytes'] == len(proof) and result['proof_decoded']
-                    assert struct.unpack_from('<8s4I2Q2I', proof) == (b'NLCODE1\0', 1, len(proof), 1, 64, 2, 0, 0, 0)
-                    assert struct.unpack_from('<QII', proof, 48) == (result['observed_address'], 64, 2)
+                    assert struct.unpack_from('<8s4I2Q2I', proof) == (b'NLCODE1\0', 1, len(proof), 1, 64, observations, 0, 0, 0)
+                    assert struct.unpack_from('<QII', proof, 48) == (result['observed_address'], 64, observations)
                     assert struct.unpack_from('<I', proof, len(proof) - 4)[0] == zlib.crc32(proof[:-4])
                     assert proof[64:-4] == bytes.fromhex(result['first_read_hex'])
                     assert proof[64:-4] == raw_span(data, table, count, result['observed_address'], 64)
@@ -203,12 +206,12 @@ def main():
             assert all(Path(path).is_file() and digest(Path(path)) == sha for path, sha in before.items()), 'Frozen input changed'
         report['processes_final'] = guard.processes()
         report['inputs_unchanged'] = True
-        report['pass'] = len(report['cases']) == 4
+        report['pass'] = len(report['cases']) == len(MODES)
     finally:
         report['inputs_unchanged'] = all(Path(path).is_file() and digest(Path(path)) == sha for path, sha in before.items())
         (out / 'validation.json').write_text(json.dumps(report, indent=2) + '\n', encoding='utf-8')
     assert report['pass'] and report['inputs_unchanged']
-    print('PASS four actual Windows observer/RPM modes; authored CPU component only, no scene/FPS acceptance')
+    print(f'PASS {len(MODES)} actual Windows observer/RPM modes')
 
 
 if __name__ == '__main__':

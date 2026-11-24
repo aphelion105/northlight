@@ -30,7 +30,19 @@ int main(int argc,char**argv){
  IDirect3DTexture9* source=texture(d,fixture);NorthlightMaterialHeight::Image im;assert(NorthlightMaterialHeight::read(source,im));NorthlightAutoNormalCache cache(d);NorthlightQuality::Settings settings;
  float leaf[3],crack[3];
  for(unsigned mode=0;mode<3;++mode){settings.autoHeightPolarity=mode;cache.endFrame();cache.configure(settings);ok(d->BeginScene());auto* generated=cache.resolve(source);assert(generated);ok(d->EndScene());auto pixels=rgbaPixels(d,generated);const auto profile=NorthlightMaterialHeight::profile(im,mode,75,50);float error=0;
-  for(unsigned y=0;y<128;y+=4)for(unsigned x=0;x<128;x+=4){auto*p=fixture.pixels.data()+(y*128+x)*4;const float cpu=NorthlightMaterialHeight::value(p[2]/255.f,p[1]/255.f,p[0]/255.f,profile);error=std::max(error,std::fabs(cpu-pixels[(y*128+x)*4]/255.f));}assert(error<2.f/255);
+  for(int y=0;y<128;y+=4)for(int x=0;x<128;x+=4){
+      // The world generator averages four bilinear half-texel samples.
+      float cpu=0;
+      for(int oy:{-1,1})for(int ox:{-1,1}){
+          float rgb[3]={};
+          for(int dy:{0,oy})for(int dx:{0,ox}){
+              const auto* p=fixture.pixels.data()+(((y+dy+128)%128)*128+(x+dx+128)%128)*4;
+              for(int c=0;c<3;++c)rgb[c]+=p[2-c]/(4.f*255);
+          }
+          cpu+=NorthlightMaterialHeight::value(rgb[0],rgb[1],rgb[2],profile)*.25f;
+      }
+      error=std::max(error,std::fabs(cpu-pixels[(y*128+x)*4]/255.f));
+  }assert(error<2.f/255);
   leaf[mode]=pixels[(64*128+64)*4]/255.f;crack[mode]=pixels[(64*128+20)*4]/255.f;std::printf("HEIGHT_PROFILE mode=%u leaf=%g crack=%g cpuGpuError=%g\n",mode,leaf[mode],crack[mode],error);
  }
  assert(leaf[0]>.5f&&crack[0]<.5f&&leaf[0]>crack[0]);assert(leaf[1]<.5f&&leaf[2]>.5f);
@@ -46,7 +58,41 @@ int main(int argc,char**argv){
  auto* skin=texture(d,face);NorthlightMaterialHeight::Image faceImage;assert(NorthlightMaterialHeight::read(skin,faceImage));settings.autoHeightPolarity=0;cache.configure(settings);cache.endFrame();ok(d->BeginScene());auto* skinMap=cache.resolve(skin,true);assert(skinMap);ok(d->EndScene());auto skinPixels=rgbaPixels(d,skinMap);
  const float skinHeight=skinPixels[(64*128+96)*4]/255.f,seamHeight=skinPixels[(64*128+20)*4]/255.f;
  assert(std::fabs(skinHeight-.5f)<2.f/255&&seamHeight<.4f);assert(std::fabs(NorthlightMaterialHeight::modelValue(faceImage,96,64,0)-.5f)<.001f);
+ const auto* smooth=skinPixels.data()+(64*128+96)*4;
+ assert(std::abs(int(smooth[2])-128)<=1&&std::abs(int(smooth[1])-128)<=1);
+ assert(std::abs(int(skinPixels[(64*128+19)*4+2])-128)>5);
+ // Distant taps used to repeat this seam in the neighbouring smooth cloth.
+ for(unsigned x:{15u,25u})assert(std::abs(int(skinPixels[(64*128+x)*4+2])-128)<=1);
  std::printf("MODEL_HEIGHT_PASS paintedSkin=%g seam=%g no_colour_accent_inflation\n",skinHeight,seamHeight);
+
+ // An alternating cross-slope pattern must cancel without flattening the seam above.
+ for(unsigned y=0;y<128;++y)for(unsigned x=0;x<128;++x){
+     auto* p=face.pixels.data()+(y*128+x)*4;
+     p[0]=p[1]=p[2]=((x<64)==bool(y&1))?64:192;
+ }
+ auto* striped=texture(d,face);cache.endFrame();ok(d->BeginScene());auto* stripedMap=cache.resolve(striped,true);assert(stripedMap);ok(d->EndScene());
+ const auto stripes=rgbaPixels(d,stripedMap);drop(striped);
+ for(unsigned y=32;y<96;++y)for(unsigned x=62;x<=65;++x){
+     const auto* p=stripes.data()+(y*128+x)*4;
+     assert(std::abs(int(p[2])-128)<=1&&std::abs(int(p[1])-128)<=1);
+ }
+ std::puts("MODEL_NORMAL_FILTER_PASS neutral_smooth retained_seam no_far_seam_echo suppressed_cross_slope_stripes");
+
+ // Switching modes on the same source invalidates both world and model maps.
+ const auto renderBoth=[&]{
+     cache.endFrame();ok(d->BeginScene());
+     auto* world=cache.resolve(source);auto* model=cache.resolve(skin,true);
+     assert(world&&model);ok(d->EndScene());
+     return std::array{rgbaPixels(d,world),rgbaPixels(d,model)};
+ };
+ const auto filtered=renderBoth();
+ settings.autoNormalFilter=0;cache.configure(settings);
+ const auto legacy=renderBoth();
+ assert(legacy[0]!=filtered[0]&&legacy[1]!=filtered[1]);
+ for(size_t i=0;i<legacy[1].size();i+=4)assert(legacy[1][i]==filtered[1][i]&&legacy[1][i+3]==filtered[1][i+3]);
+ settings.autoNormalFilter=1;cache.configure(settings);
+ assert(renderBoth()==filtered);
+ std::puts("MATERIAL_NORMAL_MODES_PASS worldAndModelSwitch=1 modelHeightAndCavityExact=1 switchBackExact=1");
 
  // Actual composited equipment path: a CPU atlas is copied to a DEFAULT-pool
  // single-level texture; a later clothing rectangle changes the same resource.

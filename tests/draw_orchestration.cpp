@@ -7,11 +7,13 @@
 #include <cstdio>
 #include <cstring>
 #include <map>
+#include <memory>
 #include <stdexcept>
 #include <vector>
 #include "m2_shader_families.h"
 #include "m2_draw_section.h"
 namespace NorthlightWaterRenderer {enum UserPointer:unsigned{NoUserPointer,UserVertices,UserVerticesAndIndices};}
+namespace NorthlightDrawSnapshot {struct Mesh;}
 namespace NorthlightAutoDisplacement {
 struct Args {struct {D3DPRIMITIVETYPE topology;INT base;UINT minimum,vertices,start,primitives;bool indexed;}draw;const void* indices=nullptr;D3DFORMAT format=D3DFMT_UNKNOWN;const void* vertices=nullptr;UINT stride=0;};
 struct CaptureSource {unsigned mesh=0,pose=0,bank=0;IDirect3DVertexDeclaration9* declaration=nullptr;};
@@ -58,19 +60,34 @@ struct Ext {
 };
 struct World {
  Env* e;bool terrainShader(IDirect3DVertexShader9*)const{return e->cfg.terrain;}bool rainBlendSetting()const{return true;}
- void capture(D3DPRIMITIVETYPE t,INT base,UINT minimum,UINT vertices,UINT start,UINT count,bool indexed,IDirect3DVertexShader9* vs,bool report,bool sample,NorthlightCaptureMetadata::PositionBounds* out=nullptr,const unsigned* mesh=nullptr,IDirect3DVertexDeclaration9* decl=nullptr,const unsigned* pose=nullptr){
+ void capture(D3DPRIMITIVETYPE t,INT base,UINT minimum,UINT vertices,UINT start,UINT count,bool indexed,IDirect3DVertexShader9* vs,bool report,bool sample,NorthlightCaptureMetadata::PositionBounds* out=nullptr,const unsigned* mesh=nullptr,IDirect3DVertexDeclaration9* decl=nullptr,const unsigned* pose=nullptr,const unsigned* bank=nullptr){
   assert(vs==shader());if(out){assert(out->owner&&out->shader==vs);e->owner=out->owner;out->known=true;}
   if(pose)assert(mesh&&(*mesh?(*pose==23&&decl):*pose==0));
+  if(bank)assert(mesh&&*bank==(*mesh?29u:0u));
   e->action(WorldCapture,{t,base,minimum,vertices,start,count,indexed,report,sample,bool(out),mesh?*mesh:0});assert(!decl||mesh&&*mesh==17);
  }
  void captureUP(D3DPRIMITIVETYPE t,UINT minimum,UINT vertices,UINT count,const void* indices,D3DFORMAT format,const void* data,UINT stride,bool indexed,IDirect3DVertexShader9* vs,bool report,bool sample){assert(vs==shader());e->action(WorldUP,{t,minimum,vertices,count,int64_t(uintptr_t(indices)),format,int64_t(uintptr_t(data)),stride,indexed,report,sample});}
 };
 struct Bump {
  Env* e;bool active()const{return e->cfg.materialActive;}void beginDraw(){e->event(BeginBump);}void beforeNativeDraw(){e->event(BeforeNative);}
- template<class Draw>void capture(IDirect3DVertexShader9* vs,Draw draw,bool up,const NorthlightAutoDisplacement::Args* g,const NorthlightCaptureMetadata::PositionBounds* pos,NorthlightAutoDisplacement::CaptureSource* source){
-  assert(vs==shader()&&g&&source);if(pos)assert(pos->owner==g&&pos->shader==vs);if(e->owner)assert(e->owner==g);e->action(Material,{up,bool(pos),pos&&pos->known,g->draw.indexed});source->mesh=17;source->pose=23;source->declaration=reinterpret_cast<IDirect3DVertexDeclaration9*>(2);if(e->cfg.componentDraw)draw();
+ void allowNativeM2Fusion(bool,void*,float){}void endNativeMaterialDraw(){}
+ template<class Draw>void capture(IDirect3DVertexShader9* vs,Draw draw,bool up,const NorthlightAutoDisplacement::Args* g,const NorthlightCaptureMetadata::PositionBounds* pos,NorthlightAutoDisplacement::CaptureSource* source,const std::shared_ptr<const NorthlightDrawSnapshot::Mesh>* hint=nullptr){
+  assert(!hint);
+  assert(vs==shader()&&g&&source);if(pos)assert(pos->owner==g&&pos->shader==vs);if(e->owner)assert(e->owner==g);e->action(Material,{up,bool(pos),pos&&pos->known,g->draw.indexed});source->mesh=17;source->pose=23;source->bank=29;source->declaration=reinterpret_cast<IDirect3DVertexDeclaration9*>(2);if(e->cfg.componentDraw)draw();
  }
 };
+using NorthlightAutoBump=Bump;
+struct BumpHandle {
+ Bump* pointer;
+ Bump* get()const{return pointer;}
+ Bump* operator->()const{return pointer;}
+ explicit operator bool()const{return pointer!=nullptr;}
+ BumpHandle& operator=(Bump* value){pointer=value;return *this;}
+};
+namespace NorthlightBackend {
+ enum class Kind{Dxvk};
+ bool isPackagedDxvk(Kind){return true;}
+}
 struct Normals {
  Env* e;template<class Draw,class Desc>void capture(IDirect3DVertexShader9* vs,Draw draw,bool up,const Desc*,const void*,D3DFORMAT,const void*,UINT,const unsigned* mesh,IDirect3DVertexDeclaration9* decl,const unsigned* pose,unsigned* published=nullptr,IDirect3DVertexDeclaration9** publishedDeclaration=nullptr,bool terrain=false,const unsigned* bank=nullptr){
   assert(vs==shader());assert(mesh&&pose&&(*mesh==0||(*mesh==17&&*pose==23&&decl)));e->action(Normal,{up,*mesh,*pose,bool(decl)});if(e->cfg.componentDraw)draw();
@@ -80,9 +97,10 @@ struct Base {
  LONGLONG cpuNormalCapture=0;
  bool sampledDrawTimers()const{return env.cfg.diagnostics;}
  bool auroraDrawProven=true;std::array<float,3> auroraDrawScale{1,2,3};float auroraDrawIntensity=2;
- Env env;Ext extStorage{&env};Ext* ext=&extStorage;World worldStorage{&env};World* world=&worldStorage;Bump bumpStorage{&env};Bump* autoBump=&bumpStorage;Normals normalStorage{&env};Normals* modelNormals=&normalStorage;
+ Env env;Ext extStorage{&env};Ext* ext=&extStorage;World worldStorage{&env};World* world=&worldStorage;Bump bumpStorage{&env};BumpHandle autoBump{&bumpStorage};Normals normalStorage{&env};Normals* modelNormals=&normalStorage;
+ NorthlightBackend::Kind selectedBackend=NorthlightBackend::Kind::Dxvk;bool indexedPairGate=false,particlePairGate=false;
  bool menuScene=false,enabled=true,applied=false,failed=false,modelNormalsNeeded=true,frameDrawGates=true,particleOn=false,spellOn=false,skyBandSeen=false,rainMrtBound=false,blobOriginal=false,shadowSwapOriginal=false,extensionFault=false;
- unsigned worldDebug=0,drawCalls=0,frame=120;LONGLONG ticks=0;float worldMinDepth=0,worldMaxDepth=.9f;struct{bool active=false;}hdr;struct{bool valid=false;}waterPending;
+ unsigned worldDebug=0,drawCalls=0,frame=120;LONGLONG ticks=0;float worldMinDepth=0,worldMaxDepth=.9f,nearZ=.22f;void* worldDepth=nullptr;struct{bool active=false;}hdr;struct{bool valid=false;}waterPending;
  struct WaterState{bool bound=false;bool isMrtBound()const{return bound;}}waterStorage;WaterState* water=&waterStorage;
  struct {bool sky=true,blob=false;}drawGates;struct {Gate gate;bool textureKnown[1]={};const void* textures[1]={};bool viewportKnown=true;struct {float MinZ=0,MaxZ=1;}viewport={};}mirrorState{{&env}};
  struct {const void* hot=nullptr;NorthlightWeather::Kind hotKind=NorthlightWeather::Kind::None;bool mistArmed=false;}weatherDetect;struct {unsigned primitives=0,draws=0;}weatherSample;
@@ -90,18 +108,27 @@ struct Base {
  struct SkyLayers{Env* e;void invalidate(){e->event(Invalidate);}}skyLayers{&env};
  struct Scene{Env* e;struct Native{Env* e;bool currentFrame(unsigned)const{return e->cfg.sceneCurrent;}}native{e};void setFrame(unsigned f){e->event(SetFrame,{f});}}sceneStorage{&env};Scene* gpuScene=&sceneStorage;
  std::map<IDirect3DVertexShader9*,uint64_t>vsHashes;NorthlightSpellLayer::DrawArgs spellArgs;
+ struct VsClass{bool terrain;unsigned family;};
+ VsClass classifyVs(IDirect3DVertexShader9* vs)const{
+  const auto found=vsHashes.find(vs);
+  return {world&&world->terrainShader(vs),found==vsHashes.end()?0u:m2ShaderFamily(found->second)};
+ }
  virtual ~Base()=default;
  virtual HRESULT STDMETHODCALLTYPE DrawPrimitive(D3DPRIMITIVETYPE,UINT,UINT)=0;virtual HRESULT STDMETHODCALLTYPE DrawIndexedPrimitive(D3DPRIMITIVETYPE,INT,UINT,UINT,UINT,UINT)=0;
  virtual HRESULT STDMETHODCALLTYPE DrawPrimitiveUP(D3DPRIMITIVETYPE,UINT,const void*,UINT)=0;virtual HRESULT STDMETHODCALLTYPE DrawIndexedPrimitiveUP(D3DPRIMITIVETYPE,UINT,UINT,UINT,const void*,D3DFORMAT,const void*,UINT)=0;
  void configure(const Config& c){env.cfg=c;enabled=c.enabled;failed=c.failed;applied=c.applied;world=c.world?&worldStorage:nullptr;autoBump=c.material?&bumpStorage:nullptr;modelNormals=c.normals?&normalStorage:nullptr;modelNormalsNeeded=c.normalDemand;frameDrawGates=c.gates;particleOn=c.particle;spellOn=c.spell;hdr.active=c.hdr;drawGates.sky=c.skyGate;drawGates.blob=c.blob;rainMrtBound=c.rainBound;waterStorage.bound=c.waterBound;weatherDetect.mistArmed=c.mist;weatherDetect.hot=c.rain?this:nullptr;weatherDetect.hotKind=c.rain?NorthlightWeather::Kind::Rain:NorthlightWeather::Kind::None;mirrorState.textureKnown[0]=c.rain;mirrorState.textures[0]=this;for(auto& v:kM2ShaderFamilies)if(v.family==3){vsHashes[shader()]=v.hash;break;}}
  void composeSkyBackground(){}
+ void beginIndexedPairDraw(){}
+ template<class Geometry>std::shared_ptr<const NorthlightDrawSnapshot::Mesh> pendingIndexedSource(const Geometry&,IDirect3DVertexShader9*){return {};}
+ template<class Source>void noteIndexedPairSource(IDirect3DVertexShader9*,const Source&){}
+ template<class Geometry,class Submit>HRESULT submitIndexedPair(const Geometry&,Submit serial){return serial();}
  bool diagnostics()const{return env.cfg.diagnostics;}HRESULT hdrResumeWorld(){env.event(Resume);return env.cfg.resumeResult;}
  LONGLONG* sampledHookTimer(){return &ticks;}
  template<class Work>bool extensionWork(const char* stage,Work work){if(extensionFault)return false;env.event(Stage,{int64_t(hashString(stage))});try{work();return true;}catch(const std::exception&){env.event(Fault,{int64_t(hashString(stage))});failed=extensionFault=true;enabled=false;return false;}}
  static uint64_t hashString(const char* s){uint64_t h=0;while(*s)h=h*131+unsigned(*s++);return h;}
  void dropBlobFaint(){env.event(DropBlob);blobOriginal=false;}void dropTerrainShadowSwap(){env.event(DropTerrain);shadowSwapOriginal=false;}
  template<class Capture>void prepareDrawImpl(Capture capture,UINT count){++drawCalls;env.owner=nullptr;env.action(Prepare,{count});if(enabled&&!failed&&!applied&&world&&!env.cfg.missingShader)capture(shader());}
- template<class Draw>HRESULT submitGameDraw(UINT count,bool sky,bool* captured,Draw draw){env.event(Wrapped,{count,sky});if(captured)*captured=env.cfg.capturedSky;return draw();}
+ template<class Draw>HRESULT submitGameDraw(UINT count,bool sky,bool* captured,Draw draw,const decltype(NorthlightAutoDisplacement::Args{}.draw)* ordered=nullptr){if(ordered)assert(ordered->indexed&&ordered->primitives==count);env.event(Wrapped,{count,sky});if(captured)*captured=env.cfg.capturedSky;return draw();}
  template<class Draw>HRESULT nativeEffectDraw(bool rain,Draw draw){env.event(Effect,{rain});return draw();}
  template<class Draw>HRESULT aoActorNativeDraw(Draw draw){env.event(Actor);return draw();}
  bool hdrSkyAdmission(){env.action(HdrAdmission);return env.cfg.linearSky;}
@@ -111,6 +138,7 @@ struct Base {
  void skyLayersBefore(D3DPRIMITIVETYPE t,UINT count,NorthlightSkyComposition::Role& role){env.action(SkyBefore,{t,count});role=env.cfg.skyRole?NorthlightSkyComposition::Role::Sky:NorthlightSkyComposition::Role::Unknown;}
  void skyClaim(D3DPRIMITIVETYPE t,UINT count,bool& claimed){env.action(SkyClaim,{t,count});claimed=env.cfg.claimed;}
  bool blobFilterActive()const{return env.cfg.blob;}void blobFilter(UINT count,bool& claimed){env.action(Blob,{count});claimed=env.cfg.blobClaim;}
+ bool mayPrepareParticleDraw(D3DPRIMITIVETYPE,UINT,bool)const{return particleOn;}
  NorthlightParticleCapture::Prepared prepareParticleDraw(bool blocked){env.action(Particle,{blocked});return {blocked};}
  void submitParticleDraw(const NorthlightParticleCapture::Prepared& p,bool accepted,bool deferred){env.event(SubmitParticle,{p.blocked,accepted,deferred});}
  bool spellGate()const{return true;}bool spellDraw(bool blocked,bool rain){env.action(Spell,{blocked,rain});return env.cfg.defer;}

@@ -7,35 +7,31 @@ method=runpy.run_path(str(ROOT/'tests/test_model_world_context.py'))['method']
 body=method('src/proxy/renderer.cpp','template<class Draw> void captureModelNormals(')
 cpp=r'''
 #include <cassert>
-#include "m2_draw_section.h"
 #include <cstdio>
-#include <map>
-#include "m2_shader_families.h"
+#include <initializer_list>
 using IDirect3DVertexShader9=int;
 namespace NorthlightAutoDisplacement {
 struct Args {int draw=0,format=0;const void* indices=nullptr;const void* vertices=nullptr;unsigned stride=0;};
 struct CaptureSource {int mesh=0,pose=0,bank=0;void* declaration=nullptr;};
 }
 struct Normals {unsigned calls=0;template<class...T>void capture(T&&...){++calls;}};
-struct Map:std::map<IDirect3DVertexShader9*,uint64_t>{unsigned lookups=0;auto find(IDirect3DVertexShader9* p){++lookups;return std::map<IDirect3DVertexShader9*,uint64_t>::find(p);}};
 struct Device {
  struct CpuScope {explicit CpuScope(unsigned* count){if(count)++*count;}};
  unsigned cpuNormalCapture=0;
  bool sampledDrawTimers()const{return true;}
- struct World {bool terrainShader(IDirect3DVertexShader9*)const{return false;}} scene;
- World* world=&scene;
- Normals* modelNormals=nullptr;bool modelNormalsNeeded=false,enabled=false,applied=false,failed=false;Map vsHashes;
+ struct ShaderClass {bool terrain=false;unsigned family=0;} shader;
+ unsigned classifications=0;
+ const ShaderClass& classifyVs(IDirect3DVertexShader9*){++classifications;return shader;}
+ Normals* modelNormals=nullptr;bool modelNormalsNeeded=false,enabled=false,applied=false,failed=false;
  __BODY__
 };
-int main(){unsigned cases=0;uint64_t model=0,particle=0;
- for(const auto& entry:kM2ShaderFamilies){if(entry.family==3)model=entry.hash;if(entry.family==1)particle=entry.hash;}
- assert(model&&particle);int shader=0;NorthlightAutoDisplacement::Args args;NorthlightAutoDisplacement::CaptureSource source;
+int main(){unsigned cases=0;int shader=0;NorthlightAutoDisplacement::Args args;NorthlightAutoDisplacement::CaptureSource source;
  for(unsigned flags=0;flags<32;++flags)for(unsigned family=0;family<3;++family)for(bool handoff:{false,true}){
   Device d;Normals normals;d.modelNormals=flags&1?&normals:nullptr;d.modelNormalsNeeded=flags&2;d.enabled=flags&4;d.applied=flags&8;d.failed=flags&16;
-  if(family)d.vsHashes[&shader]=family==1?particle:model;
+  d.shader.family=family==2?3:family;
   bool called=false;d.captureModelNormals(&shader,[&]{called=true;return 0;},false,args,handoff?&source:nullptr);
   const bool admitted=d.modelNormals&&d.modelNormalsNeeded&&d.enabled&&!d.applied&&!d.failed;
-  assert(!called&&d.vsHashes.lookups==unsigned(admitted)&&normals.calls==unsigned(admitted&&family==2));assert(d.cpuNormalCapture==normals.calls);++cases;
+  assert(!called&&d.classifications==unsigned(admitted)&&normals.calls==unsigned(admitted&&family==2));assert(d.cpuNormalCapture==normals.calls);++cases;
  }
  std::printf("MODEL_NORMAL_DEMAND_PASS cases=%u noLookupWithoutConsumer=1 acceptedModel=1 allGuards=1\n",cases);
 }

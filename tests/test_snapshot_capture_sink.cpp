@@ -78,5 +78,5 @@ int main(int argc,char** argv){
      assert(sink->finish()&&sink->status().retired==128);decode(root/"stress/000127.nlsnap");++groups;}
     {const auto p=root/"lifetime";{auto sink=std::make_unique<S>();assert(sink->start(p,"lifetime"));assert(sink->submit(*s,1,0,0,42));}
      decode(p/"000000.nlsnap");assert(s->copies()==originalCopies&&s->mode==GameSnapshot::Mode::Idle);++groups;}
-    std::printf("SNAPSHOT_CAPTURE_SINK_PASS groups=%u slots=8 producerAllocations=0 journalIsNotTraceMapping=1\n",groups);
+    std::printf("SNAPSHOT_CAPTURE_SINK_PASS groups=%u slots=%u producerAllocations=0 journalIsNotTraceMapping=1\n",groups,S::Slots);
 }

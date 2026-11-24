@@ -30,8 +30,40 @@ PINS = {
     'wrappers/trace.py': '5ba796b93c86a9ce35944e4a8fd27b85ff5b1ef1bb1512678687e70fba349a45',
     'specs/d3d9.py': '5377d7aa156b93fe1958bfdeb9e1bba0fda9c229a31187c20d0215b27c10afc6',
 }
-HELPERS = ('native_retrace_bridge.h', 'native_retrace_bridge.cpp', 'client_image.h',
-           'snapshot_archive.h', 'snapshot_store.h', 'client_code_observation.h')
+WRAPPER_LOADER = 'wrappers/dlltrace.hpp'
+WRAPPER_LOADER_SHA256 = '6258d4ecfd2dcae93b1d777a921f91524b155f4bfee36871b3a354d7782eeb42'
+WRAPPER_GENERATOR = 'wrappers/d3d9trace.py'
+WRAPPER_GENERATOR_SHA256 = '3f7d5013e504d02642556b0b23fb40ace72e7f69c167abc7ef1002135783ac0b'
+DRAW_PROBE = Path(__file__).with_name('native_draw_probe.h')
+
+BEFORE_DRAW = '''        draw_probe = interface.name == 'IDirect3DDevice9' and method.name == 'DrawIndexedPrimitive'
+        if draw_probe:
+            print('    const NorthlightDrawProbe::Draw _probe(_this, PrimitiveType, BaseVertexIndex, MinVertexIndex, NumVertices, startIndex, primCount);')
+'''
+AFTER_DRAW = '''        if draw_probe:
+            print('    _probe.finish(_this, _call, _result);')
+'''
+
+TEXTURE_WITNESS = '''
+        created_texture = {
+            'CreateTexture': ('ppTexture', 'IDirect3DTexture9'),
+            'CreateCubeTexture': ('ppCubeTexture', 'IDirect3DCubeTexture9'),
+            'CreateVolumeTexture': ('ppVolumeTexture', 'IDirect3DVolumeTexture9'),
+        }.get(method.name)
+        if interface.name == 'IDirect3DDevice9' and created_texture:
+            output, texture_type = created_texture
+            print('    if (SUCCEEDED(_result) && %s && *%s && getenv("NORTHLIGHT_APITRACE_D3D9_TARGET")) {' % (output, output))
+            print('        const auto exposed = reinterpret_cast<uintptr_t>(*%s);' % output)
+            print('        auto* inner = *%s;' % output)
+            print('        Wrap%s::_unwrap(__FUNCTION__, &inner);' % texture_type)
+            print('        wchar_t witness[40];')
+            print('        if (std::swprintf(witness, 40, L"NLTEX1;%08lx;%08lx", static_cast<unsigned long>(exposed), static_cast<unsigned long>(reinterpret_cast<uintptr_t>(inner))) == 24)')
+            print('            D3DPERF_SetMarker(0x4e4c0002u, witness);')
+            print('    }')
+'''
+HELPERS = ('stream/native_retrace_bridge.h', 'stream/native_retrace_bridge.cpp',
+           'stream/client_image.h', 'stream/snapshot_archive.h', 'stream/snapshot_store.h',
+           'stream/client_code_observation.h', 'lights/native_light_snapshot.h', 'world/menu_scene.h')
 
 
 def digest(path):
@@ -77,10 +109,15 @@ def prepare(args):
     if target.exists() or target == source or target.is_relative_to(source) or source.is_relative_to(target):
         raise ValueError('Private output must be new and outside the unchanged vendor tree')
     inputs = {source / name: expected for name, expected in PINS.items()}
+    private_wrapper = getattr(args, 'private_wrapper', False)
+    if private_wrapper:
+        inputs[source / WRAPPER_LOADER] = WRAPPER_LOADER_SHA256
+        inputs[source / WRAPPER_GENERATOR] = WRAPPER_GENERATOR_SHA256
+        inputs[DRAW_PROBE] = digest(DRAW_PROBE)
     for path, expected in inputs.items():
         if digest(path) != expected:
             raise ValueError(f'Pinned upstream source differs: {path}')
-    helpers = {ROOT / 'src/stream' / name: digest(ROOT / 'src/stream' / name) for name in HELPERS}
+    helpers = {ROOT / 'src' / name: digest(ROOT / 'src' / name) for name in HELPERS}
     inputs.update(helpers)
     fixture = ROOT / 'tests/test_native_retrace_aliases.cpp'
     inputs[fixture] = digest(fixture)
@@ -121,6 +158,30 @@ def prepare(args):
                          + EXCEPTION_OPTIONS.replace('northlight/native_retrace_bridge.cpp', 'northlight/test_native_retrace_aliases.cpp') +
                          '    install (TARGETS d3dretrace RUNTIME DESTINATION bin)')
     shutil.copytree(source, target, ignore=shutil.ignore_patterns('.git', '__pycache__'))
+    if private_wrapper:
+        loader = (source / WRAPPER_LOADER).read_text(encoding='utf-8')
+        loader = replace_once(loader, '    getProcAddress(LPCSTR lpProcName)\n    {\n        if (!m_hModule) {\n',
+            '    getProcAddress(LPCSTR lpProcName)\n    {\n'
+            '        if (!m_hModule && !strcmp(m_szName, "d3d9")) {\n'
+            '            const char* target = getenv("NORTHLIGHT_APITRACE_D3D9_TARGET");\n'
+            '            if (target && *target) {\n'
+            '                m_hModule = LoadLibraryA(target);\n'
+            '                return m_hModule ? GetProcAddress(m_hModule, lpProcName) : nullptr;\n'
+            '            }\n'
+            '        }\n'
+            '        if (!m_hModule) {\n')
+        (target / WRAPPER_LOADER).write_text(loader, encoding='utf-8', newline='\n')
+        generator = (source / WRAPPER_GENERATOR).read_text(encoding='utf-8')
+        generator = replace_once(generator, '        DllTracer.implementWrapperInterfaceMethodBody(self, interface, base, method)\n',
+                                 BEFORE_DRAW + '        DllTracer.implementWrapperInterfaceMethodBody(self, interface, base, method)\n'
+                                 + AFTER_DRAW + TEXTURE_WITNESS)
+        generator = replace_once(generator, '    print(\'#include "d3d9imports.hpp"\')\n',
+                                 '    print(\'#include "d3d9imports.hpp"\')\n    print(\'#include "native_draw_probe.h"\')\n')
+        (target / WRAPPER_GENERATOR).write_text(generator, encoding='utf-8', newline='\n')
+        wrapper_probe = target / 'wrappers' / DRAW_PROBE.name
+        shutil.copyfile(DRAW_PROBE, wrapper_probe)
+        if digest(wrapper_probe) != inputs[DRAW_PROBE]:
+            raise ValueError('Copied draw probe differs from its frozen source')
     for name, value in (('retrace/d3dretrace_main.cpp', host), ('retrace/retrace_main.cpp', common),
                         ('retrace/CMakeLists.txt', cmake)):
         (target / name).write_text(value, encoding='utf-8', newline='\n')
@@ -156,6 +217,11 @@ def prepare(args):
         'aliases_complete': False, 'full_scene_replay_ready': False, 'fps_claimed': False,
         'planned_build': ['cmake', '--build', '<new-private-x86-build>', '--target', 'd3dretrace'],
     }
+    if private_wrapper:
+        manifest['private_wrapper_loader_sha256'] = digest(target / WRAPPER_LOADER)
+        manifest['private_wrapper_generator_sha256'] = digest(target / WRAPPER_GENERATOR)
+        manifest['private_wrapper_draw_probe_sha256'] = inputs[DRAW_PROBE]
+        manifest['planned_build'].append('d3d9trace')
     (target / 'northlight-host-preparation.json').write_text(json.dumps(manifest, indent=2) + '\n', encoding='utf-8')
     return manifest
 
@@ -164,6 +230,7 @@ def main():
     parser = argparse.ArgumentParser(__doc__)
     parser.add_argument('--upstream', required=True, type=Path)
     parser.add_argument('--output-source', required=True, type=Path)
+    parser.add_argument('--private-wrapper', action='store_true', help='Add an explicit, distinct downstream D3D9 module path for game capture')
     args = parser.parse_args()
     print(json.dumps(prepare(args), indent=2))
 

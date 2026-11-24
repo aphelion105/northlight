@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 # northlight-test: requires=zig,windows-exe
 """Compile weather dispatch: native world particles, menu precipitation and sheltered optics."""
+
+from source_units import source_text
 from pathlib import Path
 import subprocess
 import sys
@@ -8,7 +10,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import northlight_paths as fp
 
-renderer = fp.src('renderer.cpp').read_text()
+renderer = source_text(fp.src('renderer.cpp'))
 start = renderer.index('    void surfaceWeather(){')
 end = renderer.index('    void renderEffects()', start)
 method = renderer[start:end]
@@ -16,16 +18,44 @@ source = r'''
 #include <algorithm>
 #include <cassert>
 #include <cstdio>
+#include <cstring>
 #include <memory>
+#include <optional>
+#include <string>
 #include "weather_roof.h"
 #include "quality_settings.h"
 #include "surface_frame.h"
 #include "weather_state.h"
 #include "diagnostic_capture_request.h"
+static unsigned weatherReceipts=0;
+static void logf(const char* format,unsigned frame,double phase,const char* kind,double blend,double intensity,double gate){
+    assert(std::strncmp(format,"WEATHER_PARITY ",15)==0);
+    assert(frame==weatherReceipts+1&&phase==45.25&&std::strcmp(kind,"rain")==0);
+    assert(blend==1&&intensity==1&&gate>0&&gate<1);
+    ++weatherReceipts;
+}
 struct IDirect3DSurface9 {};
+using HRESULT=int;
 struct Texture {};
 struct ExtensionDevice {struct RawScope {RawScope(ExtensionDevice&) {}};};
 struct SavedState {static inline unsigned saves=0;bool ok=true;IDirect3DSurface9* targets[1]={nullptr};SavedState(ExtensionDevice*,int*) {++saves;}};
+namespace NorthlightLightingCapture {
+struct Capture {
+    static inline unsigned draws=0,finished=0;
+    static inline std::string reason;
+    template<class... Args> explicit Capture(Args&&...){}
+    void bindings(const char*,unsigned,HRESULT hr){assert(hr==0);++draws;}
+    void bindingSkip(const char*,const char* why){reason=why;}
+    void finish(bool success){assert(success);++finished;}
+};
+}
+struct NorthlightSurfaceRenderer {
+    struct BindingAudit {
+        void (*record)(void*,const char*,unsigned,HRESULT);
+        void* context;
+        void operator()(const char* entry,unsigned mask)const{if(record)record(context,entry,mask,0);}
+    };
+};
 struct World {
     NorthlightQuality::Settings q;
     NorthlightWeather::State state{NorthlightWeather::Kind::Rain,1,1,0,0};
@@ -40,11 +70,12 @@ struct World {
     float weatherLensHeat()const{return 0;}
 };
 struct Surface {
+    using Audit=NorthlightSurfaceRenderer::BindingAudit;
     unsigned particles=0,lenses=0,sand=0;bool snow=false,rivulets=false;float particleAmount=0,particleSize=0,lensSize=0,frost=0,lensVisibility=0;
     void setMotion(const NorthlightSurfaceFrame&,unsigned,const NorthlightQuality::Settings&,double){}
-    void precipitation(IDirect3DSurface9*,Texture*,unsigned,unsigned,const NorthlightSurfaceFrame& context,NorthlightQuality::Preset,IDirect3DSurface9*,const SavedState* saved){assert(saved&&saved->ok);++particles;particleAmount=context.c[3][0];snow=context.c[3][1]>0;particleSize=context.c[3][2];}
-    void lens(IDirect3DSurface9*,Texture*,IDirect3DSurface9*,unsigned,unsigned,bool,double,float visibility,IDirect3DSurface9*,float,float,float size,bool streams,float edge,const SavedState* saved){assert(saved&&saved->ok);++lenses;lensSize=size;rivulets=streams;frost=edge;lensVisibility=visibility;}
-    void sandLens(IDirect3DSurface9*,unsigned,unsigned,double,float visibility,IDirect3DSurface9*,float,float,const SavedState* saved){assert(saved&&saved->ok&&visibility>0);++sand;}
+    void precipitation(IDirect3DSurface9*,Texture*,unsigned,unsigned,const NorthlightSurfaceFrame& context,NorthlightQuality::Preset,IDirect3DSurface9*,const SavedState* saved,std::shared_ptr<const NorthlightWeatherShelter::Roof>,Audit audit){assert(saved&&saved->ok);++particles;particleAmount=context.c[3][0];snow=context.c[3][1]>0;particleSize=context.c[3][2];audit("Precipitation",8);}
+    void lens(IDirect3DSurface9*,Texture*,IDirect3DSurface9*,unsigned,unsigned,bool,double,float visibility,IDirect3DSurface9*,float,float,float size,bool streams,float edge,const SavedState* saved,Audit audit){assert(saved&&saved->ok);++lenses;lensSize=size;rivulets=streams;frost=edge;lensVisibility=visibility;audit("Lens",1);}
+    void sandLens(IDirect3DSurface9*,unsigned,unsigned,double,float visibility,IDirect3DSurface9*,float,float,const SavedState* saved,Audit audit){assert(saved&&saved->ok&&visibility>0);++sand;audit("SandLens",16);}
 };
 struct Host {
     World instance;World* world=&instance;Surface draw;Surface* surface=&draw;
@@ -56,6 +87,11 @@ struct Host {
     Texture texture;Texture *depthTex=&texture,*scene=&texture;
     IDirect3DSurface9 image;IDirect3DSurface9 *worldDepth=&image,*sceneSurface=&image,*hdrPresentBack=&image;
     struct Hdr {Texture t;IDirect3DSurface9 s;Texture* texture(){return &t;}IDirect3DSurface9* surface(){return &s;}} hdrFrame;
+    struct Parity {
+        std::string path="fixture";bool enabled=false;
+        const std::string* auditDirectory(unsigned)const{return enabled?&path:nullptr;}
+    } frameParity;
+    unsigned frame=1,lateWeatherAuditFrame=~0u;
     unsigned width=960,height=640;float weatherLayerGate=0;double surfaceTime=0;
     bool surfaceContext(NorthlightSurfaceFrame&)const{return true;}
     unsigned captures=0;const char* captureReason=nullptr;
@@ -111,6 +147,12 @@ int main(){
     assert(h.captures==2&&!h.captureReason&&NorthlightDiagnosticCapture::take()==0);
     h.instance.q.weather=0;NorthlightDiagnosticCapture::request(NorthlightDiagnosticCapture::Weather);h.surfaceWeather();
     assert(h.captures==3&&h.captureReason&&NorthlightDiagnosticCapture::take()==0);
+    Host audit;audit.frameParity.enabled=true;audit.surfaceTime=45.25;audit.surfaceWeather();
+    using Capture=NorthlightLightingCapture::Capture;
+    assert(Capture::finished==1&&Capture::draws==0&&Capture::reason=="camera-sheltered"&&weatherReceipts==1);
+    audit.surfaceWeather();assert(Capture::finished==1&&weatherReceipts==1);
+    ++audit.frame;audit.instance.exposed=true;audit.surfaceWeather();
+    assert(Capture::finished==2&&Capture::draws==1&&weatherReceipts==2);
     std::puts("PASS weather dispatch: no scene particles or roof queries, exposed lens, camera turns/no sky, disabled, sand, lazy shelter, lens sizes");
 }
 '''.replace('__METHOD__', method)

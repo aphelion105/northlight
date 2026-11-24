@@ -6,6 +6,8 @@ Native part: translucent_depth.h (the trigger predicate with lazy state reads an
 through the same glue shape renderer.cpp uses (a terrain draw clears `captured`, a failed resolve leaves it false,
 the UI-time resolve finishes the frame) over a fake draw sequence. Source part: the glue in prepareDrawImpl, the
 RawScope, the reset in clearFrame, and that no setting remains. Windows x86 O0/O2; native ASan/UBSan elsewhere. No device or game."""
+
+from source_units import source_text
 import sys; from pathlib import Path; sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root
 import northlight_paths as fp
 import os,re,subprocess,tempfile
@@ -121,7 +123,7 @@ with tempfile.TemporaryDirectory(prefix='northlight-translucent-depth-') as tmp:
         print(label,subprocess.check_output([str(exe)],text=True),end='',flush=True)
 
 # source checks
-r=fp.tracked('renderer.cpp').read_text();q=fp.src('quality_settings.h').read_text();w=fp.src('world_renderer.h').read_text()
+r=source_text(fp.tracked('renderer.cpp'));q=fp.src('quality_settings.h').read_text();w=fp.src('world_renderer.h').read_text()
 impl=r[r.index('template<class Capture> void prepareDrawImpl('):r.index('    // Terrain draws run with the game')]
 checks={}
 dom=impl.index('if(worldDomain){');undo=impl.index('isUndo(');trig=impl.index('shouldResolve(');cen=impl.index('if(sampled()){const unsigned at=++censusDraws;');cap=impl.index('capture(vs);')
@@ -140,14 +142,20 @@ cf=r[r.index('void clearFrame() {'):r.index('void releaseResources(bool preserve
 checks['clearFrame resets the latch and the census']='earlyDepth.reset()' in cf and 'resetTranslucentCensus()' in cf
 fin=r[r.index('void finishFrameImpl() {'):r.index('++frame;mirrorState.gate.frame')]
 checks['TRANSLUCENT logged before clearFrame in finishFrameImpl']=fin.index('TRANSLUCENT frame=')<fin.index('clearFrame();')
-terr=r[r.index('if(!bindWorldDepth(desc))return;'):][:400]
+terrain_start=r.index('if(!bindWorldDepth(desc))return;')
+terrain_publish='terrain=true; captured=false;'
+terr=r[terrain_start:r.index(terrain_publish,terrain_start)+len(terrain_publish)]
 checks['terrain draw undo uses earlyCaptured, counted before captured=false']=terr.index('captured&&earlyDepth.earlyCaptured')<terr.index('++earlyResolveUndone')<terr.index('terrain=true; captured=false;')
 clr=r[r.index('HRESULT STDMETHODCALLTYPE Clear('):];clr=clr[:clr.index('\n    }')+6]
 checks['Clear(Z) after the early resolve freezes it instead of resolving']='earlyDepth.earlyCaptured' in clr and 'earlyDepth.freeze()' in clr and 'resolveDepth()' in clr
-checks['state reads cached per draw']='known=true' in impl
+checks['state reads cached per draw']=('NorthlightDrawPreparation::lazyState(readState,type)' in impl and 'known=true' in fp.src('draw_world_state.h').read_text())
 checks['no TranslucentActorDepth setting']=all('ranslucentActorDepth' not in x for x in (r,q,w))
 rd_=r[r.index('bool resolveDepth() {'):r.index('HRESULT quad(UINT w')]
-checks['resolveDepth unchanged: SavedState and captured=true on success']='SavedState saved(ext,&stateBlocks);' in rd_ and 'captured = true; return true;' in rd_
+copy=fp.src('scene_depth_resolve.h').read_text()
+checks['resolveDepth uses shared SavedState and sets captured only on success']=(
+    'NorthlightSceneDepth::copy(ext,stateBlocks,worldDepth,target,' in rd_ and
+    'SavedState saved(ext,&stateBlocks);' in copy and
+    rd_.index('if (!resolveDepthInto(depthTex, true)) return false;')<rd_.index('captured = true; return true;'))
 checks['banner']='translucent depth census; early depth for translucent actors; DXVK 3.1.1 default, dxvk2 (2.7.1) by choice only, no automatic fallback; AO depth texel snap; shadow cascades follow camera zoom and collision; reduced terrain shadow reach under address-space pressure; command-stream replay thread; draw-hook lookup caches; lighter replay retire; fresh texture shadows evict only stale keeps; soft local-light cap with fades; blended GI re-publication; Forever-style rain (storm light bands, weather draw detection); moving fog clouds; GPU budget control; frames ahead and frame skipping in the command stream; replay jobs; AO denoise pass; rain mask (MRT, depth scrub), effect boundary at the UI in rain; UI boundary fallback for font mods; TestCooperativeLevel answered on the game thread; two large buffer shadows (36 MiB allowance); lamp fog glow capped once over all lamps; texture readback diagnostics, texture readbacks without a queue drain; sky light held across the weather rescale; colour-guided lighting upsample and colour-picked contact normals at wall and actor feet; actor shadow map with soft contact-hardening filter; uncached maps skip geometry builds; nearest-first actor capture (radius gate, distance cut), stride-aligned replay bulk; floating names keep the game\'s colour (stencil mask); instance map names with an apostrophe or a space reach the world context; lamps in view first, screen-coherent lamp batches (16-lamp passes); backend=' in r
 ini=fp.src('windows-package/northlight-quality.ini').read_text();rm=fp.src('windows-package/README.txt').read_text()
 checks['docs: no setting in the ini or README']='TranslucentActorDepth' not in ini and 'TranslucentActorDepth' not in rm

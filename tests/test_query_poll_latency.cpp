@@ -52,6 +52,24 @@ void backendPendingAttribution(){
 }
 void backendPausePolicy(){
     using namespace NorthlightStream;
+    EventSpinHistory history;
+    history.next(false,true);
+    for(unsigned n=0;n<2;++n){history.next(true,true);assert(!history.sustained());}
+    history.next(true,true);assert(history.sustained());
+    history.next(true,true);assert(history.sustained());
+    history.next(true,false);assert(!history.sustained());
+    for(unsigned n=0;n<3;++n)history.next(true,true);
+    history.next(false,true);assert(!history.sustained());
+    for(unsigned n=0;n<3;++n){
+        history.observePending(3000000);
+        history.next(true,false);assert(history.sustained()==(n==2));
+    }
+    history.observePending(2999999);
+    history.next(true,false);assert(!history.sustained());
+    for(unsigned n=0;n<2;++n){history.observePending(3000000);history.next(true,false);}
+    history.observePending(3000000);
+    history.next(false,false);assert(!history.sustained());
+    history.next(true,false);assert(!history.sustained());
     // Execute the production selector and wait loop. A cached/immediate result
     // performs no pause; CS pending keeps only a 200 us grace, also unprofiled.
     for(bool profile:{false,true})for(auto backend:{EventPendingKind::Untouched,EventPendingKind::FalsePayload,EventPendingKind::None}){
@@ -72,11 +90,15 @@ void backendPausePolicy(){
         if(backend==EventPendingKind::Untouched)assert(shortCalls==1&&longCalls==1);
         else assert(shortCalls==2&&!longCalls);
         shortCalls=longCalls=0;
+        pauseEventQuery(backend,false,100,200000,shortPause,longPause,false);
+        if(backend!=EventPendingKind::None)assert(!shortCalls&&longCalls==1);
+        else assert(shortCalls==1&&!longCalls);
+        shortCalls=longCalls=0;
         pauseEventQuery(backend,true,100,0,shortPause,longPause);
         pauseEventQuery(backend,false,100,2000000,shortPause,longPause);
         assert(!shortCalls&&longCalls==2);
     }
-    puts("EVENT_CS_PAUSE_PASS production_selector ready_no_pause cs_grace_200us_exact gpu_grace_2ms profiling_off_on expired_immediate_sleep");
+    puts("EVENT_CS_PAUSE_PASS ready_no_pause cpu_grace_200us gpu_grace_2ms pressure_hysteresis epoch_reset expired_trip");
 }
 void blockingWaits(){
     using namespace NorthlightStream;

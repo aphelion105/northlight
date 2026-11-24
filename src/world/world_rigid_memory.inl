@@ -172,17 +172,19 @@
             unsigned group=0;for(const auto& p:replays)group=std::max(group,p->constantGroup);
             rigidMemory.forAbsent([&](auto& e){
                 float rows[12];if(replays.size()+e.payload.draws.size()>=4096||!NorthlightRigidMemory::rebase(e.world,context.inverseView,rows))return;
+                const size_t firstReplay=replays.size();
                 for(const auto& c:e.payload.draws){std::unique_ptr<Replay,ReplayRecycle> p(acquireReplay().release(),ReplayRecycle{this});
-                    NorthlightReplayCaptureConstants::reset(*p);
+                    p->resetConstantCapture();float* owned=p->writableConstants();if(!owned){replays.resize(firstReplay);captureShortfall=true;return;}
                     p->shader=c.shader.p;p->shader->AddRef();p->originalShader=c.originalShader.p;p->originalShader->AddRef();p->decl=c.decl.p;p->decl->AddRef();
                     p->texture=c.texture.p;if(p->texture)p->texture->AddRef();p->shared=c.shared;
-                    std::memcpy(p->constantStorage,c.constants.data(),sizeof p->constantStorage);std::memcpy(p->boolStorage,c.bools,sizeof p->boolStorage);std::memcpy(p->intStorage,c.ints,sizeof p->intStorage);
-                    std::memcpy(p->constantStorage+4*(31+3*e.payload.bone),rows,sizeof rows);
+                    std::memcpy(owned,c.constants.data(),sizeof c.constants);std::memcpy(p->boolStorage,c.bools,sizeof p->boolStorage);std::memcpy(p->intStorage,c.ints,sizeof p->intStorage);
+                    std::memcpy(owned+4*(31+3*e.payload.bone),rows,sizeof rows);
                     p->constantUsage=c.usage;p->projectionKind=c.projectionKind;p->cutoff=c.cutoff;p->alphaMode=c.alphaMode;p->addressU=c.addressU;p->addressV=c.addressV;
                     p->type=c.type;p->base=0;p->min=0;p->vertices=p->mesh().vertexCount;p->start=0;p->count=c.count;p->indexed=c.indexed;
                     p->captureRootValid=false;p->selfShadow=false;std::memcpy(p->anchor,e.world+9,sizeof p->anchor);p->anchorValid=true;p->pointBounds={};p->gpuCached=false;p->shadowSkinned=p->shadowSelected=true;p->shadowSmall=false;p->fateSlot=-1;p->fateClass=NorthlightShadowFate::NotRanked;p->fateDistance=0;
                     p->staticProofMask=p->staticM2Mask=0;p->staticM2Model=nullptr;p->boneKnown=false;p->bone=NAN;p->constantGroup=++group;
-                    replays.emplace_back(p.release());++rigidInjected;}});
+                    replays.emplace_back(p.release());}
+                rigidInjected+=unsigned(replays.size()-firstReplay);});
         }
         if(captureSampled){const auto& s=rigidMemory.stats();const double ms=rigidObserveMs+std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-started).count();
             deferLogf("RIGID memory tracks=%zu entries=%zu injected=%u seen=%zu held=%zu static=%zu mobile=%zu droppedInView=%llu droppedRange=%llu droppedTeleport=%llu droppedMoved=%llu droppedUnseen=%llu evicted=%llu remembered=%llu indexComplete=%d bytes=%zu ms=%.3f drawn=%zu drawnNotCaptured=%zu liveUnselected=%zu notDrawn=%zu drawnMoved=%llu rememberGateFar=%llu tracksForgotten=%llu refreshSkipped=%llu sortMs=%.3f eventsSuppressed=%u indexMs=%.3f indexItems=%zu",

@@ -230,14 +230,14 @@ float currentDirectionalShadowFade(float3 p,float3 normal,float confidence,float
     return result;
 }
 float4 DirectionalShadowTransitionCurrent(float2 uv:TEXCOORD0):COLOR0 {
- float2 screen=uv;uv=depthUV(uv);float depth=normalizedDepth(uv);
+ float2 screen=uv;uv=halfDepthUV(uv);float depth=normalizedDepth(uv);
  if(depth>=.99999||waterDistance(uv,depth)>0)return 1;
  float4 normal=shadowReceiver(screen,depth,tex2Dlod(NormalBuffer,float4(screen,0,0)));
  float3 p=worldPosition(uv,depth)+normal.xyz*(.08*saturate(normal.w));
  float v=currentDirectionalShadowFade(p,normal.xyz,saturate(normal.w),normal.w);return float4(v,v,v,1);
 }
 float4 DirectionalShadowTransitionPrevious(float2 uv:TEXCOORD0):COLOR0 {
- float2 screen=uv;uv=depthUV(uv);float depth=normalizedDepth(uv);
+ float2 screen=uv;uv=halfDepthUV(uv);float depth=normalizedDepth(uv);
  if(depth>=.99999||waterDistance(uv,depth)>0)return 0;
  float4 normal=shadowReceiver(screen,depth,tex2Dlod(NormalBuffer,float4(screen,0,0)));
  float3 p=worldPosition(uv,depth)+normal.xyz*(.08*saturate(normal.w));

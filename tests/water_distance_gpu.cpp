@@ -5,10 +5,13 @@
 #include "saved_state.h"
 #include <array>
 #include <cstdarg>
+#include <cstdlib>
 template<class T> static void drop(T*& p){if(p){p->Release();p=nullptr;}}
 static void logf(const char* fmt,...){va_list args;va_start(args,fmt);std::vfprintf(stderr,fmt,args);va_end(args);std::fputc('\n',stderr);}
 #include "water_renderer.h"
+#include "compiled_shaders.h"
 #include "forwarders.h"
+#include "world_lighting_capture.h"
 
 struct Meter:ForwardIDirect3DDevice9 {
     using ForwardIDirect3DDevice9::ForwardIDirect3DDevice9;
@@ -85,6 +88,50 @@ struct Fixture {
         ok(staging->UnlockRect());drop(staging);drop(out);return data;
     }
 };
+static void tideglassInputs(Fixture& fixture){
+    auto* device=fixture.d;
+    Image packed{2,1,D3DFMT_R32F,4,std::vector<unsigned char>(8)};
+    const float distance[]={0.f,17.25f};
+    std::memcpy(packed.pixels.data(),distance,sizeof distance);
+    auto* input=texture(device,packed);
+    IDirect3DTexture9* output=nullptr;
+    IDirect3DSurface9* target=nullptr;
+    IDirect3DPixelShader9* shader=nullptr;
+    ok(device->CreateTexture(2,1,1,D3DUSAGE_RENDERTARGET,D3DFMT_G32R32F,D3DPOOL_DEFAULT,&output,nullptr));
+    ok(output->GetSurfaceLevel(0,&target));
+    ok(device->CreatePixelShader(kTideglassCoverageShader,&shader));
+    ok(device->BeginScene());
+    ok(NorthlightHdr::quadState(device,target,2,1));
+    ok(device->SetPixelShader(shader));ok(device->SetTexture(0,input));
+    ok(NorthlightHdr::drawQuad(device,2,1));
+    ok(device->EndScene());
+    const auto coverage=fixture.pixels(output,2,1);
+    assert(coverage[0][0]==0.f&&coverage[0][1]==0.f);
+    assert(coverage[1][0]==17.25f&&coverage[1][1]==1.f);
+    drop(shader);drop(target);drop(output);drop(input);
+
+    const Image rain{2,1,D3DFMT_A8R8G8B8,4,{0,0,0,255,0,0,128,255}};
+    const Image native{2,1,D3DFMT_A8R8G8B8,4,{0,0,255,255,0,0,255,255}};
+    auto* rainMask=texture(device,rain);
+    auto* scene=texture(device,native);
+    ok(device->CreateTexture(2,1,1,D3DUSAGE_RENDERTARGET,D3DFMT_A8R8G8B8,D3DPOOL_DEFAULT,&output,nullptr));
+    ok(output->GetSurfaceLevel(0,&target));
+    ok(device->ColorFill(target,nullptr,0xff0000ff));
+    ok(device->CreatePixelShader(kTideglassRetainRainShader,&shader));
+    ok(device->BeginScene());
+    ok(NorthlightHdr::quadState(device,target,2,1));
+    ok(device->SetTexture(0,scene));ok(device->SetTexture(1,rainMask));ok(device->SetPixelShader(shader));
+    ok(device->SetRenderState(D3DRS_ALPHABLENDENABLE,TRUE));
+    ok(device->SetRenderState(D3DRS_SRCBLEND,D3DBLEND_SRCALPHA));
+    ok(device->SetRenderState(D3DRS_DESTBLEND,D3DBLEND_INVSRCALPHA));
+    ok(NorthlightHdr::drawQuad(device,2,1));
+    ok(device->EndScene());
+    const auto colour=fixture.pixels(output,2,1);
+    assert(colour[0][0]==0.f&&colour[0][2]==1.f);
+    assert(std::abs(colour[1][0]-128.f/255.f)<.005f&&std::abs(colour[1][2]-127.f/255.f)<.005f);
+    drop(shader);drop(target);drop(output);drop(scene);drop(rainMask);
+    std::puts("TIDEGLASS_INPUTS_PASS compact coverage and retained precipitation");
+}
 enum class Capture { Bare, Wide, Compact };
 enum class Scene { Shore, SmallScissor, SampleMaskStress };
 static std::vector<Pixel> run(Fixture& f,IDirect3DSurface9* game,IDirect3DSurface9* depth,D3DSURFACE_DESC desc,Capture capture,int mixed,bool timing,Scene scene=Scene::Shore){
@@ -150,7 +197,19 @@ static std::vector<Pixel> run(Fixture& f,IDirect3DSurface9* game,IDirect3DSurfac
         if(timing)ok(decodeStart->Issue(D3DISSUE_END));
         meter.draws=meter.resolves=meter.regions=0;meter.refuseRegion=!timing&&frame==4;
         if(!bare){
-            assert(water.resolveMask());result=water.maskTextureForDepth(0,1);assert(result);
+            const char* auditDirectory=std::getenv("NORTHLIGHT_TEST_WATER_AUDIT");
+            if(auditDirectory&&!timing&&!frame&&(desc.MultiSampleType==0||desc.MultiSampleType==2)&&mixed<2){
+                const unsigned ticket=420+unsigned(desc.MultiSampleType)*10+unsigned(mixed)*2+unsigned(scalar);
+                const std::string directory=auditDirectory;
+                NorthlightLightingCapture::Capture audit(d,directory,ticket,ticket,ticket,w,h,"frame-parity-atmosphere");
+                bool observed=false;
+                assert(water.resolveMask([&](const char* name,unsigned mask,HRESULT hr,IDirect3DSurface9* source){
+                    audit.bindings(name,mask,hr,source);observed=true;
+                }));
+                if(!observed)audit.bindingSkip("WaterMaskResolve","no-resolve-draw");
+                audit.finish(true);
+            }else assert(water.resolveMask());
+            result=water.maskTextureForDepth(0,1);assert(result);
             D3DSURFACE_DESC image{};ok(result->GetLevelDesc(0,&image));
             assert(image.Format==(scalar&&!mixed?D3DFMT_R32F:D3DFMT_G32R32F));
         }
@@ -196,6 +255,7 @@ int main(int argc,char** argv){
     unsigned modes=0;
     {
     Fixture f(d,argv[2]);
+    if(!timing)tideglassInputs(f);
     const unsigned w=timing?3840:193,h=timing?2160:129;
     for(unsigned n=0;n<=16;++n){
         DWORD levels=0;auto ms=D3DMULTISAMPLE_TYPE(n);

@@ -16,59 +16,64 @@ source audit. Reads files only; no Wine, GPU or game. Writes temporal-history-va
 """
 import sys; from pathlib import Path; sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root
 import northlight_paths as fp
+from scripts.shaders.shader_sources import world_source_text
 import json
 import math
 import re
+import struct
 
-hlsl = fp.src('world_effects.hlsl').read_text()
+hlsl = world_source_text(fp.src('world_effects.hlsl'))
 w = fp.src('world_renderer.h').read_text()
-temporal = hlsl[hlsl.index('TemporalOutput TemporalLight('):hlsl.index('// 1x1 pass: fraction of the source disc')]
+temporal = hlsl[hlsl.index('TemporalOutput temporalLight('):hlsl.index('// Keep current normals/distance')]
 code = re.sub(r'//[^\n]*', '', temporal)
 checks = {}
 
 # ---- 1. source pins ----
 NEAREST_TEST = ['    float2 pq=(clamp(floor(puv*half),0,half-1)+.5)/half;',
-                '    float hz=tex2Dlod(DepthHistory,float4(pq,0,0)).r;',
+                '    float hz=tex2Dlod(historyDepth,float4(pq,0,0)).r;',
                 '    if(abs(hz-w)>max(.25,w*.03))return o;']
 FOOTPRINT = ['    float tol=max(.25,w*.03);',
              '    float2 texel=1/half,corner=(floor(puv*half-.5)+.5)*texel; // CLAMP addressing repeats the border',
-             '    float4 footprint=float4(tex2Dlod(DepthHistory,float4(corner,0,0)).r,',
-             '        tex2Dlod(DepthHistory,float4(corner+float2(texel.x,0),0,0)).r,',
-             '        tex2Dlod(DepthHistory,float4(corner+float2(0,texel.y),0,0)).r,',
-             '        tex2Dlod(DepthHistory,float4(corner+texel,0,0)).r);',
+             '    float4 footprint=float4(tex2Dlod(historyDepth,float4(corner,0,0)).r,',
+             '        tex2Dlod(historyDepth,float4(corner+float2(texel.x,0),0,0)).r,',
+             '        tex2Dlod(historyDepth,float4(corner+float2(0,texel.y),0,0)).r,',
+             '        tex2Dlod(historyDepth,float4(corner+texel,0,0)).r);',
              '    bool agree=all(abs(footprint-w)<=tol);']
-HISTORY = '    float4 history=tex2Dlod(LightHistory,float4(agree?puv:pq,0,0));'
+HISTORY = '    float4 history=tex2Dlod(historyLight,float4(agree?puv:pq,0,0));'
 A1 = ['    float4 tight=clamp(history,lo,hi);',
       '    float still=saturate(2-4*length(puv*half-(base+.5)));',
       '    float margin=.15/max(RemovalInfo.z,1e-4)*RemovalInfo.y*still;',
       '    float loose=clamp(history.a,lo.a-margin,hi.a+margin);',
       '    float3 reach=abs(loose-tight.a)*RemovalInfo.z*TemporalReach.w;',
-      '    o.light=lerp(current,float4(clamp(history.rgb,lo.rgb-reach,hi.rgb+reach),loose),TemporalInfo.x);']
+      '    float4 retained=float4(clamp(history.rgb,lo.rgb-reach,hi.rgb+reach),loose);']
 checks['TemporalLight: nearest depth test unchanged; history read once, at puv only when the footprint depths agree'] = (
     all(temporal.count(l + '\n') == 1 for l in NEAREST_TEST + FOOTPRINT + [HISTORY])
     and temporal.index(NEAREST_TEST[-1]) < temporal.index(FOOTPRINT[0]) < temporal.index(HISTORY)
-    and code.count('LightHistory') == 1 and code.count('DepthHistory') == 5 and 'pq,0,0)).r' in code)
+    and code.count('tex2Dlod(historyLight,') == 1 and code.count('tex2Dlod(historyDepth,') == 5 and 'pq,0,0)).r' in code
+    and 'return temporalLight(uv,false,DepthHistory,LightHistory);' in hlsl)
 checks['A1 lines unchanged except the F2 gate (full to .25 px, none from .5)'] = (
     all(temporal.count(l + '\n') == 1 for l in A1) and 'saturate(2-length(' not in temporal)
 
 # ---- 2. sampler states: s14 LINEAR only in the temporal pass, s15 stays POINT ----
-block = w[w.index('{   // Temporal stabilization: retain this frame\'s already produced distance'):w.index('temporalIndex=prev;temporalValid=true;')]
-loop = ('for(unsigned sampler=14;sampler<16;++sampler){if(sampler==15&&removalDrawn)continue;d->SetSamplerState(sampler,D3DSAMP_ADDRESSU,D3DTADDRESS_CLAMP);'
-        'd->SetSamplerState(sampler,D3DSAMP_ADDRESSV,D3DTADDRESS_CLAMP);'
-        'd->SetSamplerState(sampler,D3DSAMP_MINFILTER,sampler==14?D3DTEXF_LINEAR:D3DTEXF_POINT);'
-        'd->SetSamplerState(sampler,D3DSAMP_MAGFILTER,sampler==14?D3DTEXF_LINEAR:D3DTEXF_POINT);'
-        'd->SetSamplerState(sampler,D3DSAMP_MIPFILTER,D3DTEXF_NONE);d->SetSamplerState(sampler,D3DSAMP_SRGBTEXTURE,FALSE);}')
-fog_loop = loop.replace('if(sampler==15&&removalDrawn)continue;', '')
-normals = ('d->SetTexture(14,normalBuffer);d->SetSamplerState(14,D3DSAMP_ADDRESSU,D3DTADDRESS_CLAMP);'
-           'd->SetSamplerState(14,D3DSAMP_ADDRESSV,D3DTADDRESS_CLAMP);d->SetSamplerState(14,D3DSAMP_MINFILTER,D3DTEXF_POINT);'
-           'd->SetSamplerState(14,D3DSAMP_MAGFILTER,D3DTEXF_POINT);')
-checks['s14 LINEAR (history) and s15 POINT (depth) in the temporal pass; the normals setup resets s14 POINT first'] = (
-    block.count(loop) == 1 and w.count(normals) == 1 and w.index(normals) < w.index(block)
-    and all(block.count('d->SetSamplerState(15,D3DSAMP_'+state+','+value+');') == 1 for state,value in
-            [('ADDRESSU','D3DTADDRESS_CLAMP'),('ADDRESSV','D3DTADDRESS_CLAMP'),('MINFILTER','D3DTEXF_POINT'),
-             ('MAGFILTER','D3DTEXF_POINT'),('MIPFILTER','D3DTEXF_NONE'),('SRGBTEXTURE','FALSE')])
-    and block.index('if(removalDrawn){') < block.index('d->SetSamplerState(15,D3DSAMP_ADDRESSU') < block.index(loop)
-    and w.count(fog_loop) == 1 and 'sampler==14?D3DTEXF_LINEAR' not in w.replace(loop, '').replace(fog_loop, '') and not re.search(r'SetSamplerState\((14|15),D3DSAMP_M(IN|AG)FILTER,D3DTEXF_LINEAR', w))
+host = fp.src('world_light_history.h').read_text()
+block = host[host.index('bool resolveLighting('):host.index('bool resolveDistance(')]
+normals = fp.src('world_normals_pass.h').read_text()
+normal_sampler = ('d->SetTexture(14,texture_);', 'd->SetSamplerState(14,D3DSAMP_ADDRESSU,D3DTADDRESS_CLAMP);',
+                  'd->SetSamplerState(14,D3DSAMP_ADDRESSV,D3DTADDRESS_CLAMP);',
+                  'd->SetSamplerState(14,D3DSAMP_MINFILTER,D3DTEXF_POINT);',
+                  'd->SetSamplerState(14,D3DSAMP_MAGFILTER,D3DTEXF_POINT);')
+samplers = host[host.index('static void bindHistorySampler('):host.index('void resetMerged(')]
+checks['light history is bilinear and distance stays POINT in both temporal paths'] = (
+    all(normals.count(site)==1 for site in normal_sampler)
+    and sorted(normal_sampler,key=normals.index)==list(normal_sampler)
+    and w.index('if(!worldNormals.draw(') < w.index('history.resolveLighting(')
+    and all(site in block for site in ('bindHistorySampler(d,14,D3DTEXF_LINEAR);',
+        'if(!removalDrawn)bindHistorySampler(d,15,D3DTEXF_POINT);',
+        'bindHistorySampler(d,9,D3DTEXF_LINEAR);', 'bindHistorySampler(d,13,D3DTEXF_POINT);'))
+    and block.index('if(removalDrawn){') < block.index('bindHistorySampler(d,15,D3DTEXF_POINT);')
+    and all(f'SetSamplerState(slot,D3DSAMP_{state},{value});' in samplers for state,value in (
+        ('ADDRESSU','D3DTADDRESS_CLAMP'),('ADDRESSV','D3DTADDRESS_CLAMP'),('MINFILTER','filter'),
+        ('MAGFILTER','filter'),('MIPFILTER','D3DTEXF_NONE'),('SRGBTEXTURE','FALSE'))))
 keys = {'BilinearHistory', 'TemporalHistory', 'HistoryFilter'}
 config = [fp.src('quality_settings.h').read_text(), fp.src('windows-package/northlight-quality.ini').read_text(),
           fp.src('windows-package/README.txt').read_text(encoding='utf-8')]
@@ -175,6 +180,31 @@ def reject(hz, w):
     return abs(hz - w) > max(.25, w * .03)
 checks['depth rejection unchanged: |hz-w| > max(.25, 3% w) returns current only'] = (
     not reject(10.2, 10) and reject(10.4, 10) and not reject(100 + 2.9, 100) and reject(100 + 3.1, 100))
+
+def half_value(bits):
+    return struct.unpack('<e', struct.pack('<H', bits))[0]
+
+
+def half_round(value):
+    return struct.unpack('<e', struct.pack('<e', value))[0]
+
+
+def store_history(current, previous, stabilize):
+    delta = previous - current
+    band = max(abs(current), 2**-14) * (3 / 1024)
+    return half_round(current + delta * (0 if stabilize and abs(delta) <= band else .75))
+
+
+checks['FP16 history converges within the rounding band and preserves larger blends'] = (
+    'float4 roundingBand=max(abs(current),0.00006103515625)*(3.0/1024.0);' in temporal and
+    'float4 keep=1-step(abs(delta),roundingBand);' in temporal and
+    'o.light=current+delta*(historyWeight*keep);' in temporal and
+    all(store_history(half_value(bits), half_value(bits + 1), False) == half_value(bits + 1)
+        for bits in (0x0208, 0x0408, 0x3808, 0xbc08, 0x4480)) and
+    all(store_history(half_value(bits), half_value(bits + offset), True) == half_value(bits)
+        for bits in (0x0208, 0x0408, 0x3808, 0xbc08, 0x4480) for offset in (-3, -2, -1, 1, 2, 3)) and
+    all(store_history(current, previous, True) == store_history(current, previous, False)
+        for current, previous in ((.5, .25), (.25, .5), (-.5, -.2), (-.5, .2), (8, 12))))
 
 for name, ok in checks.items():
     print(('PASS ' if ok else 'FAIL ') + name)

@@ -108,9 +108,20 @@ int main(){
     {const std::vector<PageBytes> aligned={{CopyChunkBytes+32,400,32}};Upload u;assert(u.begin(aligned));FakeBackend b(aligned);
      while(u.status()==Result::Pending){FakeBudget allowance;allowance.remaining=17003;const auto step=u.step();u.advance([&](Step current,size_t page,size_t at,size_t bytes){if(current==Step::CopyVertices)assert(at%32==0&&bytes%32==0);return b(current,page,at,bytes);},allowance);if(step==Step::CopyVertices)assert(u.offset()%32==0||u.step()!=Step::CopyVertices);}
      assert(u.status()==Result::Ready&&b.pages[0].sourceV==b.pages[0].gpuV);assert(!u.begin({{33,2,32}}));}
+
+    // A byte-only checkpoint can leave a budget smaller than one vertex.
+    // Resume with a fresh allowance while preserving the pending cursor.
+    const std::vector<PageBytes> tail={{64,12,32}};
+    Upload partial;assert(partial.begin(tail));FakeBackend resumed(tail);
+    FakeBudget checkpoint;checkpoint.remaining=47;
+    assert(partial.advanceAvailable(resumed,checkpoint)==Result::Pending);
+    assert(resumed.calls==3&&checkpoint.remaining==15&&partial.offset()==32&&partial.step()==Step::CopyVertices);
+    FakeBudget remainder;remainder.remaining=45;
+    assert(partial.advanceAvailable(resumed,remainder)==Result::Ready&&remainder.remaining==1);
+    assert(resumed.pages[0].gpuV==resumed.pages[0].sourceV&&resumed.pages[0].gpuI==resumed.pages[0].sourceI);
     assert(!upload.begin({{MaxBufferBytes+1,1}}));
     assert(!upload.begin({{1,MaxBufferBytes+1}}));
     assert(!upload.begin({{0,1}}));assert(!upload.begin({{1,0}}));
     assert(upload.begin({})&&upload.status()==Result::Ready);
-    std::cout<<"Paged mesh upload budget, byte fidelity, cancellation, and failure tests passed\n";
+    std::cout<<"Paged mesh upload budget, sub-vertex remainder, byte fidelity, cancellation, and failure tests passed\n";
 }

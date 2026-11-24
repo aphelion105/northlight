@@ -6,6 +6,7 @@ sunlit factor (sun 30%, shadow/interior/night unchanged) and source/shader integ
 the point-shadow lamp are unchanged. Not a GPU or appearance test; no game, Wine or GPU."""
 import sys; from pathlib import Path; sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root
 import northlight_paths as fp
+from scripts.shaders.shader_sources import world_source_text
 import json
 import subprocess
 import tempfile
@@ -59,13 +60,13 @@ def native():
 
 def main():
     values = native()
-    shader = fp.src('world_effects.hlsl').read_text()
+    shader = world_source_text(fp.src('world_effects.hlsl'))
     cpu = fp.src('world_renderer.h').read_text()
     point = fp.src('world_point_rendering.inl').read_text()
-    lighting = shader[shader.index('LightingOutput worldLightingValue('):shader.index('float4 WorldGI(')]
+    lighting = shader[shader.index('LightingOutput worldLightingValue('):shader.index('LightingOutput WorldLighting(')]
     local = shader[shader.index('float4 localDirectValue('):shader.index('float3 removalScale(')]
     # Lamps use proven directional visibility; -1 distinguishes unknown coverage.
-    assert 'o.baseline=float4(max(old+AmbientLight.rgb,.15),known?lerp(visibility,shadow,SunDirection.w):-1);return o;' in lighting
+    assert 'o.baseline=float4(max(old+AmbientLight.rgb,.15),known?lerp(visibility,shadow,SunDirection.w):-1);' in lighting
     assert 'float3 cover=affinePoint(p,FarMatrix);' in lighting and 'float known=max(abs(cover.x),abs(cover.y))<=1&&cover.z>=0&&cover.z<=1?1:0;' in lighting
     for use in [l for l in shader.splitlines() if 'tex2Dlod(BaselineLighting' in l and 'sunlit=' not in l]:
         assert '.rgb' in use, use
@@ -73,13 +74,19 @@ def main():
     assert 'return float4(result*(LocalLightInfo.y*(1-LocalLightInfo.z*sunlit)),0);' in local
     # CPU: no global daylight gain (lamp fog c58 and the point lamp as in 0.3.164); c52.z per batch; s12 bound.
     assert 'const float lampGain=.9f*NorthlightLocalLightSelection::nightGain(lampNight);' in cpu and 'daylightGain' not in cpu and 'lampDaylight' not in cpu
-    assert 'c[52][1]=.9f*lampGain;' in cpu and 'c[58][2]=10.f*lampGain*wx.lampFogGain();c[58][3]=.12f*lampGain*wx.lampFogGain();' in cpu
-    assert 'NorthlightLocalLightSelection::sunlitCut(celestialValid?sourceWeights[0]:0.f,sourceActive[0]&&geometryReady&&effects.shadows);' in cpu
-    assert 'const float info[4]={float(batch.count),c[52][1],lampSunlitCut,0};' in cpu
-    assert cpu.index('d->SetTexture(12,baselineLight);') < cpu.index('"local direct light batch"')
+    bank = fp.src('world_frame_constants.inl').read_text()
+    assert 'c[52][1]=.9f*lampGain;' in bank
+    assert 'c[58][2]=.25f*lampGain*wx.lampFogGain();c[58][3]=.12f*lampGain*wx.lampFogGain();' in bank
+    assert 'NorthlightLocalLightSelection::sunlitCut(celestialValid?sourceWeights[0]:0.f,sourceActive[0]&&geometryReady&&applyDirectionalShadows);' in cpu
+    passes=fp.src('world_local_lighting.inl').read_text()
+    assert 'drawDirectLocalLights(w,h,localLights,rects,c[52][1],lampSunlitCut,' in passes
+    lamp_owner=fp.src('world_local_lighting.h').read_text()
+    assert 'const float info[4]={float(batch.count),lampStrength,lampSunlitCut,0};' in lamp_owner
+    assert cpu.index('if(!renderCelestialLighting(') < cpu.index('if(!renderLocalLighting(')
+    assert 'd->SetTexture(12,baseline_.texture);' in fp.src('world_screen_lighting.h').read_text()
     # Lamp fog and the point-shadow lamp are pinned unchanged against 0.3.164 (live 7ba4d92).
     assert 'std::memcpy(constants[8],pointSlot().selected.diffuse,12);constants[8][3]=pointSlot().selected.attenuationEnd;' in point
-    assert 'const float lampFogInfo[4]={c[21][0],c[21][1],c[21][2],localLights.fogDistance};' in cpu
+    assert 'const float lampFogInfo[4]={worldFogInfo[0],worldFogInfo[1],worldFogInfo[2],localLights.fogDistance};' in lamp_owner
     result = dict(game_launched=False, gpu_tested=False, native_policy_passed=True, gains=values)
     (fp.output_dir()/'lamp-daylight-validation.json').write_text(json.dumps(result, indent=2)+'\n')
     print(json.dumps(result, indent=2))

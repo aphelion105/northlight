@@ -359,6 +359,7 @@ class Package:
         self.version = self.info.get('version', 'dev')
         self.payload = self.root / 'payload'
         self.dll = self.payload / 'd3d9.dll'
+        self.tideglass = 'tideglass' in self.info
         self.stormlib = self.root / 'runtime' / {'windows': 'StormLib.dll', 'linux': 'lib/libstorm.so'}.get(platform, 'lib/libstorm.dylib')
         self.variants = {p.stem: read_json(p) for p in sorted((self.root / 'variants').glob('*.json'))}
         self.work = self.root / 'work'
@@ -614,6 +615,13 @@ class Installer:
         if manifest is None or not self.pkg.dll.is_file():
             raise Refusal('The package is incomplete (payload-manifest.json or payload/d3d9.dll missing). '
                           'Unzip the download again.')
+        water = {'water-core.dll', 'water.ini', 'water-host.ini'}
+        packaged = {e['path']: e['sha256'] for e in manifest if e['path'] in water}
+        if self.pkg.tideglass:
+            if packaged.keys() != water or packaged['water-core.dll'] != self.pkg.info['tideglass'].get('core_sha256'):
+                raise Refusal('The Tideglass payload does not match BUILD-INFO.json. Unzip the download again.')
+        elif packaged:
+            raise Refusal('The Tideglass payload is missing its build metadata. Unzip the download again.')
         for e in manifest:
             path = self.pkg.payload / e['path']
             other = INSTALL.other_dxvk(e['path'], backend)
@@ -885,7 +893,7 @@ class Installer:
         data = sorted((cache / 'fog').rglob('*.frf'))
         data += [cache / 'lights/world-emitters-v1.json',
                  client / 'Cache/WDB' / locale / 'creaturecache.wdb']
-        inputs = {'locale': locale, 'letter': LETTER,
+        inputs = {'locale': locale, 'letter': LETTER, 'tideglass': self.pkg.tideglass,
                   'archives': client_archives.fingerprint(client_archives.chain(client, 'all', locale, LETTER), client),
                   'sources': {p.relative_to(APP).as_posix(): sha(p) for p in sources},
                   'data': {p.relative_to(client).as_posix(): sha(p) if p.is_file() else None for p in data}}
@@ -933,7 +941,8 @@ class Installer:
         remove_tree(work)
         work.mkdir(parents=True)
         code, _ = self.run(APP / 'build_art_layer.py', ['--client', client, '--locale', locale, '--world-cache',
-                                                         client / CACHE, '--output', work, '--letter', LETTER], show=False)
+                                                         client / CACHE, '--output', work, '--letter', LETTER]
+                           + (['--tideglass'] if self.pkg.tideglass else []), show=False)
         report = read_json(work / 'art-layer-manifest.json')
         if code != 0 or not report:
             raise Failed(f'The art layer build failed (exit {code}); its last lines are shown above. '
@@ -1264,6 +1273,10 @@ class Installer:
         else:
             report['art_layer'] = '; '.join(f'{action} {hashlib.sha256(layer[name]).hexdigest()[:8]} {name}'
                                             for name, action in actions.items())
+        if self.pkg.tideglass:
+            paths = client_archives.chain(client, locale=locale, pending=actions)
+            layer['northlight-water-archives.txt'] = ''.join(
+                './' + path.relative_to(client).as_posix() + '\n' for path in paths).encode('utf-8')
         backups, payload = [], 'kept (unchanged)'
         if self.platform == 'mac':
             self.still_closed('installing the renderer')

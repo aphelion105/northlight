@@ -1,11 +1,13 @@
 # northlight-test: requires=windows-exe,zig manual timing
 """Compare the actual logger's FILE formatting with a frozen git version. No game is started."""
+
+from source_units import source_text
 from pathlib import Path
 import argparse,hashlib,json,re,statistics,subprocess,sys
 ROOT=Path(__file__).resolve().parents[1];sys.path.insert(0,str(ROOT));import northlight_paths as fp
 p=argparse.ArgumentParser(__doc__);p.add_argument('--reference',required=True);p.add_argument('--output',type=Path,required=True);a=p.parse_args()
 out=a.output.resolve();out.mkdir(parents=True,exist_ok=True);source=fp.src('renderer.cpp')
-for name,text in [('Current',source.read_text(encoding='utf-8')),('Before',subprocess.check_output(['git','show',a.reference+':src/proxy/renderer.cpp']).decode('utf-8'))]:
+for name,text in [('Current',source_text(source)),('Before',subprocess.check_output(['git','show',a.reference+':src/proxy/renderer.cpp']).decode('utf-8'))]:
  section=text[text.index('static SRWLOCK logLock='):text.index('static void reportLogCost()')]
  (out/(name+'.inc')).write_text('namespace '+name+' { static FILE* logFile=nullptr;static wchar_t rootPath[MAX_PATH]={};static void rotatePreviousLog(){}\n'+section+'}\n',encoding='utf-8')
 cpp=r'''

@@ -4,7 +4,7 @@
 #include <vector>
 
 int main(int argc,char** argv){
-    assert(argc==2);const auto root=std::filesystem::u8path(argv[1])/std::filesystem::u8path(u8"unicode-\u0442\u0435\u0441\u0442");
+    assert(argc==2);const auto root=std::filesystem::u8path(argv[1])/std::filesystem::u8path(u8"unicode-\u00dcber-\u4e16\u754c");
     std::filesystem::create_directories(root/"raw");std::filesystem::create_directories(root/"compact");
     const unsigned char pixels[]={1,2,3,4,99,99,99,99,5,6,7,8,77,77,77,77};
     const unsigned char packed[]={1,2,3,4,5,6,7,8};

@@ -345,11 +345,12 @@ public:
     }
     // Once per frame, before the effects read the mask and after render target 1 was unbound: the multisampled twin is resolved into the data texture, the mask is cleared
     // (unless a second draw already did) and one full-screen pass decodes the data into it. False: no MRT data this frame (a failure disables the MRT path for the session).
-    bool resolveMask(){
+    template<class Audit=NorthlightWaterDistanceMask::NoBindingAudit>
+    bool resolveMask(const Audit& audit={}){
         if(!mrtDirty)return true;
         unbindMrt();mrtDirty=false;
         if(compactFrame){
-            const HRESULT hr=compact.resolve(width,height,captured?maskSurface:nullptr,stateBlocks);
+            const HRESULT hr=compact.resolve(width,height,captured?maskSurface:nullptr,stateBlocks,audit);
             if(FAILED(hr)){mrtResolved=false;mrtFail("compact resolve",hr);return false;}
             mrtResolved=true;return true;
         }
@@ -371,7 +372,10 @@ public:
         // fallback. Keep clear and draw inside the same target/state scope.
         if(SUCCEEDED(hr)&&!captured)hr=d->Clear(0,nullptr,D3DCLEAR_TARGET,0,1,0);
         if(SUCCEEDED(hr))hr=d->SetPixelShader(resolvePS);
-        if(SUCCEEDED(hr))hr=NorthlightScreen::drawQuad(d,width,height);
+        if(SUCCEEDED(hr)){
+            hr=NorthlightScreen::drawQuad(d,width,height);
+            audit("WaterResolveLegacy",1u,hr,twin?twin:rawSurface);
+        }
         if(FAILED(hr)){mrtFail("decode pass",hr);return false;}
         mrtResolved=true;maskMayBeBound=true;return true;
     }

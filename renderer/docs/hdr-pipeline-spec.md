@@ -1,75 +1,75 @@
-# Спецификация HDR Northlight
+# Northlight HDR pipeline specification
 
-Статус: согласована; код первого этапа реализован. Перенос между физическими дисплеями отложен по согласованию; визуальная приёмка игровых сцен и бюджет полного кадра ещё не подтверждены. Дата: 2026-10-31.
+Status: agreed; code of the first phase implemented. Transfer between physical displays is postponed by agreement; visual acceptance of game scenes and full frame budget not yet confirmed. Date: 2026-10-31.
 
-Первый этап сохраняет яркость освещения Northlight в линейных FP16-буферах до финального отображения, добавляет автоэкспозицию и калибровку, обеспечивает переход между SDR- и HDR-дисплеями без перезапуска игры. Обычные поверхности сохраняют привычный характер изображения; дополнительные яркость и детализация приходятся преимущественно на источники света, блики и свечение.
+The first phase preserves the brightness of Northlight light in linear FP16-buffers prior to final display, adds auto exposition and calibration, provides a transition between SDR- and HDR-displays without re-starting the game. Normal surfaces retain the usual character of the image; additional luminance and detail are concentrated on light sources, blares and lights.
 
-## Обязательный результат
+## Mandatory outcome
 
-Первый этап охватывает собственное освещение Northlight, GI, солнце и луну, атмосферу, рассеяние света и bloom. Источники получают запас яркости выше обычного белого до преобразования для дисплея. Отключение bloom сохраняет HDR-яркость самого источника.
+The first stage covers its own lighting, Northlight, GI, Sun and Moon, atmosphere, light scattering, and blue. Sources are given a range of brightness above normal white before conversion to display. Disable the bloom saves the HDR brightness of the source itself.
 
-Обязательная платформа — Windows с поставляемыми DXVK 2 и DXVK 3. Поддерживаются обычное окно и безрамочный полноэкранный режим. Сохраняются существующие варианты MSAA и логические backbuffer-буферы клиента. Целевой прирост времени GPU-кадра относительно текущего рендера — не более 5%, включая автоэкспозицию.
+The mandatory platform is Windows with DXVK 2 and DXVK 3. The normal window and frameless full-screen mode are maintained. The existing versions of the MSAA and the logical backbuffer client are maintained. The target increase in GPU time relative to the current frame is no more than 5% including car exposure.
 
-Оригинальная сцена WoW остаётся SDR-источником для композиции. Для неё добавляется опциональный Legacy highlight expansion. Восстановление уже обрезанных деталей не производится. Сквозной HDR оригинальных заклинаний и частиц требует отдельного этапа с перехватом до потери диапазона. Wine/Linux проходят отдельную проверку; эксклюзивный fullscreen и нативный D3D9 HDR выходят за рамки первого этапа.
+The original WOW scene remains the SDR source for the composition. It is supplemented by an option legacy highlight expansion. The already cut parts are not recovered. The HDR of the original spells and particles requires a separate phase with interception to range loss. Wine/Linux is subject to a separate check; the exclusive fullscreen and the offensive D3D9 HDR extend beyond the first stage.
 
-SDR сохраняет текущий вид. Автоэкспозиция и новый HDR-tonemapping работают в HDR-ветке. Переключение обратно в SDR возвращает существующее отображение сцены.
+The SDR saves the current view. The auto exposition and the new HDR-tonemapping work in the HDR. Switching back to SDR returns the existing scene display.
 
-## Причины текущих ограничений
+## Causes of current restrictions
 
-Текущий [HdrWorld](../../shaders/hdr_effects.hlsl) получает готовую 8-битную сцену, декодирует sRGB, применяет contrast/exposure и масштабирует результат через paper white. Peak только уменьшает значения выше установленного предела. При contrast=1 и EV=0 исходное белое не превышает paper white: peak 7298 при white point 200 закономерно оставляет максимум мира на уровне 200 нит.
+The current [HdrWorld](../../shaders/hdr_effects.hlsl) receives a finished 8- bit scene, decodes sRGB, applies contrast/exposure and scales the result through a paper white. Peak only reduces values above the limit. At contrast=1 and EV=0, the original white does not exceed the paper white: pek 7298 at White point 200 it is legitimate to leave the world maximum of 200 thread.
 
-В [HDR presentation](../../src/proxy/hdr_presentation.h) активация привязана к созданию устройства и Reset. Объявленный GetCurrentOutputDesc не используется. Northlight не повторяет проверку при переносе окна, поэтому первоначальный отказ на SDR-дисплее может сохраняться после переноса на HDR-дисплей.
+In [HDR presentation](../../src/proxy/hdr_presentation.h) activation is linked to device creation and Reset. The declared GetCurrentOutputDesc is not used. Northlight does not repeat the window transfer check, so the initial SDR failure can be maintained after the transfer to HDR disks.
 
-Промежуточные поля освещения и тумана в [world renderer](../../src/world/world_renderer.h) уже используют FP16. Однако [world composition](../../shaders/world_effects.hlsl) работает с закодированной исходной сценой и возвращает результат в legacy target. Bloom содержит SDR-ограничения, а [солнце и луна](../../shaders/celestial_disc_effects.hlsl) ограничивают собственную эмиссию до финальной конверсии. Смена только формата последнего буфера эти потери не устраняет.
+The intermediate lighting and fog fields in [world renderer](../../src/world/world_renderer.h) already use FP16. However, [world composition](../../shaders/world_effects.hlsl) works with a coded reference stage and returns the result to legacy Target. Bloom contains SDR limits and [The sun and the moon](../../shaders/celestial_disc_effects.hlsl) limit its own emissions to final conversion. The change of format only of the last buffer does not eliminate these losses.
 
-## Порядок обработки кадра
+## Personnel processing procedure
 
 ```mermaid
 flowchart TD
-    A[Исходная SDR сцена WoW] --> B[Однократное декодирование sRGB]
-    B --> X[Опциональное расширение ярких деталей legacy SDR]
-    X --> C[Линейная FP16 композиция Northlight]
-    L[Собственные HDR источники и атмосфера] --> C
-    C --> M[Оценка яркости мира до bloom и UI]
-    M --> E[Ограниченная автоэкспозиция]
-    C --> F[HDR bloom из необрезанного света]
-    C --> G[Экспозиция и художественные настройки]
+    A[Original WoW SDR scene] --> B[One sRGB decode]
+    B --> X[Optional highlight expansion for legacy SDR]
+    X --> C[Northlight linear FP16 composition]
+    L[HDR emitters and atmosphere] --> C
+    C --> M[World luminance metering before bloom and UI]
+    M --> E[Bounded auto exposure]
+    C --> F[HDR bloom from unclipped light]
+    C --> G[Exposure and art settings]
     F --> G
     E --> G
-    G --> T[Однократная адаптация к дисплею]
-    T --> U[UI с независимой яркостью]
-    U --> P[FP16 scRGB через DXVK]
+    G --> T[One display adaptation]
+    T --> U[UI with independent luminance]
+    U --> P[FP16 scRGB through DXVK]
 ```
 
-### Линейная композиция
+### Linear composition
 
-Исходный SDR-цвет декодируется ровно один раз. Все складываемые и вычитаемые члены освещения, восстановление цвета поверхности, GI и атмосферная композиция получают явно заданные совместимые единицы и линейное представление. Существующая защита от двойного освещения сохраняется. Оценка материала из уже освещённого SDR-изображения остаётся приближением; её нельзя выдавать за исходное физически калиброванное albedo.
+The original SDR color is decoded exactly once. All composite and subtractable light members, surface colour restoration, GI and atmospheric composition receive clearly specified compatible units and linear representation. The existing protection against double lighting is retained. The evaluation of the material from the already illuminated SDR image remains an approach; it cannot be given as a source physically calibrated albedo.
 
-Собственные источники, включая диски солнца/луны и световое рассеяние, не проходят через 8-битный target перед HDR-композицией. Значения выше обычного белого сохраняются в FP16 до выходного преобразования. Ограничения масок, глубины и прозрачности сохраняют свой смысл независимо от диапазона цвета.
+Own sources, including sun/ moon discs and light scattering, do not pass through 8-bit Target before HDR. The values above normal white remain in FP16 until output conversion. Masks restrictions, depths and transparency remain valid regardless of colour range.
 
-Bloom извлекает свет до ограничения для дисплея и до наложения UI. Его энергия согласована с экспозицией мира, а UI не порождает свечение мира. Добавляется один общий регулятор силы HDR bloom: 0 выключает свечение, 1 задаёт базовый сдержанный вид, диапазон — 0–2. Это множитель относительно нового базового HDR-bloom, а не перенос текущего внутреннего коэффициента .08 в линейный домен без проверки. Регулятор действует только в HDR-ветке. Яркость источников определяется сценой, а peak описывает возможности вывода и не заставляет каждый источник достигать максимума дисплея.
+Bloom removes the light to the limit for the display and to the overlaying of UI. Its energy is aligned with the world's exposure, and UI does not produce a glow of the world. Adds one general force regulator HDR bloom: 0 turns off the luminance, 1 sets the basic restraint view, range 0–2. This is a multiplier relative to the new base HDR-bloom, not the transfer of the current internal coefficient .08 to the linear domain without verification. The regulator only works in the HDR. The brightness of the sources is determined by the scene, and peak describes the output possibilities and does not force each source to reach maximum display.
 
-### Отображение и UI
+### Image and UI
 
-Paper white задаёт яркость обычного белого. Выходная кривая нейтральна, монотонна и плавно сжимает яркие детали к effective peak. Она сохраняет оттенки без дополнительного кинематографического окрашивания. Contrast применяется вокруг опорного серого в линейной HDR-ветке и при значении 1 нейтрален. Exposure и contrast не обрабатывают UI.
+Paper white gives you the brightness of normal white. The output curve is neutral, monotonna, and smoothly compresses the bright details to the effective peak. It saves shades without additional cinematographic colouring. Contrast applies around a support gray in a linear HDR duct and at 1 neutral. Exposure and contrast do not process UI.
 
-При нулевой экспозиции и нейтральном contrast обычное белое отображается в paper white, пока дисплей допускает это значение. HDR-источники способны превышать paper white. Рост peak расширяет доступный диапазон ярких деталей, сохраняя обычные тона. Нужное сжатие near-peak и поведение насыщенных цветов проверяются цветными градиентами; независимое обрезание RGB-каналов не должно создавать сдвиг оттенка.
+At zero exposure and neutral control, the normal white is displayed in the paper white as long as the display allows this value. HDR sources are capable of exceeding paper White. Peak growth expands the available range of bright parts by keeping the normal tone. The necessary neer-peak compression and the behaviour of saturated colours shall be checked by colour gradients; independent cutting of RGB channels shall not cause a change of shade.
 
-Вывод остаётся линейным FP16/scRGB: нейтральный RGB 1 соответствует 80 нит, RGB 12,5 — 1000 нит. Преобразование в PQ поверх scRGB не выполняется. Это единицы сигнала приложения; физическую яркость панели можно подтвердить измерителем, а не одним программным overlay. [Windows Advanced Color](https://learn.microsoft.com/en-us/windows/win32/direct3darticles/high-dynamic-range).
+The conclusion remains linear FP16/scRGB: neutral RGB 1 corresponds to 80 thread, RGB 12,5 to 1000 thread. Conversion to PQ above scRGB is not performed. These are application signal units; the physical luminance of the panel can be confirmed by a measuring device rather than one software overlay. [Windows Advanced Color](https://learn.microsoft.com/en-us/windows/win32/direct3darticles/high-dynamic-range).
 
-После отображения мира применяется отдельная конверсия UI с сохранением premultiplied alpha, существующих вариантов смешивания и доказанной границы world/UI. Яркость нейтрального белого UI определяется только UI brightness. Изменение UI brightness не влияет на оценку экспозиции мира. Сохраняются обработка копирований, чтение логических backbuffer, восстановление шейдеров и неизменённых констант клиента.
+After the world display, a separate conversion of UI is applied, while preserving pre-optimized alpha, existing mixing options and proven boundaries world/UI. The brightness of neutral white UI is determined only by UI brightness. The change of UI breakness does not affect the evaluation of world exposure. Copy processing, reading logical backbuffer, restoring sheders and unchanged client constants are maintained.
 
-### Расширение ярких деталей legacy SDR
+### Extension of bright parts of legacy SDR
 
-Legacy highlight expansion — управляемое inverse tone mapping исходного SDR-слоя. По умолчанию значение 0 выключает его; регулятор 0–2 EV ограничивает максимальное усиление ярких деталей величиной от 1 до 4 раз. Он действует после декодирования SDR и до добавления собственного HDR-освещения. UI и уже сформированная HDR-энергия Northlight в этот оператор не входят. В SDR-ветке настройка не действует.
+Legacy Highlight expansion is a controlled inverse tone mastering the original SDR layer. By default, the value 0 turns it off; the controller 0–2 EV limits the maximum reinforcement of bright parts from 1 to 4 times. It operates after decodes the SDR and before adding its own HDR illumination. UI and the already formed HDR energy Northlight are not included in this operator. The SDR stream does not operate.
 
-Оператор сохраняет оттенок, применяя общий множитель к RGB. Плавный порог по интенсивности и ограниченная оценка локального контраста выделяют яркие детали; равномерное светлое поле не должно целиком подниматься к peak. Метод остаётся эвристикой: одинаковые SDR-пиксели без дополнительных сведений о материале не позволяют надёжно отличить белую поверхность от источника света. Настройка не заявляет восстановление потерянной текстуры или физической энергии оригинальных эффектов.
+The operator retains the shade by applying a common multiplier to RGB. A floating threshold of intensity and a limited assessment of the local contrast selects bright details; an even light field should not rise entirely to peak. The method remains heuristic: the same SDR pixels without additional material information do not allow a reliable distinction between the white surface and the light source. The settings do not claim the restoration of lost texture or physical energy from original effects.
 
-Сила расширения задаётся в пространстве сцены и не зависит от peak дисплея. Отображение для текущего дисплея применяется один раз в конце. Ограничение усиления, пространственная оценка и переходы проверяются на белых поверхностях, малых светящихся объектах, насыщенных цветах и движении камеры. Недопустимы резкие пороги, ореолы на границах, заметное мерцание и повторное усиление собственных HDR-источников.
+The force of expansion is set in the scene space and is not dependent on peak display. The display for the current display is applied once at the end. Restriction, spatial evaluation and transitions are checked on white surfaces, small luminous objects, saturated flowers and camera motion. Cut-off thresholds, nuts at borders, visible blinking and re-enhancement of their own HDR sources are not acceptable.
 
-## Автоэкспозиция
+## Auto exposition
 
-По умолчанию действует Auto; Manual отключает автоматическую поправку. В Auto существующий EV становится пользовательской компенсацией. В Manual он задаёт экспозицию напрямую:
+The default is Auto; Manual shuts down the automatic correction. In Auto, the existing EV becomes a user's compensation. In Manual, it directs the display:
 
 ```text
 Auto:   EV_total = EV_auto + EV_user
@@ -77,119 +77,119 @@ Manual: EV_total = EV_user
 gain = 2 ^ EV_total
 ```
 
-EV_auto ограничивается диапазоном от -2 до +1 EV относительно авторского базового отображения. Пределы доступны в расширенных настройках; ручная компенсация остаётся отдельной. Auto уменьшает яркую сцену максимум в четыре раза и повышает тёмную максимум вдвое. EV_auto не зависит от выбранного peak или монитора.
+EV_auto is limited to a range of -2 to +1 EV relative to the author's basic display. Limits are available in extended settings; manual compensation remains separate. Auto reduces the bright scene by a maximum of four times and increases the dark to a maximum of twice. EV_auto does not depend on the selected peak or monitor.
 
-Оценка использует яркость мира до выходной кривой, bloom и UI. Она должна быть устойчива к небольшим ярким источникам и кратким вспышкам. Начальный способ — оценка логарифмической яркости на уменьшенном GPU-изображении с подавлением выбросов и временной фильтрацией; окончательные параметры фиксируются по эталонным сценам. Постоянный CPU-readback полного кадра и ожидание GPU для выбора экспозиции исключаются.
+The assessment uses the luminance of the world before the output curve, bloom and UI. It must be resistant to small bright sources and short flashes. The initial method is to estimate logarithmic luminance on a reduced GPU image with emission suppression and temporary filtering; the final parameters are fixed against reference scenes. Permanent CPU-readback complete frame and waiting for GPU to select exposure is excluded.
 
-Авторский базовый уровень учитывает существующее время суток, региональное освещение и NightBrightness. Постоянное приведение всех сцен к одному среднему серому не допускается. Ночь остаётся темнее дня, а тёмное помещение отличается от солнечной улицы. На эталонных сценах фиксируются средние тона, распределение яркости и отношение дневной/ночной яркости для визуального согласования.
+The author's basic level takes into account the current time of day, regional lighting and NightBrightness. It is not allowed to constantly bring all scenes to one medium gray. The night is darker than the day, and the dark space is different from the sunny street. The reference scenes record the average tone, the distribution of luminance and the ratio of daylight/night luminance for visual harmonization.
 
-Адаптация выполняется во времени в EV, независимо от частоты кадров. При снижении экспозиции 90% изменения достигается примерно за 0,5 секунды; при повышении — за 2 секунды. Для экспоненциального перехода коэффициент обновления равен `1 - exp(-ln(10) * dt / T90)`. Применение пользовательской компенсации не изменяет внутреннюю историю автоматической поправки.
+Adaptation is performed over time in the EV regardless of the frequency of the personnel. When exposure is reduced, 90% changes are achieved in about 0,5 seconds; when increased in 2 seconds. For an exponential transition, the renewal factor is `1 - exp(-ln(10) * dt / T90)`. The application of user compensation does not change the internal history of the automatic correction.
 
-Обычный поворот камеры и движение сохраняют плавную адаптацию. Небольшое солнце/фонарь и короткая локальная вспышка не должны заметно гасить остальной кадр. Смена освещённости большей части мира вызывает адаптацию с заданными временами.
+The normal turn of the camera and movement maintain a smooth adaptation. A small sun/lighter and a short local flash should not let the rest of the frame out. The change in lightness of most of the world causes adaptation to the specified times.
 
-Во время загрузки, отсутствия достоверной сцены и свёрнутого окна оценка приостанавливается. После загрузочного экрана или подтверждённой смены локации новая оценка инициализируется до показа первого валидного кадра. Если сцену ещё нельзя оценить, применяется ограниченный авторский базовый уровень. Для перехода между дисплеями сохраняется EV_auto; при пересоздании ресурсов его последнее значение восстанавливается.
+During loading, the absence of a valid stage and a closed window, the evaluation is suspended. After a downloading screen or confirmed site change, the new estimate is initialized before the first valide frame is shown. If the scene cannot be evaluated, a limited copyright base level is used. For the transition between displays, the EV_auto is retained; when the resources are re-created, its last value is restored.
 
-## Настройки и однократный сброс
+## Setup and single discharge
 
-Калибровка дисплея хранится отдельно для каждого монитора. Художественные настройки сцены общие. Профиль привязывается к устойчивой идентичности дисплея; номер монитора и изменяющийся runtime handle не являются единственным ключом.
+The calibration of the display is stored separately for each monitor. The artistic settings of the scenes are common. The profile is linked to the steady identity of the display; the monitor number and the changing ringime handle are not the only key.
 
-| Параметр | Начальное значение после сброса | Область |
+| Parameter | Initial value after discharge | Area |
 | --- | --- | --- |
-| HDR output | Включён запрос HDR; при недоступности — SDR | Общий |
-| Paper white | 203 нит | Дисплей |
-| UI brightness | 160 нит | Дисплей |
-| Peak mode | Auto | Дисплей |
-| Ручной peak | 1000 нит, используется в Manual | Дисплей |
-| Exposure mode | Auto | Сцена |
-| Exposure / compensation | 0 EV | Сцена |
-| Contrast | 1 | Сцена |
-| HDR bloom strength | 1; 0 выключает, диапазон 0–2 | Сцена, только HDR |
-| Legacy highlight expansion | 0; диапазон 0–2 EV | Сцена, только HDR |
-| Пределы автоматической поправки | -2 / +1 EV | Сцена, расширенные |
-| Адаптация к свету / темноте | 0,5 / 2 секунды до 90% | Сцена, расширенные |
+| HDR output | HDR request enabled; SDR is not available | Total |
+| Paper white | 203 thread | Display |
+| UI brightness | 160 thread | Display |
+| Peak mode | Auto | Display |
+| Hand peak | 1000 filament used in Manual | Display |
+| Exposure mode | Auto | Scene |
+| Exposure / compensation | 0 EV | Scene |
+| Contrast | 1 | Scene |
+| HDR bloom strength | 1; 0 Disable, range 0–2 | Scene, only HDR |
+| Legacy highlight expansion | 0; range 0–2 EV | Scene, only HDR |
+| Automatic amendment limits | -2 / +1 EV | Scene expanded |
+| Adaptation to light/darkness | 0,5 / 2 seconds to 90% | Scene expanded |
 
-Первый запуск версии с новым HDR-пайплайном однократно сбрасывает прежние параметры HDR целиком. Старые paper white, UI brightness, peak, contrast и exposure не мигрируют в новые значения или профили. Прежнее значение ExperimentalHDR также сбрасывается: запрос HDR output становится включённым. Экспозиция и peak после сброса — Auto; остальные значения приведены в таблице. На SDR-дисплее это даёт SDR с сохранённым запросом HDR для последующего переноса окна. Область сброса ограничена HDR-параметрами; остальные настройки рендера, включая NightBrightness, сохраняются. Последующий ручной выбор HDR output сохраняется и не отменяется при следующих запусках.
+The first launch of the new HDR-pipline version once drops the entire HDR. Old paper white, UI breakness, peak, contrast and exoure do not migrate to new values or profiles. The previous ExerimentalHDR value is also dropped: the HDR output request becomes active. Exposition and peak after discharge are Auto; the rest are shown in the table. On SDR, it gives the SDR with a saved HDR request for the subsequent transfer of the window. The discharge area is limited to HDR parameters; the rest of the rendezvous settings, including NightBrightness, are retained. The subsequent manual selection of HDR output is retained and not cancelled at the next launches.
 
-Для существующих численных контролов сохраняются диапазоны: paper white 80–400 нит, UI brightness 40–400 нит, Manual peak 80–10000 нит, contrast 0,5–2 и пользовательский EV от -4 до +4. Расширенные пределы Auto проверяются на конечность и порядок min ≤ max; времена адаптации должны быть положительными.
+For the existing number of counterheads, ranges are retained: Paper White 80–400 thread, UI breakness 40–400 thread, Manual peak 80–10000 thread, Contrast 0,5–2 and user EV from -4 to +4. The extended Auto limits shall be checked for limbs and order min ≤ max; adaptation times shall be positive.
 
-Версия миграции и новые значения записываются одной транзакцией через существующий сервис настроек. Повторный запуск, перенос окна, обновление профиля дисплея и переключение HDR не повторяют сброс. Ошибка записи видна пользователю; маркер успешной миграции не ставится раньше сохранения значений.
+The migration version and the new values are recorded by one transaction via the existing settings service. Restarting, moving the window, updating the display profile and switching the HDR do not repeat the discharge. The recording error is visible to the user; the successful migration marker is not marked before maintaining the values.
 
-Все HDR-настройки, включая HDR output, применяются без перезапуска на безопасной границе кадра. Save/Revert и live preview используют существующий контракт меню. Переключение монитора выбирает его профиль и не переносит несохранённый draft одного дисплея в профиль другого.
+All HDR designs, including HDR output, are applied without re-starting at the safe frame boundary. Save/Revert and live preview use the existing menu contract. Switching the monitor selects its profile and does not transfer unsaved draft one display to another.
 
-## Возможности дисплея и переключение вывода
+## Showability and change of output
 
-Auto peak использует валидные сведения текущего дисплея из Windows с учётом доступных системных переопределений. Min luminance, peak luminance и full-frame luminance различаются и показываются раздельно, если доступны. Полноэкранная яркость не подменяет пик малого яркого участка. Windows сообщает эти характеристики через [DXGI_OUTPUT_DESC1](https://learn.microsoft.com/en-us/windows/win32/api/dxgi1_6/ns-dxgi1_6-dxgi_output_desc1).
+Auto peak uses the current Windows display's valide data to account for available system redefinitions. Min luminance, peak luminance and Full-frame luminance are different and shown separately if available. Full-screen luminance does not replace a peak of a small bright area. Windows reports these features through [DXGI_OUTPUT_DESC1](https://learn.microsoft.com/en-us/windows/win32/api/dxgi1_6/ns-dxgi1_6-dxgi_output_desc1).
 
-Если достоверный peak недоступен, используется 1000 нит с явной пометкой Fallback. Manual использует заданное пользователем значение. Отображаются источник, запрошенное и effective значения. Числа проверяются на конечность, положительность и согласованность. Если peak ниже выбранных уровней белого, effective paper white/UI white ограничиваются доступным peak, а сохранённые предпочтения отображаются отдельно от ограничения.
+If a reliable peak is not available, 1000 Fallback thread is used. Manual uses the user &apos; s specified value. The source requested and effective values are displayed. The numbers are checked for limb, positive and consistent. If peak is lower than the selected white levels, the active paper white/UI White is limited to the available peak and the saved preferences are shown separately from the restriction.
 
-Основным считается дисплей с наибольшей площадью пересечения с окном; переключение стабилизируется около границы дисплеев. Отслеживаются перенос и изменение размера окна, HDR toggle Windows, смена конфигурации дисплеев, hotplug и возвращение после сворачивания. Возможности обновляются также после изменения системного цветового профиля. При изменении конфигурации нельзя полагаться только на устаревший output swapchain. [Рекомендации Windows для динамических возможностей дисплея](https://learn.microsoft.com/en-us/windows/win32/direct3darticles/high-dynamic-range).
+The main display is considered to be with the largest window crossing area; the switch is stabilized near the display boundary. Trace the transfer and change of window size, HDR toggle Windows, display configuration change, hotplug and return after roll-out. Opportunities are also updated after a change in the system colour profile. When changing configuration, you cannot rely only on an outdated output swapchain. [Windows recommendations for dynamic display capabilities](https://learn.microsoft.com/en-us/windows/win32/direct3darticles/high-dynamic-range).
 
-| Событие | Требуемое поведение |
+| Event | Required behaviour |
 | --- | --- |
-| Запуск на SDR при включённом запросе HDR | Корректный SDR; запрос HDR остаётся сохранённым |
-| Перенос SDR → HDR | Повторная проверка, выбор профиля, активация HDR без перезапуска |
-| Перенос HDR → SDR | Возврат к существующему SDR-отображению |
-| Перенос HDR → другой HDR | Профиль и отображение для нового дисплея; экспозиция мира сохраняется |
-| HDR Windows выключен / включён | SDR fallback / автоматическое восстановление HDR при сохранённом запросе |
-| HDR output выключен / включён в Northlight | Живой переход без перезапуска; при недоступности HDR — SDR и причина |
-| Hotplug, Alt-Tab, resize, смена MSAA | Восстановленные корректные ресурсы, состояние UI и логические backbuffer |
-| Ошибка проверки или выделения ресурсов | Рабочий SDR, причина отказа, сохранённый запрос HDR; повтор при релевантном изменении состояния |
+| Start on SDR when HDR is on | Correct SDR; HDR request remains stored |
+| SDR carry-over | Rechecking, profile selection, activation of HDR without restarting |
+| Transport HDR ♪ SDR | Return to existing SDR |
+| Transport HDR ~ other HDR | Profile and display for new display; world exposure retained |
+| HDR Windows off / off | SDR Fallback / Automatic HDR Recovery with Saved Request |
+| HDR output off/set in Northlight | Live transition without restarting; HDR - SDR and cause |
+| Hotpage, Alt-Tab, resize, MSAA shift | Re-established correct resources, state of UI and logical backbuffer |
+| Error in checking or allocating resources | Working SDR, cause of failure, saved HDR request; repeat with relevant state change |
 
-Короткая пауза или затемнение при перенастройке допускаются. Длительность переходов измеряется. Перенастройка сериализуется с командным потоком и выполняется с корректным временем жизни ресурсов. Ежекадровые тяжёлые Reset, повторные попытки неисправной конфигурации и блокирующая проверка возможностей не допускаются.
+Short pauses or blackouts are allowed when reset. The length of the transitions is measured. Resets with command flow and is performed with the correct life time of the resources. Heavy reset, repeated failed configuration attempts and blocking capability testing are not permitted.
 
-Механизм переходов проверяется первым на DXVK 2 и 3: обновление возможностей после переноса, доступность FP16/scRGB при первоначальном SDR-выводе, изменение presentation при живых ресурсах игры. Безопасность внутреннего device Reset нельзя предполагать по успешной начальной активации. Выбор сохранения FP16 presentation или иной перенастройки определяется этим экспериментом. Если потребуется изменение backend, оно оформляется отдельным конкретным изменением и проходит ту же матрицу проверки. Требование перехода без перезапуска сохраняется.
+The transition mechanism shall be checked first on DXVK 2 and 3: upgrades after transfer, availability FP16/scRGB in the original SDR output, change of priority with the game &apos; s living resources. Security of internal performance Reset cannot be assumed from successful initial activation. The choice of FP16 retention or other re-assembly is determined by this experiment. If a change to backken is required, it is processed by a specific change and follows the same verification matrix. The change-over requirement is maintained without restarting.
 
-## Калибровка и диагностика
+## Calibration and diagnostics
 
-В Renderer & HDR добавляется небольшой режим калибровки. Он содержит нейтральные участки известного уровня сигнала, настройку обычного белого и UI, яркие градиенты для оценки peak, цветные HDR-участки для проверки оттенков. Предусматриваются малый яркий участок и широкое поле, чтобы видеть различие пиковой и полноэкранной яркости.
+A small calibration mode is added to the Render & HDR. It contains neutral sections of a known signal level, settings for normal white and UI, bright gradients for peak evaluation, coloured HDR areas for shade testing. A small bright section and a wide field are provided to see the difference between peak and full-screen luminance.
 
-Калибровочные участки генерируются в единицах выходного сигнала и обходят автоэкспозицию, contrast, bloom и художественную кривую мира. В тесте peak диапазон определяется проверяемым кандидатом: выбранный scene peak не должен заранее обрезать шаблон и создавать ложную точку исчезновения деталей. UI-инструкция и обычное меню сохраняют заданную UI brightness.
+The calibration areas are generated in units of output and bypass the world &apos; s auto exposition, contrast, bloom and art curve. In the peak test, the range is determined by the candidate being tested: the selected scene pek should not pre-cut the template and create a false point of disappearance for the parts. The UI manual and the normal menu retain the specified UI breakness.
 
-Краткая диагностика показывает текущий дисплей, backend, запрошенное/активное состояние HDR, причину fallback, формат/цветовое пространство вывода, peak и его источник Auto/Manual/Fallback, effective уровни белого. Информация о яркости явно обозначается как уровень сигнала приложения, а не измерение панели. Расширенные средства могут получать GPU-статистику по запросу, без полного readback кадра в обычной игре.
+Short diagnostics show the current display, backend, requested/active HDR status, cause fallsback, output format/color space, peak and its source Auto/Manual/Fallback, effective white levels. luminance information is clearly identified as an application signal level rather than a panel measurement. Extended tools can receive GPU statistics on request without full readback frame in the normal game.
 
-## Проверка результата
+## Results check
 
-### Числа и порядок обработки
+### Numbers and processing
 
-| Проверка | Ожидаемый результат |
+| Verification | Output expected |
 | --- | --- |
-| Нейтральный калибровочный сигнал 80 / 203 / 1000 нит | scRGB RGB 1 / 2,5375 / 12,5 с допуском FP16 |
-| Paper white 200, Manual EV 0, contrast 1, peak 1000 | Обычное белое около 200 нит; собственный яркий источник способен превысить 200 нит |
-| Изменение peak при фиксированном линейном входе и EV | Стабильные обычные тона; меняется отображение ярких деталей |
-| Выключение bloom | HDR-яркость источника остаётся; исчезает его bloom |
-| Изменение UI brightness при фиксированной сцене | Меняется только UI; оценка экспозиции мира стабильна |
-| Цветные градиенты и очень яркие источники | Плавное сжатие, отсутствие NaN/Inf и сдвига оттенка из-за поканального clipping |
-| Legacy highlight expansion 0 / больше 0 | При 0 исходное SDR-размещение неизменно; локальные яркие детали получают ограниченное усиление, равномерное белое поле сохраняется |
-| Изменение expansion при фиксированных собственных HDR-источниках | UI и собственные HDR-источники напрямую не усиливаются; peak не управляет силой expansion |
-| Изменение уровней мира и UI в соседних кадрах | Нет trails, замороженных копий, повторной конверсии или пропущенных UI-draw |
+| neutral calibration signal 80 / 203 / 1000 filament | scRGB RGB 1 / 2,5375 / 12,5 with FP16 tolerance |
+| Paper white 200, Manual EV 0, contrast 1, peak 1000 | Normal white about 200 thread; a bright source of its own can exceed 200 thread |
+| Change peak with fixed linear inlet and EV | Steady normal tone; display of bright details changed |
+| Shutdown Bloom | HDR source brightness remains; it disappears |
+| Change UI breakness with a fixed scene | Only UI changes; world exposure is stable |
+| Color gradients and very bright sources | Float compression, absence of NaN/Inf and shift of the shade due to canal clipping |
+| Legacy Highlight expansion 0 / greater 0 | At 0 reference SDR location unchanged; local bright parts receive limited reinforcement, even white field retained |
+| Change expansion with fixed HDR sources | UI and its own HDR sources are not directly enhanced; peak does not control expansion power |
+| Changes in world levels and UI in neighbouring personnel | No Trails, frozen copies, re-conversion or missing UI-draw |
 
-Для калибровочных значений допускается погрешность до 0,2% на уровне FP16-сигнала. Проверки самого shader-output дополняются наблюдением на реальном HDR-дисплее: корректный FP16-буфер ещё не доказывает корректный desktop output.
+For calibration values an error of up to 0,2% at the level of FP16 is allowed. Checks on the master-output itself are supplemented by observations on a real HDR-display: the correct FP16-buffer does not yet prove the correct desktop output.
 
-Автоэкспозиция отдельно проверяется на пределах, компенсации EV, временах T90 при нескольких частотах кадров, локальных ярких источниках, коротких вспышках, загрузке и непрерывном движении. При одинаковой сцене изменение UI, bloom, peak или монитора не меняет EV_auto. Дневная улица, ночь и интерьер включаются в визуальные эталоны с проверкой NightBrightness.
+The auto exposure is checked separately on limits, compensation for EV, times T90 at multiple frequencies of personnel, local bright sources, short flashes, downloads and continuous motion. If the same scene changes UI, bloom, peak or monitor does not change EV_auto. Day street, night and interior are included in visual benchmarks with NightBrightness.
 
-### Совместимость и переходы
+### Comparability and transitions
 
-Матрица запускается для DXVK 2 и 3, обычного и безрамочного окна. Она включает оба направления SDR/HDR, HDR/HDR с разными профилями, запуск на каждом типе дисплея, системный HDR toggle, переключатель Northlight, hotplug, Alt-Tab и resize. Статус active подтверждается фактическим состоянием вывода.
+The matrix shall be started for DXVK 2 and 3, a conventional and frameless window. It shall include both directions SDR/HDR, HDR/HDR with different profiles, launch on each display type, HDR toggle system, Northlight switch, hotplug, Alt-Tab and resise. Active status shall be confirmed by the actual state of withdrawal.
 
-Сохраняются и расширяются существующие проверки logical backbuffer, Device/SwapChain Present, нескольких буферов, MSAA off/2x/4x/8x, смены samples при Reset, readback, UI-boundary с эффектами on/off, shader/state restoration и отрицательных примеров классификации UI. Старый oracle, ожидающий максимум paper white из SDR-источника, остаётся полезным для legacy-входа; собственный HDR-вход требует новых положительных проверок headroom.
+Existing tests of the logical backbuffer, Device/SwapChain President, several buffers, MSA off/2x/4x/8x, changes of samples at Reset, readback, UI-boundary with effects on/off, shader/state restoration and negative examples of UI classification are being maintained and expanded. The old oracle, which is expected to have the maximum paper white from the SDR source, remains useful for legacy-entry; its own HDR-entry requires new positive tests of headroom.
 
-SDR сравнивается с текущей веткой на одинаковых сценах и настройках. Миграция проверяется как одноразовая: первый запуск сбрасывает все прежние HDR-значения, второй сохраняет новые настройки, переключение дисплеев сохраняет отдельные профили, ошибка записи не отмечается успешной миграцией.
+The SDR is compared to the current branch on the same scenes and settings. Migration is checked as a one-time event: the first launch drops all previous HDR values, the second saves new settings, changes in displays saves separate profiles, recording error does not occur successfully migration.
 
-### Производительность и память
+### Productivity and memory
 
-До изменения кода фиксируется baseline текущего рендера. Сравнение выполняется на одном GPU/драйвере, одинаковых сценах, разрешении, MSAA и настройках, после прогрева шейдеров. Отдельно измеряются текущий и новый HDR, а также SDR для контроля регрессий. В новый HDR включены Auto, bloom и обычный UI; калибровка и расширенная диагностика измеряются отдельно.
+Prior to the code change, the baseline of the current rendezvous is fixed. The comparison is performed on one GPU/driver, the same scenes, permits, MSAA and settings after warming up the sheaders. The current and new HDR as well as the SDR for regression control are separately measured. Auto, Bloom and conventional UI are included in the new HDR; calibration and extended diagnostics are measured separately.
 
-Проверяются дневная сцена, ночь, интерьер, насыщенный источниками участок и сцена с атмосферой; разрешения — 1080p, 1440p и 4K при доступности оборудования. Фиксируются среднее время GPU-кадра, p95, стоимость новых проходов и условия запуска. Цель 5% оценивается по среднему времени каждой представительной сцены; p95 сохраняется для обнаружения новых задержек. Превышение сопровождается измеренным разбором и оптимизацией, без скрытого снижения качества.
+The day scene, night, interior, source-rich area and atmosphere stage are checked; permits are 1080p, 1440p and 4K when equipment is available. The average time of the GPU frame, p95, the cost of new passageways and launch conditions are fixed. The target 5% is estimated at the average time of each representative scene; p95 is retained to detect further delays. Excess is accompanied by measured review and optimization, without hidden deterioration of quality.
 
-Повторно используются существующие FP16-ресурсы и сервисы. Каждый новый полноразмерный target включается в учёт памяти и времени жизни, включая MSAA и ресурсы пересоздания. Один RGBA16F target 3840×2160 без MSAA содержит 63,28125 MiB данных; это размер payload, а не оценка всего процесса. Учитываются ограничения x86, повторные переходы и отсутствие накопления ресурсов. Текущий manifest сообщает 363/512 ps_3_0 slots для WorldComposite; старый комментарий 512/512 в исходнике устарел. Новые HDR-варианты проходят фактическую проверку slots и регистров после компиляции.
+Existing FP16 resources and services are reused. Each new full-size target is included in the memory and time of life, including MSAA and re-created resources. One RGBA16F tagt 3840×2160 without MSAA contains 63,28125 MiB data; this is the size of the Payload, not the evaluation of the whole process. The limitations of x86, repeats and no accumulation of resources are taken into account. The current manifest reports 363/512 ps_3_0 slots for World Composite; the old comment 512/512 in the source is outdated. The new HDRs are actually checked by slots and registers after compilation.
 
-## Последовательность реализации
+## Implementation sequence
 
-1. Зафиксировать baseline и воспроизведение исходных проблем; доказать жизненный цикл SDR/HDR на обоих DXVK с живыми ресурсами и логическими буферами клиента.
-2. Определить линейные единицы источников и композиции, провести собственную HDR-энергию через FP16, реализовать нейтральное отображение и сохранить отдельный UI. Подтвердить headroom при фиксированном Manual EV.
-3. Перенести bloom на необрезанный HDR-вход, добавить опциональный Legacy highlight expansion и проверить собственные свет, атмосферу, солнце/луну и их сочетания.
-4. Добавить GPU-оценку яркости, Auto/Manual, ограничение и временную адаптацию. Настроить базовый уровень по дневным, ночным и интерьерным эталонам.
-5. Добавить профили дисплеев, Auto/Manual peak, однократный полный сброс HDR-настроек, live-переключение меню, калибровку и диагностику.
-6. Пройти численные, GPU-интеграционные и реальные дисплейные проверки, сравнить SDR, измерить бюджет времени и памяти. Обновить документацию фактического HDR-поведения.
+1. Record baseline and repeat underlying problems; prove life cycle SDR/HDR on both DXVKs with living resources and logical client buffers.
+2. Identify linear source units and compositions, conduct your own HDR energy through FP16, execute a neutral display, and save a separate UI. Confirm hedroom with fixed Manual EV.
+3. Move bloom to uncircumcised HDR entrance, add an option legacy highlight expression and check their own light, atmosphere, sun/ moon and combinations.
+4. Add a GPU luminance assessment, Auto/Manual limitation and temporary adaptation; set the base level for day, night and interior standards.
+5. Add display profiles, Auto/Manual peak, one full HDR release, live switch menu, calibration and diagnostic.
+6. Go through numerical, GPU integration and real display tests, compare SDR, measure the time and memory budget. Update the actual HDR behavior documentation.
 
-Спецификация задаёт согласованные требования к результату. Проверка жизненного цикла вывода выполняется до изменения цветового пайплайна.
+The specification sets the agreed result requirements. The output life cycle check is performed before the color-player changes.

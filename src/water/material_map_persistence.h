@@ -15,6 +15,7 @@ class NorthlightMaterialMapPersistence {
     Bytes environment;
     struct Read {
         IDirect3DTexture9* source=nullptr;std::uint64_t revision=0,used=0;bool model=false;unsigned polarity=0,details=0,balance=0;
+        bool filtered=true;
         std::array<float,4> profile{};Store::Handle ticket;
         ~Read(){drop(source);}
     };
@@ -52,14 +53,14 @@ public:
     ~NorthlightMaterialMapPersistence(){reset();}
     void reset(){reads.clear();saves.clear();captured=false;trimUploads();}
     void trimUploads(){drop(uploadStaging);uploadWidth=uploadHeight=0;}
-    Probe probe(IDirect3DTexture9* source,const D3DSURFACE_DESC& desc,bool model,unsigned polarity,unsigned details,unsigned balance,std::uint64_t revision){
+    Probe probe(IDirect3DTexture9* source,const D3DSURFACE_DESC& desc,bool model,unsigned polarity,unsigned details,unsigned balance,std::uint64_t revision,bool filtered=true){
         if(!store.available()||(desc.Usage&(D3DUSAGE_DYNAMIC|D3DUSAGE_RENDERTARGET|D3DUSAGE_DEPTHSTENCIL))||desc.Pool!=D3DPOOL_MANAGED)return {};
         if(model){polarity=polarity==2?2u:0u;details=0;balance=50;} // Only the model height sign affects its generator.
         Read* found=nullptr;
         reads.erase(std::remove_if(reads.begin(),reads.end(),[&](const auto& r){
             if(r->source!=source)return false;
             if(r->revision!=revision)return true;
-            if(!found&&r->model==model&&r->polarity==polarity&&r->details==details&&r->balance==balance)found=r.get();
+            if(!found&&r->model==model&&r->polarity==polarity&&r->details==details&&r->balance==balance&&r->filtered==filtered)found=r.get();
             return false;
         }),reads.end());
         if(found){
@@ -77,9 +78,14 @@ public:
         try{if(valid){bytes.resize(row*rows);for(size_t y=0;y<rows;++y)std::memcpy(bytes.data()+y*row,static_cast<const std::uint8_t*>(lock.pBits)+y*size_t(lock.Pitch),row);}}
         catch(...){surface->UnlockRect();drop(surface);return {};}
         const auto unlocked=surface->UnlockRect();drop(surface);if(!valid||FAILED(unlocked))return {};
-        auto record=std::make_unique<Read>();record->source=source;source->AddRef();record->revision=revision;record->used=frame;record->model=model;record->polarity=polarity;record->details=details;record->balance=balance;
+        auto record=std::make_unique<Read>();record->source=source;source->AddRef();record->revision=revision;record->used=frame;record->model=model;record->polarity=polarity;record->details=details;record->balance=balance;record->filtered=filtered;
         record->profile=model?NorthlightMaterialHeight::profile({},polarity,details,balance):NorthlightMaterialHeight::textureProfile(source,polarity,details,balance);
         Bytes identity=environment;append(identity,desc.Width);append(identity,desc.Height);append(identity,desc.Format);append(identity,model);append(identity,record->profile);
+        if(!filtered){
+            const auto shader=model?NorthlightMaterialDisk::hash(kAutoNormalModelLegacyShader,sizeof kAutoNormalModelLegacyShader):
+                NorthlightMaterialDisk::hash(kAutoNormalLegacyShader,sizeof kAutoNormalLegacyShader);
+            append(identity,shader);
+        }
         record->ticket=store.request(std::move(identity),std::move(bytes),std::min(desc.Width,512u),std::min(desc.Height,512u));
         if(!record->ticket)return {Status::Pending,{},{}};
         reads.push_back(std::move(record));return {Status::Pending,{},{}};

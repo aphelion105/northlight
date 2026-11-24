@@ -2,6 +2,7 @@
 #include "world_math.h"
 #include <algorithm>
 #include <cmath>
+#include <utility>
 
 // 0.3.209 (task 29): the actor shadow map. A 1024 map of Radius yards around the player per light source
 // (texel 24/1024 yd, four times finer than the near cascade) that holds only the moving casters (replays); the
@@ -71,17 +72,20 @@ inline bool tiledFogRange(const float* m,const float* camera,float bias){
 }
 // Conservative light-plane bounds for fog sampling. Includes point-texel coverage
 // and float matrix evaluation error; unknown bounds keep the whole actor map.
-inline bool fogBounds(bool valid,const float* low,const float* high,const float* matrix,float* out){
-    if(!valid||!low||!high||!out||!finiteMatrix(matrix))return false;
+inline bool fogBoundsForFiniteMatrix(bool valid,const float* low,const float* high,const float* matrix,float* out){
+    if(!valid||!low||!high||!out)return false;
     for(unsigned k=0;k<3;++k)if(!std::isfinite(low[k])||!std::isfinite(high[k])||low[k]>high[k])return false;
     for(unsigned axis=0;axis<2;++axis){
         double a=matrix[12+axis],b=a,magnitude=std::fabs(a);
         for(unsigned k=0;k<3;++k){const double x=double(low[k])*matrix[4*k+axis],y=double(high[k])*matrix[4*k+axis];a+=std::min(x,y);b+=std::max(x,y);magnitude+=std::max(std::fabs(x),std::fabs(y));}
-        const double pad=2.0/Size+std::ldexp(magnitude,-18);
+        const double pad=2.0/Size+magnitude*0x1p-18;
         out[axis]=float(std::max(-1.0,a-pad));out[axis+2]=float(std::min(1.0,b+pad));
         if(!std::isfinite(out[axis])||!std::isfinite(out[axis+2])||out[axis]>out[axis+2])return false;
     }
     return true;
+}
+inline bool fogBounds(bool valid,const float* low,const float* high,const float* matrix,float* out){
+    return valid&&low&&high&&out&&finiteMatrix(matrix)&&fogBoundsForFiniteMatrix(true,low,high,matrix,out);
 }
 
 // The largest |x| or |y| (clip units; Inset and Stay compare against it) of the box's 8 corners, or infinity when the box is invalid, a corner
@@ -101,6 +105,55 @@ inline float insetExtent(bool valid,const float* low,const float* high,const flo
     }
     return extent;
 }
+
+// The rounded affine expression is monotonic in each input when all terms
+// stay finite. Select the two extremal corners per axis with the same float
+// expression as the eight-corner path. Keep that path for exceptional inputs.
+class InsetProjection {
+    static constexpr float SafeMagnitude=0x1p50f;
+    const float* matrix_;
+    unsigned char maxSide_[3][3]={};
+    bool safe_=true;
+
+    std::pair<float,float> range(unsigned axis,const float* const* bounds)const{
+        const auto* side=maxSide_[axis];
+        const auto project=[&](unsigned flip){
+            return bounds[side[0]^flip][0]*matrix_[axis]+bounds[side[1]^flip][1]*matrix_[4+axis]+
+                   bounds[side[2]^flip][2]*matrix_[8+axis]+matrix_[12+axis];
+        };
+        return {project(1),project(0)};
+    }
+public:
+    explicit InsetProjection(const float* matrix,bool prepared=true):matrix_(matrix),safe_(matrix&&prepared){
+        if(!safe_)return;
+        for(unsigned axis=0;axis<3;++axis){
+            safe_&=std::fabs(matrix_[12+axis])<=SafeMagnitude;
+            for(unsigned k=0;k<3;++k){
+                const float coefficient=matrix_[4*k+axis];
+                safe_&=std::fabs(coefficient)<=SafeMagnitude;
+                maxSide_[axis][k]=coefficient>=0;
+            }
+        }
+    }
+    float extent(bool valid,const float* low,const float* high,float limit)const{
+        if(!valid||!low||!high||!matrix_)return INFINITY;
+        if(!safe_)return insetExtent(valid,low,high,matrix_,limit);
+        for(unsigned axis=0;axis<3;++axis)
+            if(!(low[axis]>=-SafeMagnitude&&high[axis]<=SafeMagnitude&&low[axis]<=high[axis]))
+                return insetExtent(valid,low,high,matrix_,limit);
+        const float* const bounds[]={low,high};
+        const auto x=range(0,bounds);
+        const float xExtent=std::max(std::fabs(x.first),std::fabs(x.second));
+        if(!(xExtent<=limit))return INFINITY;
+        const auto y=range(1,bounds);
+        const float yExtent=std::max(std::fabs(y.first),std::fabs(y.second));
+        if(!(yExtent<=limit))return INFINITY;
+        const auto z=range(2,bounds);
+        if(!(z.first>0)||!(z.second<1))return INFINITY;
+        return std::max(xExtent,yExtent);
+    }
+};
+
 // True when the box is valid and all 8 corners project into |x|,|y|<=Inset and 0<z<1 of the actor map (row-vector matrix, which the
 // caller has checked with finiteMatrix).
 inline bool insideInset(bool valid,const float* low,const float* high,const float* m){

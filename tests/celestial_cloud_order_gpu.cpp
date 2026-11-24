@@ -22,7 +22,7 @@ int main(int argc,char** argv){
     NorthlightCelestialDisc::softenMoonRim(lunar);
     for(unsigned p=0;p<lunar.rgba.size();p+=4)std::swap(lunar.rgba[p],lunar.rgba[p+2]);
     auto moon=texture(d,{lunar.width,lunar.height,D3DFMT_A8R8G8B8,4,lunar.rgba});
-    for(unsigned s=0;s<6;++s){ok(d->SetTexture(s,white));for(auto state:{D3DSAMP_MINFILTER,D3DSAMP_MAGFILTER})ok(d->SetSamplerState(s,state,D3DTEXF_POINT));ok(d->SetSamplerState(s,D3DSAMP_MIPFILTER,D3DTEXF_NONE));ok(d->SetSamplerState(s,D3DSAMP_ADDRESSU,D3DTADDRESS_CLAMP));ok(d->SetSamplerState(s,D3DSAMP_ADDRESSV,D3DTADDRESS_CLAMP));}
+    for(unsigned s=0;s<7;++s){ok(d->SetTexture(s,white));for(auto state:{D3DSAMP_MINFILTER,D3DSAMP_MAGFILTER})ok(d->SetSamplerState(s,state,D3DTEXF_POINT));ok(d->SetSamplerState(s,D3DSAMP_MIPFILTER,D3DTEXF_NONE));ok(d->SetSamplerState(s,D3DSAMP_ADDRESSU,D3DTADDRESS_CLAMP));ok(d->SetSamplerState(s,D3DSAMP_ADDRESSV,D3DTADDRESS_CLAMP));}
     struct Flat{float x,y,z,w;DWORD color;};
     auto flat=[&](DWORD color,float z,bool blend){
         const Flat q[]={{-.5f,-.5f,z,1,color},{N-.5f,-.5f,z,1,color},{-.5f,N-.5f,z,1,color},{N-.5f,N-.5f,z,1,color}};
@@ -33,17 +33,23 @@ int main(int argc,char** argv){
     };
     auto capture=[&]{ok(d->GetRenderTargetData(target,staging));D3DLOCKED_RECT l{};ok(staging->LockRect(&l,nullptr,D3DLOCK_READONLY));std::vector<float> out(N*N*4);for(unsigned y=0;y<N;++y)std::memcpy(out.data()+y*N*4,static_cast<char*>(l.pBits)+y*l.Pitch,N*16);ok(staging->UnlockRect());return out;};
     float weatherGain=1,hdrPolicy=0;
-    auto planet=[&](unsigned body,bool early,bool surface=true,bool halo=true){
-        const float cs=std::cos(.4f),sn=std::sin(.4f);float c[49][4]{};
+    auto planet=[&](unsigned body,bool early,bool surface=true,bool halo=true,bool combined=false,const float* palette=nullptr){
+        const float cs=std::cos(.4f),sn=std::sin(.4f);float c[57][4]{};
         c[0][0]=c[0][1]=1.f/N;c[0][3]=1/.94f;c[1][0]=c[1][1]=5;c[1][2]=1;c[2][1]=1;c[3][0]=-sn;c[3][2]=cs;c[4][0]=cs;c[4][2]=sn;c[5][3]=1;
         c[6][0]=cs;c[6][2]=sn;c[6][3]=std::tan(.14f);c[7][1]=1;c[8][0]=-sn;c[8][2]=cs;
         c[9][0]=c[9][1]=c[9][2]=1;c[9][3]=weatherGain;c[10][1]=.2f;c[10][2]=1000;c[10][3]=early?0.f:1.f;
         c[10][0]=hdrPolicy;
         c[11][0]=.99992f;c[11][1]=early?0.f:1.f;c[11][2]=1.5f/16777215;c[11][3]=body?0.f:1.f;c[12][0]=1;c[12][1]=20;
         for(unsigned k=0;k<3;++k)c[47][k]=c[48][k]=1;
+        if(combined){
+            c[12][2]=halo?2.4f:0;c[12][3]=1;c[46][3]=2;
+            c[49][0]=c[49][1]=1;c[49][2]=weatherGain;
+            c[50][0]=c[50][1]=c[50][2]=1;
+            if(palette){c[49][3]=1;for(unsigned band=51;band<57;++band)std::copy_n(palette,3,c[band]);}
+        }
         const Vertex q[]={{-.5f,-.5f,.99992f,1,0,0},{N-.5f,-.5f,.99992f,1,1,0},{-.5f,N-.5f,.99992f,1,0,1},{N-.5f,N-.5f,.99992f,1,1,1}};
-        ok(d->SetTexture(1,body?moon:white));ok(d->SetPixelShader(early?after:before));ok(d->SetFVF(D3DFVF_XYZRHW|D3DFVF_TEX1));ok(d->SetRenderState(D3DRS_ZENABLE,early));ok(d->SetRenderState(D3DRS_ZWRITEENABLE,FALSE));ok(d->SetRenderState(D3DRS_ALPHABLENDENABLE,TRUE));ok(d->SetRenderState(D3DRS_SRCBLEND,D3DBLEND_SRCALPHA));ok(d->SetRenderState(D3DRS_DESTBLEND,D3DBLEND_ONE));ok(d->SetPixelShaderConstantF(0,c[0],49));if(surface)ok(d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,q,sizeof(Vertex)));
-        if(halo){c[9][3]=1;c[12][0]=1.1f;c[12][1]=body?6.f:20.f;c[12][2]=(body?1.f:2.4f)*weatherGain;c[12][3]=1;c[46][3]=early?1.f:0.f;ok(d->SetRenderState(D3DRS_SRCBLEND,D3DBLEND_INVDESTCOLOR));ok(d->SetPixelShaderConstantF(0,c[0],49));ok(d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,q,sizeof(Vertex)));}
+        ok(d->SetTexture(1,body?moon:white));ok(d->SetPixelShader(early||combined?after:before));ok(d->SetFVF(D3DFVF_XYZRHW|D3DFVF_TEX1));ok(d->SetRenderState(D3DRS_ZENABLE,early));ok(d->SetRenderState(D3DRS_ZWRITEENABLE,FALSE));ok(d->SetRenderState(D3DRS_ALPHABLENDENABLE,TRUE));ok(d->SetRenderState(D3DRS_SRCBLEND,combined?D3DBLEND_ONE:D3DBLEND_SRCALPHA));ok(d->SetRenderState(D3DRS_DESTBLEND,D3DBLEND_ONE));ok(d->SetPixelShaderConstantF(0,c[0],57));if(surface)ok(d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,q,sizeof(Vertex)));
+        if(halo&&!combined){c[9][3]=1;c[12][0]=1.1f;c[12][1]=body?6.f:20.f;c[12][2]=(body?1.f:2.4f)*weatherGain;c[12][3]=1;c[46][3]=early?1.f:0.f;ok(d->SetRenderState(D3DRS_SRCBLEND,D3DBLEND_INVDESTCOLOR));ok(d->SetPixelShaderConstantF(0,c[0],49));ok(d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,q,sizeof(Vertex)));}
     };
     unsigned cases=0,failures=0,baselineWrong=0,geometryPixels=0;double maxError=0;
     for(unsigned body=0;body<2;++body)for(float gain:{1.f,.5f,.15f,0.f}){weatherGain=gain;
@@ -69,6 +75,54 @@ int main(int argc,char** argv){
     }
     assert(baselineWrong);
     weatherGain=1;
+    // A split cloud mask covers only the left half of the late disk.
+    for(unsigned body:{0u,1u})for(bool hdr:{false,true}){
+        hdrPolicy=hdr?(body?3.f:2.f):0.f;
+        auto captureSurface=[&](bool combined){
+            ok(d->Clear(0,nullptr,D3DCLEAR_TARGET|D3DCLEAR_ZBUFFER,0,1,0));
+            ok(d->BeginScene());planet(body,!combined,true,false,combined);ok(d->EndScene());
+            return capture();
+        };
+        const auto reference=captureSurface(false);
+        assert(reference[(N/2*N+N/2-1)*4]>.05f&&reference[(N/2*N+N/2)*4]>.05f);
+        for(float transmission:{0.f,.25f,.5f,1.f}){
+            const float texels[]={0,0,0,transmission,0,0,0,1};
+            Image im{2,1,D3DFMT_A32B32G32R32F,16,std::vector<unsigned char>(sizeof texels)};
+            std::memcpy(im.pixels.data(),texels,sizeof texels);auto cloud=texture(d,im);
+            ok(d->SetTexture(6,cloud));const auto actual=captureSurface(true);
+            for(unsigned p=0;p<N*N;++p)for(unsigned k=0;k<3;++k){
+                const float expected=reference[p*4+k]*(p%N<N/2?transmission:1.f);
+                if(!std::isfinite(actual[p*4+k])||std::fabs(actual[p*4+k]-expected)>.00005f)
+                    if(failures++<4)std::printf("FAIL late cloud body=%u hdr=%u transmission=%g p=%u got=%g expected=%g\n",body,hdr,transmission,p,actual[p*4+k],expected);
+            }
+            ok(d->SetTexture(6,nullptr));cloud->Release();++cases;
+        }
+    }
+    // The Barrens capture had a warm, nearly saturated legacy background
+    // under a blue replacement. The halo must use the replacement's headroom.
+    hdrPolicy=0;
+    const float nativeSky[]={1,.75f,.5f},replacement[]={.2f,.45f,.7f};
+    auto captureGlare=[&](const float* background,float transmission,const float* palette){
+        const float rgba[]={background[0]*transmission,background[1]*transmission,background[2]*transmission,transmission};
+        Image im{1,1,D3DFMT_A32B32G32R32F,16,std::vector<unsigned char>(sizeof rgba)};
+        std::memcpy(im.pixels.data(),rgba,sizeof rgba);auto layers=texture(d,im);
+        ok(d->SetTexture(6,layers));ok(d->Clear(0,nullptr,D3DCLEAR_TARGET|D3DCLEAR_ZBUFFER,0,1,0));
+        ok(d->BeginScene());planet(0,false,true,true,true,palette);ok(d->EndScene());const auto actual=capture();
+        ok(d->SetTexture(6,nullptr));layers->Release();return actual;
+    };
+    for(float transmission:{0.f,.5f,1.f}){
+        const auto reference=captureGlare(replacement,transmission,nullptr);
+        const auto actual=captureGlare(nativeSky,transmission,replacement);
+        for(unsigned p=0;p<N*N;++p)for(unsigned k=0;k<3;++k)
+            if(!std::isfinite(actual[p*4+k])||std::fabs(actual[p*4+k]-reference[p*4+k])>5e-5f)++failures;
+        if(!transmission)for(unsigned p=0;p<N*N;++p)assert(actual[p*4]==0);
+        else{
+            const auto legacy=captureGlare(nativeSky,transmission,nullptr);
+            const auto center=(N/2*N+N/2)*4;
+            assert(actual[center]>legacy[center]+.2f);
+        }
+        ++cases;
+    }
     for(unsigned body=0;body<2;++body){hdrPolicy=body?3:2;
         ok(d->Clear(0,nullptr,D3DCLEAR_TARGET|D3DCLEAR_ZBUFFER,0,1,0));ok(d->BeginScene());planet(body,true,true,false);ok(d->EndScene());const auto bright=capture();
         float peak=0;for(unsigned p=0;p<N*N;++p)peak=std::max(peak,bright[p*4]);assert(peak>1);
@@ -108,5 +162,5 @@ int main(int argc,char** argv){
         }
     }
     std::printf("cloud order GPU cases=%u checkedPixels=%u baselineWrongChannels=%u geometryPixels=%u maxError=%.9g failures=%u\n",cases,cases*N*N,baselineWrong,geometryPixels,maxError,failures);
-    d->SetPixelShader(nullptr);for(unsigned s=0;s<6;++s)d->SetTexture(s,nullptr);moon->Release();white->Release();before->Release();after->Release();staging->Release();target->Release();zbuffer->Release();d->Release();api->Release();FreeLibrary(module);DestroyWindow(window);UnregisterClassW(wc.lpszClassName,wc.hInstance);return failures?1:0;
+    d->SetPixelShader(nullptr);for(unsigned s=0;s<7;++s)d->SetTexture(s,nullptr);moon->Release();white->Release();before->Release();after->Release();staging->Release();target->Release();zbuffer->Release();d->Release();api->Release();FreeLibrary(module);DestroyWindow(window);UnregisterClassW(wc.lpszClassName,wc.hInstance);return failures?1:0;
 }

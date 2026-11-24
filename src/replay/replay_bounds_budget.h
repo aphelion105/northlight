@@ -20,6 +20,13 @@ using BoundsClock=NORTHLIGHT_REPLAY_BOUNDS_CLOCK;
    vertex. */
 constexpr bool FastReady=true;
 constexpr unsigned ReadyClockStride=8,BuildClockStride=32;
+constexpr size_t BaseOperationLimit=262144;
+inline size_t crowdOperationLimit(size_t packets,bool manyPointShadows){
+    // Extra cheap evaluations use the existing frame deadline. A missing
+    // bound can otherwise submit the same packet to every face of every cube.
+    if(!manyPointShadows||packets<=1024)return BaseOperationLimit;
+    return BaseOperationLimit+std::min(packets-1024,size_t(1024))*256;
+}
 // Lending is allowed only after both reserved passes have had their turn.
 // Closing those passes prevents spending the same unused allowance twice.
 struct AdaptiveTimeBudget {
@@ -35,10 +42,15 @@ struct AdaptiveTimeBudget {
     }
     // After the first cheap/heavy turns, use half their unspent frame allowance
     // to warm cold sources. The final cheap turn receives only what remains.
-    void lendToBuild(std::uint64_t readyUsed,std::uint64_t heavyUsed){
+    void lendToBuild(std::uint64_t readyUsed,std::uint64_t heavyUsed,bool coldPointWave=false){
         if(reservedClosed)return;
         const auto left=readyUsed>=totalLimit||heavyUsed>=totalLimit-readyUsed?0:totalLimit-readyUsed-heavyUsed;
         buildLimit=std::max(Build,left/2);
+        if(coldPointWave){
+            // Spend the existing headroom on new sources before the final cheap turn.
+            buildLimit+=MaxTotal-totalLimit;
+            totalLimit=MaxTotal;
+        }
     }
     // The rigid source scanner handles 32 vertices per clock check. Do not
     // strand its finished work behind the old scalar decoder's vertex quota;

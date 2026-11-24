@@ -3,9 +3,11 @@
 #include "shared_pom.h"
 #include "native_local_pom.h"
 #include "material_stencil.h"
+#include "device_mirror.h"
 
 class NorthlightAutoParallax {
     IDirect3DDevice9* d;NorthlightAutoNormalCache& normals;
+    ExtensionDevice* drawStateSource=nullptr;
     NorthlightMaterialProfile* profile=nullptr;
     struct Pixel {IDirect3DPixelShader9* source=nullptr,*shader=nullptr,*shared=nullptr;unsigned constants=0,sharedConstants=0;bool sharedChecked=false;};
     struct Vertex {IDirect3DVertexShader9* source=nullptr,*shader=nullptr,*shared=nullptr;bool sharedChecked=false;};
@@ -15,6 +17,9 @@ class NorthlightAutoParallax {
     const NorthlightNativePOM* activeNativePOM=nullptr;
     unsigned draws=0,skipped=0,frames=0;bool sharedActive=false;
     static constexpr D3DSAMPLERSTATETYPE keys[]={D3DSAMP_MINFILTER,D3DSAMP_MAGFILTER,D3DSAMP_MIPFILTER,D3DSAMP_ADDRESSU,D3DSAMP_ADDRESSV,D3DSAMP_SRGBTEXTURE,D3DSAMP_MAXMIPLEVEL,D3DSAMP_MIPMAPLODBIAS};
+    static constexpr unsigned samplerMask=(1u<<(D3DSAMP_MINFILTER-1))|(1u<<(D3DSAMP_MAGFILTER-1))|
+        (1u<<(D3DSAMP_MIPFILTER-1))|(1u<<(D3DSAMP_ADDRESSU-1))|(1u<<(D3DSAMP_ADDRESSV-1))|
+        (1u<<(D3DSAMP_SRGBTEXTURE-1))|(1u<<(D3DSAMP_MAXMIPLEVEL-1))|(1u<<(D3DSAMP_MIPMAPLODBIAS-1));
     struct State {
         IDirect3DDevice9* d;IDirect3DPixelShader9* pixel=nullptr;IDirect3DVertexShader9* vertex=nullptr;
         IDirect3DBaseTexture9* textures[4]={};DWORD samplers[4][8]={};float constants[12]={};unsigned stages[4]={},layers=0,constantBase=0,constantCount=2,samplerChanged[4]={},textureChanged=0;bool changed=false,borrowedVertex=false,borrowedPixel=false,vertexChanged=false,pixelChanged=false,constantChanged=false;
@@ -24,8 +29,19 @@ class NorthlightAutoParallax {
             vertex=boundVertex;pixel=boundPixel;borrowedVertex=vertex!=nullptr;borrowedPixel=pixel!=nullptr;
             if((!borrowedVertex&&FAILED(d->GetVertexShader(&vertex)))||!vertex||(!borrowedPixel&&FAILED(d->GetPixelShader(&pixel)))||!pixel)return false;return true;
         }
-        bool saveSamplers(unsigned count,bool shared=false){
-            for(unsigned n=0;n<count*(shared?2u:1u);++n){layers=n+1;stages[n]=n<count?14+n:12+n-count;if(FAILED(d->GetTexture(stages[n],&textures[n])))return false;for(unsigned i=0;i<8;++i)if(FAILED(d->GetSamplerState(stages[n],keys[i],&samplers[n][i])))return false;}return true;
+        bool saveSamplers(unsigned count,bool shared,ExtensionDevice* source){
+            for(unsigned n=0;n<count*(shared?2u:1u);++n){
+                layers=n+1;
+                const DWORD stage=stages[n]=n<count?14+n:12+n-count;
+                if(FAILED(d->GetTexture(stage,&textures[n])))return false;
+                DWORD values[D3DSAMP_DMAPOFFSET];
+                if(source&&source->knownSamplerStates(stage,samplerMask,values)){
+                    for(unsigned i=0;i<8;++i)samplers[n][i]=values[keys[i]-1];
+                }else{
+                    for(unsigned i=0;i<8;++i)if(FAILED(d->GetSamplerState(stage,keys[i],&samplers[n][i])))return false;
+                }
+            }
+            return true;
         }
         void restore(){if(changed){if(vertexChanged)d->SetVertexShader(vertex);if(pixelChanged)d->SetPixelShader(pixel);if(constantChanged)d->SetPixelShaderConstantF(constantBase,constants,constantCount);
             for(unsigned n=0;n<layers;++n){if(textureChanged&(1u<<n))d->SetTexture(stages[n],textures[n]);for(unsigned i=0;i<8;++i)if(samplerChanged[n]&(1u<<i))d->SetSamplerState(stages[n],keys[i],samplers[n][i]);}}
@@ -35,6 +51,7 @@ class NorthlightAutoParallax {
     };
 public:
     NorthlightAutoParallax(IDirect3DDevice9* device,NorthlightAutoNormalCache& cache):d(device),normals(cache){}
+    void setDrawStateSource(ExtensionDevice* source){drawStateSource=source;}
     void setProfiler(NorthlightMaterialProfile* p){profile=p;}
     ~NorthlightAutoParallax(){for(auto& p:pixels){drop(p.second.shader);drop(p.second.shared);drop(p.second.source);}for(auto& v:vertices){drop(v.second.shader);drop(v.second.shared);drop(v.second.source);}}
     bool shared()const{return sharedActive;}
@@ -83,7 +100,7 @@ public:
         for(unsigned n=0;n<(dual?2u:1u);++n){const bool u=SUCCEEDED(d->GetSamplerState(n,D3DSAMP_ADDRESSU,&addressU[n])),v=SUCCEEDED(d->GetSamplerState(n,D3DSAMP_ADDRESSV,&addressV[n]));matching=matching&&u&&v&&maps[n].get()==sharedPOM->maps[n]&&addressU[n]==sharedPOM->addressU[n]&&addressV[n]==sharedPOM->addressV[n];}
         const bool reuse=matching&&supportsShared(saved.pixel,material);
         saved.constantBase=reuse?pixel.sharedConstants:pixel.constants;saved.constantCount=reuse?3:2;
-        if(FAILED(d->GetPixelShaderConstantF(saved.constantBase,saved.constants,saved.constantCount))||!saved.saveSamplers(dual?2:1,reuse))return nativeDraw();
+        if(FAILED(d->GetPixelShaderConstantF(saved.constantBase,saved.constants,saved.constantCount))||!saved.saveSamplers(dual?2:1,reuse,drawStateSource))return nativeDraw();
         NorthlightSharedPOM::Binding binding(d);
         const auto fallback=[&]{saved.restore();binding.restore();return this->draw(knownVertex,forwarded,material,projection,control,nativeDraw,model,boundVertex,boundPixel);};
         if(reuse&&!binding.bind(*sharedPOM,true))return fallback();

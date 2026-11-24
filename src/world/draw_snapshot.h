@@ -41,6 +41,17 @@
 namespace NorthlightDrawSnapshot {
 struct Stream { UINT stride=0; std::vector<std::uint8_t> bytes; };
 struct Mesh {
+private:
+    friend class Frame;
+    // Only the published, immutable snapshot can carry the decoder's proof.
+    // Copying or moving into editable storage drops it.
+    struct IndexRangeProof {
+        bool valid=false;
+        IndexRangeProof()=default;
+        IndexRangeProof(const IndexRangeProof&) noexcept{}
+        IndexRangeProof& operator=(const IndexRangeProof&) noexcept{valid=false;return *this;}
+    };
+public:
     NorthlightSourceIdentity::Handle sourceIdentity;
     // Optional byte-equality proof for GPU contents. sourceIdentity always
     // retains the current resource/layout/revision contract independently.
@@ -52,11 +63,15 @@ struct Mesh {
     // Device-thread eligibility hint only; exact owner/identity proof is still required.
     // Workers never read/write this metadata. It occupies existing Mesh tail padding.
     mutable bool sharedCapture=false;
+private:
+    IndexRangeProof checkedIndices_;
+public:
+    bool hasCheckedIndices()const{return checkedIndices_.valid;}
     std::size_t byteSize() const {std::size_t n=indices.size()*4;for(auto& s:streams)n+=s.bytes.size();return n;}
     std::size_t capacityBytes()const{std::size_t n=indices.capacity()*4;for(auto& s:streams)n+=s.bytes.capacity();return n;}
     // Only metadata is reset. Every observed byte/index is overwritten below;
     // retaining vector sizes avoids zero-filling the complete mesh each frame.
-    void prepare(){sourceIdentity.reset();replayIdentity.reset();vertexCount=primitiveCount=0;indexed=dynamic=sharedCapture=false;topology=D3DPT_TRIANGLELIST;for(auto& s:streams)s.stride=0;}
+    void prepare(){sourceIdentity.reset();replayIdentity.reset();vertexCount=primitiveCount=0;indexed=dynamic=sharedCapture=checkedIndices_.valid=false;topology=D3DPT_TRIANGLELIST;for(auto& s:streams)s.stride=0;}
 };
 struct Draw { D3DPRIMITIVETYPE topology=D3DPT_TRIANGLELIST; INT base=0; UINT minimum=0,vertices=0,start=0,primitives=0; bool indexed=true; };
 enum class Error { None, Arguments, Declaration, Stream, Instancing, IndexBuffer, IndexRange, VertexRange, Budget, Lock, Unlock };
@@ -331,7 +346,7 @@ private:
     bool replayContentReuse_=false;
     unsigned replayContentTests_=0,replayContentHits_=0;size_t replayContentComparedBytes_=0;
     size_t avoidedReadBytes_=0;
-    unsigned metadataBatches_=0,metadataHits_=0,metadataFallbacks_=0,fastCacheHits_=0;
+    unsigned metadataBatches_=0,metadataHits_=0,metadataFallbacks_=0,fastCacheHits_=0,residentIndexedPlanHits_=0;
 public:
     // 0.3.181 (S2, r89): the snapshot-cache lookup. Map: today's hash lookup (the prediction is kept,
     // never read). Predict: a tracked key is first compared with the LRU successor of the previous hit
@@ -550,7 +565,9 @@ private:
             const auto hash=hashKey(key);auto existing=sources_->entries.find(hash);if(existing!=sources_->entries.end()){eraseIdentity(existing->second);sources_->bytes-=existing->second.bytes;sources_->metadataBytes-=existing->second.metadataBytes;sources_->lru.remove(existing->second);sources_->entries.erase(existing);++sources_->generation;
                 dropPrediction(Erase::Replacement);} /* the replaced entry may be the predicted one */
             const auto bytes=entry.bytes,metadataBytes=entry.metadataBytes;auto inserted=sources_->entries.emplace(hash,std::move(entry));sources_->lru.append(inserted.first->second);sources_->bytes+=bytes;sources_->metadataBytes+=metadataBytes;noteStored(key,hash);
-            *owned=std::move(mesh);*shared=owned;if(owned->sourceIdentity)try{sources_->identities.emplace(owned->sourceIdentity->hash,&inserted.first->second);}catch(...){}
+            *owned=std::move(mesh);
+            owned->checkedIndices_.valid=owned->indexed;
+            *shared=owned;if(owned->sourceIdentity)try{sources_->identities.emplace(owned->sourceIdentity->hash,&inserted.first->second);}catch(...){}
             if(replayContentReuse_&&sources_->replayCandidates&&key.tracked&&owned->sourceIdentity)(*sources_->replayCandidates)[logicalHash(key)%sources_->replayCandidates->size()]=owned;
             return true;
         }catch(...){return false;}
@@ -831,6 +848,40 @@ public:
     }
     // Draw-count exhaustion alone: the near reserve never bypasses it.
     bool countExhausted(bool priority)const noexcept{return draws_>=4096||(!priority&&regularDraws_>=3072);}
+    // A pending native batch already owns the mesh. Verify its single-stream
+    // source against the live bindings without rebuilding a snapshot key.
+    bool matchesIndexedSource(const std::shared_ptr<const Mesh>& source,IDirect3DVertexDeclaration9* declaration,
+                              IDirect3DVertexBuffer9* vertex,UINT offset,UINT stride,IDirect3DIndexBuffer9* indices,const Draw& draw,
+                              std::shared_ptr<const Mesh>* reuse=nullptr){
+        if(!metadata_||!draw.indexed||!source||!source->sourceIdentity||!vertex||!indices||(reuse&&chargeResidentHits_))return false;
+        const auto entries=sources_->identities.equal_range(source->sourceIdentity->hash);
+        for(auto it=entries.first;it!=entries.second;++it){
+            const auto& entry=*it->second;
+            if(entry.mesh.get()!=source.get())continue;
+            const auto& k=entry.key;
+            if(!k.tracked||!k.indexed||!k.extent[0]||k.extent[1]||k.extent[2]||k.extent[3]||
+               k.declaration!=declaration||k.offset[0]!=offset||k.stride[0]!=stride||
+               k.base!=draw.base||k.minimum!=draw.minimum||k.vertices!=draw.vertices||k.start!=draw.start||
+               k.primitives!=draw.primitives||k.topology!=unsigned(draw.topology)||
+               k.tracking[0]!=reinterpret_cast<std::uintptr_t>(identity_)||
+               k.tracking[1]!=reinterpret_cast<std::uintptr_t>(version_)||
+               k.tracking[2]!=reinterpret_cast<std::uintptr_t>(metadata_))continue;
+            UINT count=0;if(!indexCount(draw,count,nullptr))return false;
+            const NorthlightCaptureMetadata::Request requests[]={vertexRequest(vertex,draw,count,offset,stride,k.extent[0]),
+                                                               {indices,true,draw.start,count,true}};
+            NorthlightCaptureMetadata::Info live[2]{};
+            metadata_(requests,live,2);
+            if(live[0].known&&live[1].known&&live[0].identity==k.vb[0]&&live[1].identity==k.ib&&
+               live[0].revision==k.version[0]&&live[1].revision==k.version[4]){
+                if(!reuse)return true;
+                priority_=near_=compacted_=false;
+                predictionGeneration_=sources_->generation;
+                bool served=false;
+                return serveEntry(*it->second,true,reuse,nullptr,served)&&served;
+            }
+        }
+        return false;
+    }
     // The caller proves the same serialized draw/declaration. Only a tracked
     // snapshot still in this pool may bypass native binding/key queries.
     // A miss leaves the ordinary read path and its admission policy intact.
@@ -849,7 +900,7 @@ public:
     // Extra bytes for near priority draws once the main budget is spent (0: off, the 0.3.171 budget).
     void setNearReserve(std::size_t bytes){nearReserve_=bytes;}
     std::size_t nearReserve()const{return nearReserve_;}
-    void clearFrame(){maintenance_={};sampleMaintenance_=false;used_=regularUsed_=0;draws_=regularDraws_=0;sourceSpanVertices_=uniqueVertices_=savedVertexBytes_=0;compactedDraws_=0;indexHits_=indexMisses_=0;cacheHits_=cacheMisses_=revalidated_=revalidationMismatches_=trackedHits_=peerHits_=sharedSourceHits_=0;replayContentTests_=replayContentHits_=0;replayContentComparedBytes_=0;avoidedReadBytes_=0;metadataBatches_=metadataHits_=metadataFallbacks_=fastCacheHits_=0;predictTried_=predictHits_=predictMisses_=0;++frame_;}
+    void clearFrame(){maintenance_={};sampleMaintenance_=false;used_=regularUsed_=0;draws_=regularDraws_=0;sourceSpanVertices_=uniqueVertices_=savedVertexBytes_=0;compactedDraws_=0;indexHits_=indexMisses_=0;cacheHits_=cacheMisses_=revalidated_=revalidationMismatches_=trackedHits_=peerHits_=sharedSourceHits_=0;replayContentTests_=replayContentHits_=0;replayContentComparedBytes_=0;avoidedReadBytes_=0;metadataBatches_=metadataHits_=metadataFallbacks_=fastCacheHits_=residentIndexedPlanHits_=0;predictTried_=predictHits_=predictMisses_=0;++frame_;}
     // Cache lifetime never establishes validity: reads still lock/compare current
     // IB contents and copy current VB data. Reset/destruction may drop plans.
     size_t clearIndexCache(NorthlightStreaming::CpuRetirement* retirement=nullptr,NorthlightStreaming::CpuRetirementBatch* batch=nullptr,bool preserveSnapshots=false){
@@ -882,10 +933,55 @@ public:
     std::size_t uniqueVertices()const{return uniqueVertices_;}
     std::size_t savedVertexBytes()const{return savedVertexBytes_;}
     unsigned compactedDraws()const{return compactedDraws_;}
+    unsigned residentIndexedPlanHits()const{return residentIndexedPlanHits_;}
     // shared: identified static resources or fully write-tracked generations
     // (also DYNAMIC) may be served from / stored into the persistent
     // cache as an immutable shared mesh and output is left empty. Hits charge
     // admission and the read budget exactly like the equivalent miss.
+    // The caller holds the device gate and has proved these are the current
+    // indexed bindings. Only tracked resident hits use the borrowed pointers.
+    bool readResidentIndexed(IDirect3DVertexDeclaration9* declaration,const Draw& draw,const UINT extent[4],
+                             IDirect3DVertexBuffer9* vertex,UINT offset,UINT stride,IDirect3DIndexBuffer9* indices,
+                             std::shared_ptr<const Mesh>& source){
+        if(!metadata_||!identity_||!version_||chargeResidentHits_||!draw.indexed||
+           !extent[0]||extent[1]||extent[2]||extent[3]||!vertex||!indices||stride<extent[0]||stride>4096)return false;
+        UINT count=0;if(!indexCount(draw,count,nullptr))return false;
+        const NorthlightCaptureMetadata::Request requests[]={vertexRequest(vertex,draw,count,offset,stride,extent[0]),
+                                                            {indices,true,draw.start,count,true}};
+        NorthlightCaptureMetadata::Info live[2]{};
+        metadata_(requests,live,2);++metadataBatches_;
+        if(!live[0].known||!live[1].known||!live[0].identity||!live[1].identity||!live[0].revision||!live[1].revision)return false;
+        const unsigned indexSize=live[1].format==D3DFMT_INDEX16?2:live[1].format==D3DFMT_INDEX32?4:0;
+        if(!indexSize||(uint64_t(draw.start)+count)*indexSize>live[1].size)return false;
+        priority_=near_=compacted_=false;
+        // The LRU successor is commonly the next section rendered. Validate
+        // it from the live bindings and range revisions before forming a key.
+        if(!NORTHLIGHT_SNAPSHOT_COUNTERFACTUAL&&lookup_!=Lookup::Map&&predictionGeneration_==sources_->generation&&predicted_){
+            const auto& k=predicted_->key;
+            if(k.start==draw.start&&k.primitives==draw.primitives&&k.base==draw.base&&k.minimum==draw.minimum&&
+               k.vertices==draw.vertices&&k.topology==unsigned(draw.topology)&&k.indexed&&k.tracked&&k.declaration==declaration&&
+               k.stride[0]==stride&&k.offset[0]==offset&&k.extent[0]==extent[0]&&!k.extent[1]&&!k.extent[2]&&!k.extent[3]&&
+               k.vb[0]==live[0].identity&&k.version[0]==live[0].revision&&k.size[0]==live[0].size&&
+               k.ib==live[1].identity&&k.version[4]==live[1].revision&&k.ibSize==live[1].size&&k.format==unsigned(live[1].format)&&
+               k.tracking[0]==reinterpret_cast<std::uintptr_t>(identity_)&&k.tracking[1]==reinterpret_cast<std::uintptr_t>(version_)&&
+               k.tracking[2]==reinterpret_cast<std::uintptr_t>(metadata_)){
+                bool served=false;
+                if(!serveEntry(*predicted_,true,&source,nullptr,served)||!served)return false;
+                ++predictTried_;++predictHits_;++residentIndexedPlanHits_;
+                metadataHits_+=2;++fastCacheHits_;
+                return true;
+            }
+        }
+        D3DVERTEXBUFFER_DESC descriptions[4]={};descriptions[0].Size=live[0].size;
+        bool valid=false,served=false;
+        // makeKey reads the supplied metadata for the only active stream.
+        auto key=makeKey(nullptr,extent,draw,declaration,&stride,&offset,descriptions,
+                         live[1].identity,live[1].size,live[1].format,valid,live);
+        key.version[4]=live[1].revision;
+        if(!valid||!key.tracked||!serve(key,nullptr,nullptr,extent,&source,nullptr,served)||!served)return false;
+        metadataHits_+=2;++fastCacheHits_;
+        return true;
+    }
     // Optional admission probes may reuse tracked resident data without reads,
     // revalidation locks or cache population. A miss leaves the normal path intact.
     template<class GpuLookup=std::nullptr_t>

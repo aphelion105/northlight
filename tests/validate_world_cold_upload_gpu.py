@@ -111,7 +111,8 @@ def main():
             shutil.copy2(args.prebuilt, exe)
         build = origin['build']
     else:
-        subprocess.run(cmd, env=env, check=True, **flags)
+        with (out/'compile.log').open('wb') as log:
+            subprocess.run(cmd, env=env, stdout=log, stderr=subprocess.STDOUT, check=True, **flags)
         build = {'command': cmd, 'compiler_sha256': sha(fp.zig()), 'source_root': str(fp.REPO)}
     assert inputs() == initial and sha(Path(__file__)) == runner_hash, 'Source changed during compilation'
     original_data = exe.read_bytes()

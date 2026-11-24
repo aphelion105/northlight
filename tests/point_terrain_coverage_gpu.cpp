@@ -4,7 +4,14 @@
 #include <cassert>
 static void must(HRESULT hr){assert(SUCCEEDED(hr));}
 struct PointCopyFaults:ForwardIDirect3DDevice9 {
-  using ForwardIDirect3DDevice9::ForwardIDirect3DDevice9;bool fail=false,after=false,failPair=false;unsigned failures=0,copies=0;
+  using ForwardIDirect3DDevice9::ForwardIDirect3DDevice9;bool fail=false,after=false,failPair=false,failStatic=false;unsigned failures=0,copies=0;
+  HRESULT STDMETHODCALLTYPE CreateTexture(UINT w,UINT h,UINT levels,DWORD usage,D3DFORMAT format,D3DPOOL pool,
+     IDirect3DTexture9** target,HANDLE* handle)override{
+   if(failStatic&&w==256&&h==256&&usage==D3DUSAGE_RENDERTARGET&&format==D3DFMT_R32F){
+    failStatic=false;*target=nullptr;return E_OUTOFMEMORY;
+   }
+   return real->CreateTexture(w,h,levels,usage,format,pool,target,handle);
+  }
   HRESULT STDMETHODCALLTYPE SetRenderTarget(DWORD slot,IDirect3DSurface9* target)override{
    if(slot==1&&target&&failPair){failPair=false;return E_FAIL;}
    return real->SetRenderTarget(slot,target);
@@ -119,7 +126,7 @@ struct PointTerrainCoverageTest {
   assert(w.meshStore.beginStaging({NorthlightMeshPageKey::keyOf(vertices,sizeof vertices,indices,sizeof indices)}));w.meshStore.commit();w.meshBuffers.resize(w.meshStore.entries().size());auto& page=w.meshBuffers[w.meshStore.bufferOf(0)];
   must(d->CreateVertexBuffer(sizeof vertices,0,0,D3DPOOL_MANAGED,&page.vb,nullptr));must(d->CreateIndexBuffer(sizeof indices,0,D3DFMT_INDEX16,D3DPOOL_MANAGED,&page.ib,nullptr));void* bytes=nullptr;
   must(page.vb->Lock(0,sizeof vertices,&bytes,0));std::memcpy(bytes,vertices,sizeof vertices);must(page.vb->Unlock());must(page.ib->Lock(0,sizeof indices,&bytes,0));std::memcpy(bytes,indices,sizeof indices);must(page.ib->Unlock());w.vertices=page.vb;w.indices=page.ib;
-  D3DVERTEXELEMENT9 elements[]={{0,0,D3DDECLTYPE_FLOAT3,D3DDECLMETHOD_DEFAULT,D3DDECLUSAGE_POSITION,0},{0,24,D3DDECLTYPE_FLOAT2,D3DDECLMETHOD_DEFAULT,D3DDECLUSAGE_TEXCOORD,0},D3DDECL_END()};must(d->CreateVertexDeclaration(elements,&w.shadowDecl));must(d->CreatePixelShader(kShadowUnionShader,&w.unionPS));
+  D3DVERTEXELEMENT9 elements[]={{0,0,D3DDECLTYPE_FLOAT3,D3DDECLMETHOD_DEFAULT,D3DDECLUSAGE_POSITION,0},{0,24,D3DDECLTYPE_FLOAT2,D3DDECLMETHOD_DEFAULT,D3DDECLUSAGE_TEXCOORD,0},D3DDECL_END()};must(d->CreateVertexDeclaration(elements,&w.shadowPrograms.worldLayout_));must(d->CreatePixelShader(kShadowUnionShader,&w.shadowPrograms.union_));
   w.materials.push_back(nullptr);w.uploadedAlphaCutoffs.push_back(-1);WorldRenderer::Batch batch{};batch.page=0;batch.start=0;batch.count=2;batch.minVertex=0;batch.vertexCount=4;batch.material=0;batch.terrain=true;batch.chunkX=7;batch.chunkY=9;batch.boundsLow={-1,-1,0};batch.boundsHigh={1,1,0};w.batches.push_back(batch);
   IDirect3DTexture9* white=nullptr;must(d->CreateTexture(1,1,1,0,D3DFMT_A8R8G8B8,D3DPOOL_MANAGED,&white,nullptr));D3DLOCKED_RECT whiteLock{};
   must(white->LockRect(0,&whiteLock,nullptr,0));*static_cast<DWORD*>(whiteLock.pBits)=0xffffffff;must(white->UnlockRect(0));
@@ -166,6 +173,9 @@ struct PointTerrainCoverageTest {
     for(unsigned y=0;y<256;++y)std::memcpy(cube.data()+faceIndex*256*256+256*y,static_cast<char*>(lock.pBits)+y*lock.Pitch,256*4);must(readback->UnlockRect());}
    if(referenceCube.empty())referenceCube=std::move(cube);else assert(cube==referenceCube);
   }
+  std::uint64_t cubeDigest=14695981039346656037ull;
+  for(float depth:referenceCube){std::uint32_t bits;std::memcpy(&bits,&depth,sizeof bits);cubeDigest=(cubeDigest^bits)*1099511628211ull;}
+  std::printf("POINT_TERRAIN_CUBE_HASH faces=6 r32=%016llx\n",(unsigned long long)cubeDigest);
   std::puts("POINT_BATCH_COALESCING_GPU_PASS cases=8 faces=6 pixels=exact pageMaterialFilterGapOverflow=separate triangleOrder=preserved");
   // The production candidate path must address appended subranges while the
   // coarse directional/terrain indices keep their original meaning.
@@ -201,6 +211,25 @@ struct PointTerrainCoverageTest {
   }
   w.pointMinBlend=minSupported;w.pointPairedTargets=pairSupported;
   std::puts(minSupported?"POINT_MIN_BLEND_GPU_PASS cases=4 faces=6 pixels=exact legacy=1 min=1 copyFaultBeforeAfter=1 unionEliminated=1":"POINT_MIN_BLEND_GPU_SKIP unsupported-format legacy-retained");
+  // Refuse a new static face after the shared attachments have been warmed.
+  // The partially written cube must not be published, and the retry must
+  // recover the reference depth using the same attachments.
+  auto cached=batch;cached.terrain=false;w.batches={batch,cached};w.terrainBatchListGeneration=UINT64_MAX;
+  auto& slot=w.pointSlot();
+  for(unsigned face=0;face<6;++face){drop(slot.cacheSurface[face]);drop(slot.cacheFace[face]);}
+  slot.cacheValid=false;calls.failStatic=true;
+  const auto retries=w.pointFailures;
+  must(d->BeginScene());assert(!w.renderPointShadow(light,true,false));must(d->EndScene());
+  assert(!calls.failStatic&&!slot.ready&&!slot.cacheValid&&w.pointFailures==retries+1);
+  slot.retryAt=0;
+  must(d->BeginScene());assert(w.renderPointShadow(light,true,false));must(d->EndScene());
+  assert(slot.ready&&slot.cacheValid);
+  for(unsigned face=0;face<6;++face){
+   must(d->GetRenderTargetData(slot.faces[face],readback));D3DLOCKED_RECT lock{};must(readback->LockRect(&lock,nullptr,D3DLOCK_READONLY));
+   for(unsigned y=0;y<256;++y)assert(!std::memcmp(referenceCube.data()+face*256*256+y*256,static_cast<char*>(lock.pBits)+y*lock.Pitch,256*4));
+   must(readback->UnlockRect());
+  }
+  std::puts("POINT_STATIC_ALLOCATION_RECOVERY_PASS unpublished=1 exactFaces=6");
   w.batches={batch};w.rebuildTerrainLists();
   // The actual pool must spend its full budget on visible sources, even when
   // closer/brighter offscreen bulbs would win the old camera-distance ranking.
@@ -213,7 +242,7 @@ struct PointTerrainCoverageTest {
    for(unsigned i=0;i<limit;++i){selection.sources[i]={{0,0,-13},{16,8,4},1,12,100+i,3,NorthlightLocalLights::CastShadow};
     selection.sources[limit+i]={{0,0,4},{1,.4f,.1f},1,12,1000+i,3,NorthlightLocalLights::CastShadow};}
    must(d->BeginScene());w.renderPointShadows(selection,true,false);must(d->EndScene());
-   unsigned ready=0,resident=0;for(const auto& slot:w.pointSlots){resident+=slot.cube!=nullptr;if(slot.ready){++ready;assert(slot.selected.sourceId>=1000&&slot.selectionGain==1);}}
+   unsigned ready=0,resident=0;for(const auto& slot:w.pointTargets.slots()){resident+=slot.cube!=nullptr;if(slot.ready){++ready;assert(slot.selected.sourceId>=1000&&slot.selectionGain==1);}}
    assert(ready==limit&&resident==limit);std::printf("POINT_VISIBLE_POOL_PASS limit=%u ready=%u cubeSlots=%u\n",limit,ready,resident);
   }
   w.releasePointGPU();w.localScissorView={};
@@ -225,7 +254,7 @@ struct PointTerrainCoverageTest {
    w.releasePointGPU();w.quality.pointShadowDistance=distance;const bool expected=distance>=84;
    assert(w.pointRefreshPredicted()==expected);
    must(d->BeginScene());w.renderPointShadows(distant,true,false);must(d->EndScene());
-   assert(w.pointReady==expected);unsigned resident=0;for(const auto& slot:w.pointSlots)resident+=slot.cube!=nullptr;
+   assert(w.pointReady==expected);unsigned resident=0;for(const auto& slot:w.pointTargets.slots())resident+=slot.cube!=nullptr;
    assert(resident==unsigned(expected));std::printf("POINT_DISTANCE_PASS distance=%u ready=%u cubeSlots=%u\n",distance,unsigned(w.pointReady),resident);
   }
   w.releasePointGPU();w.quality.pointShadowDistance=48;w.context.camera[2]=0;w.active->localLights.clear();
@@ -239,7 +268,7 @@ struct PointTerrainCoverageTest {
    0x02000001,0xe0030001,0x90e40001,0xffff};
   std::vector<uint32_t> patched;assert(NorthlightShadowShader::patch(original,sizeof(original)/4,patched));
   auto replay=std::make_unique<WorldRenderer::Replay>();must(d->CreateVertexShader(reinterpret_cast<const DWORD*>(patched.data()),&replay->shader));
-  replay->decl=w.shadowDecl;replay->decl->AddRef();replay->stream[0]=page.vb;page.vb->AddRef();replay->stride[0]=sizeof(NorthlightGI::WorldVertex);
+  replay->decl=w.shadowPrograms.worldLayout();replay->decl->AddRef();replay->stream[0]=page.vb;page.vb->AddRef();replay->stride[0]=sizeof(NorthlightGI::WorldVertex);
   replay->index=page.ib;page.ib->AddRef();replay->type=D3DPT_TRIANGLELIST;replay->indexed=true;
   replay->base=0;replay->min=0;replay->start=0;replay->vertices=4;replay->count=2;
   replay->projectionKind=2;replay->constantUsage.floats={2,4};replay->constantUsage.booleans={};replay->constantUsage.integers={};

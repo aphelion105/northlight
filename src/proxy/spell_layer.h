@@ -40,6 +40,7 @@ constexpr unsigned kBlendZero=1,kBlendOne=2,kSrcColor=3,kInvSrcColor=4,kSrcAlpha
 constexpr unsigned kLockReadOnly=0x10,kLockNoOverwrite=0x1000,kLockDiscard=0x2000,kUsageDynamic=0x200; /* D3DLOCK_*, D3DUSAGE_DYNAMIC */
 static_assert(unsigned(D3DLOCK_READONLY)==0x10&&unsigned(D3DLOCK_NOOVERWRITE)==0x1000&&unsigned(D3DLOCK_DISCARD)==0x2000&&unsigned(D3DUSAGE_DYNAMIC)==0x200,"lock flag values");
 constexpr unsigned kCooldownFrames=30,kMaxStreams=4,kMaxTextures=20,kMaxDecl=65,kMinPsMajor=2; /* kMaxTextures: pixel samplers 0..15 and the vertex texture samplers D3DVERTEXTEXTURESAMPLER0..3 (stages 257..260) */
+constexpr unsigned kMaxCapacityCooldownFrames=4*kCooldownFrames;
 
 // ---- a) classification (pure) ----
 enum class Family:uint8_t{None,Particle,ParticleUnlit,Model,Projected,Ripples}; // M2 vertex shader family, known at shader creation; Ripples (WaterRipples, not an M2 shader) are treated like water
@@ -154,24 +155,37 @@ struct FadeRun{
 enum class Mode:uint8_t{Off,Armed,Deferring,Fallback,Cooldown};
 inline const char* modeName(Mode m){static const char* const n[]={"off","armed","deferring","fallback","cooldown"};return n[unsigned(m)];}
 // Fallback: a hazard flushed (or a defer failed) this frame, or B has passed (frame closed): every later candidate is drawn in place. A hazard
-// frame is followed by kCooldownFrames Cooldown frames; memory pressure gives Cooldown frames without counting them down.
+// frame is followed by Cooldown frames; memory pressure pauses the countdown.
 class FrameState{
-    Mode mode_=Mode::Off;unsigned cooldown_=0;bool cooldownNext_=false;
+    Mode mode_=Mode::Off;
+    unsigned cooldown_=0,cooldownNext_=0,capacityCooldown_=kCooldownFrames;
 public:
     Mode mode()const{return mode_;}
     unsigned cooldownLeft()const{return cooldown_;}
     bool canDefer()const{return mode_==Mode::Armed||mode_==Mode::Deferring;}
     void begin(bool on,bool pressure){
-        if(mode_==Mode::Fallback&&cooldownNext_)cooldown_=kCooldownFrames;
-        cooldownNext_=false;
-        if(!on)mode_=Mode::Off;
-        else if(pressure)mode_=Mode::Cooldown;
+        if(!on){*this=FrameState{};return;}
+        if(mode_==Mode::Fallback&&cooldownNext_)cooldown_=cooldownNext_;
+        cooldownNext_=0;
+        if(pressure)mode_=Mode::Cooldown;
         else if(cooldown_){--cooldown_;mode_=Mode::Cooldown;}
         else mode_=Mode::Armed;
     }
     void deferred(){if(mode_==Mode::Armed)mode_=Mode::Deferring;}
-    void fallback(bool cooldown){if(canDefer()){mode_=Mode::Fallback;cooldownNext_=cooldown;}}
+    void fallback(bool cooldown,Reason reason=Reason::Count){
+        if(!canDefer())return;
+        mode_=Mode::Fallback;
+        if(cooldown&&reason==Reason::Capacity){
+            // A retry that drains an overfull queue is expensive in a sustained crowd.
+            cooldownNext_=capacityCooldown_;
+            capacityCooldown_=std::min(capacityCooldown_*2,kMaxCapacityCooldownFrames);
+        }else{
+            cooldownNext_=cooldown?kCooldownFrames:0;
+            capacityCooldown_=kCooldownFrames;
+        }
+    }
     void close(){fallback(false);} // B reached: no deferral for the rest of the frame, no cooldown
+    void reset(){close();cooldown_=cooldownNext_=0;capacityCooldown_=kCooldownFrames;}
 };
 struct Counters{
     unsigned deferred[4]={},inPlace[4]={};        // by sub-class (additive, alpha, modulate, other); accepted in-place draws by kind (only fade is counted)
@@ -804,7 +818,7 @@ private:
         noteHazard(r);noteEvent(r,InPlaceKind::None);
         if(count_){count([](Counters& c){++c.flushes;});drain();}
         else releaseHeld(); // nothing pending: the references this refused record took are not needed
-        fm_.fallback(r!=Reason::Frame);
+        fm_.fallback(r!=Reason::Frame,r);
         return false;
     }
     // Mutable/unknown texels cannot be deferred. Keep this draw in order without turning the whole layer off for 30 frames.
@@ -1704,7 +1718,7 @@ public:
         if(!count_)return;
         if(by!=InPlaceKind::None&&by!=InPlaceKind::Fade&&frame_.orderBy[0]+frame_.orderBy[1]+frame_.orderBy[2]<cfg_.maxOrderSplits){count([&](Counters& c){++c.orderBy[unsigned(by)-1];++c.flushes;});drain();return;}
         noteHazard(r);noteEvent(r,by);count([](Counters& c){++c.flushes;});
-        drain();fm_.fallback(cooldown);
+        drain();fm_.fallback(cooldown,r);
     }
     // Buffer::Lock hook, called BEFORE the lock is forwarded, only for buffers the markGuard callback marked. READONLY and non-conflicting writes
     // return untouched. A conflicting write to a DYNAMIC buffer without outstanding locks (conflictCopy allowed) first copies the guarded bytes
@@ -1765,7 +1779,7 @@ public:
     }
     // Device Reset/destroy/extension fault: drops everything WITHOUT drawing, releases records, buffers and surfaces, unmarks guards.
     void reset(){
-        clearFrame();deltaChunks_.clear();entryChunks_.clear();arena_.reset();arenaCap_=0;ffChunks_.clear();releaseUploads();clearVerdicts();fm_.close();
+        clearFrame();deltaChunks_.clear();entryChunks_.clear();arena_.reset();arenaCap_=0;ffChunks_.clear();releaseUploads();clearVerdicts();fm_.reset();
     }
 };
 }

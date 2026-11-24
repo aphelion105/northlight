@@ -37,7 +37,7 @@ struct PipelineOffTest {
     static void setup(WorldRenderer& w,unsigned width,unsigned height,bool reference,unsigned sample){
         WorldScreenEffectsTest::setup(w,width,height);w.effects={false,false,false};
         w.quality.localLights=w.quality.weather=w.quality.autoBump=0;w.quality.contactAO=1;
-        w.hdrBaseAllowed=true;w.hdrAOBaseTried=reference;
+        WorldScreenEffectsTest::configureAOBase(w,reference);
         w.celestialValid=true;w.celestial.dayFraction=sample&1?0.f:.5f;
         w.quality.nightBrightness=sample&1?100:0;
         w.legacyFogKnown=sample&2;w.legacyFog.parameters[0]=1;w.legacyFog.parameters[1]=10;w.legacyFog.parameters[2]=.02f;w.legacyFog.parameters[3]=1;
@@ -56,10 +56,10 @@ struct PipelineOffTest {
         }
     }
     static void liveToggle(WorldRenderer& w){
-        w.fogHistoryValid=w.fogVolume.valid=true;
+        WorldScreenEffectsTest::fogHistoryValid(w)=w.fogVolume.valid=true;
         NorthlightSettings::Config next;next.quality=w.quality;next.celestial=w.celestialProfiles;
         next.quality.godrays=!next.quality.godrays;w.applyLiveSettings(next);
-        assert(!w.fogHistoryValid&&!w.fogVolume.valid);
+        assert(!WorldScreenEffectsTest::fogHistoryValid(w)&&!w.fogVolume.valid);
     }
 };
 

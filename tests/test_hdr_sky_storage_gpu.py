@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 # northlight-test: requires=windows-gpu,zig,client
 """Check identical HDR sky storage with one fewer MSAA0 FP16 copy."""
+
+from source_units import source_text
 import argparse
 import hashlib
 import json
@@ -22,7 +24,7 @@ args = parser.parse_args()
 processes()
 out = args.output.resolve()
 out.mkdir(parents=True, exist_ok=True)
-renderer = fp.src('renderer.cpp').read_text(encoding='utf-8')
+renderer = source_text(fp.src('renderer.cpp'), encoding='utf-8')
 start = renderer.index('    IDirect3DSurface9* hdrSkyTarget()const{')
 end = renderer.index('\n    }', start)+6
 (out/'hdr_sky_storage_methods.inc').write_text(renderer[start:end]+'\n')

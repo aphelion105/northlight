@@ -1,9 +1,16 @@
 # Celestial placement and size
 
-The **Sun & moon → Celestial placement & size** selector saves
+The **Sun & moon → Sky style** selector saves
 `[Quality] CelestialStyle=Default` or `Forever` in `northlight-quality.ini`.
-Default follows the client's visible billboard positions and animated sizes.
-Forever uses the locally recovered daily orbit and enlargement tables, with
+Default uses the client's sky palette, visible billboard positions and animated sizes.
+Forever reads regional sky and daylight colors from `forever-atmosphere.bin` on
+Azeroth and Kalimdor. In Outland and Northrend it approximates the sky gradient
+from the local biome, game time and weather using the installed regional fog
+cache. The expansions keep the client's light budget. Uncovered regions use the
+client's palette.
+Both styles can be previewed live with **Enhanced sun, moon & sky** enabled.
+
+Forever also uses the locally recovered daily orbit and enlargement tables, with
 Northlight's solar calibration and the client's unreduced lunar base:
 
 | Body | Base angular radius | Imported enlargement |
@@ -26,22 +33,26 @@ extinction, retaining texture contrast and energy above the bloom threshold.
 The early, late and native-sky residual paths share this gain. World lighting,
 fog intensity and global exposure are independent.
 
-`test_expansion_atmosphere.py` checks equality across Azeroth, Kalimdor and
-Northrend, and both bodies at four time keys with nine
+`test_expansion_atmosphere.py` checks both trajectories and discs across Azeroth,
+Kalimdor and Northrend at every minute with a shared appearance profile. It also
+checks both body sizes at four time keys with nine
 different combinations of native size/base size, repeated resolution without
 compounding, and preservation of Default mode. Existing native celestial and
 orbit tests cover the unchanged default and the shared horizon calculations.
 
 ## Expansion celestial bodies
 
-Northrend uses the same calibrated Forever sun/moon angular radii as Azeroth,
-including the imported daily size curves. No native skybox size is multiplied
-on top. Early sky drawing and late world/light resolution receive the current map.
+Northrend shares Azeroth and Kalimdor's Forever sun and moon orbits, angular
+radii, daily size curves and disc renderer. All three maps load the same
+`world-cache/celestial/sun.fct` and `moon.fct`. Local appearance profiles can tint
+the discs and change their gain. Clouds, weather and skybox artwork affect their
+visibility. Early sky drawing and late world/light resolution receive the current map.
 
-Outland (`Expansion01`) keeps its authored planetary textures, positions, rotation,
-relative sizes and rings. The ordinary Azeroth lunar disc/halo is disabled there in both placement modes.
-The existing night-light budget is retained; skybox planets keep their native
-material emission without inventing additional directional lights.
+Outland (`Expansion01`) uses the native solar trajectory, size and opacity in
+both modes. A full skybox or a skipped native solar draw keeps the solar disc
+and halo hidden. The ordinary lunar disc and halo stay hidden. Authored planet
+meshes retain their textures, positions, rotation, rings and native material
+emission.
 
 In **Forever**, reviewed planet meshes scale by `0.46176318` about their original
 centers, reusing Northlight's existing lunar linear-size calibration. Both ring

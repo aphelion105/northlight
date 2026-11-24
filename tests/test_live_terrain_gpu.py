@@ -5,63 +5,86 @@ retirement and rollover cases, plus prepare()/write() against the 0.3.175 indice
 twin caches), the fixed-chunk bitmap beside the set (test_fixed_chunk_bits.cpp), each plain and
 ASan/UBSan, and a wiring audit of uploadLiveTerrain (counts instead of index vectors, the same resets
 on the same paths, the bitmap filled at the mesh commit and dropped with the set). No game or GPU."""
+
+from source_units import source_text
 import sys; from pathlib import Path; sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root
 import northlight_paths as fp
 import subprocess,tempfile
 HERE=Path(__file__).resolve().parent
-w=fp.src('world_renderer.h').read_text();pr=fp.src('world_point_rendering.inl').read_text()
+w=source_text(fp.src('world_renderer.h'));pr=fp.src('world_point_rendering.inl').read_text()
+indices=fp.src('live_terrain_indices.h').read_text()
+flash=fp.src('world_flash_rendering.inl').read_text()
+dgpu=fp.src('directional_gpu_pass.h').read_text()
+pgpu=fp.src('point_shadow_face_pass.h').read_text()
+point_live=pgpu[pgpu.index('bool drawLiveTerrain('):pgpu.index('bool resolve(')]
+live_gpu=dgpu[dgpu.index('    bool liveTerrain('):dgpu.index('    bool beginNearReplay(')]
 up=w[w.index('    bool uploadLiveTerrain(){'):w.index('    // Win32 wide-path read')]
-reset='liveTerrainIndexCount=liveDirectionalIndexCount=0;liveIndexBase=0;liveTerrainChunks.clear();uploadedTerrain.clear();return true;'
+reset='liveTerrainIndexCount=liveDirectionalIndexCount=0;liveTerrainIndices.clearBase();liveTerrainChunks.clear();uploadedTerrain.clear();return true;'
 release=w[w.index('    void releaseGPU(bool keepMesh=false){'):]
-release=release[:release.index('\n')]
+release=release[:release.index('\n    }\n')]
+programs=fp.src('world_shadow_programs.h').read_text()
+geometry=fp.src('world_geometry_resources.inl').read_text()
 assert w.count('void endFrame(')==1
 frame_start=w.index('void endFrame(')
 frame_prefix=w[frame_start:w.index('frameFence.endFrame();',frame_start)]
+pivot_reset=w[w.index('    void resetShadowPivot(){'):w.index('    V shadowPivot(){')]
+replay_release=fp.src('world_replay_upload.inl').read_text().split('    bool uploadReplay(',1)[0]
+replay_buffers=fp.src('world_replay_buffers.h').read_text()
 checks={
  'live terrain uses lossless20B caster vertices and a dedicated declaration in both consumers':
     'NorthlightLiveTerrainGPU::Cache<NorthlightTerrainCapture::MeshSnapshot,StaticShadow::Vertex>& liveTerrainGPU=gpuScene->terrain;' in w
     and 'NorthlightLiveTerrainGPU::Cache<NorthlightTerrainCapture::MeshSnapshot,StaticShadow::Vertex> terrain;' in fp.src('gpu_scene.h').read_text()
     and 'return StaticShadow::Vertex{p.x,p.y,p.z,0,0};' in up
     and '#include "world_screen_resources.inl"' in w
-    and 'CreateVertexDeclaration(liveElements,&liveTerrainDecl)' in fp.src('world_screen_resources.inl').read_text()
-    and 'drop(liveTerrainDecl);' in release
-    and w.count('SetVertexDeclaration(liveTerrainDecl)')==1 and pr.count('SetVertexDeclaration(liveTerrainDecl)')==1
-    and w.count('liveTerrainGPU.vertices(),0,sizeof(StaticShadow::Vertex)')==1 and pr.count('liveTerrainGPU.vertices(),0,sizeof(StaticShadow::Vertex)')==1
-    and '"restore terrain declaration"' in w and '"cube restore terrain declaration"' in pr
+    and 'CreateVertexDeclaration(elements,&liveLayout_)' in programs
+    and 'shadowPrograms.createLiveLayout(d)' in fp.src('world_screen_resources.inl').read_text()
+    and 'drop(liveLayout_);' in programs and 'shadowPrograms.releaseCasters();' in release
+    and w.count('gpuPass.liveTerrain({shadowPrograms.liveLayout(),liveTerrainGPU.vertices(),liveTerrainIndices.buffer(),sizeof(StaticShadow::Vertex)}')==1
+    and pr.count('facePass.drawLiveTerrain({shadowPrograms.liveLayout(),liveTerrainGPU.vertices(),liveTerrainIndices.buffer(),')==1
+    and 'sizeof(StaticShadow::Vertex),liveTerrainGPU.vertexCapacity(),liveTerrainIndices.base()' in pr
+    and 'SetVertexDeclaration(geometry.declaration)' in live_gpu and 'SetVertexDeclaration(declaration)' in pgpu
+    and '"restore terrain declaration"' in live_gpu and '"cube restore terrain declaration"' in pgpu
+    and 'return restoreStaticDeclaration(staticDeclaration);' in point_live
     and 'frameTerrainVertices+snapshot->positions.size()>262144' in w,
- 'no index vectors left: counts only':'liveTerrainIndices' not in w+pr and 'liveDirectionalIndices' not in w+pr
+ 'no index vectors left: counts only':'liveTerrainIndices[' not in w+pr and 'liveDirectionalIndices' not in w+pr
     and 'size_t liveTerrainIndexCount=0,liveDirectionalIndexCount=0;' in w,
  'S_FALSE and index-growth refusal keep the 0.3.175 reset':up.count(reset)==2
-    and 'if(terrainResult==S_FALSE){' in up and 'if(!admitsGrowth("live-terrain-index-growth",ibCapacity)){\n                '+reset in up,
+    and 'if(terrainResult==S_FALSE){' in up and 'if(uploaded==NorthlightLiveTerrainIndices::Upload::Deferred){\n            '+reset in up
+    and 'if(!admit(capacity))return Upload::Deferred;' in indices,
  'totals before the Lock, the same ring Lock size, lists written inside it, Unlock right after':
-    'UINT ib=UINT((liveTerrainIndexCount+liveDirectionalIndexCount)*sizeof(uint32_t));' in up
-    and 'if(!check(liveIndicesGPU->Lock(slot.offset,ib,&data,slot.flags),"live index upload"))return false;\n        liveTerrainGPU.write(static_cast<uint32_t*>(data));\n        if(!check(liveIndicesGPU->Unlock(),"live index unlock"))return false;' in up
-    and up.index('liveTerrainGPU.prepare(')<up.index('->Lock('),
+    'const UINT ib=UINT((liveTerrainIndexCount+liveDirectionalIndexCount)*sizeof(uint32_t));' in up
+    and 'return admitsGrowth("live-terrain-index-growth",capacity);' in up
+    and 'liveTerrainGPU.write(data);' in up and up.index('liveTerrainGPU.prepare(')<up.index('liveTerrainIndices.upload(d,ib,fence(),')
+    and indices.index('buffer_->Lock(slot.offset,bytes,&data,slot.flags)')<indices.index('write(static_cast<std::uint32_t*>(data));')<indices.index('buffer_->Unlock()'),
  'membership failure and the empty case as before':'},liveTerrainIndexCount,liveDirectionalIndexCount,[&](const auto& snapshot){' in up
     and '}))return check(E_FAIL,"live terrain arena membership");' in up
     and 'if(!liveTerrainIndexCount){uploadedTerrain=frameTerrain;liveTerrainGeneration=meshGeneration;return true;}' in up,
- 'readers use the counts':'if(liveTerrainIndexCount){' in pr and 'if(liveDirectionalIndexCount){' in w
-    and 'UINT(liveIndexBase+liveTerrainIndexCount),UINT(liveDirectionalIndexCount/3)),"live terrain shadow")' in w,
- 'liveIndexBase added at both draw sites that bind liveIndicesGPU (0.3.192 ring offset, in indices)':
-    w.count('SetIndices(liveIndicesGPU)')==1 and pr.count('SetIndices(liveIndicesGPU)')==1
-    and 'UINT(liveIndexBase+liveTerrainIndexCount),UINT(liveDirectionalIndexCount/3)),"live terrain shadow")' in w
-    and 'UINT(liveIndexBase+batch.start),batch.count),"cube live draw")' in pr
-    and w.count('liveIndexBase+')==1 and pr.count('liveIndexBase+')==1,
- 'liveIndexBase set from the ring slot after the Unlock, reset with the ring':
-    'liveIndexBase=slot.offset/sizeof(uint32_t);' in up and up.index('liveIndicesGPU->Unlock()')<up.index('liveIndexBase=slot.offset')
-    and w.count('liveIndexBase=slot.offset')==1
-    and 'NorthlightDynamicRing::reset(liveIndexRing,0,queries);liveIndexBase=0;' in w[w.index('    bool recreateLiveIndices('):w.index('    bool uploadLiveTerrain(){')]
-    and 'liveIndexBase=0;' in release and 'NorthlightDynamicRing::reset(liveIndexRing,0,' in release,
- 'every other write of liveIndexBase is a reset to 0 (releaseGPU, recreate, S_FALSE, growth refusal)':
-    w.count('liveIndexBase=')==6 and w.count('liveIndexBase=0;')==5, # the member, recreateLiveIndices, S_FALSE, growth refusal, releaseGPU; the one non-zero write is the slot
- '0.3.192 frame fence: one member, endFrame() after deferred logs before any early return, drop() in the release paths, touch() on the reuse path and at both live IB draw sites':
+ 'readers use the counts and the point face candidates':
+    'const bool drawLiveTerrain=liveTerrainIndexCount&&!pointLiveCandidates[face].empty();' in pr
+    and 'if(drawLiveTerrain){' in pr and 'if(liveDirectionalIndexCount){' in w
+    and 'UINT(liveTerrainIndices.base()+liveTerrainIndexCount),UINT(liveDirectionalIndexCount/3)' in w,
+ 'the same ring slice supplies directional, flash and point ranges':
+    'SetIndices(geometry.indices)' in live_gpu and 'SetIndices(indices),"cube live indices"' in pgpu
+    and 'DrawIndexedPrimitive(D3DPT_TRIANGLELIST,0,0,vertices,start,count)' in live_gpu
+    and 'UINT(liveTerrainIndices.base()+liveTerrainIndexCount),UINT(liveDirectionalIndexCount/3)' in w
+    and 'UINT(liveTerrainIndices.base()),UINT((liveTerrainIndexCount+liveDirectionalIndexCount)/3)' in flash
+    and 'UINT(geometry.indexBase+batch.start),batch.count),"cube live draw")' in point_live,
+ 'the ring owner publishes the base after Unlock and clears it on release':
+    indices.index('buffer_->Unlock()')<indices.index('base_=slot.offset/sizeof(std::uint32_t);')
+    and indices.count('base_=slot.offset')==1 and 'void clearBase(){base_=0;}' in indices
+    and 'releaseLiveTerrainBuffers();' in release and 'liveTerrainIndices.release(fence());' in geometry,
+ 'one EVENT after the frame and a touch before each read of the live slice':
     w.count('NorthlightDynamicRing::FrameFence frameFence;')==1 and w.count('DeviceQueries')==0
     and 'flushDeferredLogs();' in frame_prefix and 'return' not in frame_prefix
-    and 'queries.drop();' in release and 'NorthlightDynamicRing::reset(replayIndexRing,0,queries);queries.drop();' in w
-    and 'if(reuse){terrainUploadReused=true;if(liveTerrainIndexCount||liveDirectionalIndexCount)NorthlightDynamicRing::touch(liveIndexRing,fence());return true;}' in up
-    and w.count('NorthlightDynamicRing::touch(')==2 and pr.count('NorthlightDynamicRing::touch(liveIndexRing,fence());')==1
-    and 'd->SetIndices(liveIndicesGPU);NorthlightDynamicRing::touch(liveIndexRing,fence());' in w
-    and 'void reset(bool preserveCaptureSources=false){' in w and 'cascadeAnchor.reset();endFrame();' in w,
+    and 'replayBuffers.release(fence());' in replay_release
+    and replay_buffers.index('NorthlightDynamicRing::reset(indexRing_,0,queries);')<replay_buffers.index('queries.drop();')<replay_buffers.index('for(auto& buffer:vertices_)drop(buffer);')
+    and 'if(reuse){terrainUploadReused=true;if(liveTerrainIndexCount||liveDirectionalIndexCount)liveTerrainIndices.touch(fence());return true;}' in up
+    and w.count('liveTerrainIndices.touch(fence());')==2 and pr.count('liveTerrainIndices.touch(fence());')==1
+    and '[&]{liveTerrainIndices.touch(fence());}' in flash
+    and live_gpu.index('SetIndices(geometry.indices)')<live_gpu.index('touch();')<live_gpu.index('DrawIndexedPrimitive(')
+    and pr.index('facePass.drawLiveTerrain(')<pr.index('liveTerrainIndices.touch(fence());')
+    and point_live.index('bindLiveTerrain(')<point_live.index('touch();')<point_live.index('"cube live draw"')
+    and 'cascadeAnchor.reset();' in pivot_reset and 'resetShadowPivot();endFrame();' in w,
  'bitmap filled from the committed set at the swap, dropped with the set':'std::swap(fixedTerrain,committedFixed);std::swap(uploadedStaticOwners,committedOwners);fixedTerrainBits.assign(fixedTerrain.get());' in w
     and 'fixedTerrain.reset();fixedTerrainBits.reset();' in release and w.count('fixedTerrainBits.assign(')==1,
  'bitmap only for the set it describes, the set otherwise':'const auto& fixed=fixedTerrainChunks();const bool bits=fixedTerrainBits.source()==&fixed;' in up

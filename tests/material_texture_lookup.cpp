@@ -25,10 +25,12 @@ int main(int argc,char**){
     NorthlightMaterialTextures::Cache current;MaterialLookupReference::Cache reference;
     std::vector<std::uint8_t> bytes(32*32*4,255),patch(4*4*4,96);
     insert(current,0,0,1,bytes);insert(reference,0,0,1,bytes);
-    // A cached miss must not conceal a later insertion, including after the
-    // positive recent hint moved to another identity.
+    // The colliding insertion displaces the positive hint for the prior miss.
+    // Moving that hint must not expose a stale negative for the now-live key.
     assert(!current.version(key(1))&&!reference.version(key(1)));
-    insert(current,1,1,0,bytes);insert(reference,1,1,0,bytes);equal(current,reference,0);equal(current,reference,1);
+    insert(current,1,1,0,bytes);insert(reference,1,1,0,bytes);
+    insert(current,258,258,0,bytes);insert(reference,258,258,0,bytes);
+    equal(current,reference,1);
     assert(current.version(key(1)));
     unsigned comparisons=0;
     for(unsigned n=0;n<12000;++n){
@@ -54,13 +56,22 @@ int main(int argc,char**){
     std::printf("MATERIAL_LOOKUP_PASS comparisons=%u insert_after_miss=1 replacement=1 owner_reuse=1 revisions=exact counters=exact pixels=exact limits=unchanged\n",comparisons);
     if(argc>1){
         volatile std::uint64_t sink=0;
-        for(unsigned population:{0u,16u,128u})for(unsigned batch:{1u,8u,1024u}){
+        for(unsigned population:{0u,16u,128u})for(unsigned batch:{1u,8u,1024u,0u}){
+            if(!batch&&population!=128)continue;
             NorthlightMaterialTextures::Cache now;MaterialLookupReference::Cache old;
             for(unsigned i=0;i<population;++i){insert(now,i,i,1,bytes);insert(old,i,i,1,bytes);}
-            auto measure=[&](bool candidate){const auto start=std::chrono::steady_clock::now();for(unsigned n=0;n<200000;++n){const auto raw=key(1024+(n/batch)%32);sink+=candidate?query(&now,raw):query(&old,raw);}return std::chrono::duration<double,std::nano>(std::chrono::steady_clock::now()-start).count()/200000;};
+            auto measure=[&](bool candidate){
+                const auto start=std::chrono::steady_clock::now();
+                for(unsigned n=0;n<200000;++n){
+                    const auto raw=key(batch?1024+(n/batch)%32:(n%3==0?n%128:4096+(n/3)%128));
+                    sink+=candidate?query(&now,raw):query(&old,raw);
+                }
+                return std::chrono::duration<double,std::nano>(std::chrono::steady_clock::now()-start).count()/200000;
+            };
             double before[8],after[8];for(unsigned block=0;block<8;++block){if(block%4==1||block%4==2){after[block]=measure(true);before[block]=measure(false);}else{before[block]=measure(false);after[block]=measure(true);}}
             std::sort(before,before+8);std::sort(after,after+8);
-            std::printf("MATERIAL_LOOKUP_BENCH population=%u missBatch=%u beforeNs=%.4f afterNs=%.4f scope=metadata_lookup_not_frame\n",population,batch,(before[3]+before[4])*.5,(after[3]+after[4])*.5);
-        }assert(!sink);
+            std::printf("MATERIAL_LOOKUP_BENCH population=%u missBatch=%u mixed=%u beforeNs=%.4f afterNs=%.4f scope=metadata_lookup_not_frame\n",population,batch,unsigned(!batch),(before[3]+before[4])*.5,(after[3]+after[4])*.5);
+        }
+        assert(sink);
     }
 }

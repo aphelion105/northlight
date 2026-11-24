@@ -1,9 +1,11 @@
 #pragma once
 #include <cstddef>
 #include <cstdint>
+#include "frame_parity_clock.h"
 
 namespace NorthlightReplayGPU {
 inline constexpr bool CreateTimeBudget=true;
+inline bool useCreateTimeBudget(){return CreateTimeBudget&&!NorthlightFrameParityClock::fixedProfileWork();}
 inline constexpr double CreateBudgetMs=1.0;
 // Shared by production residency and the legacy comparison caches.
 inline double& createBudgetMs(){static double value=CreateBudgetMs;return value;}

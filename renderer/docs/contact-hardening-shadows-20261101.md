@@ -1,31 +1,31 @@
-# Contact hardening shadows для Northlight
+# Contact Hardening Shadows for Northlight
 
-Исторический проект от 1 ноября 2026 года. Фактическая реализация и результаты проверок описаны в [PCSS extension](pcss-filter-extension-20261101.md). Ниже сохранено исходное исследование.
+The historical project of 1 November 2026 is described in [PCSS extension](pcss-filter-extension-20261101.md).
 
-Рекомендуемый путь — расширить существующий PCSS на готовых картах теней, выделив обработку видимости в отключаемый этап. Геометрию, число кубов и расписание их обновления этот этап не меняет. В исходном плане первый этап охватывал солнце, луну и персонажей; второй добавлял мягкие тени для одного или двух значимых локальных источников.
+The recommended path is to extend the existing PCSS on ready-made shadow maps by highlighting the processing of visibility into an off-line phase. Geometry, number of cubes and schedule for updating them does not change this stage. In the original plan, the first step covered the sun, moon and characters; the second added soft shadows for one or two significant local sources.
 
-На момент исследования были проверены только отдельные прототипы. Последующее расширение PCSS уже подключено к рендереру: SoftShadows=0|1, солнце/луна и все готовые выбранные локальные источники. Первоначальный план уровней 0|1|2 и ограничения на 1–2 локальных источника ниже не описывает итоговую реализацию. Игровые файлы не изменены.
+At the time of the study, only selected prototypes had been tested.0|1the sun/moon and all available locally selected sources. 0|1|2 and restrictions on the use of 1–2 Local sources do not describe the final implementation below. The game files have not been changed.
 
-## Что уже реализовано
+## What has already been implemented
 
-| Подсистема | Текущий способ | Где смотреть |
+| Subsystem | Current mode | Where to look |
 | --- | --- | --- |
-| Солнце и луна, окружение | Растеризация near/far shadow maps; фиксированный PCF, 25/16 выборок | `shaders/world_effects.hlsl`: `shadowMap`, `directionalShadow`, `WorldLighting` |
-| Ближние персонажи и маунты | Отдельная карта 1024² на область 24×24 world units; отдельный half-res PCSS | `ActorShadow`, `ActorTiles`; `src/shadows/actor_shadow_map.h` |
-| Локальные источники | R32F cubemap 256² на грань; четыре PCF-выборки | `shaders/local_light_effects.hlsl`: `localVisibility`; `world_point_rendering.inl` |
-| GI | CPU-трассировка BVH на фоновом worker, включая shadow rays в расчёте переноса света | `src/gi/world_gi.cpp`: `BVH::trace`, `BVH::occluded`, `transport` |
+| Sun and moon, environment | Disruption of near/far Shadow Maps; fixed PCF, 25/16 sample | `shaders/world_effects.hlsl`: `shadowMap`, `directionalShadow`, `WorldLighting` |
+| Nearby actors and mounts | Separate 1024² map covering 24×24 world units and a separate half-resolution PCSS pass | `ActorShadow`, `ActorTiles`; `src/shadows/actor_shadow_map.h` |
+| Local lights | R32F cubemap with 256² pixels per face and four PCF samples | `shaders/local_light_effects.hlsl`: `localVisibility`; `world_point_rendering.inl` |
+| GI | CPU BVH on background worker, including Shadow rays in light transfer calculation | `src/gi/world_gi.cpp`: `BVH::trace`, `BVH::occluded`, `transport` |
 
-Таким образом, трассировка в проекте действительно есть, но она обслуживает GI. Готового GPU-прохода ray traced direct shadows в исследованном пути нет. `ActorShadow` уже даёт требуемый принцип CHS: резкий контакт и расширение полутени с удалением blocker от receiver. Сейчас поиск содержит 41 выборку, затем выполняется непрерывный tent-фильтр до 81 выборки. Для большинства освещённых пикселей четыре чтения tile minima позволяют завершить работу раньше.
+So there's actually a path in the project, but it's serving the GI. The finished GPU route ray truced direct Shadows does not exist in the research path. `ActorShadow` already gives the required CHS principle: sharp contact and extension of the half with the removal of blocker from receiver. Now the search contains 41 sample, then a continuous tent filter up to 81 sample. For most pixels covered, four tile minima readings allow the work to be completed earlier.
 
-[AMD ShadowFX](https://github.com/GPUOpen-Effects/ShadowFX) реализует CHS через фильтрацию карт теней и рассчитан на DX11/DX12 с SM5. Для нашего D3D9/SM3 целесообразен собственный совместимый фильтр на имеющихся ресурсах. Отдельный [AMD Hybrid Shadows](https://github.com/GPUOpen-Effects/Hybrid-Shadows) использует DXR 1.1; это иной архитектурный путь.
+[AMD ShadowFX](https://github.com/GPUOpen-Effects/ShadowFX) Implements CHS by filtering shadow maps and is designed for DX11/DX12 with SM5 for our D3D9/SM3 own compatible filter on available resources; the individual [AMD Hybrid Shadows](https://github.com/GPUOpen-Effects/Hybrid-Shadows) uses DXR 1.1; this is a different architectural path.
 
-CPU BVH полезен как эталон для тестовых сцен. Использовать его для каждого экранного пикселя в runtime не предлагается: уже один луч на пиксель half-res 1080p при 60 кадрах/с требует 31,1 млн запросов/с на источник, без учёта мягких теней и обновления геометрии. Screen-space ray marching можно рассматривать позже для мелких контактных деталей, но он ограничен видимой глубиной и не заменяет внеэкранных blockers.
+CPU BVH is useful as a reference for test scenes. It is not proposed to use it for each screen pixel in runtime: one beam per pixel half-res 1080p at 60 frame/s requires 31,1 million requests/s per source, without accounting for soft shadows and updating geometry. Screen-space Ray Marching can be considered later for small contact details, but it is limited by visible depth and does not replace off-screen blockers.
 
-## Связь с оптимизацией Штормграда
+## Relationship to the optimization of Stormgrad
 
-В исходном `qa_report/northlight-renderer.log` найдены 19 GPU-срезов с `ActorShadow` и `PointShadow`, строки 547–6871:
+Original `qa_report/northlight-renderer.log` found 19 GPU cuts from `ActorShadow` and `PointShadow`, line 547–6871:
 
-| Интервал | Медиана, мс | Число срезов |
+| Interval | Median, ms | Number of cuts |
 | --- | ---: | ---: |
 | ActorTiles | 0,010 | 17 |
 | ActorShadow | 0,034 | 19 |
@@ -33,49 +33,49 @@ CPU BVH полезен как эталон для тестовых сцен. И�
 | PointLight | 0,170 | 19 |
 | PointShadow | 24,181 | 19 |
 
-Срезы включают кадры без работы некоторых проходов. Это старый проблемный захват, а не результат нового CHS и не измерение после исправлений. В логе адаптер назван RTX 3080; PCI vendor там расходится с названием, поэтому перед новым benchmark нужно заново записать реальное устройство, backend и разрешение. GPU timestamps отражают интервалы команд, включая возможные простои.
+Cuts include footage without work of certain passageways. This is an old problem grab, not the result of a new CHS or measurement after corrections. In the log, the adapter is called RTX 3080; the PCI vendor there differs from the name, so before the new benchmark, you have to rewrite the real device, backend and resolution.
 
-В чате [Analyze Stormwind FPS bottleneck](thread://01a19774-6639-7923-bcfa-62ee6e6e2dd1?hostId=local) исправлены покрытие bounds, общий список terrain, refresh в плотной сцене, повторное использование неизменных граней и общие временные ресурсы. Архитектурный review из этого чата учтён ниже: раздельная готовность actor-карты и фильтра, сохранение fog tiles, проверки `slot.ready`, линейная глубина blocker и упаковка видимости в RGBA16F.
+The chat room [Analyze Stormwind FPS bottleneck](thread://01a19774-6639-7923-bcfa-62ee6e6e2dd1?hostId=local) has corrected the bows coating, a general list of terrain, refresh in a dense scene, reuse of fixed edges and total time resources. The architecture review from this chat room is taken into account below: separate actor card and filter readiness, fog tiles retention, checks `slot.ready`, linear depth blocker, and visual packaging in RGBA16F.
 
-CHS потребляет итоговые карты после этих оптимизаций. Не меняются `PointShadowLimit`, выбор источников, refresh, face cycle, content signatures, bounds и caster admission. Нельзя вернуть прежний bottleneck дополнительным replay для мягкой тени.
+CHS consumes the final maps after these optimisms. There is no change `PointShadowLimit`, source selection, refresh, face cycle, coherent signatures, backgrounds and caster admission. You cannot return the old bottleneck additional backplay for soft shadow.
 
-## Отдельный этап видимости
+## Individual stage of visibility
 
-Предлагаемая настройка `SoftShadows=0|1|2`: Off, Balanced, Quality. Это новый проектируемый ключ, пока отсутствующий в конфиге. Он управляет именно contact hardening. `ActorShadows`, `ActorShadowDetail`, `PointShadows` и общий выключатель теней сохраняют свои назначения.
+Proposed settings `SoftShadows=0|1|2`: Off, Balanced, Quality. This is a new design key that is not yet available in the seizure. It controls precisely the concert hardening. `ActorShadows`, `ActorShadowDetail`, `PointShadows`, and the overall shadow switch retains its function.
 
 ```mermaid
 flowchart TD
-    A[Существующие карты солнца, луны и персонажей] --> B[WorldNormals и нужные ActorTiles]
+    A[Existing sun, moon, and actor shadow maps] --> B[WorldNormals and required ActorTiles]
     B --> C{SoftShadows}
     C -->|Off| D[ActorUniformPCF]
-    D --> E[WorldLighting с прежним directional PCF]
-    C -->|Balanced или Quality| F[Actor PCSS и DirectionalSoftResolve]
-    F --> G[Общий буфер видимости RGBA16F]
+    D --> E[WorldLighting with the existing directional PCF]
+    C -->|Balanced or Quality| F[Actor PCSS and DirectionalSoftResolve]
+    F --> G[Shared RGBA16F visibility buffer]
     G --> H[WorldLightingFromVisibility]
-    E --> I[GI, сглаживание и локальное освещение]
+    E --> I[GI, smoothing, and local lighting]
     H --> I
-    I --> J[Необязательный LocalSoftResolve и LocalSoftCorrection]
-    J --> K[Туман и итоговая композиция]
+    I --> J[Optional LocalSoftResolve and LocalSoftCorrection]
+    J --> K[Fog and final composition]
 ```
 
-CHS — отдельный измеряемый этап, который может содержать несколько draw calls. Один большой shader entry здесь не нужен.
+CHS is a separate measured step that can contain several draw calls. One big shader enry is not needed here.
 
-Для CHS используется один half-res `A16B16G16R16F` target:
+For CHS, one half-res `A16B16G16R16F` Target is used:
 
-- R/G — видимость от actor-карт солнца/луны;
-- B/A — видимость от directional-карт солнца/луны.
+- R/G is the visibility of an actor map of the sun/ moon;
+- B/A is the visibility of the directional map of the sun/ Moon.
 
-Target очищается белым один раз. Сначала готовятся все необходимые tiles. Затем компактные actor/directional shaders пишут только свой канал с выключенным blending, без переключения между промежуточными targets. Consumer делает одно чтение и `min(value.rg, value.ba)`, выбирает канал текущего источника и выполняет остальное освещение. Он больше не вычисляет directional PCF.
+Target is cleaned white once. First all the necessary tiles are prepared. Then the compact actor/directional shaders write only their channel with the blanking off, without switching between intermediate margets. Consumer does one reading and `min(value.rg, value.ba)` selects the current source channel and performs the rest of the lighting. It no longer calculates the directional PCF.
 
-Это сохраняет существующий способ объединения независимых карт. `min` двух отфильтрованных видимостей является приближением для перекрывающихся полутеней; физически точное объединение потребовало бы совместной проверки blockers до фильтрации. Такое изменение не входит в первый этап.
+This preserves the existing way of combining independent maps. `min` two filtered views are approaching for overlapping sides; physically accurate integration would require a joint check of the stockers prior to filtering. This change is not part of the first step.
 
-FP16 устраняет дополнительное восьмибитное квантование directional visibility. Логический размер target — 3,96 МиБ для 1080p и 15,82 МиБ для 4K. Если он заменяет нынешний A8R8G8B8 actor target, прирост составляет 1,98/7,91 МиБ. Это размеры пиксельных данных, без накладных расходов драйвера. Actor и directional не получают отдельные полноэкранные targets или отдельную историю.
+FP16 eliminates the additional 8bit Quantum of directional visibility. The logical size of target is 3,96 MB for 1080p and 15,82 MB for 4K. If it replaces the current A8R8G8B8 actor Target, the increase is 1,98/7,91 MB. This is the amount of pixel data without driver overhead. Actor and directional do not receive separate full-screen tags or a separate story.
 
-Владение visibility-target следует отделить от actor shadow maps. При Off он нужен только существующему actor resolve и может использовать нынешний A8R8G8B8; при CHS включённом target нужен также без actor-карт. Смена формата не должна освобождать карты, сбрасывать caster routing или перестраивать статические кэши. Если новый target не помещается в действующий memory budget, остаётся обычный путь теней.
+The owner of the visibiliability-target should be separated from the actor Shadow Maps. For Off, it is only needed by the existing actor resolve and can use the current A8R8G8B8; for a CHS on, it is also necessary without an actor card. The format change should not release cards, drop caster routing or reconstruct static caches. If the new turget is not placed in the current memory dudget, then there remains a normal shadow path.
 
-## Алгоритм и ограничение стоимости
+## Algorithm and value limitation
 
-PCSS состоит из поиска blockers, оценки ширины полутени и фильтрации сравнений глубины. Для направленного света:
+The PCSS consists of searching for blokers, evaluating the width of the half-wall and filtering depth comparisons. For directional light:
 
 ```text
 separation = max(receiverPlaneDepthAtTap − blockerDepth, 0) / inverseDepthSpan
@@ -83,25 +83,25 @@ penumbraWorld = clamp(tan(lightHalfAngle) × averageSeparation, minWorld, maxWor
 radiusTexels = penumbraWorld / shadowTexelWorldSize
 ```
 
-Важно вычислять separation с поправкой на плоскость receiver. Иначе наклон поверхности будет ошибочно увеличивать полутень. Геометрические normals и confidence берутся из общего `WorldNormals`; material normals продолжают влиять на освещение, не подменяя bias-нормаль.
+It is important to calculate separation with the receiver plane. Otherwise, the slope of the surface will mistakenly increase the half. Geometric normals and conference are taken from the total `WorldNormals`; matrial normals continue to affect the light without replacing the bis-normal.
 
-Первое внедрение сохраняет существующий actor PCSS при включённом CHS: его непрерывный tent уже устраняет скачки при анимации. Начальный диапазон actor-полутени остаётся 0,05–0,10 world units. Простая замена на несколько шумных выборок без проверки анимаций неприемлема.
+The first application saves the existing actor PCSS when CHS is activated: its continuous tent already eliminates animation surges. The initial range of actor half is still 0,05–0,10 world units. A simple replacement for a few noisy samples without an animation check is not acceptable.
 
-Для окружения сначала добавляется CHS в near cascade. Far сохраняет PCF и существующий переход между каскадами. Это явная граница первой версии: удалённые тени пока имеют фиксированную мягкость. Радиус задаётся в мировых единицах, затем переводится в texels; граница каскадов не должна менять ширину внезапно.
+For the environment, a CHS is first added to the Near cascade. The Far retains the PCF and the existing transition between cascades. This is the obvious boundary of the first version: remote shadows are still flexible. Radio is set in world units, then translated into texels; the cascade boundary should not change the width suddenly.
 
-Для прототипирования near-фильтра предлагаются два ограниченных ядра: Balanced — 8 blocker + 16 filter samples, Quality — 16 + 32. Это начальные бюджеты для сравнения качества, а не уже проверенные presets. Сэмплы фиксируются в координатах карты; покадровой случайной ротации и нового temporal denoiser в первой версии нет. Размер ядра ограничивается четырьмя texels near-карты; более широкая мягкость требует отдельной проверки.
+Two limited cores are proposed for the prototype of a niear filter: Balanced – 8 blocker + 16 filter samples, Quality – 16 + 32. These initial budgets are for quality comparison and not already tested presets. The Samples are fixed in map coordinates; there is no precipitous rotation and no new temporal denoiser in the first version. The size of the kernel is limited to four sets of near cards; broader softness requires separate testing.
 
-Нулевой результат разреженного blocker search не доказывает отсутствие тонкого caster. На таком пикселе нужно использовать базовый PCF; возвращать «полностью освещён» можно только по консервативному доказательству покрытия. Нельзя переносить actor tile minima на world-карту: там другая геометрия. Новая иерархия minima для world пока не нужна; добавлять её следует только по измеренной пользе.
+The zero result of the diluted blacker survey does not prove that there is no fine caster. At such a pixel, you need to use the basic PCF; you can only return "fully lit" on conservative evidence of coating. You cannot carry an actor tale minimum to a world map: there's another geometry. A new minimum hierarchy for world is not needed yet; it should be added only for measured benefit.
 
-При Off directional остаётся в прежнем `WorldLighting`, actor-карта читается фиксированным непрерывным PCF с минимальным радиусом. Blocker search и новый directional resolve не запускаются. Консервативный actor tile early-out сохраняется с областью доказательства под фиксированный радиус. Это отключает CHS, сохраняя сглаженные обычные тени; `ActorShadowDetail=0` по-прежнему отдельно отключает детальную карту.
+For Off directional, it remains the same `WorldLighting`, the actor card is read in a fixed continuous PCF with minimum radius. Blocker search and new directional resolve are not launched. The conservative actor tale-out is retained with the area of evidence under a fixed radius. This shuts down CHS by keeping the smoothed normal shadows; `ActorShadowDetail=0` still separates the detailed map.
 
-## Локальные источники
+## Local sources
 
-Локальный CHS вводится вторым этапом. Проектируемый `LocalSoftShadowLimit` ограничивает его 0–2 источниками из уже выбранных и готовых `PointSlot`. Значение 0 отключает только дополнительную мягкость. Остальные источники сохраняют текущие PCF-тени. Выбор для CHS использует значимость в кадре и hysteresis по `sourceId`; пересортировка softness не изменяет основную shadow selection.
+The local CHS is introduced by a second step. The design of `LocalSoftShadowLimit` limits it to 0–2 sources from already selected and ready `PointSlot`. The value 0 only turns off additional softness. The remaining sources retain current PCF shadows. The CHS choice uses the value in frame and hysteresis for `sourceId`; softness over sorting does not change the main Shadow selection.
 
-У `Light` сейчас нет физического радиуса излучателя. `attenuationEnd` задаёт дальность освещения и не подходит для ширины полутени. Для первой проверки нужен один явно художественный малый emitter radius, независимый от falloff; изменять FGL1 ради этой проверки не требуется. Позднее радиус можно задать для конкретных типов источников.
+`Light` now does not have a physical radius of the radiator. `attenuationEnd` sets the range of light and is not suitable for the width of the half. The first test requires one clearly artistic small emiter radius independent of fallsoff; FGL1 is not required to be modified for this verification; later, the radius can be given for specific types of sources.
 
-Куб хранит перспективный `z/w`. Для направления `q`, нормированного так, что его максимальная абсолютная компонента равна 1:
+The Cube keeps a promising one. `z/w`B. For direction `q`normalized so that its maximum absolute component is equal to 1:
 
 ```text
 A = far / (far − near)
@@ -110,84 +110,84 @@ blockerRayDistance = blockerAxialDistance × length(q)
 penumbraWorld ≈ emitterRadius × (receiverDistance − blockerRayDistance) / blockerRayDistance
 ```
 
-Формула полутени — локальное приближение малого источника. Пустую глубину, неположительный gap и вырожденные знаменатели нужно исключать. Сохраняются `localCubeTexelRay`, receiver-plane comparison, bias в мировых единицах и обработка переходов через грани; напрямую усреднять `z/w` разных граней нельзя.
+The semi-shadow formula is the local approach of a small source. The empty depth, non-consensual gap and generic denominators need to be excluded. `localCubeTexelRay`, receiver-plane comparison, bias in world units and cross-border processing; directly average `z/w` You can't have different sides.
 
-Отдельная обработка одного источника состоит из двух компактных экранных проходов:
+Separate treatment of one source consists of two compact screen passes:
 
-1. `LocalSoftResolve` читает только готовый `slot.cube`, depth, water и geometric normals. В RG общего transient target записываются `V_PCF` и `V_CHS`. После завершения `WorldLighting` прежняя directional visibility больше не нужна, поэтому память можно переиспользовать.
-2. `LocalSoftCorrection` добавляет в существующий FP16 light target строго разность:
+1. `LocalSoftResolve` Reads only the finished `slot.cube`, dept, water and geometric normals. The RG general transient Target records `V_PCF` and `V_CHS`. After `WorldLighting`, the previous directional visibility is no longer needed, so memory can be reused.
+2. `LocalSoftCorrection` Adds strict differences to the existing FP16 Light Target:
 
    ```text
    deltaRGB = contribution × relevance × selectionGain × (V_CHS − V_PCF)
    ```
 
-Оба прохода выполняются только внутри существующего conservative light scissor. Это максимум четыре дополнительных экранных draw calls для двух ламп, без новых caster draws. `LocalSoftResolve` записывает нейтральные `(1,1)` для отвергнутых pixels, не оставляет их через discard. Correction потребляет только успешно записанную область текущего источника. Source ID, frame и текущая пара масок должны совпадать; предыдущую маску читать нельзя.
+Both passes are performed only within the existing Conservative Light scissor. This is a maximum of four additional screen drow calles for two lamps, without new caster draws. `LocalSoftResolve` records neutral `(1,1)` for rejected pixels, does not leave them through discard. Correction only consumes a well-recorded area of the current source. Source ID, framework and current pair of masks should coincide; the previous mask cannot be read.
 
-Основной PointLight остаётся неизменным. `contribution`, attenuation, normal/material response, water rejection, дневное ослабление и relevance берутся из той же общей HLSL-логики, что и основной проход. Разность может быть положительной или отрицательной; нужны RGB-only additive blending и signed FP16 target. Повторное вычитание полной occlusion вместо delta испортит яркость.
+The main PointLight remains unchanged. `contribution`, attenuation, normal/material responsion, water rejuvenation, day weakening and relevancy are taken from the same common HLSL logic as the main passageway. The difference may be positive or negative; RGB-only addictive blending and signed FP16 Target is needed. Rereading full offset instead of delta will spoil brightness.
 
-Эти проходы располагаются после базовых PointLight-коррекций и до существующего восстановления world-констант/samplers. Локальный CHS не получает новую историю: текущая локальная radiance уже проходит после `TemporalLight`. Необходимо восстановить также изменённые RT, viewport, scissor, blend и color masks.
+These passageways are located after the base pointlight adjustments and until the existing world-constant/sampler restoration. Local CHS does not receive a new story: the current local radiance is already occurring after `TemporalLight`. It is also necessary to restore modified RT, viewport, scissor, blend and color masks.
 
-Перед `LocalSoftResolve` снимаются все sampler-привязки переиспользуемого visibility-target, затем он назначается render target. Перед `LocalSoftCorrection` RT возвращается на `lightSurface`, и только после этого visibility связывается как texture input. Читать и записывать одну поверхность одновременно нельзя; восстановление состояний в конце не заменяет эти переходы.
+Before `LocalSoftResolve`, all sampler links of the reused visibility-target are removed and then it is assigned to render target. Before `LocalSoftCorrection` RT returns to `lightSurface`, and only after that, the visibility connects as texture input. It is not possible to read and write one surface at the same time; recovery of states at the end does not replace these transitions.
 
-## Контракты готовности и отказов
+## Readiness and refusal contracts
 
-`actorMapOn` сейчас зависит одновременно от карты, `actorShadowPS`, `actorTilesPS` и `actorVisibility`. Эта связность должна быть разделена до добавления переключателя. CHS Off не имеет права возвращать персонажей в near cascade только из-за отключённого PCSS entry. Базовый actor resolve должен быть готов до решения, какие caster draws пропустить в near cascade.
+`actorMapOn` Now depends on the map, `actorShadowPS`, `actorTilesPS` and `actorVisibility`. This connection must be separated before the switch is added. CHS Off cannot return characters to the nier cascade simply because of the blackout of PCSS entry. The basic actor resolve should be ready before deciding which caster draws would skip into the nier cascade.
 
-Потребители tiles учитываются отдельно: actor resolve и fog. `ActorTilesWide` нужен туману, а `actorTilesWideCurrent[source]` подтверждает расширенную область текущего кадра. Отключение CHS не освобождает нужные fog-ресурсы и не подставляет обычные tiles вместо wide-варианта.
+Tiles users are accounted for separately: actor resolve and fog. `ActorTilesWide` needs fog, and `actorTilesWideCurrent[source]` confirms the extended area of the current frame. Disablement of CHS does not release the right fog resources and does not set up normal tiles instead of a wide option.
 
-Для каждой celestial source результат считается готовым только после успешной записи всех требуемых каналов. Неактивные источники и отсутствующие actor-карты дают нейтральную видимость. При ошибке нового resolve consumer возвращается к обычному directional PCF и базовому actor resolve; частичный packed target не становится «валидным». Ошибка опциональной фильтрации не должна отключать всё освещение.
+For each celiastal source, the result is considered ready only after successful recording of all required channels. Inactive sources and missing actor cards give neutral visibility. When a new resolve consumer error returns to the normal directional PPF and base actor resolve; partial packed target does not become "manual." The option filtering error should not turn off all lighting.
 
-Локальный resolve проверяет `slot.ready`, а не только `pointReady`, и читает итоговый `slot.cube`. Грани могут иметь разный возраст по существующему расписанию. CHS не требует принудительного обновления всех шести граней. `pointScratch` и `pointDepth` общие и перезаписываются; использовать их как опубликованные карты запрещено. Ошибки нового эффекта обрабатываются отдельно от `pointCheck`, чтобы не инвалидировать исправный cube cache.
+Local reolve checks `slot.ready`, not just `pointReady`, and reads the final `slot.cube`. Grans may have different ages according to the current schedule. CHS does not require mandatory updating of all six dimensions. `pointScratch` and `pointDepth` general and rewrite; use as published maps is prohibited. Errors of a new effect are treated separately from `pointCheck` to avoid disability of a functional cube cache.
 
-Consumer сохраняет `baseline.a`, coverage за пределами far cascade, вклад солнца/луны, weather softening, water/sky exclusions и правила HDR. При live-переключении качества сбрасывается lighting history, но не shadow-map cache. F9, смена карты, Reset и resize проходят существующие правила жизненного цикла. Новый ключ нельзя включать в список принудительно выключаемых при `ActorShadows=0`: мягкость окружения от персонажей не зависит.
+Consumer saves `baseline.a`, control outside the far cascade, sun/ Moon contribution, weather softening, water/sky extensions and HDR rules. When quality changes, lowing history is dropped but not Shadow-map cache. F9, card change, Reset and resise pass through existing life cycle rules. The new key cannot be included in the list of forced off at `ActorShadows=0`: environmental softness is independent of characters.
 
-## Что проверено компилятором
+## Which is verified by the compiler.
 
-Изолированные исходники собраны штатным Microsoft d3dcompiler_47, IEEE strict, `ps_3_0`. Никакие production headers, manifests или shader binaries не перезаписывались.
+Isolated sources are collected by the state-owned Microsoft d3dcompiler_47, IEEE strict, `ps_3_0`. No production headers, manifests or Shader binaires were re-recorded.
 
-| Прототип | Static slots | Temp registers | Результат |
+| Prototype | Static slots | Temp registers | Result |
 | --- | ---: | ---: | --- |
-| Текущий ActorShadow | 332 | 10 | Базовая точка |
-| Текущий WorldLighting | 411 | 16 | Базовая точка |
-| Прямое объединение actor и directional в один entry | 537 | 17 | Превышает выбранный базовый лимит 512 |
-| Отдельный directional resolve с текущим PCF | 257 | 13 | Проходит SM3 gate |
-| Consumer packed visibility с `min(RG, BA)` | 233 | 9 | Проходит; не читает shadow maps |
-| ActorUniformPCF с сохранённым tile early-out | 253 | 10 | Проходит; sampler tiles сохранён |
-| Local delta consumer из готовой пары visibility | 246 | 9 | Проходит; cube sampling отсутствует |
+| Current ActorShadow | 332 | 10 | Base point |
+| Current WorldLighting | 411 | 16 | Base point |
+| Direct integration actor and directional into one entry | 537 | 17 | Exceeds the chosen base limit 512 |
+| Select directional resolve with current PCF | 257 | 13 | SM3 gate passes |
+| Consumer packed performance with `min(RG, BA)` | 233 | 9 | Passes; does not read Shadow Maps |
+| ActorUniformPCF with a safe-early-out | 253 | 10 | Passes; sampler tiles saved |
+| Local delta consumer from the finished pair | 246 | 9 | Passes; cube sampling is not available |
 
-Это проверка возможности разделить работу и дать фильтрам собственный instruction budget. Directional CHS и LocalSoftResolve с новыми ядрами ещё должны пройти компиляцию и GPU-проверки. Число статических инструкций не учитывает динамическое число итераций и не является замером скорости. В частности, удаление tile early-out даёт 217 slots у uniform actor-прототипа, но может сделать освещённые pixels дороже; этот вариант не выбран.
+This test of the ability to divide work and give filters their own instruction budget. Directed CHS and LocalSoftResolve with new kernels still have to be compiled and GPU checks. The number of static instructions does not take into account the dynamic number of iterations or is not a speed measurement. In particular, removing a data range-out gives 217 slots in uniform actor-prototype but can make the highlighted pixels more expensive; this option is not selected.
 
-Прототипы, хеши и результаты находятся в `.local/contact-hardening-design-20261101/`. `check_feasibility.py` воспроизводит компиляцию; `feasibility.json` содержит статистику и хеши; `evidence.json` — извлечённые срезы игрового лога и хеши изученных файлов. Это локальные исследовательские артефакты, не часть поставляемой DLL.
+Prototypes, hashs and results are in `.local/contact-hardening-design-20261101/`. `check_feasibility.py` reproduced compilations; `feasibility.json` contains statistics and hashs; `evidence.json` -- recovered clippings of the game log and heshes of the files studied. These are local research artifacts, not part of the supply of DLL.
 
-## Бюджет и приёмка
+## Budget and acceptance
 
-Начальная инженерная цель для полного Balanced-эффекта при 1920×1080 на подтверждённом GPU из тестового стенда: **добавка к кадру не более 0,5 мс по медиане и 1,0 мс по P95**, включая выбранные локальные источники. Это целевой бюджет, не обещанный результат. Для 4K нужен отдельный замер: число half-res pixels возрастает в четыре раза. CPU-работа фильтра не должна зависеть от количества caster packets.
+Initial engineering target for full Balanced Effect at 1920×1080 confirmed GPU from the test bench: **Add to frame not more than 0,5 ms by mid-point and 1,0 ms by P95** including selected local sources. This is a target budget, not a promised result. 4K needs to be measured separately: the number of half-res pixels increases fourfold. KPU filter work should not depend on the number of caster packages.
 
-Измеряется сумма `ActorTiles + ActorResolve + DirectionalSoftResolve + WorldLighting + LocalSoftResolve + LocalSoftCorrection`, а также полный кадр. Сравнение только 411 против 233 slots скроет перенесённую работу и дополнительные чтения depth/normals. Профилирование использует существующий асинхронный ring без flush/wait; у `NorthlightGpuProfile` сейчас 42 marks, вместимость нужно проверить для кадра с двумя celestial sources и всеми эффектами.
+The sum `ActorTiles + ActorResolve + DirectionalSoftResolve + WorldLighting + LocalSoftResolve + LocalSoftCorrection` is measured, as well as the full frame. The comparison only 411 against 233 slots will hide the work carried out and the additional readings depth/normals. Profiling uses the existing asynchronous ring without flush/wait; `NorthlightGpuProfile` now has 42 markers, capacity needs to be checked for a frame with two celis and all effects.
 
-При превышении бюджета первым сокращается количество локальных CHS-источников, затем качество нового near-фильтра. Радиусы теней, caster selection и число базовых shadowed lights этим эффектом не сокращаются. В первой версии качество выбирается явно; новый автоматический контроллер не требуется.
+If the budget is exceeded first, the number of local CHS sources is reduced, then the quality of the new nier filter is reduced. Shadow radios, caster selection and the number of basic shadowed lights are not reduced by this effect. The first version selects the quality clearly; a new automatic controller is not required.
 
-| Проверка | Критерий |
+| Verification | Criterion |
 | --- | --- |
-| Разделение без нового алгоритма | Отдельный resolve с прежним PCF/PCSS сохраняет изображение в пределах явно измеренной погрешности формата |
-| Контакт и penumbra | У стоп сохраняется контакт; у поднятого объекта полутень монотонно расширяется; тонкие ограды и крылья не исчезают |
-| Пространственная устойчивость | Нет новых скачков на границах каскадов, actor inset и кубических граней; проверены low sun и наклонные поверхности |
-| Движение | Поворот камеры, idle-анимация и движение персонажей проверены последовательностями кадров; статичного screenshot недостаточно |
-| Off и ошибки | Нет CHS blocker search/directional resolve/local correction; карты и тени остаются; недоступный ресурс даёт базовый путь |
-| Независимые настройки | `ActorShadows=0`, `ActorShadowDetail=0`, `PointShadows=0`, CHS Off, fog on/off и сумерки с двумя sources работают независимо |
-| Cube cache | Те же draws, update/reuse counters и coverage; проверены пропущенный capture, появление/исчезновение actor, смена source ID и face cycle |
-| Local delta | При одинаковых visibility delta равна нулю; нет двойного света; вода, дневной интерьер и пересекающиеся лампы сохраняют правила |
-| Lifecycle | Reset, resize, смена карты, нехватка памяти и live-toggle не оставляют stale visibility или render states |
-| Производительность | Native D3D9 и DXVK: одинаковая сцена, настройки и камера; прогрев, чередование Off/On, median/P95 полного кадра и суммы проходов |
+| Segregation without new algorithm | The individual resolve with the previous PCF/PCSS saves the image within the clearly measured format error |
+| Contact and penumbra | Stop is still in contact; a raised object has a single-tond extension of the half; thin fences and wings do not disappear |
+| Spatial sustainability | No new jumps at cascade boundaries, actor inset and cubes; low sun and tilt surfaces checked |
+| Movement | Camera turn, idle-imulation and character movement checked by human sequences; static screenshot is insufficient |
+| Off and Errors | No CHS locker search/directional resolve/local control; maps and shadows remain; inaccessible resource provides the basic route |
+| Independent settings | `ActorShadows=0`, `ActorShadowDetail=0`, `PointShadows=0`, CHS Off, fog on/off and twilight with two sources operate independently |
+| Cube cache | Same draws, update/reuse accounts and control; checked missing frame, appearance/disappearance actor, change source ID and face cycle |
+| Local delta | With the same visibility delta equals zero; no double light; water, daytime interior and intersecting lamps retain rules |
+| Lifecycle | Reset, resize, change of map, memory deficit and live-toggle leave no stale visibility or render states. |
+| Productivity | Native D3D9 and DXVK: the same scene, settings and camera; warming up, rotating Off/On, median/P95 full frame and sum of passes |
 
-Используются существующие `validate_actor_filter_gpu.py`, `test_model_normals_gpu.py`, `test_point_shadow_visibility_gpu.py`, `test_local_shadow_receiver_gpu.py` и `test_point_shadow_schedule.py`; новые проверки должны дополнять реальные GPU-сценарии и формулы, а не проверять лишь наличие строк в исходниках.
+Existing `validate_actor_filter_gpu.py`, `test_model_normals_gpu.py`, `test_point_shadow_visibility_gpu.py`, `test_local_shadow_receiver_gpu.py` and `test_point_shadow_schedule.py` tests should be used; new tests should complement actual GPU scenarios and formulas, rather than simply checking the availability of lines in the source.
 
-## Порядок внедрения
+## Implementation modalities
 
-1. Зафиксировать совместимую базовую сборку после текущих оптимизаций теней и записать повторный захват моста в Штормграде.
-2. Отделить готовность actor-карт от filter readiness, выделить visibility target и consumer; сначала сохранить старые алгоритмы и проверить изображение.
-3. Добавить полноценный Off с uniform actor PCF и сохранённым tile early-out; затем near directional CHS и профилирование. Подключить настройку через `quality_settings.h`, schema и overlay, обновить shader manifests штатным compiler.
-4. После прохождения бюджета добавить ограниченный LocalSoftResolve/Correction. Изменения здесь согласовать с владельцем `world_point_rendering.inl`, сохранив его cache/refresh контракты.
-5. Только после GPU-регрессий и нового игрового захвата выбрать defaults для presets и собирать поставляемую DLL.
+1. Record a compatible basic assembly after the current optimism of shadows and record the re-entry of the bridge in Stormgrad.
+2. Segregate the actor card readiness from filter re-business, select visibility target and consumer; first save old algorithms and check the image.
+3. Add a full Off with uniform actor PCF and saved data year-out; then new directional CHS and profiling. Activate settings through `quality_settings.h`, schema and overlay, update Shader manifests to the regular compiler.
+4. After the budget has passed, add limited LocalSoftResolve/Correction. changes here to be agreed with the owner `world_point_rendering.inl`, retaining his cache/refresh contracts.
+5. Only after GPU's rebounds and a new game grab will you choose defaults for presets and collect the DLL delivered.
 
-Настоящие GPU ray traced shadows остаются отдельной задачей backend: GPU acceleration structures, динамическая геометрия, alpha-tested any-hit, синхронизация и denoising. Контракт visibility позволит подключить такой producer позднее, но текущая реализация GI не делает этот путь готовым.
+This GPU ray tray trays remains a stand-alone task: GPU acceleration structures, dynamic geometry, alpha-tested any-hit, synchronizing and denoising. The performance contract will connect this product later, but the current implementation of GI does not make this path ready.

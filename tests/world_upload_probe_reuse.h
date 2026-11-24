@@ -16,7 +16,7 @@ inline void WorldColdUploadTest::probeReuse(UploadFaultDevice& d,D3DPRESENT_PARA
         for(auto& e:*coarse){e.key.x+=100;for(auto& sh:e.probe.sh)sh=sh*2.f;}
         snapshot->coarseAtlas=std::move(coarse);
     };
-    auto texture=[&](unsigned c){return c<5?w.probe[c]:w.probePrev;};
+    auto texture=[&](unsigned c){return c<5?w.probeAtlas.channel(c):w.probeAtlas.previous();};
     auto poison=[&]{for(unsigned c=0;c<6;++c){auto* t=texture(c);assert(t);D3DSURFACE_DESC desc{};assert(SUCCEEDED(t->GetLevelDesc(0,&desc)));D3DLOCKED_RECT lock{};assert(SUCCEEDED(t->LockRect(0,&lock,nullptr,0)));
         for(unsigned y=0;y<desc.Height;++y){auto* row=reinterpret_cast<float*>(static_cast<char*>(lock.pBits)+size_t(y)*lock.Pitch);std::fill(row,row+size_t(desc.Width)*4,12345.f);}assert(SUCCEEDED(t->UnlockRect(0)));}};
     auto exact=[&]{
@@ -70,8 +70,9 @@ inline void WorldColdUploadTest::probeReuse(UploadFaultDevice& d,D3DPRESENT_PARA
     // An incompatible retained descriptor must be replaced while compatible
     // channels keep their identity. Hold the old texture to rule out pointer reuse.
     poison();populate(5);w.reset();assert(w.keepPressureProbes);assert(SUCCEEDED(d.Reset(&parameters)));
-    drop(w.probe[0]);IDirect3DTexture9* wrong=nullptr;assert(SUCCEEDED(d.CreateTexture(1,1,1,0,D3DFMT_A32B32G32R32F,D3DPOOL_MANAGED,&wrong,nullptr)));w.probe[0]=wrong;wrong->AddRef();
-    w.valid=true;assert(w.resources(128,128,D3DFMT_A16B16G16R16F));complete(w,snapshot);assert(w.probe[0]!=wrong&&w.probe[0]!=retained[0]);
+    IDirect3DTexture9* wrong=nullptr;assert(SUCCEEDED(d.CreateTexture(1,1,1,0,D3DFMT_A32B32G32R32F,D3DPOOL_MANAGED,&wrong,nullptr)));
+    WorldScreenEffectsTest::replaceProbeChannel(w.probeAtlas,0,wrong);
+    w.valid=true;assert(w.resources(128,128,D3DFMT_A16B16G16R16F));complete(w,snapshot);assert(texture(0)!=wrong&&texture(0)!=retained[0]);
     for(unsigned c=1;c<6;++c)assert(texture(c)==retained[c]);exact();wrong->Release();for(auto* t:retained)t->Release();
     assert(!w.failed);std::puts("COLD_PROBE_REUSE_PASS realReset=6 interruptedBeforePage=1 interruptedDuringCopy=1 managedIdentity=1 fineAndCoarseAtlases=1 fullAtlasRewrite=1 invalidCellsCleared=1 historyCleared=1 incompatibleDescriptorRecreated=1 uploadedSerial=5");Spooling=wasSpooling;
 }

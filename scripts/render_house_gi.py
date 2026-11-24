@@ -9,6 +9,7 @@ import subprocess
 import sys
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 import northlight_paths as fp
+from scripts.shaders.shader_sources import source_files
 
 def main():
     parser=argparse.ArgumentParser(__doc__)
@@ -19,7 +20,7 @@ def main():
     parser.add_argument('--benchmark',action='store_true',help='Measure cold/warm CPU batches, without rendering images.')
     args=parser.parse_args();out=args.output.resolve();out.mkdir(parents=True,exist_ok=True)
     if not 8<=args.rays<=4096:parser.error('--rays must be in 8..4096')
-    inputs=[fp.SCRIPTS/'render_house_gi.cpp',fp.SCRIPTS/'render_house_gi.py',fp.src('probe_local_visibility.h'),fp.src('world_gi.h'),fp.src('world_gi.cpp'),fp.SHADERS/'world_effects.hlsl']
+    inputs=[fp.SCRIPTS/'render_house_gi.cpp',fp.SCRIPTS/'render_house_gi.py',fp.src('probe_local_visibility.h'),fp.src('world_gi.h'),fp.src('world_gi.cpp'),*source_files(fp.SHADERS/'world_effects.hlsl')]
     sha=lambda p:hashlib.sha256(p.read_bytes()).hexdigest()
     hashes={str(p):sha(p) for p in inputs}
     exe=out/'house-gi.exe'
@@ -50,8 +51,8 @@ def main():
         mapped=np.clip((x*(2.51*x+.03))/(x*(2.43*x+.59)+.14),0,1)
         srgb=np.where(mapped<=.0031308,mapped*12.92,1.055*np.power(mapped,1/2.4)-.055)
         return Image.fromarray(np.rint(np.clip(srgb,0,1)*255).astype('u1'))
-    titles={'outside':'Снаружи — взгляд в дверной проём','inside':'Внутри комнаты','doorway':'Из комнаты — наружу'}
-    phases={'day':'ДЕНЬ','night':'НОЧЬ'}
+    titles={'outside':'Outside, looking through the doorway','inside':'Inside the room','doorway':'Looking out from the room'}
+    phases={'day':'DAY','night':'NIGHT'}
     meta.update(exposure=1.15,display_transform='ACES fitted, then sRGB',night_sources='Moon and two warm lamps',GI_strength=1)
     meta.update(GI='Production colour transport and SH4; experimental cached 9x9 FP16 blocker planes, bilinear visibility^4 and receiver facing',production_renderer_integration=False)
     meta['sources']=hashes
@@ -61,26 +62,26 @@ def main():
             prefix=args.reference_phase+'-'+view
             comparison=Image.new('RGB',(w*2,h+48),(18,21,25));label=ImageDraw.Draw(comparison)
             comparison.paste(image(out/(prefix+'-probes.rgb32f')),(0,48));comparison.paste(image(out/(prefix+'-gi.rgb32f')),(w,48))
-            label.text((20,10),'GI: прототип, локальная видимость',font=font,fill=(235,237,240))
-            label.text((w+20,10),'Эталон: лучи от поверхности, без проб',font=font,fill=(235,237,240))
+            label.text((20,10),'GI prototype with local visibility',font=font,fill=(235,237,240))
+            label.text((w+20,10),'Reference with rays from the surface and no probes',font=font,fill=(235,237,240))
             comparison.save(out/(prefix+'-reference-comparison.png'))
         (out/'render.json').write_text(json.dumps(meta,ensure_ascii=False,indent=2)+'\n')
         print(out/(args.reference_phase+'-inside-reference-comparison.png'))
         return
     sheet=Image.new('RGB',(w*2,h*3+54*3+80),(18,21,25));draw=ImageDraw.Draw(sheet)
-    draw.text((20,16),f'Прототип GI · 3 отражения · сетка 8 ед. · {args.rays} лучей / пробу · одна экспозиция',font=small,fill=(221,225,230))
+    draw.text((20,16),f'GI prototype · 3 bounces · 8-unit grid · {args.rays} rays per probe · fixed exposure',font=small,fill=(221,225,230))
     for row,view in enumerate(titles):
         for col,phase in enumerate(phases):
             prefix=phase+'-'+view;im=image(out/(prefix+'-gi.rgb32f'));im.save(out/(prefix+'.png'))
             y=70+row*(h+54);sheet.paste(im,(col*w,y+44));draw.text((col*w+20,y+5),phases[phase]+'  ·  '+titles[view],font=font,fill=(235,237,240))
             comparison=Image.new('RGB',(w*2,h+48),(18,21,25));label=ImageDraw.Draw(comparison)
             comparison.paste(image(out/(prefix+'-native-ambient.rgb32f')),(0,48));comparison.paste(im,(w,48))
-            label.text((20,10),'Без GI: общий ambient',font=font,fill=(235,237,240));label.text((w+20,10),'GI: видимость неба и отражённый свет',font=font,fill=(235,237,240))
+            label.text((20,10),'Uniform ambient without GI',font=font,fill=(235,237,240));label.text((w+20,10),'Sky visibility and bounced light with GI',font=font,fill=(235,237,240))
             comparison.save(out/(prefix+'-comparison.png'))
             comparison.paste(image(out/(prefix+'-legacy.rgb32f')),(0,48))
             label.rectangle((0,0,w*2,47),fill=(18,21,25))
-            label.text((20,10),'До: видимость по 6 направлениям',font=font,fill=(235,237,240))
-            label.text((w+20,10),'После: локальные преграды 9×9',font=font,fill=(235,237,240))
+            label.text((20,10),'Visibility in six directions',font=font,fill=(235,237,240))
+            label.text((w+20,10),'Local occluders with a 9×9 grid',font=font,fill=(235,237,240))
             comparison.save(out/(prefix+'-before-after.png'))
             image(out/(prefix+'-indirect.rgb32f')).save(out/(prefix+'-indirect.png'))
     sheet.save(out/'house-day-night.png')

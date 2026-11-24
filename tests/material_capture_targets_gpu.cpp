@@ -4,6 +4,15 @@
 #include <numeric>
 struct TargetGpuMeter:ForwardIDirect3DDevice9 {
     unsigned binds=0,writes=0,constantReads=0,constantRegisters=0;explicit TargetGpuMeter(IDirect3DDevice9* d):ForwardIDirect3DDevice9(d){}
+    unsigned indexed=0,instanceFailures=0;bool failInstanceBind=false;
+    HRESULT STDMETHODCALLTYPE DrawIndexedPrimitive(D3DPRIMITIVETYPE type,INT base,UINT min,UINT vertices,UINT start,UINT count)override{
+        ++indexed;return real->DrawIndexedPrimitive(type,base,min,vertices,start,count);
+    }
+    HRESULT STDMETHODCALLTYPE SetStreamSourceFreq(UINT slot,UINT frequency)override{
+        const auto hr=real->SetStreamSourceFreq(slot,frequency);
+        if(failInstanceBind&&slot==0&&(frequency&D3DSTREAMSOURCE_INDEXEDDATA)){ok(hr);failInstanceBind=false;++instanceFailures;return E_FAIL;}
+        return hr;
+    }
     HRESULT STDMETHODCALLTYPE GetVertexShaderConstantF(UINT first,float* out,UINT count)override{++constantReads;constantRegisters+=count;return real->GetVertexShaderConstantF(first,out,count);}
     HRESULT STDMETHODCALLTYPE GetPixelShaderConstantF(UINT first,float* out,UINT count)override{++constantReads;constantRegisters+=count;return real->GetPixelShaderConstantF(first,out,count);}
     HRESULT STDMETHODCALLTYPE SetRenderTarget(DWORD n,IDirect3DSurface9* value)override{binds+=n==1;return real->SetRenderTarget(n,value);}
@@ -15,7 +24,10 @@ struct MaterialCaptureStateTestAccess {
         IDirect3DSurface9* staging=nullptr;ok(d->CreateOffscreenPlainSurface(width,height,format,D3DPOOL_SYSTEMMEM,&staging,nullptr));ok(d->GetRenderTargetData(target,staging));D3DLOCKED_RECT lock{};ok(staging->LockRect(&lock,nullptr,D3DLOCK_READONLY));
         std::vector<unsigned char> data(size_t(width)*height*bpp);for(unsigned y=0;y<height;++y)std::memcpy(data.data()+size_t(y)*width*bpp,static_cast<char*>(lock.pBits)+size_t(y)*lock.Pitch,width*bpp);ok(staging->UnlockRect());drop(staging);return data;
     }
-    static Result run(TargetGpuMeter& d,IDirect3DVertexShader9* vs,IDirect3DPixelShader9* ps,IDirect3DVertexDeclaration9* declaration,unsigned width,unsigned height,unsigned pattern,bool partial,bool fallback,bool timing){
+#ifdef NORTHLIGHT_EXPECT_STATE_REUSE
+#include "material_palette_targets.inc"
+#endif
+    static Result run(TargetGpuMeter& d,IDirect3DVertexShader9* vs,IDirect3DPixelShader9* ps,IDirect3DVertexDeclaration9* declaration,unsigned width,unsigned height,unsigned pattern,bool partial,bool fallback,bool timing,bool sourceBuffers=false){
         NorthlightAutoBump b(&d);b.width=width;b.heightPixels=height;
         D3DCAPS9 caps{};ok(d.GetDeviceCaps(&caps));assert(caps.PrimitiveMiscCaps&D3DPMISCCAPS_INDEPENDENTWRITEMASKS);b.independentCaptureWrites=!fallback;
         ok(d.CreateTexture(width,height,1,D3DUSAGE_RENDERTARGET,D3DFMT_A16B16G16R16F,D3DPOOL_DEFAULT,&b.height,nullptr));ok(b.height->GetSurfaceLevel(0,&b.target));
@@ -27,20 +39,62 @@ struct MaterialCaptureStateTestAccess {
             mesh->indexed=true;mesh->topology=D3DPT_TRIANGLELIST;mesh->indices={0,1,2,3,4,5};
             const float x=-1.f+float(i%16)/8.f,y=-1.f+float(i/16)/6.f,r=x+.125f,t=y+1.f/6.f,z=.25f+float(i%4)*.1f;
             const float v[][4]={{x,y,z,1},{r,y,z,1},{x,t,z,1},{x,t,z,1},{r,y,z,1},{r,t,z,1}};mesh->streams[0].bytes.resize(sizeof v);std::memcpy(mesh->streams[0].bytes.data(),v,sizeof v);meshes.push_back(std::move(mesh));}
+#ifdef NORTHLIGHT_EXPECT_STATE_REUSE
+        constexpr UINT stride=16,vertexBytes=6*stride,vertexBufferBytes=stride+192*vertexBytes;
+        constexpr WORD indices[]={0,3,4,5,6,7,8};
+        constexpr NorthlightDrawSnapshot::Draw sourceDraw{D3DPT_TRIANGLELIST,-3,3,6,1,2,true};
+        NorthlightDrawSnapshot::Ref<IDirect3DVertexBuffer9> sourceVB;
+        NorthlightDrawSnapshot::Ref<IDirect3DIndexBuffer9> sourceIB;
+        if(sourceBuffers){
+            ok(d.CreateVertexBuffer(vertexBufferBytes,0,0,D3DPOOL_MANAGED,sourceVB.out(),nullptr));
+            ok(d.CreateIndexBuffer(sizeof indices,0,D3DFMT_INDEX16,D3DPOOL_MANAGED,sourceIB.out(),nullptr));
+            void* bytes=nullptr;
+            ok(sourceVB.p->Lock(0,0,&bytes,0));
+            for(unsigned i=0;i<meshes.size();++i)std::memcpy(static_cast<char*>(bytes)+stride+i*vertexBytes,meshes[i]->streams[0].bytes.data(),vertexBytes);
+            ok(sourceVB.p->Unlock());ok(sourceIB.p->Lock(0,0,&bytes,0));std::memcpy(bytes,indices,sizeof indices);ok(sourceIB.p->Unlock());
+            static bool changed=false;
+            changed=false;
+            b.setGeometryTracking(+[](void* buffer,bool){return uint64_t(reinterpret_cast<std::uintptr_t>(buffer));},
+                +[](void*,bool){return uint64_t(1);},
+                +[](const NorthlightCaptureMetadata::Request* requests,NorthlightCaptureMetadata::Info* out,unsigned count){
+                    for(unsigned i=0;i<count;++i){const auto& request=requests[i];
+                        const bool rewritten=!request.index&&request.begin>=vertexBufferBytes-vertexBytes&&changed;
+                        out[i]={uint64_t(reinterpret_cast<std::uintptr_t>(request.buffer)),rewritten?2u:1u,
+                                request.index?UINT(sizeof indices):vertexBufferBytes,0,request.index?D3DFMT_INDEX16:D3DFMT_VERTEXDATA,true};}
+                });
+            ok(d.SetIndices(sourceIB.p));ok(d.SetVertexDeclaration(declaration));
+            for(unsigned i=0;i<meshes.size();++i){
+                ok(d.SetStreamSource(0,sourceVB.p,stride+i*vertexBytes,stride));
+                Mesh local;std::shared_ptr<const Mesh> snapshot;
+                assert(b.deferredSnapshots.read(&d,declaration,sourceDraw,local,nullptr,false,&snapshot)&&snapshot&&snapshot->sourceIdentity);
+                meshes[i]=std::move(snapshot);
+            }
+            // A write to the final range after capture must replay its old vertices.
+            ok(sourceVB.p->Lock(vertexBufferBytes-vertexBytes,vertexBytes,&bytes,0));
+            std::memset(bytes,0,vertexBytes);ok(sourceVB.p->Unlock());changed=true;
+        }
+#endif
         ok(d.real->SetVertexShader(vs));ok(d.real->SetPixelShader(ps));
         float nativeV[1024],nativeP[896];for(unsigned i=0;i<1024;++i)nativeV[i]=float(i)*.001f;for(unsigned i=0;i<896;++i)nativeP[i]=-float(i)*.002f;
         ok(d.real->SetVertexShaderConstantF(0,nativeV,256));ok(d.real->SetPixelShaderConstantF(0,nativeP,224));
         ok(d.real->GetVertexShaderConstantF(0,nativeV,256));ok(d.real->GetPixelShaderConstantF(0,nativeP,224));
         Result result;std::vector<double> gpu,cpu;
+#ifdef NORTHLIGHT_EXPECT_STATE_REUSE
+        std::vector<unsigned char> snapshotColor,snapshotOcclusion;
+#endif
         IDirect3DQuery9 *frequency=nullptr,*start=nullptr,*finish=nullptr,*disjoint=nullptr;
         if(timing){ok(d.CreateQuery(D3DQUERYTYPE_TIMESTAMPFREQ,&frequency));ok(d.CreateQuery(D3DQUERYTYPE_TIMESTAMP,&start));ok(d.CreateQuery(D3DQUERYTYPE_TIMESTAMP,&finish));ok(d.CreateQuery(D3DQUERYTYPE_TIMESTAMPDISJOINT,&disjoint));}
-        const unsigned count=timing?27:16;
+        const unsigned count=sourceBuffers?3:timing?27:16;
         for(unsigned frame=0;frame<count;++frame){
             b.cleared=b.occlusionCleared=false;
             for(unsigned i=0;i<meshes.size();++i){auto packet=std::make_unique<NorthlightAutoBump::Deferred>();packet->mesh=meshes[i];packet->tag=19;packet->vertex=vs;vs->AddRef();packet->pixel=ps;ps->AddRef();packet->declaration=declaration;declaration->AddRef();packet->vertexCount=0;packet->vertexFloatOnly=true;
                 packet->vertexCount=256;std::memcpy(packet->vertexConstants,nativeV,sizeof nativeV);packet->vertexConstants[124]=float(i)*.01f;
 #ifdef NORTHLIGHT_EXPECT_STATE_REUSE
                 packet->pixelFloatOnly=true;
+                if(sourceBuffers&&frame==2){
+                    packet->sourceDraw=sourceDraw;packet->sourceOffset=stride+i*vertexBytes;packet->sourceStride=stride;
+                    packet->gpuVertex[0]=sourceVB.p;sourceVB.p->AddRef();packet->gpuIndex=sourceIB.p;sourceIB.p->AddRef();
+                }
 #endif
                 packet->first=128;packet->pixelConstants={float(i%7)/8.f,.5f,.25f,1,.65f,.72f,.8f,1};packet->occlusion=pattern==1||(pattern==2&&(i&1));
                 packet->viewport=partial?D3DVIEWPORT9{width/8,height/8,width*3/4,height*3/4,.15f,.85f}:D3DVIEWPORT9{0,0,width,height,0,1};
@@ -54,6 +108,17 @@ struct MaterialCaptureStateTestAccess {
             result.constantReads=d.constantReads-reads;result.constantRegisters=d.constantRegisters-registers;
 #ifdef NORTHLIGHT_EXPECT_STATE_REUSE
             assert(result.constantReads==2&&result.constantRegisters==130);
+            if(sourceBuffers&&frame==1){
+                assert(b.residentDraws==meshes.size()&&b.uploadDraws==0);
+                snapshotColor=pixels(&d,b.target,width,height,D3DFMT_A16B16G16R16F,8);
+                snapshotOcclusion=pixels(&d,b.occlusionTarget,width,height,D3DFMT_A8R8G8B8,4);
+            }
+            if(sourceBuffers&&frame==2){
+                assert(b.sourceDraws==meshes.size()-1&&b.sourceInvalidated==1&&b.residentDraws==1&&b.uploadDraws==0);
+                assert(pixels(&d,b.target,width,height,D3DFMT_A16B16G16R16F,8)==snapshotColor);
+                assert(pixels(&d,b.occlusionTarget,width,height,D3DFMT_A8R8G8B8,4)==snapshotOcclusion);
+                std::puts("MATERIAL_GAME_GEOMETRY_GPU_PASS equalNormalAndOcclusion=1 changedVertexRange=1");
+            }
 #endif
             float restoredV[1024],restoredP[896];ok(d.real->GetVertexShaderConstantF(0,restoredV,256));ok(d.real->GetPixelShaderConstantF(0,restoredP,224));
             for(unsigned i=0;i<1024;++i)if(std::memcmp(nativeV+i,restoredV+i,4)){std::printf("STATE_FLOAT_MISMATCH vertex=%u before=%.9g after=%.9g\n",i,nativeV[i],restoredV[i]);break;}
@@ -81,6 +146,10 @@ int main(int argc,char** argv){
         IDirect3DDevice9* raw=nullptr;ok(api->CreateDevice(0,D3DDEVTYPE_HAL,window,D3DCREATE_HARDWARE_VERTEXPROCESSING|D3DCREATE_FPU_PRESERVE,&pp,&raw));{
             TargetGpuMeter d(raw);IDirect3DVertexShader9* vs=nullptr;IDirect3DPixelShader9* ps=nullptr;auto v=read(folder+"vs.bin"),p=read(folder+"ps.bin");ok(d.CreateVertexShader(reinterpret_cast<DWORD*>(v.data()),&vs));ok(d.CreatePixelShader(reinterpret_cast<DWORD*>(p.data()),&ps));
             const D3DVERTEXELEMENT9 elements[]={{0,0,D3DDECLTYPE_FLOAT4,D3DDECLMETHOD_DEFAULT,D3DDECLUSAGE_POSITION,0},D3DDECL_END()};IDirect3DVertexDeclaration9* decl=nullptr;ok(d.CreateVertexDeclaration(elements,&decl));
+#ifdef NORTHLIGHT_EXPECT_STATE_REUSE
+            if(!samples&&!timing)MaterialCaptureStateTestAccess::paletteReplay(d);
+            if(!timing)MaterialCaptureStateTestAccess::run(d,vs,ps,decl,256,128,2,true,false,false,true);
+#endif
             for(unsigned fallback=0;fallback<2;++fallback)for(unsigned partial=0;partial<2;++partial)for(unsigned pattern=0;pattern<3;++pattern){if(timing&&(fallback||partial))continue;
                 const auto result=MaterialCaptureStateTestAccess::run(d,vs,ps,decl,timing?1920:256,timing?1080:128,pattern,partial,fallback,timing);
                 const auto stem=std::to_string(samples)+"-"+std::to_string(fallback)+"-"+std::to_string(partial)+"-"+std::to_string(pattern);

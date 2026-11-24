@@ -2,14 +2,21 @@
 // No graphics API/device is created.
 #include <array>
 #include <cassert>
+#include <cstddef>
 #include <iostream>
+#include <string>
 #include <vector>
 using HRESULT=int;
 #define FAILED(x) ((x)<0)
 #define SUCCEEDED(x) ((x)>=0)
 constexpr int D3DSBT_ALL=1;
 constexpr HRESULT D3DERR_NOTFOUND=-1;
+enum D3DRENDERSTATETYPE {D3DRS_ZENABLE,D3DRS_ZWRITEENABLE,D3DRS_STENCILENABLE,D3DRS_ALPHATESTENABLE,
+    D3DRS_COLORWRITEENABLE,D3DRS_COLORWRITEENABLE1,D3DRS_COLORWRITEENABLE2,D3DRS_COLORWRITEENABLE3,D3DRS_POINTSIZE};
+enum {D3DFVF_XYZ=2,D3DPT_POINTLIST=1,D3DTSS_COLOROP=1,D3DTSS_COLORARG1=2,D3DTOP_SELECTARG1=2,
+      D3DTOP_DISABLE=1,D3DTA_TEXTURE=2};
 struct D3DVIEWPORT9 { unsigned X=0,Y=0,Width=0,Height=0;float MinZ=0,MaxZ=1; };
+struct IDirect3DTexture9 {};
 struct IDirect3DSurface9 {
     int refs=1;
     void AddRef(){++refs;}
@@ -17,6 +24,8 @@ struct IDirect3DSurface9 {
 };
 struct IDirect3DStateBlock9;
 struct IDirect3DDevice9 {
+    enum CopyOp {BindDepth,BindTexture,VertexShader,PixelShader,VertexFormat,RenderState,TextureStage,DrawPoint};
+    using CopyCommand=std::array<unsigned,4>;
     int refs=1,creates=0,captures=0,applies=0,alive=0,state=17;
     bool failCreate=false,failCapture=false,failViewport=false,failApply=false,failApplyOnce=false;
     int failTargetRead=-1;
@@ -26,31 +35,98 @@ struct IDirect3DDevice9 {
     IDirect3DSurface9* boundResource=nullptr;
     D3DVIEWPORT9 viewport{3,4,800,600,.1f,.9f};
     std::vector<int> changes;
+    std::vector<CopyCommand> copyCommands;
+    IDirect3DSurface9* copySource=nullptr;
+    IDirect3DTexture9 *texture=nullptr,*copyTarget=nullptr;
+    int failCopyAt=-1;
+    HRESULT copyCommand(CopyCommand command){
+        const auto index=static_cast<int>(copyCommands.size());
+        copyCommands.push_back(command);
+        state=-1;
+        return index==failCopyAt?-2:0;
+    }
     HRESULT CreateStateBlock(int,IDirect3DStateBlock9**);
     HRESULT GetRenderTarget(int i,IDirect3DSurface9** out){*out=nullptr;if(failTargetRead==i)return -2;*out=targets[i];if(*out)(*out)->AddRef();return *out?0:D3DERR_NOTFOUND;}
     HRESULT GetDepthStencilSurface(IDirect3DSurface9** out){*out=depth;if(*out)(*out)->AddRef();return *out?0:-1;}
     HRESULT GetViewport(D3DVIEWPORT9* out){if(failViewport)return -1;*out=viewport;return 0;}
     HRESULT SetRenderTarget(int i,IDirect3DSurface9* value){changes.push_back(10+i);if(!value&&failNullTargetOnce==i){failNullTargetOnce=-1;return -1;}targets[i]=value;return 0;}
-    HRESULT SetDepthStencilSurface(IDirect3DSurface9* value){depth=value;changes.push_back(value?21:20);return 0;}
+    HRESULT SetDepthStencilSurface(IDirect3DSurface9* value){
+        depth=value;changes.push_back(value?21:20);
+        return copySource&&value==copySource?copyCommand({BindDepth,0,0,0}):0;
+    }
     HRESULT SetViewport(const D3DVIEWPORT9* v){viewport=*v;changes.push_back(30);return 0;}
+    HRESULT SetTexture(unsigned stage,IDirect3DTexture9* value){assert(stage==0&&value==copyTarget&&depth==copySource);texture=value;return copyCommand({BindTexture,stage,0,0});}
+    HRESULT SetVertexShader(std::nullptr_t){return copyCommand({VertexShader,0,0,0});}
+    HRESULT SetPixelShader(std::nullptr_t){return copyCommand({PixelShader,0,0,0});}
+    HRESULT SetFVF(unsigned value){return copyCommand({VertexFormat,value,0,0});}
+    HRESULT SetRenderState(D3DRENDERSTATETYPE key,unsigned value){return copyCommand({RenderState,unsigned(key),value,0});}
+    HRESULT SetTextureStageState(unsigned slot,unsigned key,unsigned value){return copyCommand({TextureStage,slot,key,value});}
+    HRESULT DrawPrimitiveUP(unsigned type,unsigned count,const float* vertices,unsigned stride){
+        assert(stride==3*sizeof(float)&&vertices[0]==0&&vertices[1]==0&&vertices[2]==0);
+        return copyCommand({DrawPoint,type,count,stride});
+    }
 };
 struct IDirect3DStateBlock9 {
-    IDirect3DDevice9* d;int value;IDirect3DSurface9* retained;
+    IDirect3DDevice9* d;int value;IDirect3DSurface9* retained;IDirect3DTexture9* texture;
     // Model native D3D9's incomplete initial constant capture.
-    explicit IDirect3DStateBlock9(IDirect3DDevice9* p):d(p),value(0),retained(p->boundResource){++d->refs;++d->alive;if(retained)retained->AddRef();}
-    HRESULT Capture(){++d->captures;if(d->failCapture)return -1;value=d->state;if(retained)retained->Release();retained=d->boundResource;if(retained)retained->AddRef();return 0;}
-    HRESULT Apply(){++d->applies;d->changes.push_back(40);if(d->failApplyOnce){d->failApplyOnce=false;return -1;}if(d->failApply)return -1;d->state=value;d->boundResource=retained;return 0;}
+    explicit IDirect3DStateBlock9(IDirect3DDevice9* p):d(p),value(0),retained(p->boundResource),texture(nullptr){++d->refs;++d->alive;if(retained)retained->AddRef();}
+    HRESULT Capture(){++d->captures;if(d->failCapture)return -1;value=d->state;texture=d->texture;if(retained)retained->Release();retained=d->boundResource;if(retained)retained->AddRef();return 0;}
+    HRESULT Apply(){++d->applies;d->changes.push_back(40);if(d->failApplyOnce){d->failApplyOnce=false;return -1;}if(d->failApply)return -1;d->state=value;d->boundResource=retained;d->texture=texture;return 0;}
     void Release(){if(retained)retained->Release();--d->refs;--d->alive;delete this;}
 };
 HRESULT IDirect3DDevice9::CreateStateBlock(int kind,IDirect3DStateBlock9** out){assert(kind==D3DSBT_ALL);++creates;if(failCreate){*out=nullptr;return -1;}*out=new IDirect3DStateBlock9(this);return 0;}
-#include "saved_state.h"
+#include "scene_depth_resolve.h"
 struct Fixture {
     IDirect3DSurface9 surface[6];IDirect3DDevice9 d;
     Fixture(){for(int i=0;i<4;++i)d.targets[i]=surface+i;d.depth=surface+4;d.boundResource=surface+5;}
     ~Fixture(){assert(d.refs==1&&d.alive==0);for(auto& s:surface)assert(s.refs==1);}
 };
 static void mutate(Fixture& f,int state){f.d.state=state;f.d.targets={f.surface+5,nullptr,nullptr,nullptr};f.d.depth=nullptr;f.d.viewport={0,0,7,9,0,1};}
+static void testDepthCopy(){
+    using D=IDirect3DDevice9;
+    for(bool native:{false,true})for(bool fatal:{false,true}){
+        std::vector<D::CopyCommand> expected={{D::BindDepth,0,0,0},{D::BindTexture,0,0,0}};
+        std::vector<const char*> stages={"bind scene depth","bind depth resolve target"};
+        if(native){
+            expected.insert(expected.end(),{{D::VertexShader,0,0,0},{D::PixelShader,0,0,0},{D::VertexFormat,D3DFVF_XYZ,0,0}});
+            stages.insert(stages.end(),{"RESZ dummy VS","RESZ dummy PS","RESZ dummy FVF"});
+            for(auto state:{D3DRS_ZENABLE,D3DRS_ZWRITEENABLE,D3DRS_STENCILENABLE,D3DRS_ALPHATESTENABLE,
+                    D3DRS_COLORWRITEENABLE,D3DRS_COLORWRITEENABLE1,D3DRS_COLORWRITEENABLE2,D3DRS_COLORWRITEENABLE3}){
+                expected.push_back({D::RenderState,unsigned(state),0,0});stages.push_back("RESZ disable writes");
+            }
+            expected.insert(expected.end(),{{D::TextureStage,0,D3DTSS_COLOROP,D3DTOP_SELECTARG1},
+                {D::TextureStage,0,D3DTSS_COLORARG1,D3DTA_TEXTURE},{D::TextureStage,1,D3DTSS_COLOROP,D3DTOP_DISABLE},
+                {D::DrawPoint,D3DPT_POINTLIST,1,3*sizeof(float)}});
+            stages.insert(stages.end(),{"RESZ sampler op","RESZ sampler arg","RESZ stage1","RESZ dummy draw"});
+        }
+        expected.insert(expected.end(),{{D::RenderState,D3DRS_POINTSIZE,0x3f800000,0},{D::RenderState,D3DRS_POINTSIZE,0x7fa05000,0}});
+        stages.insert(stages.end(),{nullptr,"RESZ"}); // The first POINTSIZE write is an unchecked trigger reset.
+        for(int fail=-2;fail<static_cast<int>(expected.size());++fail){
+            Fixture f;
+            NorthlightStateBlockPool pool(&f.d);
+            IDirect3DTexture9 current,target;
+            f.d.failCapture=fail==-2;
+            f.d.failCopyAt=fail;
+            f.d.copySource=f.surface+5;
+            f.d.texture=&current;
+            f.d.copyTarget=&target;
+            std::vector<std::string> reported;
+            auto error=[&](HRESULT hr,const char* stage){if(FAILED(hr))reported.emplace_back(stage);return FAILED(hr);};
+            const bool failed=fail>=0&&stages[fail];
+            const auto targets=f.d.targets;
+            const bool ok=NorthlightSceneDepth::copy(&f.d,pool,f.d.copySource,&target,native,fatal,error);
+            assert(ok==(fail!=-2&&!failed));
+            const auto count=fail==-2?0u:failed?static_cast<unsigned>(fail+1):expected.size();
+            assert(f.d.copyCommands==std::vector<D::CopyCommand>(expected.begin(),expected.begin()+count));
+            assert(f.d.applies==(fail!=-2)&&f.d.targets==targets&&f.d.depth==f.surface+4&&f.d.texture==&current&&f.d.state==17);
+            assert(f.d.viewport.X==3&&f.d.viewport.Width==800);
+            assert(reported.size()==unsigned(fatal&&failed));
+            if(!reported.empty())assert(reported[0]==stages[fail]);
+        }
+    }
+}
 int main(){
+    testDepthCopy();
     for(unsigned mask=0;mask<8;++mask){Fixture f;
         for(unsigned i=1;i<4;++i)if(!(mask&(1u<<(i-1))))f.d.targets[i]=nullptr;
         const auto original=f.d.targets;
@@ -86,8 +162,11 @@ int main(){
     {Fixture f;NorthlightStateBlockPool pool(&f.d);f.d.depth=nullptr;{SavedState s(&f.d,&pool);assert(s.ok);f.d.depth=f.surface+5;}assert(!f.d.depth);}
     {Fixture f;NorthlightStateBlockPool pool(&f.d);{SavedState s(&f.d,&pool);assert(s.ok);f.d.failApply=true;assert(!s.restore()&&!s.restore());}assert(f.d.applies==2);pool.clear();assert(f.d.alive==0);}
     {Fixture f;{SavedState s(&f.d);mutate(f,99);f.d.failApplyOnce=true;assert(s.restore()&&s.restore()&&f.d.state==17);}assert(f.d.applies==2);}
-    {Fixture f;{SavedState s(&f.d);mutate(f,99);assert(s.restore());f.d.state=74;assert(s.restore());}assert(f.d.state==74&&f.d.applies==1);}
+    {Fixture f,other;{SavedState s(&f.d);assert(s.coversDevice(&f.d)&&!s.coversDevice(&other.d));
+        mutate(f,99);assert(s.restore()&&!s.coversDevice(&f.d));f.d.state=74;assert(s.restore());}
+        assert(f.d.state==74&&f.d.applies==1);}
     for(int target=0;target<4;++target){Fixture f;f.d.failTargetRead=target;{SavedState s(&f.d);assert(!s.ok&&!s.restore());}assert(f.d.applies==0&&f.d.changes.empty());}
     for(bool pooled:{false,true}){Fixture f;NorthlightStateBlockPool pool(&f.d);f.d.failCapture=true;{SavedState s(&f.d,pooled?&pool:nullptr);assert(!s.ok&&s.block==nullptr);}assert(f.d.alive==0&&!f.d.applies&&f.d.captures==1);}
     std::cout<<"SavedState: explicit initial capture, restoration order, 10000 reuses (1 create / 10000 captures), 7 nested leases, active clear, failures, device identity, null depth, resource release passed\n";
+    std::cout<<"Scene depth copy: DXVK and native call order, fatal and nonfatal outcomes, saved state and failures at every step passed\n";
 }

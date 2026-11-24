@@ -22,6 +22,7 @@ static void logf(const char* format,...){if(!std::strstr(format,"MATERIAL_CONFIG
 #include "device_mirror.h"
 #include "mirror_resource_forwarders.h"
 #include "native_m2_section_fixture.h"
+#include "native_world_batch_fixture.h"
 
 struct DisplacementStateTestAccess {
     using Mesh=NorthlightDrawSnapshot::Mesh;
@@ -631,6 +632,20 @@ void DisplacementStateTestAccess::poseHandoff(const char* path,const std::vector
      g.endFrame();optional.clear();
      assert(g.nearestMaterialDepth(&device.vs,args,depth,true,nullptr,&upper,&optional,true)&&optional.mesh&&optional.pose.outsideRange&&depth>48&&!g.coarseProgramSkipped);
      std::puts("MATERIAL_COARSE_DEMAND_PASS unsupported_preflight_reads=0 mandatory_range_proof=retained source=retained");}
+    {
+        float nearBank[1024];std::memcpy(nearBank,farBank,sizeof nearBank);
+        for(unsigned bone=0;bone<4;++bone)nearBank[4*(33+3*bone)+3]=4;
+        assert(SUCCEEDED(extension.SetVertexShaderConstantF(0,nearBank,256)));
+        g.endFrame();NorthlightAutoDisplacement::CaptureSource admitted;float depth=0;
+        assert(!g.nearestMaterialDepth(&device.vs,args,depth,true,nullptr,nullptr,&admitted,true)&&admitted.mesh);
+        assert(g.modelRangeProof.tested==1);
+        g.prepare(&device.vs,4,1,args,nullptr,&admitted,48,&admitted);
+        assert(g.modelRangeProof.tested==1&&g.singleRangeReuses==1&&!admitted.pose.outsideRange);
+        assert(!g.nearestMaterialDepth(&device.vs,args,depth,true,nullptr,nullptr,&admitted,true));
+        assert(SUCCEEDED(extension.SetVertexShaderConstantF(0,farBank,256)));
+        assert(!g.prepare(&device.vs,4,1,args,nullptr,&admitted,48,&admitted));
+        assert(g.modelRangeProof.tested==3&&g.singleRangeReuses==1&&admitted.pose.outsideRange);
+    }
 #ifdef NORTHLIGHT_COARSE_PAIR_TEST
     for(bool classified:{false,true})for(float distance:{3.f,20.f,80.f}){
         single.rangeKind=classified?NorthlightModelNormalRange::Single:NorthlightModelNormalRange::None;
@@ -759,6 +774,7 @@ void DisplacementStateTestAccess::primitiveLimit(){
     g.materials[&d.vs].uv=g.materials[&d.vs].view;g.materials[&d.vs].uv.textureCoordinates=true;
     d.vs.AddRef();g.shaders[&d.vs].patched=&d.vs;
     std::vector<float> vertices(8193*3*4);for(unsigned i=0;i<8193*3;++i)vertices[i*4+3]=1;
+    vertices[4]=1.f;vertices[9]=1.f;
     NorthlightAutoDisplacement::Args args{{D3DPT_TRIANGLELIST,0,0,8193*3,0,8193,false},nullptr,D3DFMT_UNKNOWN,vertices.data(),16};
     assert(!g.prepare(&d.vs,1,1,args)&&g.primitiveRejected==1&&g.readsThisFrame==0&&d.texture.levels==0&&g.textures.empty()&&!g.buildsThisFrame);
     // Existing exact entries retain priority over the cold-build limit.
@@ -954,6 +970,14 @@ struct MaterialCaptureStateTestAccess {
         b.beginDraw();b.capture(&d.vs,[&]{++draws;return D3D_OK;},true,&args);assert(!b.earlyRangeRejected&&d.pixelQueries>0);
         b.endFrame();for(unsigned i=0;i<3;++i)vertices[4*i+2]=10;const auto queries=d.pixelQueries;
         b.beginDraw();b.capture(&d.vs,[&]{++draws;return D3D_OK;},true,&args);assert(b.earlyRangeRejected==1&&d.pixelQueries==queries+1);
+        b.endFrame();b.range=48;
+        for(unsigned i=0;i<3;++i){vertices[4*i]+=10;vertices[4*i+2]=3;}
+        b.beginDraw();b.capture(&d.vs,[&]{++draws;return D3D_OK;},true,&args);
+        assert(b.displacementLodSide==1&&!b.pomInRange&&!b.earlyRangeRejected);
+        b.endFrame();
+        for(unsigned i=0;i<3;++i){vertices[4*i]=(vertices[4*i]-10)*.1f;vertices[4*i+1]*=.1f;}
+        b.beginDraw();b.capture(&d.vs,[&]{++draws;return D3D_OK;},true,&args);
+        assert(b.displacementLodSmall==1&&!b.pomInRange&&!b.earlyRangeRejected);
         std::puts("MATERIAL_EARLY_DISPLACEMENT_PASS max_capture_geometry_range far_no_capture_setup near_consumer_retained");
         std::puts("MATERIAL_EFFECT_RANGE_PASS normal_48 cavity_shadow_shared_8 inactive_0 rigid_m2_far_skipped crossing_retained");
     }
@@ -1033,6 +1057,8 @@ static void sharedGeometry(){
 }
 int main(int argc,char** argv){
     nativeM2Section();
+    nativeM2Grouped();
+    nativeWorldBatches();
     std::setvbuf(stdout,nullptr,_IONBF,0);
     assert(argc==4);DisplacementStateTestAccess::distanceViewReuse();DisplacementStateTestAccess::conservativeBody(argv[1]);DisplacementStateTestAccess::cameraBounds(argv[1]);
     FILE* file=std::fopen(argv[3],"rb");assert(file);std::fseek(file,0,SEEK_END);const long size=std::ftell(file);std::rewind(file);std::vector<uint32_t> singleCode(size/4);assert(std::fread(singleCode.data(),1,size,file)==size_t(size));std::fclose(file);

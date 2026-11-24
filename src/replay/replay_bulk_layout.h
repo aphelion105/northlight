@@ -36,4 +36,29 @@ public:
     }
     bool unique(std::size_t draw)const{return draw>=Limit||owners_[draw]==draw;}
 };
+
+// One successful bulk layout publishes the nonresident packet order for its
+// upload and bindings. Starts over when admission or pressure changes it.
+class DrawList {
+    std::array<std::uint16_t,Layout::Limit> draws_{};
+    std::size_t count_=0;
+    bool indexed_=true;
+public:
+    void clear(){count_=0;indexed_=true;}
+    void add(std::size_t i){
+        if(i>=draws_.size())indexed_=false;
+        if(indexed_)draws_[count_]=static_cast<std::uint16_t>(i);
+        ++count_;
+    }
+    std::size_t size()const{return count_;}
+    bool indexed()const{return indexed_;}
+    template<class Replays,class Visit>
+    void visit(const Replays& replays,Visit&& visitDraw)const{
+        if(indexed_){
+            for(std::size_t i=0;i<count_;++i)visitDraw(draws_[i]);
+        }else{
+            for(std::size_t i=0;i<replays.size();++i)if(!replays[i]->gpuCached)visitDraw(i);
+        }
+    }
+};
 }

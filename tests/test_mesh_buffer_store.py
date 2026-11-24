@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
-# northlight-test: requires=cxx
+# northlight-test: requires=zig
 """World mesh buffer store (mesh_buffer_store.h, 0.3.216 issue #66): content-key lookup over active and idle buffers,
 claims that never touch the active table, atomic commit, cancel with invalidated keys, shared duplicate pages, idle-only
 trim order, and a randomised invariant run. Native clang++ with ASan/UBSan. No game or GPU."""
+
+from source_units import source_text
 import sys; from pathlib import Path; sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root
 import northlight_paths as fp
 import subprocess
@@ -24,18 +26,24 @@ else:
 
 # Source wiring (world_renderer.h): the store replaces meshPool[2]; an active buffer is never written; claims are cancelled on every
 # path that drops a pending staging; only the missed pages are uploaded and admitted.
-w = fp.src('world_renderer.h').read_text()
+w = source_text(fp.src('world_renderer.h'))
 for gone in ('meshPool[', 'activeMesh', 'stagingSlot', 'vbCapacity=0,ibCapacity=0;};'):
     assert gone not in w, gone
-assert '#include "mesh_buffer_store.h"' in w and 'NorthlightMeshBufferStore::Store& meshStore=gpuScene->meshStore;' in w
-assert 'NorthlightMeshBufferStore::Store meshStore;' in fp.src('gpu_scene.h').read_text()
+assert 'NorthlightMeshBufferStore::Store& meshStore=gpuScene->meshPages.store;' in w
+assert 'NorthlightWorldMeshPool meshPages;' in fp.src('gpu_scene.h').read_text()
+owner=fp.src('world_mesh_pool.h').read_text()
 acquire = w[w.index('bool acquireMeshPage(uint32_t id'):w.index('void releaseMeshPool()')]
-assert 'if(!meshStore.writable(id)||id>=meshBuffers.size())return false;' in acquire and acquire.index('writable(id)') < acquire.index('Create')
+assert 'gpuScene->meshPages.acquire(d,id,vertex,bytes,pool' in acquire
+assert 'if(!store.writable(id)||id>=buffers.size())return false;' in owner and owner.index('writable(id)') < owner.index('CreateVertexBuffer(')
 bind = w[w.index('bool bindMeshPage('):w.index('std::vector<Batch> batches')]
 assert 'meshStore.bufferOf(batch.page)' in bind and 'meshBuffers[id]' in bind
-upload = w[w.index('bool upload(NorthlightStreaming::Budget& streamBudget){'):w.index('if((!menuDomain&&(!vertices||!indices))||uploadedMap!=active->map)return false;')]
-perform = upload[upload.index('auto perform=['):upload.index('while(pageBudget.available()')]
-assert 'if(!meshStore.markWriting(id)||id>=meshBuffers.size())return false;' in perform and perform.index('markWriting') < perform.index('payload.pages->copy(') < perform.index('Unlock')  # writable + key invalidated before the first write
+upload = w[w.index('std::optional<bool> beginMeshStaging(){'):w.index('if((!menuDomain&&(!vertices||!indices))||uploadedMap!=active->map)return false;')]
+perform = upload[upload.index('auto perform=['):upload.index('next.upload.advanceAvailable(perform,pageBudget)')]
+assert 'if(!meshStore.markWriting(id)||id>=meshBuffers.size())return false;' in perform
+assert perform.index('markWriting') < perform.index('meshPages.copy(')
+assert 'meshPages.preload(id,' in perform and '->Lock(' not in perform
+page_copy = owner[owner.index('bool copy(uint32_t id'):owner.index('template<class PressureReplay>')]
+assert page_copy.index('->Lock(') < page_copy.index('source.copy(') < page_copy.index('->Unlock(')
 assert 'staging.upload[cursor]' in perform and 'staging.uploadBuffer[cursor]' in perform  # the cursor runs over the miss list
 assert upload.count('meshStore.beginStaging(pageKeys,') == 1 and upload.index('meshStore.beginStaging(pageKeys,') < upload.index('NorthlightGeometryMemory::admits(memory,budget)')
 assert 'uploadBudget(payload->pages->defaultPool()?0:missVertexBytes,payload->pages->defaultPool()?0:missIndexBytes,payload->pages->defaultPool()?0:shadowTextureFormat.bytes(active->meshPlan->textureBytes),payload->pages->defaultPool()?0:largestTexture)' in upload and 'for(uint32_t pageIndex:staged.upload)' in upload
@@ -53,9 +61,9 @@ failure = w[w.index('bool streamingFailure('):w.index('bool uploadRegionalFog(')
 for body in (orphan, failure):
     assert 'meshStore.cancel();' in body and body.index('meshStore.cancel();') < body.index('pendingMesh.reset();')
 release = w[w.index('void releaseGPU(bool keepMesh=false){'):]
-release = release[:release.index('\n')]
+release = release[:release.index('\n    }\n')]
 assert 'if(!keepMesh){pendingMesh.reset();clearMesh();}' in release and 'if(!keepMesh){releaseMeshPool();uploadedMap.clear();}' in release  # releaseMeshPool resets the store, claims included
-assert 'meshStore.reset();' in w[w.index('void releaseMeshPool()'):w.index('size_t trimMeshPools(')]
+assert 'gpuScene->meshPages.clear();' in w[w.index('void releaseMeshPool()'):w.index('size_t trimMeshPools(')] and 'store.reset();' in owner
 assert 'meshIdleMiB=%.1f' in w and 'meshStore.poolBytes()' in w
 # 0.3.216 page elision: keys published under the worker mutex per map, worker elides before seal, an elided miss falls back.
 assert 'std::shared_ptr<const NorthlightMeshPageKey::KeySet> residentPages;std::string residentMap;' in w
@@ -91,7 +99,7 @@ assert reset_mesh.index('meshStore.cancel();') < reset_mesh.index('if(activeLost
 reset = w[w.index('void reset(bool preserveCaptureSources=false){'):w.index('// 0.3.176 (U0/S0)')]
 assert reset.index('keepPressureProbes=true;') < reset.index('releaseDefaultMesh();')
 assert reset.index('drop(resetReplayQuery);resetReplayFence.drop();') < reset.index('releaseDefaultMesh();')
-fence = w[w.index('bool pressureReplayReady(){'):w.index('bool upload(NorthlightStreaming::Budget& streamBudget){')]
+fence = w[w.index('bool pressureReplayReady(){'):w.index('bool upload(NorthlightStreaming::Budget& streamBudget')]
 assert 'auto& queries=resetReplayFence;' in fence and 'resetReplayQuery->GetData(nullptr,0,0)' in fence
 assert 'D3DGETDATA_FLUSH' not in fence and 'Sleep(' not in fence and 'queries=fence()' not in fence
 assert '!meshRetry.ready(GetTickCount())||!pressureReplayReady()' in upload
@@ -99,15 +107,15 @@ assert 'drop(resetReplayQuery);resetReplayFence.drop();' in release
 print('pressure pool compatibility and nonblocking Reset wiring ok')
 
 # A previous page balance must never admit the next real driver creation.
-assert 'GlobalMemoryStatusEx(&current)' in acquire and 'debitGrowth(memory,capacity)' not in acquire
-assert 'NorthlightGeometryMemory::ResetReplayReserve' in acquire and 'pressureReplayAllocation()' in acquire
+assert 'GlobalMemoryStatusEx(&current)' in owner and 'debitGrowth(memory,capacity)' not in owner
+assert 'NorthlightGeometryMemory::ResetReplayReserve' in owner and 'pressureReplayAllocation()' in acquire
 scope = w[w.index('bool pressureReplayAllocation(){'):w.index('bool pressureReplayReady(){')]
 assert 'active->bvh==resetReplaySource.lock()&&active->meshPlan==resetReplayPlan.lock()' in scope
 assert 'drop(resetReplayQuery);resetReplayFence.drop();resetReplayPending=false;' in scope
 assert 'pageMemory' not in perform and 'if(!sampled)' not in perform
 print('fresh page admission and exact Reset recovery source wiring ok')
 
-assert upload.index("reusableMaterial(m,") < upload.index('admitsGrowth("pressure-material"') < upload.index("HRESULT hr=d->CreateTexture(m.width,m.height")
+assert upload.index("reusableMaterial(m,") < upload.index('admitsGrowth("pressure-material"') < upload.index("next.materialUpload.begin(")
 
 # Reset during an unfinished replay must preserve managed probe ownership and
 # cancel staging even if no DEFAULT page has been allocated yet.

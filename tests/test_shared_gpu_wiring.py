@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 # northlight-test: requires=windows-exe,zig
 """Compile the actual world bind lambda; verify canonical scene wiring, ownership and material offsets."""
+
+from source_units import source_text
 import subprocess,sys
 from pathlib import Path
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
@@ -11,14 +13,14 @@ out=fp.output_dir()/'shared-gpu-wiring';out.mkdir(parents=True,exist_ok=True)
 stub=replay_gpu_fixture.stub;a=stub.index('using UINT');b=stub.index('constexpr unsigned D3DUSAGE')
 stub=stub[:a]+'#include <windows.h>\nconstexpr HRESULT D3D_OK=0,D3DERR_INVALIDCALL=HRESULT(0x8876086cu);\n'+stub[b:]
 (out/'d3d9.h').write_text(stub);(out/'replay_fixture.h').write_text(replay_gpu_fixture.fixture)
-world=fp.src('world_renderer.h').read_text();bump=fp.src('auto_bump_renderer.h').read_text();device=fp.src('renderer.cpp').read_text()
+world=source_text(fp.src('world_renderer.h'));bump=fp.src('auto_bump_renderer.h').read_text();device=source_text(fp.src('renderer.cpp'))
 first=world.index('        auto bindReplay=[&](Replay& p){');last=world.index('        replayTimeDeferredIndices.clear();',first)
 binding=world[first:last]
 assert 'world=std::make_unique<WorldRenderer>(ext,gpuScene);' in device and 'autoBump=std::make_unique<NorthlightAutoBump>(ext,gpuScene);' in device
 assert 'world.reset();gpuScene.reset();releaseResources();' in device and 'gpuScene->setFrame(frame);' in device
 assert 'sharedReplayGeometry' not in world and 'sharedGeometry.borrow' not in bump
 assert 'NativeClient& deferredGPU=gpuScene->materials;' in bump and 'NativeClient& replayGpuCache=gpuScene->shadows;' in world
-assert 'if(deferredGPU.commitPending())' in bump and bump.index('if(deferredGPU.commitPending())')<bump.index('bool success=true;const Deferred* previous=nullptr;')
+assert 'if(deferredGPU.commitPending())' in bump and bump.index('if(deferredGPU.commitPending())')<bump.index('const Deferred* previous=nullptr;')
 assert 'DrawIndexedPrimitive(mesh.topology,placement.baseVertex(),placement.minimumVertex(),mesh.vertexCount,placement.indexStart,mesh.primitiveCount)' in bump
 assert 'DrawPrimitive(mesh.topology,placement.vertexBase,mesh.primitiveCount)' in bump
 scene=fp.src('gpu_scene.h').read_text()

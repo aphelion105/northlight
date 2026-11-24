@@ -1,4 +1,5 @@
 #include "quality_settings.h"
+#include "frame_parity_clock.h"
 #include "local_light_selection.h"
 #include "point_light_shadow.h"
 #include "world_math.h"
@@ -9,6 +10,10 @@
 #include <fstream>
 #include <random>
 using namespace NorthlightQuality;
+static_assert(NorthlightFrameParityClock::farShadowBoundary(368,4));
+static_assert(!NorthlightFrameParityClock::farShadowBoundary(371,4));
+static_assert(!NorthlightFrameParityClock::farShadowBoundary(368,1));
+static_assert(!NorthlightFrameParityClock::farShadowBoundary(368,0));
 static Settings parse(const char* own,const char* legacy,std::vector<std::string>& problems){
     std::istringstream a(std::string(own?own:"")+"\n[Quality]\nLocalLightLimitsVersion=2\n"),b(legacy?legacy:"");return load(own?&a:nullptr,legacy?&b:nullptr,problems);
 }
@@ -113,6 +118,9 @@ int main(){
     for(auto p:{Preset::Quality,Preset::Balanced,Preset::Performance})assert(preset(p).pointShadowDistance==48);
     assert(parse("[Quality]\nPointShadowDistance=96\n").pointShadowDistance==96);
     assert(parse(nullptr)==d&&parse("")==d&&parse("[Quality]\nPreset=Quality\n")==d&&preset(Preset::Quality)==d);
+    assert(d.autoBumpTerrain==2&&d.autoBumpWalls==2&&d.autoBumpGrass==1&&d.autoBumpModels==1);
+    const auto displacement=parse("[Quality]\nAutoBumpTerrain=3\nAutoBumpWalls=3\nAutoBumpModels=3\n");
+    assert(displacement.autoBumpTerrain==3&&displacement.autoBumpWalls==3&&displacement.autoBumpModels==3);
     for(const auto& k:Keys){assert(k.preset[0]==k.get(d));for(unsigned p=0;p<3;++p)assert(k.preset[p]>=k.low&&k.preset[p]<=k.high);}
     { /* The shipped default file must be exactly Quality, with no warnings. */
         std::ifstream f("windows-package/northlight-quality.ini");assert(f);std::vector<std::string> problems;

@@ -42,7 +42,15 @@ static size_t budgets(){
         const uint64_t once=b.cheapLimit;b.finishReservedTurns(0,0);assert(b.cheapLimit==once);b.finishReservedTurns(UINT64_MAX,UINT64_MAX);assert(b.cheapLimit==once);
         b.reset();assert(b.cheapLimit==280000&&!b.reservedClosed&&b.lent()==0);++checked;
     }
-    return checked;
+    AdaptiveTimeBudget normal,pointWave;
+    normal.reset(1220);pointWave.reset(1220);
+    normal.lendToBuild(500000,0);pointWave.lendToBuild(500000,0,true);
+    assert(pointWave.totalLimit==AdaptiveTimeBudget::MaxTotal&&pointWave.cheapLimit==normal.cheapLimit);
+    assert(pointWave.buildLimit-normal.buildLimit==pointWave.totalLimit-normal.totalLimit);
+    pointWave.finishReservedTurns(0,pointWave.buildLimit);
+    assert(pointWave.cheapLimit+pointWave.buildLimit==AdaptiveTimeBudget::MaxTotal);
+    pointWave.reset(1220);assert(pointWave.totalLimit==normal.totalLimit&&pointWave.buildLimit==AdaptiveTimeBudget::Build);
+    return checked+1;
 }
 // Token-limited fake phases exercise REAL production cursor semantics without
 // depending on native CPU speed. Only deadline duration is replaced by tokens.
@@ -160,7 +168,7 @@ int main(int argc,char** argv){
     alignas(Mesh) unsigned char storage[sizeof(Mesh)];auto create=[&](){return std::shared_ptr<const Mesh>(new(storage) Mesh(geometry(12)),[](const Mesh* p){const_cast<Mesh*>(p)->~Mesh();});};
     auto first=create();const auto* address=first.get();warm(cache,*prepared,first,c,inverse);std::weak_ptr<const Mesh> weak=first;first.reset();assert(weak.expired());auto replacement=create();assert(replacement.get()==address);cold(cache,*prepared,replacement,c,inverse);replacement.reset();
     EnvelopeCache eviction;warm(eviction,*prepared,mesh,c,inverse);std::vector<std::shared_ptr<const Mesh>> retained;
-    for(unsigned n=0;n<2300;++n){retained.push_back(std::make_shared<const Mesh>(geometry(3)));warm(eviction,*prepared,retained.back(),c,inverse);assert(eviction.entries()<=2048&&eviction.reservedBytes()<=8u*1024u*1024u);}
+    for(unsigned n=0;n<4300;++n){retained.push_back(std::make_shared<const Mesh>(geometry(3)));warm(eviction,*prepared,retained.back(),c,inverse);assert(eviction.entries()<=4096&&eviction.reservedBytes()<=8u*1024u*1024u);}
     cold(eviction,*prepared,mesh,c,inverse);assert(mesh.use_count()==1);
     std::printf("PASS adaptive: %zu deterministic budget/overflow/reset/idempotence cases; mixed/allheavy/allcold/growing queue fairness and badcursor regression; %zu prepared continuation results, heavy attempts%zu, cold vertices%zu. Immutable program+decl copies, exactDEF/layout/newowner/reset/ABA/eviction, currentpose/camera and diagnosticparity validated.\n",budgetCases,extraValid,heavyAttempts,coldBuilt);
 }

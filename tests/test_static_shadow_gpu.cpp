@@ -14,6 +14,16 @@ std::shared_ptr<Snapshot> snapshot(const std::shared_ptr<Model>& m,unsigned coun
 // Lifecycle assertions require completed uploads; wall-clock timing is tested separately.
 static GpuCache::Limits lifecycleLimits(){GpuCache::Limits l;l.uploadMs=1000;return l;}
 int main(){float matrix[16]={1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1};
+ {IDirect3DDevice9 d;auto limits=lifecycleLimits();limits.uploadBytes=20;limits.uploadMs=0;
+  GpuCache gpu(limits);auto m=model("fixed");m->materials[0].width=4;m->materials[0].height=2;
+  m->materials[0].rgba.assign(32,255);auto s=snapshot(m);const auto empty=gpu.readyContentHash();
+  NorthlightStreaming::Budget normal(20,1000);assert(gpu.update(&d,s,1,true,&normal));
+  assert(gpu.stats().frameBytes==0&&gpu.readyContentHash()==empty);
+  for(unsigned frame=2;frame<=8;++frame){NorthlightStreaming::Budget bytes(20,std::numeric_limits<double>::infinity());
+   assert(gpu.update(&d,s,frame,true,&bytes,true));assert(gpu.stats().frameBytes<=20);
+   if(frame==5)assert(gpu.stats().frameBytes==6&&gpu.readyContentHash()==empty);}
+  assert(gpu.stats().readyModels==1&&gpu.readyContentHash()!=empty&&gpu.coverage(0,1,"fixed"));
+  gpu.reset();assert(gpu.readyContentHash()==empty&&FakeResource::alive==0);}
  {IDirect3DDevice9 d;auto limits=lifecycleLimits();limits.uploadBytes=20;limits.uploadMs=100;GpuCache gpu(limits);auto m=model("one"),m2=model("two");auto s=snapshot(m);uint64_t empty=0;
  for(unsigned frame=1;frame<=8;++frame){assert(gpu.update(&d,s,frame));assert(gpu.stats().frameBytes<=20);if(frame==1)empty=gpu.signature(matrix);}
  assert(gpu.stats().readyModels==1);assert(gpu.coverage(0,1,"one"));assert(gpu.signature(matrix)!=empty);assert(d.indexBuffers==1&&d.textures==1);assert(gpu.draw(&d,matrix));assert(gpu.stats().drawCalls==1&&gpu.stats().instances==2);assert(d.frequencies[0]==1&&d.frequencies[1]==1);

@@ -96,6 +96,40 @@ int main(){
     atlas[13].occupied=false;assert(mirror.changed(atlas));mirror.write(pixels.data(),pitch,4,atlas);
     assert(!mirror.changed(atlas));std::array<uint16_t,4> cleared;std::memcpy(cleared.data(),pixels.data()+ty*pitch+tx*8,8);assert(cleared[3]==0xbc00);
     mirror.reset();assert(mirror.changed(atlas)&&mirror.prepare(atlas.size()));dirty=mirror.write(pixels.data(),pitch,4,atlas);assert(dirty.right==layout.width);
+
+    // The same two cascades previously reached the uploader as one vector.
+    // Compare GPU bytes and dirty bounds when a tile crosses the bank boundary.
+    const auto layered=V::atlas(4,2);
+    const size_t layeredPitch=layered.width*8+24;
+    std::vector<ProbeAtlasEntry> nearBank(64),coarse(64);
+    nearBank.back().occupied=nearBank.back().probe.valid=true;
+    nearBank.back().probe.localVisibility=map;
+    coarse.front().occupied=coarse.front().probe.valid=true;
+    coarse.front().probe.localVisibility=floorMap;
+    NorthlightProbeUpload::LocalVisibilityMirror flatMirror,bankMirror;
+    std::vector<unsigned char> flatPixels(layeredPitch*layered.height,0x73),bankPixels=flatPixels;
+    const auto compareBanks=[&]{
+        auto flat=nearBank;
+        flat.insert(flat.end(),coarse.begin(),coarse.end());
+        assert(flatMirror.changed(flat)&&bankMirror.changed(nearBank,coarse));
+        assert(flatMirror.prepare(flat.size())&&bankMirror.prepare(nearBank.size()+coarse.size()));
+        const auto a=flatMirror.write(flatPixels.data(),layeredPitch,4,flat,2);
+        const auto b=bankMirror.write(bankPixels.data(),layeredPitch,4,nearBank,2,coarse);
+        assert(flatPixels==bankPixels&&a.left==b.left&&a.top==b.top&&a.right==b.right&&a.bottom==b.bottom);
+        return b;
+    };
+    assert(compareBanks().right==layered.width);
+    coarse.front().probe.sh[0]={1,3,7};
+    assert(!bankMirror.changed(nearBank,coarse));
+    coarse.front().probe.valid=false;
+    const auto coarseDirty=compareBanks();
+    const unsigned coarseX=64%layered.columns*9,coarseY=64/layered.columns*9;
+    assert(coarseDirty.left==coarseX&&coarseDirty.top==coarseY&&coarseDirty.right==coarseX+9&&coarseDirty.bottom==coarseY+9);
+    bankMirror.reset();
+    flatMirror.reset();
+    assert(compareBanks().right==layered.width);
+    std::printf("PROBE_VISIBILITY_BANKS_PASS cascades=2 entryBytes=%zu\n",sizeof(ProbeAtlasEntry));
+
     // Probe publications share immutable visibility through cache copies and
     // retain structural blockers while actor radiance changes independently.
     ProbeCache colours;Probe colour;colour.valid=true;colour.localVisibility=map;colours.put({},colour);

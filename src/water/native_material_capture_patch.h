@@ -58,10 +58,16 @@ inline bool alphaSlice(const Word* code,const NorthlightTerrainCoverage::Program
 }
 // Append normal/occlusion capture to the coverage slice. Original constants,
 // UVs and samplers keep their ABI; native lighting is not a capture output.
-inline bool patch(const Word* code,size_t count,std::vector<Word>& out,unsigned& control,bool alpha=true,bool shared=false,bool receiver=false,bool normalOnly=false){
-    const auto* prefix=reinterpret_cast<const Word*>(receiver?kModelNormalCaptureShader:shared?kBumpSharedNativeShader:normalOnly?kBumpNormalNativeShader:kBumpNativeShader);const size_t length=receiver?sizeof(kModelNormalCaptureShader)/sizeof(DWORD):shared?sizeof(kBumpSharedNativeShader)/sizeof(DWORD):normalOnly?sizeof(kBumpNormalNativeShader)/sizeof(DWORD):sizeof(kBumpNativeShader)/sizeof(DWORD);
+inline bool patch(const Word* code,size_t count,std::vector<Word>& out,unsigned& control,bool alpha=true,bool shared=false,bool receiver=false,bool normalOnly=false,unsigned fusedSlot=0,bool packed=false){
+    const bool fused=fusedSlot!=0;
+    if(fused&&(fusedSlot>3||alpha||shared||receiver||!normalOnly))return false;
+    const bool opaqueReceiver=receiver&&!alpha;
+    const auto* prefix=reinterpret_cast<const Word*>(fused?(packed?kBumpFusedPackedNativeShader:kBumpFusedNativeShader):receiver?(alpha?kModelNormalCaptureShader:kModelNormalOpaqueShader):shared?kBumpSharedNativeShader:normalOnly?kBumpNormalNativeShader:kBumpNativeShader);
+    const size_t length=(fused?(packed?sizeof(kBumpFusedPackedNativeShader):sizeof(kBumpFusedNativeShader)):receiver?(alpha?sizeof(kModelNormalCaptureShader):sizeof(kModelNormalOpaqueShader)):shared?sizeof(kBumpSharedNativeShader):normalOnly?sizeof(kBumpNormalNativeShader):sizeof(kBumpNativeShader))/sizeof(DWORD);
     NorthlightTerrainCoverage::Program native,capture;if(!NorthlightTerrainCoverage::analyse(code,count,native)||native.vertex||!NorthlightTerrainCoverage::analyse(prefix,length,capture)||native.slots+capture.slots>512)return false;
-    std::vector<Word> sliced;if(alphaSlice(code,native,alpha,sliced)){code=sliced.data();count=sliced.size();native={};if(!NorthlightTerrainCoverage::analyse(code,count,native))return false;}
+    if(fused)for(const auto& op:native.ops)if(op.code==25||op.code==26||op.code==28||op.code==30)return false;
+    std::vector<Word> sliced;const bool slicedNative=!fused&&alphaSlice(code,native,alpha,sliced);
+    if(slicedNative){code=sliced.data();count=sliced.size();native={};if(!NorthlightTerrainCoverage::analyse(code,count,native))return false;}
     int uv=-1;bool samplers[16]={},integers[16]={};
     for(const auto& op:native.ops){
         if(op.code==31&&regType(code[op.at+2])==1&&(code[op.at+1]&15)==5){unsigned index=(code[op.at+1]>>16)&15;if(index==7||(shared&&index==6)||(receiver&&index==5))return false;if(!index)uv=int(regIndex(code[op.at+2]));}
@@ -71,7 +77,9 @@ inline bool patch(const Word* code,size_t count,std::vector<Word>& out,unsigned&
     native.inputs[varying]=true;unsigned primitive=0;if(shared){while(primitive<10&&native.inputs[primitive])++primitive;if(primitive==10)return false;}
     unsigned normal=0;if(receiver){while(normal<10&&native.inputs[normal])++normal;if(normal==10)return false;}
     auto temp=[&](){unsigned r=0;while(r<32&&native.temps[r])++r;if(r<32)native.temps[r]=true;return r;};
-    const unsigned color=temp();if(color==32)return false;
+    // A sliced opaque receiver keeps native kills but has no native color output.
+    const bool needsColorTemp=!fused&&(!opaqueReceiver||!slicedNative);
+    const unsigned color=needsColorTemp?temp():32;if(needsColorTemp&&color==32)return false;
     const unsigned bankCount=receiver?1:9; // receiver control, or material controls and view-to-world rows
     // Replay captures one contiguous external-constant span. Place controls
     // beside the native reads instead of copying a mostly unused gap to c128.
@@ -90,20 +98,21 @@ inline bool patch(const Word* code,size_t count,std::vector<Word>& out,unsigned&
         if(op==31&&regType(prefix[at+2])==1){unsigned semantic=prefix[at+1]&15,index=(prefix[at+1]>>16)&15,r=regIndex(prefix[at+2]);if(semantic==10)nativeColorInput=r;else if(semantic==5)inputs[r]=index==7?varying:index==6?primitive:receiver&&index==5?normal:unsigned(uv);else return false;}
         if(op==81){unsigned c=192;while(c<256&&native.constants[c])++c;if(c==256)return false;native.constants[c]=true;constants[regIndex(prefix[at+1])]=c;}
         if(op!=65534)for(unsigned i=op==31?2:1;i<=n;++i){if((op==81||op==48||op==47)&&i>1)break;Word t=prefix[at+i];if(regType(t)==0&&temps[regIndex(t)]==32){unsigned r=temp();if(r==32)return false;temps[regIndex(t)]=r;}if(regType(t)==7&&integerMap[regIndex(t)]==16){unsigned r=0;while(r<16&&integers[r])++r;if(r==16)return false;integers[r]=true;integerMap[regIndex(t)]=r;}}at+=n+1;}
-    if(nativeColorInput==16)return false;
-    auto mapped=[&](Word t){unsigned type=regType(t),r=regIndex(t);if(type==0)return replaceReg(t,0,temps[r]);if(type==1)return replaceReg(t,r==nativeColorInput?0:1,r==nativeColorInput?color:inputs[r]);if(type==2)return replaceReg(t,2,constants[r]);if(type==7)return replaceReg(t,7,integerMap[r]);if(type==10)return replaceReg(t,10,14);return t;};
+    if((nativeColorInput==16)!=(opaqueReceiver||fused))return false;
+    auto mapped=[&](Word t){unsigned type=regType(t),r=regIndex(t);if(type==0)return replaceReg(t,0,temps[r]);if(type==1)return replaceReg(t,r==nativeColorInput?0:1,r==nativeColorInput?color:inputs[r]);if(type==2)return replaceReg(t,2,constants[r]);if(type==7)return replaceReg(t,7,integerMap[r]);if(type==10)return replaceReg(t,10,14);if(fused&&type==8)return replaceReg(t,8,fusedSlot);return t;};
     out.assign(code,code+count-1);
-    for(const auto& op:native.ops)if(op.code!=65534&&op.code!=31&&op.code!=81&&op.code!=48&&op.code!=47)for(unsigned i=1;i<=op.size;++i){Word& t=out[op.at+i];if(regType(t)==8&&regIndex(t)==0)t=replaceReg(t,0,color);}
+    if(needsColorTemp)for(const auto& op:native.ops)if(op.code!=65534&&op.code!=31&&op.code!=81&&op.code!=48&&op.code!=47)for(unsigned i=1;i<=op.size;++i){Word& t=out[op.at+i];if(regType(t)==8&&regIndex(t)==0)t=replaceReg(t,0,color);}
     out.insert(out.begin()+native.declEnd,{0x0200001fu,0x80070005u,dst(1,varying)});
     if(receiver)out.insert(out.begin()+native.declEnd,{0x0200001fu,0x80050005u,dst(1,normal,7)});
     else out.insert(out.begin()+native.declEnd,{0x0200001fu,0x90000000u,dst(10,14)});
     if(shared)out.insert(out.begin()+native.declEnd,{0x0200001fu,0x80060005u,dst(1,primitive,1)});
     // Opaque coverage needs no original alpha; define all lanes even when the
     // native program had no live output. The capture's alpha selector is zero.
-    if(!alpha)out.insert(out.end(),{0x02000001u,dst(0,color),src(2,control)});
+    if(!alpha&&!opaqueReceiver&&!fused)out.insert(out.end(),{0x02000001u,dst(0,color),src(2,control)});
     std::vector<Word> defs;
     for(size_t at=1;at+1<length;){unsigned op=prefix[at]&65535,n=op==65534?(prefix[at]>>16)&32767:(prefix[at]>>24)&15;
         if(op==81||op==48||op==47){defs.push_back(prefix[at]);defs.push_back(mapped(prefix[at+1]));defs.insert(defs.end(),prefix+at+2,prefix+at+n+1);}
+        else if(fused&&op==65)return false;
         else if(op!=65534&&op!=31){out.push_back(prefix[at]);for(unsigned i=1;i<=n;++i)out.push_back(mapped(prefix[at+i]));}at+=n+1;}
     out.insert(out.begin()+1,defs.begin(),defs.end());out.push_back(65535);return true;
 }

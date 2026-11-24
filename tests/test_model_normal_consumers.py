@@ -46,7 +46,11 @@ struct Hook {
     Materials materials;Materials* autoBump=nullptr;
     bool modelNormalsNeeded=true,enabled=true,applied=false,failed=false;
     std::map<IDirect3DVertexShader9*,unsigned> vsHashes;
-    unsigned m2ShaderFamily(unsigned hash){return hash;}
+    struct ShaderClass {bool terrain;unsigned family;};
+    ShaderClass classifyVs(IDirect3DVertexShader9* vs){
+        const auto tag=vsHashes.find(vs);
+        return {world->terrainShader(vs),tag==vsHashes.end()?0u:tag->second};
+    }
     @METHOD@
 };
 using HRESULT=int;using DWORD=unsigned;using IDirect3DSurface9=int;using D3DRENDERSTATETYPE=unsigned;

@@ -7,23 +7,27 @@ settings, errors/warnings, capped first-N rejects, one-off events, user-triggere
 or reachable only from a gated caller). A new ungated periodic line fails this test.
 Also checks the non-log diagnostic work is gated and the functional mirror audit is
 not. Prints the full inventory. Static source analysis only; nothing is run."""
+
+from source_units import source_text
 import sys; from pathlib import Path; sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root
 import northlight_paths as fp
 from pathlib import Path
 import re,sys
 HERE=Path(__file__).resolve().parent
-FILES=['renderer.cpp','world_renderer.h','world_shadow_experiment.inl','world_point_rendering.inl','celestial_disc_renderer.h',
-       'shadow_blob_filter.h','water_renderer.h','gpu_profile.h','gpu_frame_timer.h','world_diagnostics.h','world_replay_probe.inl','world_rigid_memory.inl']
+FILES=['renderer.cpp','world_renderer.h','world_atmosphere_frame.inl','world_frame_constants.inl','world_shadow_experiment.inl','world_point_rendering.inl','world_shadow_bounds.inl','celestial_disc_renderer.h',
+       'shadow_blob_filter.h','water_renderer.h','gpu_profile.h','gpu_frame_timer.h','world_diagnostics.h','world_replay_probe.inl','world_replay_upload.inl','world_rigid_memory.inl']
 # 0.3.149: profiling()/profileSampled() = RenderProfile, which requires Diagnostics=1 (NorthlightQuality::renderProfile).
 GATES=('NorthlightDiagnostics::enabled()','diagnostics()','sampled()','captureSampled','if(diagnostics)','shadowFate.active()','sampledFrame','profiling()','profileSampled()','if(lightingClock)','profile->recording()','materialProfile->recording()','if(profileThisBuild)','if(resetProfile)')
 # Ungated lines that stay with Diagnostics=0: format prefix -> label.
 KEEP={
  'NATIVE_M2 client12340=':'start-up: one build signature verdict',
+ 'NATIVE_ADT_COVERAGE ':'sampled native ADT metadata carried by the draw command',
+ 'NATIVE_ADT_EXTENTS ':'sampled native ADT metadata mismatch',
  'WORLD geometry unavailable:':'worker error: a geometry build failed to publish',
  'WORLD reset rebuild reused local BVH':'reset recovery: the worker restored a previous local BVH',
  'WORLD upload staging uses temporary storage':'worker admission: a new mesh plan requires file-backed staging',
  'MENU context rejected reason=':'capped: one report per reason and trigger/reject pair',
- 'WORLD AO HDR compositor unavailable':'one-off per resource lifetime: hdrAOBaseTried latches the creation attempt',
+ 'WORLD AO HDR compositor unavailable':'one-off per resource lifetime: aoBaseTried_ latches the creation attempt',
  'NATIVE light stay status=':'start-up: one native lighting hook verdict',
  'NATIVE more lights status=':'start-up: one native light count hook verdict',
  'NORTHLIGHT PROFILING BUILD ':'start-up: profiling build identity',
@@ -32,7 +36,26 @@ KEEP={
  'PROFILE effective diagnostics=':'device initialization or explicit live settings update',
  'FOREVER atmosphere loaded=':'device initialization: one atmosphere catalog load per WorldRenderer',
  'CAPTURE_BATCH_POLICY ':'device initialization: reports the selected capture ownership contract',
+ 'CAPTURE_WORK_DRAW ':'stand replay only, explicit one-frame capture-work request',
+ 'CAPTURE_WORK_FRAME ':'stand replay only, explicit audit frame excluded from frame timings',
+ 'CAPTURE_WORK_BUFFER ':'stand replay only, callback installed for the one selected audit frame',
+ 'REPLAY COPY memory ':'stand replay only, memory sampled by the explicit capture-work audit',
+ 'REPLAY COPY policy ':'stand replay only, command-stream device initialization',
+ 'REPLAY_GEOMETRY_STAGING ':'stand replay only, bounded staging at the recorded geometry checkpoint',
+ 'REPLAY_GEOMETRY_CHECKPOINT ':'stand replay only, verification at the recorded geometry checkpoint',
+ 'STATIC_PARITY_FAILURE ':'explicit fixed-static-shadow parity run',
+ 'STATIC_PARITY ':'explicit fixed-static-shadow parity run',
+ 'SHADOW_CAPTURE_PROJECTION policy ':'stand replay only, one selected projection policy per process',
+ 'SHADOW_CAPTURE_PACKET_BANK policy ':'stand replay only, one selected pose bank policy per process',
+ 'LOCAL_INPUTS ':'explicit local-light input audit',
+ 'MODEL_PREPARE ':'indirect: logPrepareProfile is called only with profileSampled()',
+ 'MODEL replay banks ':'indirect: logReplayConstantStorage is called only with captureSampled',
+ 'SHADOW alpha target deferred ':'warning: once per second during alpha-target creation backoff',
+ 'WORLD directional shadows deferred ':'warning: alpha-target failure starts the one-second directional retry backoff',
  'BACKEND_WORK ':'start-up: selected loaded-runtime work policy',
+ 'STAND_PROFILE ':'start-up: fixed-work mode receipt in the replay build',
+ 'PARTICLE_ROUTE ':'indirect: logDrawGate runs on render-profile sample frames',
+ 'MATERIAL_VIEW_SYNC ':'indirect: logDrawGate runs on render-profile sample frames',
  'CSTREAM EVENT wait=':'start-up: bounded wait policy configuration',
  'POINT pipeline prewarm state/scene restoration failed':'error: startup prewarm failed to restore state',
  'NATIVE_DIRECT cold ':'capped: native local-light factory emits at most 128 cold pair traces',
@@ -43,7 +66,7 @@ KEEP={
  'ART INPUTS status=':'start-up: art-input verification result',
  'GLUE lighting selection status=':'start-up: native lighting hook installation result',
  'WEATHER capture ':'explicit user-requested weather/effect capture; consumeRequest checks the Weather request, fallback caller checks its scopes',
- 'POINT PCSS unavailable':'one-off per GPU resource lifetime: pointSoftTried is set before optional shader creation',
+ 'POINT PCSS unavailable':'one-off per GPU resource lifetime: softTried_ is set before optional shader creation',
  'STENCIL depth upgrade unavailable':'one-off per process: unavailableLogged latch',
  'STENCIL depth upgraded':'one-off per process: upgradedLogged latch',
  'AO actor shaders unavailable':'one-off per resource reset: aoActorShaderFailed latch',
@@ -105,6 +128,7 @@ KEEP={
  'HDR logical copy after UI':'gated and capped: helper returns unless diagnostics() is on, first eight logical copies after the UI boundary',
  'HDR legacy target ':'one-off per legacy target creation/reset',
  'HDR experimental requested=':'start-up: experimental HDR configuration',
+ 'SDR primary target ':'device output status, emitted together with the HDR configuration verdict',
  'HDR experimental device creation refused:':'start-up: command-stream creation failure',
  'SETTINGS startup recovery incomplete:':'one-off: a crash-interrupted settings commit could not be finished at start-up',
  'SETTINGS frame %s revision=':'settings event: a preview or saved config reached the frame boundary (user action)',
@@ -183,18 +207,27 @@ for f in FILES:
         where=f'{f}:{s.count(chr(10),0,m.start())+1}'
         if any(g in c for c in conditions(s,m.start())[:6] for g in GATES):gated.append((where,fmt));continue
         label=next((v for k,v in KEEP.items() if fmt.startswith(k)),None)
+        if f=='world_renderer.h' and fmt.startswith('logf(format,args...);});'):
+            begin=s.index('    bool ensureCloudNoise(){')
+            end=s.index('    unsigned localDirectCount=',begin)
+            if begin<m.start()<end and 'regionalFogGpu.ensureNoise(' in s[begin:end]:
+                noise=fp.src('world_regional_fog_gpu.h').read_text()
+                assert 'if(noiseFailed_||report)' in noise and 'DWORD(now-noiseReportAt_)>=60000' in noise
+                assert noise.count('log("WORLD fog clouds ')==2
+                label='cloud upload: one successful allocation or bounded failure per volume'
         (kept if label else unknown).append((where,fmt,label))
 print(f'GATED (off with Diagnostics=0): {len(gated)} log sites');[print('  LOG ',w,f) for w,f in gated]
 print(f'KEPT with Diagnostics=0: {len(kept)}');[print('  ',w,f,'--',l) for w,f,l in kept]
 assert not unknown,'ungated, unlabelled log sites:\n'+'\n'.join(f'{w} {f}' for w,f,_ in unknown)
 # Non-log diagnostic work (MEASUREMENT / COUNTER) must be gated; functional work must not be.
-r=fp.src('renderer.cpp').read_text();w=fp.src('world_renderer.h').read_text();mp=fp.src('material_profile.h').read_text()
+bank=fp.src('world_frame_constants.inl').read_text()
+r=source_text(fp.src('renderer.cpp'));w=source_text(fp.src('world_renderer.h'));mp=fp.src('material_profile.h').read_text()
 constructor=r[r.index('Device(IDirect3DDevice9* d,'):r.index('~Device() {')]
 checks={
  'weather capture is explicit and point PCSS warnings are latched':
    'if(consumeRequest&&!NorthlightDiagnosticCapture::take(NorthlightDiagnosticCapture::Weather))return;' in r
    and 'if(scopes&Weather)captureWeatherDiagnostics(' in r
-   and 'if(!pointSoftTried){\n            pointSoftTried=true;' in fp.src('world_point_rendering.inl').read_text(),
+   and 'if(!softTried_){\n            softTried_=true;' in fp.src('world_point_lighting.h').read_text(),
  'HDR CPU timers require the latched diagnostic sample without A/B scheduling':
    'mirrorState.rawCounting=sampled()&&NorthlightRenderThreadProbe::profiling();' in r
    and 'gateFrame=mirrorState.rawCounting;' in r
@@ -205,7 +238,11 @@ checks={
  'HDR layer-state diagnostics require Diagnostics and stop after twelve reports':
    'void hdrLayerDiagnostic(const char* path="ui"){\n        if(hdrLayerStateLogs>=12||!diagnostics())return;\n        ++hdrLayerStateLogs;' in r,
     'effect captures require an explicit request and exclude the captured frame':'if(!scopes&&!fallback)return;' in r[r.index('void captureEffectDiagnostics()'):r.index('void releaseResources(bool preserveCaptureSources=false)')]
-   and 'captureEffectDiagnostics();' in r[r.index('void finishFrameImpl()'):r.index('const bool diagnosticFrame=')],
+   and 'captureEffectDiagnostics();' in r[r.index('void finishFrameImpl()'):r.index('bool diagnosticFrame=')],
+ 'draw capture work is available only on the stand and outside frame timings':
+   '#ifdef NORTHLIGHT_REPLAY_STAND\n        const bool audit=NorthlightCaptureWork::selected(frame);' in r
+   and 'if(audit)logCaptureWork(' in r
+   and '#ifdef NORTHLIGHT_REPLAY_STAND\n        if(NorthlightCaptureWork::selected(frame)){\n            diagnosticFrame=true;' in r,
  'reset clock and stage lines require Diagnostics':'const bool resetProfile=diagnostics()&&cpuFrequency.QuadPart>0;' in r,
  'projected visibility queries require a trace window, Diagnostics and RenderProfile':'if(count>256||!spellTraceFrame||!diagnostics()||!world||!NorthlightQuality::renderProfile(world->surfaceSettings())||' in r
    and '!projectedAudit.canSample(frame)||' in r and 'spellTraceWindow=spellTraceLeft&&diagnostics()&&frame+1>=300;' in r,
@@ -220,7 +257,7 @@ checks={
    and 'now-resourceMemoryProfileAt<10000' in w,
  'partial interval helper exits with diagnostics disabled':'if(!diagnostics()||!have)return;' in r[r.index('void flushFrameIntervals('):r.index('void finishFrameImpl()')],
  'native shadow observations require the diagnostic/profiling limiter':'if(!vc.nativeShadow||!nativeShadowLimiter.take(diagnostics(),NorthlightRenderThreadProbe::profiling(),frame,*vc.nativeShadow))return;' in r,
- 'source logs require admission and a bounded budget':'if(!trace.enabled)return;' in w[w.index('void reportLocalSources('):w.index('void profileSplit(')] and 'localSourceTraces<32&&frames%127==0' in w and 'sourceTrace.begin(NorthlightDiagnostics::enabled()&&NorthlightQuality::renderProfile(quality)&&' in w,
+ 'source logs require admission and a bounded budget':'if(!trace.enabled)return;' in w[w.index('void reportLocalSources('):w.index('IDirect3DVertexBuffer9* vertices=nullptr;',w.index('void reportLocalSources('))] and 'localSourceTraces<32&&frames%127==0' in bank and 'sourceTrace.begin(NorthlightDiagnostics::enabled()&&NorthlightQuality::renderProfile(quality)&&' in bank,
  'normal GPU diagnostics consume explicit requests and automatic shadow captures stop at four':'gpuDiagnosticCaptures==~0u||gpuNormalDiagnosticRequested' in w and 'normalDiagnosticCapture=debug==0&&gpuNormalDiagnosticRequested;' in w and 'if(normalDiagnosticCapture)gpuNormalDiagnosticRequested=false;' in w and 'debug==1&&gpuDiagnosticArmed&&gpuDiagnosticCaptures<4' in w and 'if(world->diagnosticCaptureInLastRender()){' in r,
  'capture activation is creation-only':r.count('logf("NATIVE capture active=')==1 and 'if(captureReason){\n            target->setNativeCaptureDiagnostic(true);' in r,
  'canonical source membership is established at construction, with no silent private fallback':
@@ -235,15 +272,17 @@ checks={
  'CpuScope timings use sampled()':'const bool cleanupSample=sampled()&&NorthlightRenderThreadProbe::profiling();' in r and all('CpuScope' not in l or 'sampled' in l or 'diagnostics()' in l or 'CpuScope cost(cleanupSample?' in l
    or any(scope in l for scope in ('CpuScope timing(timeAOBlur?&aoBlurSetup:nullptr)','CpuScope timing(timeAOBlur?&aoBlurSubmit:nullptr)'))
    for l in r.splitlines() if 'CpuScope ' in l and '(' in l and 'struct' not in l),
- 'AO blur scope predicate requires an active sampled GPU profile':r.count('const bool timeAOBlur=')==1
-   and 'const bool timeAOBlur=gpuProfile->recording()&&cpuFrequency.QuadPart>0;' in r
+ 'AO blur scope predicate requires an active sampled GPU profile':
+   fp.src('contact_ao_pass.h').read_text().count('const bool timeAOBlur=gpuProfile->recording()&&cpuClockAvailable;')==1
+   and '{width,height,aoMethod,contactAO,linearHdr,fold,cpuFrequency.QuadPart>0,constants[7],constants[8]}' in r
    and 'bool recording()const {return active_>=0&&!disabled_;}' in fp.src('gpu_profile.h').read_text(),
- 'world capture: raw sample frame in, diagnostics gated inside':
-   len(re.findall(r'world->capture(?:UP)?\([^;]+;',r))==2
-   and all(re.search(r',vs,frame%120==0,NorthlightRenderThreadProbe::sampleFrame\(frame\)(?:,bounds,&source\.mesh,source\.declaration,&source\.pose)?\);$',call) for call in re.findall(r'world->capture(?:UP)?\([^;]+;',r))
-   and r.count(',vs,frame%120==0,NorthlightRenderThreadProbe::sampleFrame(frame),bounds,&source.mesh,source.declaration,&source.pose);')==1
-   and w.count('constantSelfCheck=selfCheck;sample=sample&&NorthlightDiagnostics::enabled();')==2,
- 'constant self-check keeps its 0.3.140 cadence (0.3.180 C0: its own flag and serial; the profile Stats only on diagnostic samples)':'},sample?&constantEpochProfile:nullptr,constantSelfCheck,constantSelfCheckState))return;' in w,
+ 'world capture: raw sample frame in, diagnostics gated inside':(lambda route:
+   len(re.findall(r'world->capture(?:UP)?\([^;]+;',route))==2
+   and all(re.search(r',vs,frame%120==0,NorthlightRenderThreadProbe::sampleFrame\(frame\)(?:,bounds,&source\.mesh,source\.declaration,&source\.pose,&source\.bank)?\);$',call) for call in re.findall(r'world->capture(?:UP)?\([^;]+;',route))
+   and route.count(',vs,frame%120==0,NorthlightRenderThreadProbe::sampleFrame(frame),bounds,&source.mesh,source.declaration,&source.pose,&source.bank);')==1
+   and w.count('constantSelfCheck=selfCheck;sample=sample&&NorthlightDiagnostics::enabled();')==2)(fp.src('draw_capture_route.h').read_text()),
+ 'constant self-check keeps its own cadence and samples profile counters independently':
+   '},captureFloatRows,sample?&constantEpochProfile:nullptr,constantSelfCheck,constantSelfCheckState,readFloatRows))' in w,
  'GPU timestamp queries only when on':'if(diagnostics())gpuProfile->beginFrame(frame,NorthlightRenderThreadProbe::sampleFrame(frame))' in r and 'if(diagnostics()){gpuProfile->poll();if(gpuSceneProfile)gpuSceneProfile->poll();}' in r and 'if(gpuSceneProfile&&diagnostics())gpuSceneProfile->beginFrame(frame,' in r,
  'async memory sampler always on (memory guard), periodic line only when on':'try{memoryDiagnostics=std::make_unique<NorthlightMemoryDiagnostics::Sampler>(&queryAddressSpace);}' in r and 'if(diagnostics())try{memoryDiagnostics=' not in r and 'if(decision.report&&diagnostics())logf("MEMORY frame=' in r and 'else if(diagnostics())logf("MEMORY sample failed' in r,
  'frame interval sampling only when on; diagnostic frames excluded':'if(!diagnosticFrame&&diagnostics()&&QueryPerformanceCounter(&intervalTick)&&frameIntervals.sample(' in r,
@@ -263,7 +302,7 @@ checks={
    and 'if(!rigidEventTokens||rigidEventLines>=RigidEventLines){++rigidEventSuppressed;continue;}' in t)(fp.src('world_rigid_memory.inl').read_text()),
  'celestial mask counters (0.3.175): on the gated CELESTIAL line, the clock only with RenderProfile':(lambda t:'const int64_t started=NorthlightRenderThreadProbe::profiling()?QpcClock::now():0;' in t
    and 'if(NorthlightDiagnostics::enabled()&&(!m.lastLog||now-m.lastLog>=10000)){m.lastLog=now;' in t)(w),
- 'point/envelope diagnostics gated and sampled once per rendered frame':(lambda t:t.count('const bool diagnostics=replayBoundsDiagnosticSample();')==2 and 'if(!NorthlightDiagnostics::enabled()||(frames&&frames%120)||(replayBoundsLogSeen&&replayBoundsLogFrame==frames))return false;' in t)(fp.src('world_point_rendering.inl').read_text()),
+ 'point/envelope diagnostics gated and sampled once per rendered frame':(lambda t:t.count('const bool diagnostics=replayBoundsDiagnosticSample();')==2 and 'if(!NorthlightDiagnostics::enabled()||(frames&&frames%120)||(replayBoundsLogSeen&&replayBoundsLogFrame==frames))return false;' in t)(fp.src('world_shadow_bounds.inl').read_text()),
 }
 for name,ok in checks.items():print(('PASS ' if ok else 'FAIL ')+name)
 assert all(checks.values())
@@ -278,9 +317,11 @@ print('PASS Diagnostics=0 audit: every periodic line gated, only start-up/settin
 # cache/bulk/policy/clears, MODEL shadow actors/selection, RIGID memory/event, WORLD actor packets)
 # are deferLogf, written by flushDeferredLogs() from endFrame(). Counterfactual: with deferLogf
 # turned back into logf the audit must find those lines.
-SPAN_FILES=['world_renderer.h','world_shadow_experiment.inl','world_point_rendering.inl','world_replay_probe.inl','world_rigid_memory.inl','world_diagnostics.h']
+SPAN_FILES=['world_renderer.h','world_shadow_experiment.inl','world_point_rendering.inl','world_shadow_bounds.inl','world_replay_probe.inl','world_replay_upload.inl','world_rigid_memory.inl','world_diagnostics.h']
 SPAN_ALLOWED={'JOBS workers':'start-up: the replay worker pool starts once','JOBS unavailable':'start-up: the failed worker startup is latched','WORLD elided page missed':'capped error: first 12 staging misses per session, rebuild without page elision','PREPARE worker':'0.3.177: watchdog (at most 5 a session) / record exception (first 4)','WORLD DISABLED':'error (check())','GEOMETRY MEMORY':'warning: allocation deferral','WORLD pending mesh released':'event (0.3.156)',
- 'WORLD HDR material combinedAvailable=':'one-off capability event: hdrCombineTried is set before shader creation',
+ 'REPLAY_GEOMETRY_STAGING ':KEEP['REPLAY_GEOMETRY_STAGING '],
+ 'REPLAY_GEOMETRY_CHECKPOINT ':KEEP['REPLAY_GEOMETRY_CHECKPOINT '],
+ 'WORLD HDR material combinedAvailable=':'one-off capability event: combineTried_ is set before shader creation',
  'WORLD scene targets deferred:':'warning: partial scene allocation rolled back, logged at most once per minute',
  'WORLD screen resources deferred:':'warning: partial screen allocation rolled back, logged at most once per minute',
  'WORLD regional fog deferred:':'warning: fog upload rolled back, logged at most once per minute',
@@ -321,17 +362,19 @@ for fmt in sorted(logs):print('  SPAN LOG',fmt,'--',next((v for k,v in SPAN_ALLO
 bad=[fmt for fmt in logs if not any(fmt.startswith(k) for k in SPAN_ALLOWED)]
 counter,_=span_logs([t.replace('deferLogf(','logf(') for t in texts])
 missed=[k for k in SPAN_DEFERRED if not any(fmt.startswith(k) for fmt in counter)]
-ra=fp.src('renderer.cpp').read_text();ao=ra.index('effectsBuckets.mark(Bucket::AO);')
+ra=source_text(fp.src('renderer.cpp'));ao=ra.index('NorthlightContactAO::render<CpuScope>')
+contact=fp.src('contact_ao_pass.h').read_text()
 span_checks={
  'lighting clock only samples with diagnostics':'int64_t lightingClock=profileSampled()&&captureFrequency.QuadPart>0?QpcClock::now():0;' in w,
  'U0/S0: no logf( reachable between the selection/upload bucket marks except errors and one-off events':not bad,
  'U0/S0 counterfactual: the sampled lines are reachable there when not deferred':not missed and {'selectShadowReplays','uploadReplay','rigidMemoryInject','finishActorScene','uploadLiveTerrain'}<=reached,
- 'U0/S0: the proxy has no log line from the AO mark to world->render()':'logf(' not in ra[ao:ra.index('world->render(',ao)],
- 'U0/S0: deferred lines follow only bounded equipment frame bookkeeping':'void endFrame(bool retainPool=true,unsigned rendererFrame=0){\n        gpuDiagnosticFrame=false;\n        if(equipmentLightsOn()){equipmentLights.nextFrame();equipmentCapture.nextFrame();particleLights.nextFrame();NorthlightParticleUploads::cache().nextFrame();}\n        flushDeferredLogs();' in fp.src('world_renderer.h').read_text(),
+ 'U0/S0: the proxy has no log line from the AO mark to world->render()':('logf(' not in contact[contact.index('effectsBuckets.mark(Bucket::AO);'):]
+    and 'logf(' not in ra[ao:ra.index('world->render(',ao)]),
+ 'U0/S0: deferred lines follow only bounded equipment frame bookkeeping':'void endFrame(bool retainPool=true,unsigned rendererFrame=0){\n        gpuDiagnosticFrame=false;\n        equipmentBankAudit={};equipmentDrawAudit={};\n        if(equipmentLightsOn()){equipmentLights.nextFrame();equipmentCapture.nextFrame();particleLights.nextFrame();NorthlightParticleUploads::cache().nextFrame();}\n        flushDeferredLogs();' in w,
 }
 for name,ok in span_checks.items():print(('PASS ' if ok else 'FAIL ')+name)
 assert all(span_checks.values()),(bad,missed)
 
 
 # Recovery errors remain bounded even when the Reset fence never succeeds.
-assert 'NorthlightDiagnostics::enabled()&&resetReplayFailures<=3' in fp.src('world_renderer.h').read_text()
+assert 'NorthlightDiagnostics::enabled()&&resetReplayFailures<=3' in source_text(fp.src('world_renderer.h'))

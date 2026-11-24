@@ -31,8 +31,14 @@ class Mirror {
     struct Slot {NorthlightGI::ProbeGridKey key;bool valid=false,zero=true,synchronized=true;NorthlightGI::Vec3 cur[4];float prev[12]={};float start=None;};
     std::vector<Slot> slots;
     std::string map;
+    bool currentDirty_=true,previousDirty_=true;
 public:
-    void reset(){slots.assign(NorthlightGI::probeLayout().atlasSize(),Slot{});map.clear();}
+    bool currentDirty()const{return currentDirty_;}
+    bool previousDirty()const{return previousDirty_;}
+    void currentUploaded(){currentDirty_=false;}
+    void previousUploaded(){previousDirty_=false;}
+    void invalidateUploads(){currentDirty_=previousDirty_=true;}
+    void reset(){slots.assign(NorthlightGI::probeLayout().atlasSize(),Slot{});map.clear();invalidateUploads();}
     // Sized by the process probe layout (fixed before the first upload), like NorthlightProbeActivation.
     void begin(const std::string& next){if(map!=next||slots.size()!=NorthlightGI::probeLayout().atlasSize()){reset();map=next;}}
     // One pass over the published atlas; returns how many slots started or restarted a blend.
@@ -43,25 +49,32 @@ public:
             auto& slot=slots[i];const auto& entry=atlas[i];
             static_assert(sizeof slot.cur==12*sizeof(float),"SH comparison excludes padding");
             // Resident unchanged probes need no transpose to the GPU channel order.
-            const bool resident=slot.valid&&entry.occupied&&entry.probe.valid&&slot.key==entry.key;
+            const bool valid=entry.occupied&&entry.probe.valid;
+            const bool resident=slot.valid&&valid&&slot.key==entry.key;
             if(resident&&sameCoefficients(slot.cur,entry.probe.sh))continue;
             // Empty default slots need no transpose when both cached copies are also all zero.
             static constexpr float zero[12]={};
             if(!entry.occupied&&!slot.valid&&slot.start==None&&slot.zero&&sameCoefficients(entry.probe.sh,zero))continue;
-            if((!entry.occupied||!entry.probe.valid)&&!slot.valid&&slot.start==None&&slot.synchronized&&sameCoefficients(slot.cur,entry.probe.sh))continue;
+            if(!valid&&!slot.valid&&slot.start==None&&slot.synchronized&&sameCoefficients(slot.cur,entry.probe.sh))continue;
             float next[12];
-            for(int k=0;k<4;++k){next[k]=entry.probe.sh[k].x;next[4+k]=entry.probe.sh[k].y;next[8+k]=entry.probe.sh[k].z;}
-            // An unchanged invalid slot already has both exact cached copies.
-            if((!entry.occupied||!entry.probe.valid)&&!slot.valid&&slot.start==None&&sameCoefficients(slot.cur,entry.probe.sh)&&sameCoefficients(slot.prev,next))continue;
-            if(!entry.occupied||!entry.probe.valid){slot.valid=false;slot.zero=sameCoefficients(entry.probe.sh,zero);slot.synchronized=true;slot.start=None;std::memcpy(slot.cur,entry.probe.sh,sizeof slot.cur);std::memcpy(slot.prev,next,sizeof next);continue;}
-            if(!resident){slot.key=entry.key;slot.valid=true;slot.zero=false;slot.synchronized=true;std::memcpy(slot.cur,entry.probe.sh,sizeof slot.cur);std::memcpy(slot.prev,next,sizeof next);slot.start=None;continue;}
-            const float t=slot.start==None?1.f:std::clamp((now-slot.start)/BlendSeconds,0.f,1.f);
-            for(int k=0;k<4;++k){
-                slot.prev[k]=slot.prev[k]+(slot.cur[k].x-slot.prev[k])*t;
-                slot.prev[4+k]=slot.prev[4+k]+(slot.cur[k].y-slot.prev[4+k])*t;
-                slot.prev[8+k]=slot.prev[8+k]+(slot.cur[k].z-slot.prev[8+k])*t;
+            if(resident){
+                const float t=slot.start==None?1.f:std::clamp((now-slot.start)/BlendSeconds,0.f,1.f);
+                for(int k=0;k<4;++k){
+                    next[k]=slot.prev[k]+(slot.cur[k].x-slot.prev[k])*t;
+                    next[4+k]=slot.prev[4+k]+(slot.cur[k].y-slot.prev[4+k])*t;
+                    next[8+k]=slot.prev[8+k]+(slot.cur[k].z-slot.prev[8+k])*t;
+                }
+                slot.zero=false;slot.synchronized=false;slot.start=now;++blended;
+            }else{
+                for(int k=0;k<4;++k){next[k]=entry.probe.sh[k].x;next[4+k]=entry.probe.sh[k].y;next[8+k]=entry.probe.sh[k].z;}
+                if(!valid&&!slot.valid&&slot.start==None&&sameCoefficients(slot.cur,entry.probe.sh)&&sameCoefficients(slot.prev,next))continue;
+                if(valid)slot.key=entry.key;
+                slot.valid=valid;slot.zero=!valid&&sameCoefficients(entry.probe.sh,zero);slot.synchronized=true;slot.start=None;
             }
-            std::memcpy(slot.cur,entry.probe.sh,sizeof slot.cur);slot.zero=false;slot.synchronized=false;slot.start=now;++blended;
+            if(!currentDirty_)currentDirty_=resident||!sameCoefficients(slot.cur,entry.probe.sh);
+            if(!previousDirty_)previousDirty_=!sameCoefficients(slot.prev,next);
+            std::memcpy(slot.cur,entry.probe.sh,sizeof slot.cur);
+            std::memcpy(slot.prev,next,sizeof next);
         }
         return blended;
     }

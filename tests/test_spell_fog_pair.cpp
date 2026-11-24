@@ -53,4 +53,31 @@ int main(){
     assert(cloudRayAboveSupport(bounds,clouds.height,from[2],highTo[2]));
     float clear,cloudy;opticalDepthPair(field,march,from,highTo,24,extra,clear,cloudy);
     assert(!std::memcmp(&clear,&cloudy,4));
+
+    NorthlightForever::Frame imported;
+    imported.valid=true;
+    for(unsigned i=0;i<3;++i){
+        auto& layer=imported.layer[i];
+        layer.flag[1]=layer.flag[3]=1;
+        layer.p[0]=float(i)*3;layer.p[1]=2+float(i);layer.p[3]=25;layer.p[5]=40;
+        layer.p[6]=15;layer.p[7]=0;layer.p[18]=.2f;layer.p[19]=1.1f;
+    }
+    unsigned nonzero=0;
+    for(unsigned i=0;i<2400;++i){
+        const float reach=float(6+rng()%123);
+        const float eye[]={float(int(rng()%512)-256),float(int(rng()%512)-256),float(int(rng()%62)-12)};
+        const float to[]={eye[0]+reach*.8f,eye[1]-reach*.4f,eye[2]+float(int(rng()%38)-19)};
+        // Freeze the original production imported loop and its operation order.
+        float expected=0;
+        for(unsigned j=0;j<48;++j){
+            const float aa=reach*float(j*j)/2304.f,bb=reach*float((j+1)*(j+1))/2304.f,t=(aa+bb)*.5f;
+            const float px=eye[0]+(to[0]-eye[0])*t/reach,py=eye[1]+(to[1]-eye[1])*t/reach,pz=eye[2]+(to[2]-eye[2])*t/reach;
+            const auto fs=fieldAt(field,px,py);
+            if(fs.coverage>0&&pz>=fs.ground)expected+=NorthlightForever::sigma(imported,t,pz,fs.ground)*fs.coverage*(bb-aa);
+        }
+        const float actual=importedOpticalDepth(field,imported,eye,to,reach);
+        assert(!std::memcmp(&expected,&actual,sizeof actual));
+        nonzero+=actual>0;
+    }
+    assert(nonzero>0&&nonzero<2400);
 }

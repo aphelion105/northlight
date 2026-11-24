@@ -24,6 +24,18 @@ static void singleBone(){
         bank[secondZ]=depth;assert(cache.outside(mixed,layout,3,bank,Single)==(depth==80.f));
     }
     assert(cache.singleMixed==5&&cache.mixedCulled==2);
+    {
+        Cache shortRange;
+        const unsigned firstZ=4*(33+3*7)+3;
+        double nearest=0;
+        bank[firstZ]=30;bank[secondZ]=34;
+        assert(shortRange.outside(mixed,layout,3,bank,Single,24,&nearest));
+        assert(nearest>24&&nearest<=30&&nearest<FarDepth);
+        assert(!shortRange.outside(mixed,layout,3,bank,Single));
+        bank[secondZ]=20;assert(!shortRange.outside(mixed,layout,3,bank,Single,24));
+        bank[firstZ]=24;bank[secondZ]=34;assert(!shortRange.outside(mixed,layout,3,bank,Single,24));
+        bank[firstZ]=bank[secondZ]=80;
+    }
     assert(!cache.outsideRead(mixed,layout,3,[&](unsigned first,unsigned count,float* out){
         if(first==31+3*8)return false;std::memcpy(out,bank+first*4,count*16);return true;
     },Single));
@@ -47,19 +59,36 @@ static void singleBone(){
     };
     evaluate(ClientShaders::OneBoneVs3);evaluate(ClientShaders::OneBoneVs3WLast);evaluate(ClientShaders::OneBoneVs3WMid);evaluate(ClientShaders::OneBoneVs2);
     bank[4*(33+21)]=0;
-    // The narrow reader must agree with the full bank for every legal bone,
-    // reading only c2..c5 and that bone's three rows. Missing spans fail open.
-    for(unsigned bone=0;bone<75;++bone){auto owner=source(32,bone);Cache full,narrow;
+    const NorthlightConstantEpoch::BankHandoff loan{bank,0,0,0,0,0,256};
+    assert(loan.covers(2,254)&&loan.covers(255,1)&&!loan.covers(255,2));
+    auto partial=loan;
+    partial.first=2;partial.count=253;
+    assert(partial.covers(2,32)&&!partial.covers(2,254)&&!partial.covers(0,4));
+    partial.count=~0u;assert(!partial.covers(2,4)&&!loan.covers(~0u,1));
+    partial.bank=nullptr;assert(!partial.covers(2,4));
+    // Both readers must agree with the full bank for every legal bone.
+    // Each accesses c2..c5 and the selected triplet. Missing spans fail open.
+    for(unsigned bone=0;bone<75;++bone){auto owner=source(32,bone);Cache full,narrow,borrowed;
         for(float z:{20.f,48.f,80.f}){bank[4*(33+3*bone)+3]=z;unsigned registers=0;
             const bool expected=full.outside(owner,layout,3,bank,Single);
             const bool actual=narrow.outsideRead(owner,layout,3,[&](unsigned first,unsigned count,float* out){
                 assert((first==2&&count==4)||(first==31+3*bone&&count==3));registers+=count;std::memcpy(out,bank+first*4,count*16);return true;
             },Single);assert(actual==expected&&registers==7);
+            registers=0;
+            const bool direct=borrowed.outsideView(owner,layout,3,[&](unsigned first,unsigned count,float*){
+                assert((first==2&&count==4)||(first==31+3*bone&&count==3));
+                assert(loan.covers(first,count));registers+=count;return loan.bank+first*4;
+            },Single);assert(direct==expected&&registers==7);
         }
         bank[4*(33+3*bone)+3]=80;
-        for(unsigned fail:{2u,31+3*bone})assert(!narrow.outsideRead(owner,layout,3,[&](unsigned first,unsigned count,float* out){
-            if(first==fail)return false;std::memcpy(out,bank+first*4,count*16);return true;
-        },Single));
+        for(unsigned fail:{2u,31+3*bone}){
+            assert(!narrow.outsideRead(owner,layout,3,[&](unsigned first,unsigned count,float* out){
+                if(first==fail)return false;std::memcpy(out,bank+first*4,count*16);return true;
+            },Single));
+            assert(!borrowed.outsideView(owner,layout,3,[&](unsigned first,unsigned,float*)->const float*{
+                return first==fail?nullptr:loan.bank+first*4;
+            },Single));
+        }
     }
     // A changed immutable source must not inherit a uniform result from its predecessor.
     alignas(Mesh) unsigned char storage[sizeof(Mesh)];auto owner=[&](bool changed){return std::shared_ptr<const Mesh>(new(storage) Mesh(*source(32,7,changed)),[](const Mesh* p){p->~Mesh();});};

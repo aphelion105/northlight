@@ -32,8 +32,9 @@ if a.range_shortcut:
     cpp=out/'range-shortcut-gpu.cpp';cpp.write_text(text,encoding='utf-8',newline='\n')
 if a.source_budget:
     header=fp.src('model_normal_renderer.h').read_text(encoding='utf-8')
-    needle='const bool sharedSource=packet->sharedMesh&&!pending.empty()&&pending.back()->sharedMesh==packet->sharedMesh;';assert header.count(needle)==1
-    header=header.replace('class NorthlightModelNormals {','extern bool northlightSharedSourceBudget;\nclass NorthlightModelNormals {',1).replace(needle,needle.replace('=packet->','=northlightSharedSourceBudget&&packet->',1),1)
+    needle='const bool sharedSource=shared&&charged==shared;';assert header.count(needle)==1
+    before='!pending.empty()&&pending.back()->sharedMesh.get()==shared'
+    header=header.replace('class NorthlightModelNormals {','extern bool northlightSharedSourceBudget;\nclass NorthlightModelNormals {',1).replace(needle,f'const bool sharedSource=shared&&(northlightSharedSourceBudget?charged==shared:({before}));',1)
     check=r"""
 public:
     size_t testSourceCharge()const{return pendingBytes;}
@@ -46,7 +47,7 @@ public:
     }
 """
     if a.budget_negative_control:
-        assert not a.benchmark;header=header.replace('packet->sharedMesh&&!pending.empty()&&pending.back()->sharedMesh==packet->sharedMesh','packet->sharedMesh',1)
+        assert not a.benchmark;header=header.replace(f'const bool sharedSource=shared&&(northlightSharedSourceBudget?charged==shared:({before}));','const bool sharedSource=shared!=nullptr;',1)
     end=header.rindex('\n};');header=header[:end]+check+header[end:];(overlay/'model_normal_renderer.h').write_text(header,encoding='utf-8',newline='\n')
     text=cpp.read_text(encoding='utf-8');setup=next(line for line in text.splitlines() if 'NorthlightModelNormals normals(d);' in line)
     repeated=setup.replace('        NorthlightModelNormals normals(d);','')

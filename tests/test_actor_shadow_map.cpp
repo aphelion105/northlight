@@ -11,11 +11,111 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <memory>
+#include <random>
 #include <string>
 using namespace NorthlightGI;
 namespace M=NorthlightActorShadowMap;
 static void project(const float* m,Vec3 p,float* c){for(int a=0;a<3;++a)c[a]=p.x*m[a]+p.y*m[4+a]+p.z*m[8+a]+m[12+a];}
+static void compareInsetProjection(){
+    struct Box{float low[3],high[3];};
+    const auto same=[](const M::InsetProjection& p,const float* m,const Box& b,float limit){
+        const float old=M::insetExtent(true,b.low,b.high,m,limit),candidate=p.extent(true,b.low,b.high,limit);
+        assert(std::memcmp(&old,&candidate,sizeof old)==0);
+    };
+    std::mt19937 rng(209);
+    std::uniform_real_distribution<float> direction(-1,1),nearby(-9,9),faraway(-50,50),width(0,2);
+    const Vec3 pivot(5800.125f,630.5f,631.125f);
+    const float origin[]={pivot.x,pivot.y,pivot.z};
+    std::vector<Box> crowd(1500);
+    float matrix[16];
+    for(unsigned trial=0;trial<48;++trial){
+        M::matrix(pivot,normalized(Vec3(direction(rng),direction(rng),direction(rng))),matrix);
+        const M::InsetProjection prepared(matrix);
+        for(size_t i=0;i<crowd.size();++i){
+            auto& box=crowd[i];
+            for(unsigned axis=0;axis<3;++axis){
+                box.low[axis]=origin[axis]+(i%4?faraway(rng):nearby(rng));
+                box.high[axis]=box.low[axis]+width(rng);
+            }
+            same(prepared,matrix,box,M::Stay);
+        }
+    }
+    const float identity[]={1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1};
+    const M::InsetProjection axisAligned(identity);
+    for(float x:{0.f,M::Inset,M::Stay,std::nextafter(M::Stay,0.f),std::nextafter(M::Stay,1.f),NAN,INFINITY,0x1p100f}){
+        for(float z:{0.f,std::nextafter(0.f,1.f),.5f,std::nextafter(1.f,0.f),1.f}){
+            const Box point={{x,0,z},{x,0,z}};
+            same(axisAligned,identity,point,M::Stay);
+            same(axisAligned,identity,point,M::Inset);
+        }
+    }
+    assert(std::isinf(axisAligned.extent(false,nullptr,nullptr,M::Stay)));
+    same(axisAligned,identity,{{1,2,3},{0,1,2}},M::Stay);
+    float exceptional[16];std::memcpy(exceptional,identity,sizeof exceptional);exceptional[0]=0x1p100f;
+    same(M::InsetProjection(exceptional),exceptional,{{-1,0,.5f},{1,0,.5f}},M::Stay);
+
+    std::vector<double> samples[2];
+    unsigned hits[2]={};
+    for(unsigned block=0;block<20;++block){
+        const bool usePrepared=block%4==1||block%4==2;
+        const auto start=std::chrono::steady_clock::now();
+        for(unsigned pass=0;pass<64;++pass){
+            const M::InsetProjection prepared(matrix);
+            for(const auto& box:crowd){
+                const float extent=usePrepared?prepared.extent(true,box.low,box.high,M::Stay):M::insetExtent(true,box.low,box.high,matrix,M::Stay);
+                hits[usePrepared]+=extent<=M::Stay;
+            }
+        }
+        if(block>=4)samples[usePrepared].push_back(std::chrono::duration<double,std::nano>(std::chrono::steady_clock::now()-start).count()/(64*crowd.size()));
+    }
+    assert(hits[0]==hits[1]&&hits[0]);
+    for(auto& t:samples)std::sort(t.begin(),t.end());
+    std::printf("ACTOR_INSET_PROJECTION cases=72000 mixedPackets=%zu accepted=%u oldNs=%.3f preparedNs=%.3f extent=bit-identical\n",
+        crowd.size(),hits[0]/(10*64),(samples[0][3]+samples[0][4])*.5,(samples[1][3]+samples[1][4])*.5);
+
+    const auto oldFog=[&](const Box& box,float* out){
+        if(!M::finiteMatrix(matrix))return false;
+        for(unsigned k=0;k<3;++k)if(!std::isfinite(box.low[k])||!std::isfinite(box.high[k])||box.low[k]>box.high[k])return false;
+        for(unsigned axis=0;axis<2;++axis){
+            double lo=matrix[12+axis],hi=lo,magnitude=std::fabs(lo);
+            for(unsigned k=0;k<3;++k){
+                const double a=double(box.low[k])*matrix[4*k+axis],b=double(box.high[k])*matrix[4*k+axis];
+                lo+=std::min(a,b);hi+=std::max(a,b);magnitude+=std::max(std::fabs(a),std::fabs(b));
+            }
+            const double pad=2.0/M::Size+std::ldexp(magnitude,-18);
+            out[axis]=float(std::max(-1.0,lo-pad));out[axis+2]=float(std::min(1.0,hi+pad));
+            if(!std::isfinite(out[axis])||!std::isfinite(out[axis+2])||out[axis]>out[axis+2])return false;
+        }
+        return true;
+    };
+    std::vector<Box> selected;
+    for(const auto& box:crowd){
+        float a[4]={},b[4]={};
+        assert(oldFog(box,a)==M::fogBoundsForFiniteMatrix(true,box.low,box.high,matrix,b));
+        assert(std::memcmp(a,b,sizeof a)==0);
+        if(M::insetExtent(true,box.low,box.high,matrix,M::Stay)<=M::Stay)selected.push_back(box);
+    }
+    assert(!selected.empty());
+    for(auto& t:samples)t.clear();
+    double sums[2]={};
+    for(unsigned block=0;block<20;++block){
+        const bool usePrepared=block%4==1||block%4==2;
+        const auto start=std::chrono::steady_clock::now();
+        for(unsigned pass=0;pass<128;++pass)for(const auto& box:selected){
+            float bound[4];
+            const bool valid=usePrepared?M::fogBoundsForFiniteMatrix(true,box.low,box.high,matrix,bound):oldFog(box,bound);
+            if(valid)sums[usePrepared]+=bound[0];
+        }
+        if(block>=4)samples[usePrepared].push_back(std::chrono::duration<double,std::nano>(std::chrono::steady_clock::now()-start).count()/(128*selected.size()));
+    }
+    assert(sums[0]==sums[1]&&sums[0]);
+    for(auto& t:samples)std::sort(t.begin(),t.end());
+    std::printf("ACTOR_FOG_BOUNDS cases=%zu selected=%zu oldNs=%.3f preparedNs=%.3f bounds=bit-identical\n",
+        crowd.size(),selected.size(),(samples[0][3]+samples[0][4])*.5,(samples[1][3]+samples[1][4])*.5);
+}
 int main(){
+    compareInsetProjection();
     const Vec3 sun=normalized(Vec3(.3f,-.4f,.8f));
     const Vec3 pivot(1234.567f,-876.543f,52.25f);
     // Sub-lattice celestial motion still moves the detailed actor projection.
@@ -83,7 +183,7 @@ int main(){
       assert(std::fabs(dot(centre+f.z*60.f-c,f.z))<=M::Leash+1e-3f);
       r=M::leash(centre,true,centre+f.z*60.f,sun);assert(std::fabs(dot(r-centre,f.x))<2e-3f&&std::fabs(dot(r-centre,f.y))<2e-3f);} // one 60 yd step too
      assert(M::leash(centre,false,out,sun).x==out.x);                       // no stored centre: the pivot
-     const Vec3 far=centre+f.x*(M::JumpDistance+1.f);r=M::leash(centre,true,far,sun);assert(r.x==far.x&&r.y==far.y&&r.z==far.z); // teleport
+     const Vec3 jumped=centre+f.x*(M::JumpDistance+1.f);r=M::leash(centre,true,jumped,sun);assert(r.x==jumped.x&&r.y==jumped.y&&r.z==jumped.z);
      const Vec3 nanPivot(NAN,centre.y,centre.z);r=M::leash(centre,true,nanPivot,sun);assert(std::isnan(r.x));          // non-finite: the pivot (the caller's finiteMatrix turns the map off)
     }
     {namespace S=NorthlightActorSide; // the side tracker: flips between the actor map and the near cascade
@@ -160,6 +260,31 @@ int main(){
       for(unsigned i=0;i<crowd;++i)assert(h.decide(i%12,&at[i*3],inside));
       const unsigned long lost=h.overflows;assert(lost<=2&&h.remembered()==crowd-lost);
       h.begin(true);unsigned held=0;for(unsigned i=0;i<crowd;++i)held+=h.decide(i%12,&at[i*3],band);assert(held==crowd-lost&&h.overflows==lost);}
+     // Equivalent draws can have different addresses in two replay processes.
+     // Probe placement must agree without lending history to another owner.
+     {struct Geometry {unsigned vertexCount;};
+      struct Replay {std::shared_ptr<Geometry> shared;const void* decl;unsigned count;bool captureRootValid;};
+      int firstDecl=0,secondDecl=0;
+      const Replay first{std::make_shared<Geometry>(Geometry{48}),&firstDecl,24,true};
+      const Replay second{std::make_shared<Geometry>(Geometry{48}),&secondDecl,24,true};
+      const auto a=H::holdModel(first),b=H::holdModel(second);
+      assert(a.identity!=b.identity&&a.placement==b.placement);
+      H::Hold separate;separate.begin();
+      assert(separate.decide(a,root,inside));separate.stamp(a,root,id,H::Deep);
+      separate.begin();
+      assert(!separate.decide(b,root,band)&&!separate.carry(b,root,id));
+      assert(separate.decide(a,root,band)&&separate.carry(a,root,id));
+      H::Hold left,right;left.begin(true);right.begin(true);
+      for(unsigned i=0;i<H::Probes+2;++i){
+       assert(left.decide({a.identity+i,a.placement},root,inside));
+       assert(right.decide({b.identity+i,b.placement},root,inside));
+      }
+      assert(left.overflows==2&&right.overflows==2);
+      left.begin();right.begin();
+      for(unsigned i=0;i<H::Probes+2;++i){
+       assert(left.decide({a.identity+i,a.placement},root,band)==(i<H::Probes));
+       assert(right.decide({b.identity+i,b.placement},root,band)==(i<H::Probes));
+      }}
      // The free marker is seen == 0: a frame counter that wraps past 0 never makes a live slot look free (or the free ones live).
      {H::Hold h;h.begin();assert(h.decide(1,root,inside));for(unsigned i=0;i<6;++i)h.invalidate();h.begin();assert(!h.decide(1,root,band));}
      // Near list: the actor map's reach (light-space x/y of the last matrix, Stay plus leash plus a caster), four rings, nothing sorted.
@@ -209,8 +334,15 @@ int main(){
       h.begin(true);assert(!h.carry(model,p0,m2)&&h.carriedTotal==2);            // frame 4: 3 frames old: back to the near cascade
       h.begin();h.stamp(model,p0,m2,deepE);h.begin();h.stamp(model,p0,m2,deepE);assert(!h.carry(model,p0,m2));  // a mark of this very frame is another caster with bounds, not a candidate
       h.begin();h.stamp(model,p0,m2,deepE);h.begin();                             // moved: map space delta over EpsClip (0.24 yd)
-      {const float near[3]={2.2f,3,0},far[3]={2.3f,3,0},high[3]={2,3,5.f};assert(h.carry(model,near,m2)&&!h.carry(model,far,m2)&&!h.carry(model,high,m2));}
+      {const float inside[3]={2.2f,3,0},outside[3]={2.3f,3,0},high[3]={2,3,5.f};assert(h.carry(model,inside,m2)&&!h.carry(model,outside,m2)&&!h.carry(model,high,m2));}
       {const float border[3]={0.1f,3,0};H::Hold b;b.begin();b.stamp(model,border,m2,deepE);b.begin();const float across[3]={-.1f,3,0};assert(b.carry(model,across,m2));} // a 1 yd cell border does not lose it
+      // Models 15 and 113 share a mark bucket in cell (2, 3). Two clones of
+      // one model in that cell also need separate marks if they cannot carry each other.
+      {const float first[3]={2.1f,3.2f,0},second[3]={2.8f,3.2f,0};
+       H::Hold b;b.begin();b.stamp(15,first,m2,deepE);b.stamp(113,first,m2,deepE);b.stamp(15,second,m2,deepE);
+       b.begin();assert(b.carry(15,first,m2)&&b.carry(113,first,m2)&&b.carry(15,second,m2));
+       b.stamp(15,first,m2,deepE);
+       assert(!b.carry(15,first,m2)&&b.carry(113,first,m2)&&b.carry(15,second,m2));}
       // the map centre moving with the caster (a walking player) keeps it; a centre that moves away from it does not
       {H::Hold w;w.begin();w.stamp(model,p0,m2,deepE);float m3[16];std::memcpy(m3,m2,sizeof m3);m3[12]=-.01f;const float moved[3]={2.12f,3,0};w.begin();assert(w.carry(model,moved,m3)); // world +.12, centre -.12 yd: no net move... map delta .02
        const float slid[3]={2,3,0};w.begin();m3[12]=-.1f;assert(!w.carry(model,slid,m3));}

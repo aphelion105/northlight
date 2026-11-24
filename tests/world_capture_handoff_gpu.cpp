@@ -140,7 +140,7 @@ struct PointTerrainCoverageTest {
   IDirect3DSurface9* read=nullptr;checked(d->CreateOffscreenPlainSurface(256,256,D3DFMT_R32F,D3DPOOL_SYSTEMMEM,&read,nullptr));std::ofstream out(path,std::ios::binary);bool visible=false;
   for(unsigned f=0;f<6;++f){IDirect3DSurface9* face=nullptr;
 #if NORTHLIGHT_SHARED_SOURCE
-   checked(w.pointSlots[0].cube->GetCubeMapSurface(D3DCUBEMAP_FACES(f),0,&face));
+   checked(w.pointTargets.slots()[0].cube->GetCubeMapSurface(D3DCUBEMAP_FACES(f),0,&face));
 #else
    checked(w.pointCube->GetCubeMapSurface(D3DCUBEMAP_FACES(f),0,&face));
 #endif

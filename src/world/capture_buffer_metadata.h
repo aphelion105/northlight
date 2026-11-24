@@ -1,6 +1,7 @@
 #pragma once
 #include <d3d9.h>
 #include <cstdint>
+#include <memory>
 
 namespace NorthlightCaptureMetadata {
 struct Request {
@@ -17,6 +18,9 @@ struct Info {
     UINT size=0;DWORD usage=0;D3DFORMAT format={};bool known=false;
 };
 using Read=void(*)(const Request*,Info*,unsigned);
+// Pins a native buffer and protects it with a pre-write barrier until release.
+using ReadLease=std::unique_ptr<void,void(*)(void*)>;
+using GuardRead=ReadLease(*)(void*,void*,bool,std::uint64_t);
 // Stack-scoped proof shared by consumers of one unchanged draw invocation.
 struct PositionBounds {
     const void* owner=nullptr;const void* shader=nullptr;

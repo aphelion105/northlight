@@ -212,10 +212,39 @@ static void probeReadyRace(bool nullPayload,bool profiling){
     query->Release();rig.sync();rig.device->Release();checkClean();dxvk311EventPayload.store(false);
     std::printf("EVENT_PAYLOAD_PASS nullPayload=%u profiling=%u real_terminal=1 native_one_byte_cache=1 full_BOOL=1\n",unsigned(nullPayload),unsigned(profiling));
 }
+static void exactQueuePredecessor(){
+    Queue q;
+    constexpr unsigned prefix=16384;
+    // Put the command after the predecessor in a new chunk. Its acquire and
+    // the retirement of the previous chunk must preserve the express boundary.
+    constexpr auto payload=ChunkBytes/prefix-sizeof(CommandHeader);
+    for(unsigned i=0;i<=prefix;++i){q.reserve(static_cast<std::uint16_t>(Cmd::Nop),payload);q.commit();}
+    q.publish();
+    struct Probe {Queue& queue;unsigned checks=0;std::uint64_t ran=0;};
+    Probe probe{q};
+    ExpressTimes times;
+    static std::atomic<bool> posted{false};
+    pumpHook=[]{posted.store(true);};
+    std::thread consumer([&]{
+        while(!posted.load())std::this_thread::yield();
+        for(unsigned i=0;i<=prefix;++i){
+            const auto* command=q.next(false);CHECK(command);
+            if(i+1==prefix)CHECK(!q.publishedAfter(command));
+            q.serveExpress(command->id);q.retire(command);
+        }
+    });
+    q.runExpress([](void* p){auto& probe=*static_cast<Probe*>(p);probe.ran=probe.queue.replayedSeq();},&probe,&times,
+                 ExpressKind::Query,[](void* p){auto& probe=*static_cast<Probe*>(p);++probe.checks;return true;},prefix);
+    consumer.join();pumpHook=nullptr;
+    CHECK(probe.checks==1&&probe.ran==prefix&&q.replayedSeq()==prefix+1);
+    CHECK(times.seenSeq==0&&times.serveSeq==prefix);
+    std::puts("EVENT_PREDECESSOR_PASS retired=16384 readinessChecks=1 nextCommandStayedOrdered=1");
+}
 int main(int argc,char** argv){
     std::setvbuf(stdout,nullptr,_IONBF,0);
     const bool baseline=argc>1&&std::string(argv[1])=="baseline";
     const bool gated=!(argc>1&&std::string(argv[1])=="ungated");
+    exactQueuePredecessor();
     scenario(baseline,gated,"seen-end",true,false,false,D3D_OK,false);
     scenario(baseline,gated,"cached-at-boundary",true,false,true,D3D_OK,false);
     scenario(baseline,gated,"cached-FALSE",true,false,true,D3D_OK,false,false,false,true);

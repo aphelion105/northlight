@@ -116,27 +116,61 @@ template<class Binding> inline unsigned ownedBank(const float* bank,unsigned cou
     }
     return mask;
 }
-// One adjacent bank within the owner's binding generation. The owner resets
-// before rebuilding/mutating bindings; live cube and fade checks stay outside.
+// Recent banks share the owner's binding generation. The owner resets before
+// rebuilding bindings. Cube usability and fade stay checked at submission.
 class BankMemo {
-    BankMatch result_;
-    float bank_[44]{},view_[16]{},camera_[3]{};
-    unsigned count_=0,bindingCount_=0;std::uintptr_t bindingIdentity_=0;bool cached_=false;
-public:
-    void reset(){cached_=false;}
-    template<class Binding> const BankMatch& resolve(const float* bank,unsigned count,const float* view,const float* camera,const Binding* bindings,unsigned bindingCount,bool& hit){
-        const auto identity=reinterpret_cast<std::uintptr_t>(bindings);
-        hit=cached_&&bank&&view&&camera&&count==count_&&bindingCount==bindingCount_&&identity==bindingIdentity_&&
-            !NorthlightMem::compare(camera_,camera,sizeof camera_)&&!NorthlightMem::compare(view_,view,sizeof view_)&&!NorthlightMem::compare(bank_,bank,sizeof bank_);
-        if(hit)return result_;
-        cached_=false;result_={};
-        NorthlightEquipmentLights::decodeBank(bank,count,view,camera,result_.values,result_.valid);
-        result_.bindings=matchDecoded(result_.values,result_.valid,count,bindings,bindingCount);
-        if(bank&&view&&camera&&count<=4&&(bindings||!bindingCount)){
-            std::memcpy(bank_,bank,sizeof bank_);std::memcpy(view_,view,sizeof view_);std::memcpy(camera_,camera,sizeof camera_);
-            count_=count;bindingCount_=bindingCount;bindingIdentity_=identity;cached_=true;
+    static constexpr unsigned Capacity=64;
+    struct Entry {
+        BankMatch result;
+        float bank[44]{};
+        unsigned count=~0u;
+        bool matches(const float* value,unsigned points)const{
+            return count==points&&!NorthlightMem::compare(bank,value,sizeof bank);
         }
-        return result_;
+    };
+    std::array<Entry,Capacity> entries_;
+    BankMatch invalid_;
+    float view_[16]{},camera_[3]{};
+    unsigned last_=Capacity,bindingCount_=0;
+    const void* bindingIdentity_=nullptr;
+public:
+    void reset(){
+        if(last_!=Capacity)for(auto& entry:entries_)entry.count=~0u;
+        last_=Capacity;
+    }
+    template<class Binding> const BankMatch& resolve(const float* bank,unsigned count,const float* view,const float* camera,const Binding* bindings,unsigned bindingCount,bool& hit){
+        hit=false;
+        if(!bank||!view||!camera||count>4||(!bindings&&bindingCount)){
+            reset();invalid_={};
+            NorthlightEquipmentLights::decodeBank(bank,count,view,camera,invalid_.values,invalid_.valid);
+            return invalid_;
+        }
+        if(last_!=Capacity&&(bindings!=bindingIdentity_||bindingCount!=bindingCount_||
+            NorthlightMem::compare(camera_,camera,sizeof camera_)||NorthlightMem::compare(view_,view,sizeof view_)))reset();
+        if(last_==Capacity){
+            std::memcpy(view_,view,sizeof view_);std::memcpy(camera_,camera,sizeof camera_);
+            bindingCount_=bindingCount;bindingIdentity_=bindings;
+        }else if(entries_[last_].matches(bank,count)){
+            hit=true;
+            return entries_[last_].result;
+        }
+
+        // Positions distribute model banks cheaply. Exact bytes and point
+        // count still decide whether an entry belongs to this draw.
+        std::uint32_t x,y,nextX;
+        std::memcpy(&x,bank+16,sizeof x);
+        std::memcpy(&y,bank+17,sizeof y);
+        std::memcpy(&nextX,bank+20,sizeof nextX);
+        const auto hash=(x*0x9e3779b9u)^(y*0x85ebca6bu)^(nextX*0xc2b2ae35u);
+        last_=(hash^(hash>>16))&(Capacity-1);
+        auto& entry=entries_[last_];
+        hit=entry.matches(bank,count);
+        if(!hit){
+            entry.count=count;std::memcpy(entry.bank,bank,sizeof entry.bank);entry.result={};
+            NorthlightEquipmentLights::decodeBank(bank,count,view,camera,entry.result.values,entry.result.valid);
+            entry.result.bindings=matchDecoded(entry.result.values,entry.result.valid,count,bindings,bindingCount);
+        }
+        return entry.result;
     }
 };
 inline const NorthlightNativeLights::Point* source(const NorthlightLocalLights::Light& light,const NorthlightNativeLights::Snapshot& scene){
