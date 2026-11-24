@@ -25,7 +25,12 @@ negative = subprocess.run([str(exe), str(experiment), '2', '1', str(fp.client_ro
 (out/'negative-bounds.log').write_text(negative.stdout+negative.stderr)
 assert negative.returncode == 1 and 'GPU leaf bounds exclude geometry' in negative.stderr
 assert 'GPU_BVH_PASS' not in negative.stdout
+variants = subprocess.run([str(exe), str(experiment), '3', '1', str(fp.client_root()),
+                           '--gi-variants'], capture_output=True, text=True, timeout=120)
+(out/'gi-variants.log').write_text(variants.stdout+variants.stderr)
+assert variants.returncode == 0 and 'GI_VARIANTS_PASS' in variants.stdout
+assert '"gi_variants_bit_identical":true' in variants.stdout
 (out/'validation.json').write_text(json.dumps(dict(pass_=True, production_eligible=False,
-    positive_scenes=[0, 1, 2, 3], negative_bounds_rejected=True,
+    positive_scenes=[0, 1, 2, 3], negative_bounds_rejected=True, gi_variants_bit_identical=True,
     experiment_report_sha256=hashlib.sha256((experiment/'results.json').read_bytes()).hexdigest()), indent=2)+'\n')
 print('GPU_BVH_ORACLE_PASS: structural/limited sun-sky fixtures; no production migration acceptance')
