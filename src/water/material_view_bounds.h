@@ -100,4 +100,28 @@ public:
         const float distance=std::max(std::fabs(view.low[2]),std::fabs(view.high[2]));
         return NorthlightReplayBounds::detail::outwardNormal<true>(distance)+.001f;
     }
+    static bool belowDisplacementSize(double x,double y,double z){
+        // The box diagonal is an upper bound on the section's diameter.
+        constexpr double minimumDiameter=.5;
+        return x*x+y*y+z*z<minimumDiameter*minimumDiameter;
+    }
+    struct DisplacementLod {
+        float range;
+        bool small=false,outOfRange=false;
+
+        template<class T> void classify(const T* low,const T* high){
+            double extent[3],distanceSquared=0;
+            for(unsigned axis=0;axis<3;++axis){
+                const double lower=low[axis],upper=high[axis];
+                if(!std::isfinite(lower)||!std::isfinite(upper)||lower>upper)return;
+                extent[axis]=upper-lower;
+                const double nearest=std::max({lower,-upper,0.});
+                distanceSquared+=nearest*nearest;
+            }
+            small=belowDisplacementSize(extent[0],extent[1],extent[2]);
+            // Leave borderline draws to the exact displacement path.
+            const double limit=double(range)*1.0002+.001;
+            outOfRange=distanceSquared>limit*limit;
+        }
+    };
 };

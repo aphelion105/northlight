@@ -27,6 +27,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import uuid
 from pathlib import Path
@@ -293,23 +294,30 @@ def main(argv=None):
         t, flags = item
         env = dict(os.environ, NORTHLIGHT_TEST_OUTPUT_DIR=str(out_root / t.stem), PYTHONIOENCODING='utf-8')
         start = time.perf_counter()
-        try:
-            r = subprocess.run(prefix + [sys.executable, str(t)], cwd=fp.TESTS, env=env,
-                               capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=args.timeout)
-            status = 'PASS' if r.returncode == 0 else 'FAIL'
-            tail = (r.stdout + r.stderr).strip()
-        except subprocess.TimeoutExpired as e:
-            def text(value):
-                return value.decode('utf-8', 'replace') if isinstance(value, bytes) else value or ''
-            status, tail = 'TIMEOUT', text(e.stdout) + text(e.stderr) + '\nTest timed out.'
-        except OSError as e:
-            status, tail = 'FAIL', str(e)
-        if 'known-fail' in flags and status != 'TIMEOUT':
-            status = {'FAIL': 'XFAIL', 'PASS': 'XPASS'}[status]   # XPASS: remove the tag
         log = out_root / 'logs' / (t.stem + '.log')
         log.parent.mkdir(parents=True, exist_ok=True)
-        log.write_text(tail + '\n', encoding='utf-8')
-        last = tail.splitlines()[-1] if tail and status not in ('PASS', 'XPASS') else ''
+        with log.open('xb') as output:
+            try:
+                with tempfile.TemporaryDirectory(dir=out_root, prefix='.work-') as scratch:
+                    env.update(TEMP=scratch, TMP=scratch, TMPDIR=scratch)
+                    r = subprocess.run(prefix + [sys.executable, '-u', str(t)], cwd=fp.TESTS, env=env,
+                                       stdout=output, stderr=subprocess.STDOUT, timeout=args.timeout)
+                status = 'PASS' if r.returncode == 0 else 'FAIL'
+            except subprocess.TimeoutExpired:
+                status = 'TIMEOUT'
+                output.write(b'\nTest timed out.\n')
+            except OSError as e:
+                status = 'FAIL'
+                output.write((str(e) + '\n').encode('utf-8', errors='replace'))
+        if 'known-fail' in flags and status != 'TIMEOUT':
+            status = {'FAIL': 'XFAIL', 'PASS': 'XPASS'}[status]   # XPASS: remove the tag
+        last = ''
+        if status not in ('PASS', 'XPASS'):
+            with log.open('rb') as output:
+                output.seek(max(0, log.stat().st_size - 4096))
+                tail = output.read().decode('utf-8', errors='replace').strip().splitlines()
+            if tail:
+                last = tail[-1]
         if status in ('XFAIL', 'XPASS'):
             last = f'known-fail: {known_fail.get(t.name, "")} | {last}' if status == 'XFAIL' else 'passes now: remove known-fail'
         return t.name, (status, time.perf_counter() - start, last[:300])
@@ -354,7 +362,7 @@ def main(argv=None):
                   input_identity_after=input_identity(after), inputs=before, changed_inputs=changed,
                   requirements=probes, counts=counts, tests={
                       name: dict(status=result[0], seconds=result[1], note=result[2],
-                                 command=prefix + [sys.executable, str(fp.TESTS / name)] if (out_root / 'logs' / (Path(name).stem + '.log')).is_file() else None)
+                                 command=prefix + [sys.executable, '-u', str(fp.TESTS / name)] if (out_root / 'logs' / (Path(name).stem + '.log')).is_file() else None)
                       for name, result in sorted(results.items())})
     (out_root / 'results.json').write_text(json.dumps(report, indent=2) + '\n', encoding='utf-8')
     for name in sorted(results):

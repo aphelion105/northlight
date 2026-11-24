@@ -891,9 +891,7 @@ int NORTHLIGHT_OBLIQUE_ENTRY(int argc,char** argv){
         }
         if(mode==1||mode==5||geometryRewrite){IDirect3DSurface9* map=nullptr;ok(bump.texture()->GetSurfaceLevel(0,&map));save(d,map,folder+(mode==1?"geometry-off-depth.fgr":"geometry-on-depth.fgr"));drop(map);}
         if(mode==4&&std::getenv("NORTHLIGHT_TEST_MATERIAL_DEMO")){IDirect3DSurface9* map=nullptr;if(bump.occlusionTexture()){ok(bump.occlusionTexture()->GetSurfaceLevel(0,&map));save(d,map,folder+"occlusion-factors.fgr");drop(map);}}
-        if(materialProfiling&&mode<=4){ok(d->BeginScene());pixelAudit.sample(&materialProfile,nullptr,[&](UINT x,UINT y){
-            Vertex small[]={{-.5f,-.5f,0,1,0,0},{float(x)-.5f,-.5f,0,1,1,0},{-.5f,float(y)-.5f,0,1,0,1},{float(x)-.5f,float(y)-.5f,0,1,1,1}};
-            D3DVIEWPORT9 vp={0,0,x,y,0,1};ok(d->SetViewport(&vp));return d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,small,sizeof(Vertex));});ok(d->EndScene());
+        if(materialProfiling&&mode<=4){ok(d->BeginScene());pixelAudit.sample(&materialProfile,nullptr);ok(d->EndScene());
             save(d,output,folder+"audit-sync.fgr");pixelAudit.poll();assert(pixelAudit.lastFrame==127&&pixelAudit.last[0]>0&&pixelAudit.last[1]>0);
             assert(pixelAudit.last[4]>=pixelAudit.last[0]&&pixelAudit.last[5]<=pixelAudit.last[4]&&pixelAudit.last[0]+pixelAudit.last[5]<=pixelAudit.last[4]);
             assert(pixelAudit.last[6]>=pixelAudit.last[0]&&pixelAudit.last[7]<=pixelAudit.last[6]&&pixelAudit.last[8]<=pixelAudit.last[6]);

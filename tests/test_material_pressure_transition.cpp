@@ -185,7 +185,7 @@ void MaterialCaptureStateTestAccess::pressureTransition(){
         assert(bump.deferredPacketLimit==512&&bump.deferredByteLimit==(8u<<20));
         bump.trimMemory();assert(!bump.deferredGPU.chargedBytes()&&bump.deferredGPU.limit()==(32u<<20));
         bump.setMemoryPressurePolicy(false,false);assert(!bump.memoryPressure&&bump.deferredGPU.limit()==(32u<<20));
-        assert(bump.deferredPacketLimit==512&&bump.deferredByteLimit==(8u<<20));
+        assert(bump.deferredPacketLimit==1024&&bump.deferredByteLimit==(8u<<20));
         std::puts("MATERIAL_PRESSURE_POLICY_PASS demand_32 aggregate_critical_32 recovery_32 reduced_cpu_pools repeated trim");
         bump.setMemoryPressurePolicy(true,true);
         assert(bump.memoryPressure&&bump.deferredGPU.limit()==(32u<<20)&&bump.gpuScene->native.totalLimit()==(32u<<20));

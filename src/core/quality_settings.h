@@ -118,7 +118,7 @@ struct Settings {
     // Creation-time key (the renderer reads it once with the device).
     unsigned contactAO=1;
     unsigned aoMethod=0,aoQuality=0,aoStrength=100,aoRadius=200; // Live AO method/quality, percent, hundredths of a yard.
-    unsigned autoBump=1,autoBumpStrength=75,autoBumpDistance=48,autoBumpTerrain=3,autoBumpWalls=3,autoBumpGrass=1;
+    unsigned autoBump=1,autoBumpStrength=75,autoBumpDistance=48,autoBumpTerrain=2,autoBumpWalls=2,autoBumpGrass=1;
     unsigned autoParallaxDepth=100,autoParallaxDistance=16,autoParallaxSteps=16;
     unsigned autoParallaxShadows=1,autoParallaxShadowStrength=70,autoParallaxShadowSteps=8,autoCavity=1,autoCavityStrength=35;
     unsigned autoMaterialOcclusionDistance=8;
@@ -156,7 +156,7 @@ struct Settings {
     unsigned weatherMemory=1;
     unsigned autoDisplacementStrength=100,autoDisplacementDistance=12,autoDisplacementDetail=4;
     unsigned autoBumpModelMinPixels=0;
-    unsigned autoBumpModels=3,autoModelDisplacementStrength=25,autoModelDisplacementDistance=8,autoModelDisplacementDetail=2;
+    unsigned autoBumpModels=1,autoModelDisplacementStrength=25,autoModelDisplacementDistance=8,autoModelDisplacementDetail=2;
     unsigned autoHeightPolarity=0,autoHeightDetails=75,autoHeightBalance=50;
     unsigned autoNormalFilter=1;
     char origin[129]={'d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d'};
@@ -238,8 +238,8 @@ inline const Key Keys[]={
     {"AutoBump",&Settings::autoBump,0,1,{1,0,0}},
     {"AutoBumpStrength",&Settings::autoBumpStrength,0,150,{75,60,40}},
     {"AutoBumpDistance",&Settings::autoBumpDistance,8,96,{48,36,24}},
-    {"AutoBumpTerrain",&Settings::autoBumpTerrain,0,3,{3,1,1}},
-    {"AutoBumpWalls",&Settings::autoBumpWalls,0,3,{3,1,1}},
+    {"AutoBumpTerrain",&Settings::autoBumpTerrain,0,3,{2,1,1}},
+    {"AutoBumpWalls",&Settings::autoBumpWalls,0,3,{2,1,1}},
     {"AutoBumpGrass",&Settings::autoBumpGrass,0,3,{1,1,1}},
     {"AutoParallaxDepth",&Settings::autoParallaxDepth,0,200,{100,75,50}},
     {"AutoParallaxDistance",&Settings::autoParallaxDistance,4,32,{16,12,8}},
@@ -247,7 +247,7 @@ inline const Key Keys[]={
     {"AutoDisplacementStrength",&Settings::autoDisplacementStrength,0,1000,{100,75,50}},
     {"AutoDisplacementDistance",&Settings::autoDisplacementDistance,4,24,{12,8,6}},
     {"AutoDisplacementDetail",&Settings::autoDisplacementDetail,1,5,{4,3,2}},
-    {"AutoBumpModels",&Settings::autoBumpModels,0,3,{3,1,1}},
+    {"AutoBumpModels",&Settings::autoBumpModels,0,3,{1,1,1}},
     {"AutoBumpModelMinPixels",&Settings::autoBumpModelMinPixels,0,256,{0,0,0}},
     {"AutoModelDisplacementStrength",&Settings::autoModelDisplacementStrength,0,100,{25,15,10}},
     {"AutoModelDisplacementDistance",&Settings::autoModelDisplacementDistance,2,16,{8,6,4}},

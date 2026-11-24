@@ -24,6 +24,18 @@ static void singleBone(){
         bank[secondZ]=depth;assert(cache.outside(mixed,layout,3,bank,Single)==(depth==80.f));
     }
     assert(cache.singleMixed==5&&cache.mixedCulled==2);
+    {
+        Cache shortRange;
+        const unsigned firstZ=4*(33+3*7)+3;
+        double nearest=0;
+        bank[firstZ]=30;bank[secondZ]=34;
+        assert(shortRange.outside(mixed,layout,3,bank,Single,24,&nearest));
+        assert(nearest>24&&nearest<=30&&nearest<FarDepth);
+        assert(!shortRange.outside(mixed,layout,3,bank,Single));
+        bank[secondZ]=20;assert(!shortRange.outside(mixed,layout,3,bank,Single,24));
+        bank[firstZ]=24;bank[secondZ]=34;assert(!shortRange.outside(mixed,layout,3,bank,Single,24));
+        bank[firstZ]=bank[secondZ]=80;
+    }
     assert(!cache.outsideRead(mixed,layout,3,[&](unsigned first,unsigned count,float* out){
         if(first==31+3*8)return false;std::memcpy(out,bank+first*4,count*16);return true;
     },Single));

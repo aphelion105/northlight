@@ -11,13 +11,17 @@ struct MaterialBindingState {
     bool operator==(const MaterialBindingState& o)const{return targets==o.targets&&depth==o.depth&&!std::memcmp(&viewport,&o.viewport,sizeof viewport)&&vertex==o.vertex&&pixel==o.pixel&&declaration==o.declaration&&streams==o.streams&&indices==o.indices&&offsets==o.offsets&&strides==o.strides&&frequency==o.frequency&&vf==o.vf&&pf==o.pf&&vi==o.vi&&pi==o.pi&&vb==o.vb&&pb==o.pb&&render==o.render&&samplers==o.samplers&&textures==o.textures&&!std::memcmp(&scissor,&o.scissor,sizeof scissor);}
 };
 struct BindingVertexBuffer:ForwardIDirect3DVertexBuffer9 {
-    unsigned refs=1;std::vector<unsigned char> bytes;explicit BindingVertexBuffer(UINT n):ForwardIDirect3DVertexBuffer9(nullptr),bytes(n){}
+    inline static unsigned alive=0;
+    unsigned refs=1;std::vector<unsigned char> bytes;explicit BindingVertexBuffer(UINT n):ForwardIDirect3DVertexBuffer9(nullptr),bytes(n){++alive;}
+    ~BindingVertexBuffer(){--alive;}
     ULONG STDMETHODCALLTYPE AddRef()override{return ++refs;}ULONG STDMETHODCALLTYPE Release()override{const auto n=--refs;if(!n)delete this;return n;}
     HRESULT STDMETHODCALLTYPE Lock(UINT offset,UINT size,void** out,DWORD)override{assert(uint64_t(offset)+size<=bytes.size());*out=bytes.data()+offset;return D3D_OK;}
     HRESULT STDMETHODCALLTYPE Unlock()override{return D3D_OK;}
 };
 struct BindingIndexBuffer:ForwardIDirect3DIndexBuffer9 {
-    unsigned refs=1;std::vector<unsigned char> bytes;explicit BindingIndexBuffer(UINT n):ForwardIDirect3DIndexBuffer9(nullptr),bytes(n){}
+    inline static unsigned alive=0;
+    unsigned refs=1;std::vector<unsigned char> bytes;explicit BindingIndexBuffer(UINT n):ForwardIDirect3DIndexBuffer9(nullptr),bytes(n){++alive;}
+    ~BindingIndexBuffer(){--alive;}
     ULONG STDMETHODCALLTYPE AddRef()override{return ++refs;}ULONG STDMETHODCALLTYPE Release()override{const auto n=--refs;if(!n)delete this;return n;}
     HRESULT STDMETHODCALLTYPE Lock(UINT offset,UINT size,void** out,DWORD)override{assert(uint64_t(offset)+size<=bytes.size());*out=bytes.data()+offset;return D3D_OK;}
     HRESULT STDMETHODCALLTYPE Unlock()override{return D3D_OK;}
@@ -105,7 +109,7 @@ void MaterialCaptureStateTestAccess::replayBindings(){
     unsigned cases=0;
     for(unsigned reset=0;reset<2;++reset)for(unsigned shape=0;shape<3;++shape)for(unsigned failure=0;failure<4;++failure){
         MaterialBindingDevice d;d.resetAuxViewport=reset;d.perturbUP=true;const auto initial=d.state;
-        bool success=false;unsigned resident=0,up=0;
+        bool success=false;unsigned resident=0,up=0,placementReuses=0;
         {
             NorthlightAutoBump b(&d);b.width=b.heightPixels=64;b.target=&d.capture;b.target->AddRef();b.captureDepth=&d.privateDepth;b.captureDepth->AddRef();b.occlusionTarget=&d.auxiliary;b.occlusionTarget->AddRef();
             std::shared_ptr<const NorthlightDrawSnapshot::Mesh> meshes[4];
@@ -115,14 +119,22 @@ void MaterialCaptureStateTestAccess::replayBindings(){
             const unsigned mixed[]={0,0,2,1,3,1};
             for(unsigned i=0;i<6;++i){auto packet=std::make_unique<NorthlightAutoBump::Deferred>();packet->mesh=meshes[shape==1?mixed[i]:i%2];packet->vertex=&d.vs;packet->vertex->AddRef();packet->pixel=&d.ps;packet->pixel->AddRef();packet->declaration=&d.decl;packet->declaration->AddRef();packet->viewport={0,0,64,64,0,1};packet->occlusion=shape==0?true:((i/2)%2==0);packet->tag=19;packet->first=20;packet->pixelConstants.assign(20,float(i));std::fill(packet->vertexConstants,packet->vertexConstants+1024,float(i));std::fill(packet->vertexInt,packet->vertexInt+64,int(i));std::fill(packet->pixelInt,packet->pixelInt+64,int(i));std::fill(packet->vertexBool,packet->vertexBool+16,BOOL(i&1));std::fill(packet->pixelBool,packet->pixelBool+16,BOOL(i&1));std::fill(packet->states,packet->states+14,DWORD(i));std::fill(packet->raster,packet->raster+NorthlightAutoBump::DeferredRasterCount,DWORD(i));
                 if(shape==2){packet->occlusion=(i&1)!=0;if(i==2||i==3)packet->viewport={0,0,64,64,.2f,.8f};if(i==4)packet->viewport={3,5,32,48,0,1};}
+#ifdef NORTHLIGHT_TEST_MATERIAL_PLACEMENT
+                const auto owner=std::find_if(b.deferred.begin(),b.deferred.end(),[&](const auto& prior){return prior->mesh==packet->mesh;});
+                if(owner!=b.deferred.end())packet->meshOwner=owner->get();
+#endif
                 b.deferred.push_back(std::move(packet));
             }
             d.fault=failure;success=b.finishCaptures();resident=b.residentDraws;up=b.uploadDraws;assert(b.deferred.empty());if(success)assert(d.draws.size()==6&&b.flushed==6);else assert(d.faultUsed&&b.failed);
+#ifdef NORTHLIGHT_TEST_MATERIAL_PLACEMENT
+            placementReuses=b.placementReuses;
+#endif
             assert(d.state==initial);
         }
         assert(d.state==initial&&d.vs.refs==1&&d.ps.refs==1&&d.decl.refs==1&&d.surface.refs==1&&d.capture.refs==1&&d.auxiliary.refs==1&&d.privateDepth.refs==1);
+        assert(!BindingVertexBuffer::alive&&!BindingIndexBuffer::alive);
         uint64_t hash=1469598103934665603ull;for(auto draw:d.draws)hash=(hash^draw)*1099511628211ull;
-        std::printf("MATERIAL_BINDINGS_CASE reset=%u shape=%u failure=%u success=%u draws=%zu hash=%llu resident=%u up=%u viewportCalls=%u frequencyCalls=%u auxiliaryCalls=%u restored=1\n",reset,shape,failure,unsigned(success),d.draws.size(),(unsigned long long)hash,resident,up,d.viewportCalls,d.frequencyCalls,d.auxiliaryCalls);++cases;
+        std::printf("MATERIAL_BINDINGS_CASE reset=%u shape=%u failure=%u success=%u draws=%zu hash=%llu resident=%u up=%u viewportCalls=%u frequencyCalls=%u auxiliaryCalls=%u placementReuses=%u restored=1\n",reset,shape,failure,unsigned(success),d.draws.size(),(unsigned long long)hash,resident,up,d.viewportCalls,d.frequencyCalls,d.auxiliaryCalls,placementReuses);++cases;
     }
     std::printf("MATERIAL_BINDINGS_PASS cases=%u actualProductionFlush=1 mixedResidentUP=1 viewportReset=1 partialViewport=1 failures=1 restoration=1\n",cases);
 }

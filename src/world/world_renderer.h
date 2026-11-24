@@ -2264,7 +2264,11 @@ public:
                 equipmentDrawAudit.add(values[i].attenuation,3);
             }
         }
-        for(unsigned i=0;i<it->second;++i){if(valid[i]){++equipmentCapture.decoded;equipmentLights.observe(values[i],now,active->localLights,context.camera);}else ++equipmentCapture.rejected;}
+        for(unsigned i=0;i<it->second;++i){
+            if(!valid[i]){++equipmentCapture.rejected;continue;}
+            ++equipmentCapture.decoded;
+            equipmentLights.observe(values[i],now,active->localLights,context.camera,0,0,0,active->localLightIndex.get());
+        }
     }
     const NorthlightNativeLights::Point* nativeDirectSource(const NorthlightLocalLights::Light& selected,const NorthlightNativeLights::Snapshot& scene)const{
         if(!active||selected.kind!=2||(selected.flags&NorthlightLocalLights::Flash))return nullptr;

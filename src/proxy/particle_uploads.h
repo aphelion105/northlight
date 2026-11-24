@@ -19,7 +19,7 @@ class Cache {
     unsigned wantedCount_=0,used_=0,copied_=0;std::uint64_t clock_=0;
     std::mutex mutex_;Stats stats_;
     void drop(Entry& e){used_-=unsigned(e.bytes.size());std::vector<unsigned char>().swap(e.bytes);e.key=nullptr;}
-    void erase(const void* key){for(auto& e:entries_)if(e.key==key)drop(e);}
+    void erase(const void* key){if(used_)for(auto& e:entries_)if(e.key==key)drop(e);}
 public:
     void clear(){std::lock_guard<std::mutex> lock(mutex_);for(auto& e:entries_)if(e.key)drop(e);wantedCount_=copied_=0;}
     void nextFrame(){std::lock_guard<std::mutex> lock(mutex_);copied_=0;}
@@ -29,14 +29,17 @@ public:
     }
     void invalidate(const void* key,unsigned offset,unsigned size,bool discard=false){
         std::lock_guard<std::mutex> lock(mutex_);
+        if(!used_)return;
         const std::uint64_t end=std::uint64_t(offset)+size;
         for(auto& e:entries_)if(e.key==key&&(discard||!size||(offset<std::uint64_t(e.offset)+e.bytes.size()&&e.offset<end)))drop(e);
     }
     void write(const void* key,std::uint64_t life,unsigned offset,const void* data,unsigned size,bool dynamic){
         std::lock_guard<std::mutex> lock(mutex_);
         if(!key||!life||!data||!size||std::uint64_t(offset)+size>UINT32_MAX)return;
-        for(auto& e:entries_)if(e.key==key&&e.life!=life)drop(e);
-        for(auto& e:entries_)if(e.key==key&&offset<std::uint64_t(e.offset)+e.bytes.size()&&e.offset<std::uint64_t(offset)+size)drop(e);
+        if(used_){
+            const std::uint64_t end=std::uint64_t(offset)+size;
+            for(auto& e:entries_)if(e.key==key&&(e.life!=life||(offset<std::uint64_t(e.offset)+e.bytes.size()&&e.offset<end)))drop(e);
+        }
         // Dynamic buffers are copied only after a proven particle draw asks
         // for them. Small immutable uploads can be retained before first use.
         if(dynamic&&std::find(wanted_.begin(),wanted_.begin()+wantedCount_,key)==wanted_.begin()+wantedCount_)return;
@@ -53,17 +56,22 @@ public:
         slot->key=key;slot->life=life;slot->offset=offset;slot->used=++clock_;
         used_+=size;copied_+=size;++stats_.writes;stats_.bytes+=size;
     }
-    bool read(const void* key,std::uint64_t offset,unsigned size,void* out){
+    bool read(const void* key,std::uint64_t offset,unsigned size,void* out,bool* hasBuffer=nullptr){
         std::lock_guard<std::mutex> lock(mutex_);
-        if(!key||!out||!size||offset+size>UINT32_MAX){++stats_.misses;return false;}
+        if(hasBuffer)*hasBuffer=false;
+        if(!key||!out||!size||offset>UINT32_MAX-size){++stats_.misses;return false;}
         if(std::find(wanted_.begin(),wanted_.begin()+wantedCount_,key)==wanted_.begin()+wantedCount_){
             if(wantedCount_==Entries)wantedCount_=0;
             wanted_[wantedCount_++]=key;
         }
+        if(!used_){++stats_.misses;return false;}
         unsigned copied=0;
         while(copied<size){
             Entry* found=nullptr;
-            for(auto& e:entries_)if(e.key==key&&e.offset<=offset+copied&&offset+copied<std::uint64_t(e.offset)+e.bytes.size()){found=&e;break;}
+            for(auto& e:entries_)if(e.key==key){
+                if(hasBuffer)*hasBuffer=true;
+                if(e.offset<=offset+copied&&offset+copied<std::uint64_t(e.offset)+e.bytes.size()){found=&e;break;}
+            }
             if(!found){++stats_.misses;return false;}
             const auto at=unsigned(offset+copied-found->offset),n=std::min(size-copied,unsigned(found->bytes.size())-at);
             std::memcpy(static_cast<unsigned char*>(out)+copied,found->bytes.data()+at,n);copied+=n;found->used=++clock_;

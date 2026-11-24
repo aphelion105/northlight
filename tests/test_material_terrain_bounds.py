@@ -11,7 +11,7 @@ import northlight_paths as fp
 with tempfile.TemporaryDirectory(prefix="material-terrain-bounds-") as tmp:
     root = Path(tmp)
     fixture = (fp.TESTS / "displacement_state_reuse.cpp").read_text().split("struct Backend:ForwardIDirect3DDevice9")[0]
-    fixture = fixture.replace("struct DisplacementStateTestAccess {", "struct DisplacementStateTestAccess {\n static bool terrainCall(const NorthlightActorDeformation::Program&,const float*,const float*,const float*,float&,bool);\n static bool terrainMatch(const NorthlightActorDeformation::Program&);")
+    fixture = fixture.replace("struct DisplacementStateTestAccess {", "struct DisplacementStateTestAccess {\n static bool terrainCall(const NorthlightActorDeformation::Program&,const float*,const float*,const float*,float&,bool,NorthlightMaterialViewBounds::DisplacementLod* lod=nullptr);\n static bool terrainMatch(const NorthlightActorDeformation::Program&);")
     for name in ("auto_bump_renderer.h", "device_mirror.h", "mirror_resource_forwarders.h"):
         fixture = fixture.replace('#include "' + name + '"\n', '')
     (root / "terrain_unique.h").write_text(fixture)

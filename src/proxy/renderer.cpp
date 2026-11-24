@@ -3160,6 +3160,9 @@ public:
         modelNormals->setRasterStateSource(static_cast<IDirect3DDevice9*>(ext),rasterSource);
         modelNormals->setEmptyTargetSource(static_cast<IDirect3DDevice9*>(ext),[](void* context){return static_cast<ExtensionDevice*>(static_cast<IDirect3DDevice9*>(context))->emptyAuxiliaryTargets();});
         autoBump->setSamplerStateSource(static_cast<IDirect3DDevice9*>(ext),[](void* context,DWORD stage,unsigned mask,DWORD* out){return static_cast<ExtensionDevice*>(static_cast<IDirect3DDevice9*>(context))->knownSamplerStates(stage,mask,out);});
+        particleCapture.setStateSource(static_cast<IDirect3DDevice9*>(ext),
+            [](void* context,const D3DRENDERSTATETYPE* states,unsigned count,DWORD* out){return static_cast<ExtensionDevice*>(static_cast<IDirect3DDevice9*>(context))->knownRenderStates(states,count,out);},
+            [](void* context,DWORD stage,unsigned mask,DWORD* out){return static_cast<ExtensionDevice*>(static_cast<IDirect3DDevice9*>(context))->knownSamplerStates(stage,mask,out);});
         modelNormals->setSamplerStateSource(static_cast<IDirect3DDevice9*>(ext),[](void* context,DWORD stage,unsigned mask,DWORD* out){return static_cast<ExtensionDevice*>(static_cast<IDirect3DDevice9*>(context))->knownSamplerStates(stage,mask,out);});
         world->setNativeSamplerStateSource(static_cast<IDirect3DDevice9*>(ext),[](void* context,DWORD stage,unsigned mask,DWORD* out){return static_cast<ExtensionDevice*>(static_cast<IDirect3DDevice9*>(context))->knownSamplerStates(stage,mask,out);});
         world->setConstantEpochSource({&mirrorState.constantEpoch,&mirrorState}); /* 0.3.180 (C1): read in place under the draw's gate */

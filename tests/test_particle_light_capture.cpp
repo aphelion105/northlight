@@ -84,6 +84,7 @@ static_assert(sizeof(Vertex)==24&&offsetof(Vertex,color)==12&&offsetof(Vertex,uv
 struct Device final:ForwardIDirect3DDevice9 {
     Texture texture,secondTexture;Declaration declaration;Buffer vertices;Indices indices;
     float constants[1024]{};DWORD source=D3DBLEND_SRCALPHA,destination=D3DBLEND_ONE,alphaTest=TRUE,alphaRef=1,alphaFunc=D3DCMP_GREATEREQUAL;unsigned streamOffset=0;
+    unsigned samplerReads=0,constantReads=0;
     Device():ForwardIDirect3DDevice9(nullptr){
         constants[8]=constants[13]=constants[18]=constants[22]=1; // c2..5, clip.w = view.z
         constants[24]=constants[29]=1; // Native UV0 matrix.
@@ -98,11 +99,13 @@ struct Device final:ForwardIDirect3DDevice9 {
         default:assert(false);return E_NOTIMPL;}return D3D_OK;
     }
     HRESULT STDMETHODCALLTYPE GetSamplerState(DWORD sampler,D3DSAMPLERSTATETYPE type,DWORD* out)override{
+        ++samplerReads;
         assert(sampler<2);switch(type){case D3DSAMP_SRGBTEXTURE:*out=0;break;
         case D3DSAMP_ADDRESSU:case D3DSAMP_ADDRESSV:*out=D3DTADDRESS_CLAMP;break;
         case D3DSAMP_MAGFILTER:case D3DSAMP_MINFILTER:*out=D3DTEXF_POINT;break;default:assert(false);return E_NOTIMPL;}return D3D_OK;
     }
     HRESULT STDMETHODCALLTYPE GetVertexShaderConstantF(UINT start,float* out,UINT count)override{
+        ++constantReads;
         assert(start==0&&count==256);std::memcpy(out,constants,sizeof(constants));return D3D_OK;
     }
     HRESULT STDMETHODCALLTYPE GetVertexDeclaration(IDirect3DVertexDeclaration9** out)override{*out=&declaration;declaration.AddRef();return D3D_OK;}
@@ -218,6 +221,25 @@ int main(int argc,char** argv){
     const auto& emitted=prepared.clusters[0].sample;assert(close(emitted.position[0],100)&&close(emitted.position[1],200)&&close(emitted.position[2],302));
     assert(emitted.rgb[2]>emitted.rgb[0]&&emitted.rgb[2]>emitted.rgb[1]);
     for(unsigned k=0;k<3;++k)assert(close(emitted.rgb[k],float((vertices[0].color>>(16-8*k))&255)/255*texel[k]*float((vertices[0].color>>24)&255)/255*texel[3]));
+    {
+        capture.setStateSource(static_cast<IDirect3DDevice9*>(&device),[](void* context,const D3DRENDERSTATETYPE* keys,unsigned count,DWORD* out){
+            auto* d=static_cast<IDirect3DDevice9*>(context);
+            for(unsigned i=0;i<count;++i)if(FAILED(d->GetRenderState(keys[i],out+i)))return false;
+            return true;
+        },[](void* context,DWORD stage,unsigned mask,DWORD* out){
+            auto* d=static_cast<IDirect3DDevice9*>(context);
+            for(unsigned i=0;i<D3DSAMP_DMAPOFFSET;++i)if((mask&(1u<<i))&&FAILED(d->GetSamplerState(stage,D3DSAMPLERSTATETYPE(i+1),out+i)))return false;
+            return true;
+        });
+        NorthlightParticleLights::Frame cachedFrame;
+        const auto cached=capture.prepare(&device,&vertex,&ps,args,inverse,camera,projection,cachedFrame);
+        assert(cached.count==1&&cachedFrame.triangles==1);
+        for(unsigned k=0;k<3;++k){
+            assert(cached.clusters[0].sample.position[k]==emitted.position[k]);
+            assert(cached.clusters[0].sample.rgb[k]==emitted.rgb[k]);
+        }
+        capture.setStateSource(nullptr,nullptr,nullptr);
+    }
     capture.submit(prepared,false,false,frame);assert(publish().count==0&&frame.accepted==0);
     capture.submit(prepared,true,true,frame);auto shown=publish();assert(frame.accepted==1&&frame.deferred==1&&shown.count==1&&shown.color[0][2]>.01f);
     frame.nextFrame();assert(publish().count==0&&selection.fading==0); // No selection fade/TTL after native particles retire.
@@ -248,7 +270,15 @@ int main(int argc,char** argv){
     frame.nextFrame();device.source=D3DBLEND_SRCALPHA;for(auto& v:vertices)v.color=0;upload();
     const auto constant=prepare(white);assert(constant.count==1); // Native ParticleUnlit constant white is not VB COLOR0.
     for(unsigned k=0;k<3;++k)assert(close(constant.clusters[0].sample.rgb[k],texel[k]*texel[3]));
-    frame.nextFrame();uploads.forget(&device.vertices);assert(!prepare(vertex).count&&frame.bufferMiss>0); // Miss stays dark; no Lock.
+    frame.nextFrame();uploads.forget(&device.vertices);args.primCount=16;
+    const auto samplerReads=device.samplerReads,constantReads=device.constantReads;
+    assert(!prepare(vertex).count&&frame.bufferMiss==1); // A missing stream ends this draw's probe.
+    assert(device.samplerReads==samplerReads&&device.constantReads==constantReads);
+    args=indexed;
+    frame.nextFrame();upload();
+    for(unsigned i=0;i<NorthlightParticleLights::DrawLimit;++i)assert(frame.takeDraw());
+    assert(!prepare(vertex).count&&frame.probes==1&&frame.dropped==1);
+    assert(device.samplerReads==samplerReads&&device.constantReads==constantReads);
     frame.nextFrame();upload();textures.invalidate(&device.texture);assert(!prepare(vertex).count&&frame.textureMiss==1);
     textures.upload(&device.texture,&device.texture,image[0],image[1],0,image[2],payload.data(),payload.size(),image[3],true,true);
     for(auto& v:vertices)v.color=packed(nativeTint);upload();
@@ -425,9 +455,8 @@ int main(int argc,char** argv){
     const auto junkBefore=uploads.stats();
     for(unsigned i=0;i<NorthlightParticleLights::ProbeLimit;++i)require(bool(prepare(vertex).count)==(i<NorthlightParticleLights::DrawLimit),"MULTI_OUTSIDE_ADMISSION");
     const auto junkAfter=uploads.stats();
-    const unsigned indexedTriangles=NorthlightParticleLights::DrawLimit*NorthlightParticleLights::TrianglesPerDraw+
-        NorthlightParticleLights::ProbeLimit-NorthlightParticleLights::DrawLimit+NORTHLIGHT_PARTICLE_PROBE_REFERENCE*NorthlightParticleLights::DrawLimit;
-    const unsigned reads=3*(indexedTriangles+NorthlightParticleLights::ProbeLimit);
+    const unsigned indexedTriangles=NorthlightParticleLights::DrawLimit*(NorthlightParticleLights::TrianglesPerDraw+NORTHLIGHT_PARTICLE_PROBE_REFERENCE);
+    const unsigned reads=3*(indexedTriangles+NorthlightParticleLights::DrawLimit);
     require(junkAfter.hits-junkBefore.hits==reads&&junkAfter.misses==junkBefore.misses,"MULTI_OUTSIDE_READS");
     require(frame.probes==128&&frame.draws==32&&frame.triangles==512&&frame.dropped==96,"MULTI_OUTSIDE_COUNTS");
     // Every triangle uses the same known texel/colour, so all four RGBA samples run.

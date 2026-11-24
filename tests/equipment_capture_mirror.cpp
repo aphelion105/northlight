@@ -7,6 +7,7 @@
 #include <cassert>
 #include <chrono>
 #include <cstdio>
+#include <memory>
 #include <unordered_map>
 #include <string>
 static unsigned tick=1000;
@@ -35,7 +36,11 @@ struct CaptureWorld {
     NorthlightLocalLightTrace::InputHash equipmentBankAudit,equipmentDrawAudit;
     std::unordered_map<IDirect3DVertexShader9*,unsigned> equipmentShaders;
     std::string equipmentMap;
-    struct Scene {std::string map="Northrend";std::vector<NorthlightLocalLights::Light> localLights;} scene;
+    struct Scene {
+        std::string map="Northrend";
+        std::vector<NorthlightLocalLights::Light> localLights;
+        std::shared_ptr<const NorthlightEquipmentLights::StaticLightIndex> localLightIndex;
+    } scene;
     Scene* active=&scene;
     struct {float inverseView[16]={1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1},camera[3]={};} context;
     float projection[3]={1,1,1};bool enabled=true,knownContext=true,actor=true;
@@ -96,10 +101,14 @@ int main(){
     bank[0]=.2f;bank[1]=.1f;bank[2]=.05f;d.SetVertexShaderConstantF(17,bank,11);capture();before=backend.gets;
     // Representative cyclic banks (twice the old 16-bank cutoff), with 512 fixed sources.
     for(unsigned i=0;i<512;++i){Native n{};n.position[0]=1000.f+i;n.color[0]=1;n.attenuation[1]=.7f;world.scene.localLights.push_back(light(n,i,1));}
-    for(unsigned cycle:{32u,96u}){auto start=std::chrono::steady_clock::now();
+    const auto index=std::make_shared<const StaticLightIndex>(indexStaticLights(world.scene.localLights));
+    for(unsigned cycle:{32u,96u})for(bool indexed:{false,true}){
+        world.scene.localLightIndex=indexed?index:nullptr;
+        world.equipmentLights.reset();
+        auto start=std::chrono::steady_clock::now();
         for(unsigned frame=0;frame<100;++frame){world.equipmentLights.nextFrame();world.equipmentCapture.nextFrame();
             for(unsigned i=0;i<1000;++i){bank[16]=float(i%cycle)*1.1f;d.SetVertexShaderConstantF(17,bank,11);capture();}}
         auto ms=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count()/100;
         assert(backend.gets==before);
-        std::printf("NATIVE_LIGHT_CAPTURE_PASS cachedCandidates=1000 fixedSources=512 memoCycle=%u backendGets=0 millisecondsPerFrame=%.4f\n",cycle,ms);}
+        std::printf("NATIVE_LIGHT_CAPTURE_PASS cachedCandidates=1000 fixedSources=512 memoCycle=%u backendGets=0 millisecondsPerFrame=%.4f indexed=%u\n",cycle,ms,unsigned(indexed));}
 }

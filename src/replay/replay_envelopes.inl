@@ -644,23 +644,31 @@ private:
         const size_t groups=e->skin?e->skin->usedBones:e->groups.size();
         const size_t operations=e->skin?size_t(75)+groups*(alignedSkin_?88:16):groups*p.operations.size();
         if((!e->skin||!batched)&&((!e->singleBone&&groups>8)||operations>128))return false;
-        if(budget.operations>budget.maxOperations||operations>budget.maxOperations-budget.operations)return false;
-        for(unsigned j=0;j<16;++j)if(!std::isfinite(inverse[j]))return false;
-        if(inverse[3]!=0||inverse[7]!=0||inverse[11]!=0||inverse[15]!=1)return false;
+        const bool fits=budget.operations<=budget.maxOperations&&operations<=budget.maxOperations-budget.operations;
+        if(!fits&&(!batched||diagnostics_))return false;
+        if(fits){
+            for(unsigned j=0;j<16;++j)if(!std::isfinite(inverse[j]))return false;
+            if(inverse[3]!=0||inverse[7]!=0||inverse[11]!=0||inverse[15]!=1)return false;
+        }
         if(batched&&!fastOpen_){fastMark_=BoundsClock::now();fastOpen_=true;fastCount_=0;}
         e->touched=++clock_;
         if(info){info->kind=Kind::Cheap;info->programHash=e->programHash;info->groups=groups;info->operations=operations;info->skin=bool(e->skin);info->paletteSpan=e->paletteSpan;info->paletteFirst=e->paletteSpan?e->paletteFirst:0;info->weightedPaletteEnd=e->skin?e->skin->paletteEnd:0;}
         if(individual)individual->evaluation(*e,info,Stage::All,status,groups,operations);
-        if(certifiedPose(*e,poseStamp,inverse,output)){
+        // An operation cap refusal did no evaluation. Charge the batched
+        // clock and leave this source's measured pose cost available for retry.
+        if(!fits){
+            ++stats_.operationDeferred;status=Status::Budget;
+        }else if(certifiedPose(*e,poseStamp,inverse,output)){
             ++stats_.certifiedPoseHits;budget.operations+=operations;status=Status::Valid;++stats_.ready;stats_.skinValid+=bool(e->skin);stats_.cheapValid+=batched;++stats_.fastValid;
             return true;
+        }else{
+            float storage[1024];const float* effective=effectiveConstants(p,*e,constants,storage);
+            if(!effective){++stats_.invalid;status=Status::Invalid;}
+            else if(e->skin){budget.operations+=operations;status=e->skin->evaluate(effective,inverse,output,nullptr,nullptr,alignedSkin_)?Status::Valid:Status::Unsupported;}
+            else status=evaluateGroups(p,*e,effective,inverse,budget,output,[]{return false;});
+            if(status==Status::Valid){certifyPose(*e,poseStamp,inverse,output);++stats_.ready;stats_.skinValid+=bool(e->skin);stats_.cheapValid+=batched;++stats_.fastValid;}
+            else {output={};if(status==Status::Unsupported)++stats_.unsupported;}
         }
-        float storage[1024];const float* effective=effectiveConstants(p,*e,constants,storage);
-        if(!effective){++stats_.invalid;status=Status::Invalid;}
-        else if(e->skin){budget.operations+=operations;status=e->skin->evaluate(effective,inverse,output,nullptr,nullptr,alignedSkin_)?Status::Valid:Status::Unsupported;}
-        else status=evaluateGroups(p,*e,effective,inverse,budget,output,[]{return false;});
-        if(status==Status::Valid){certifyPose(*e,poseStamp,inverse,output);++stats_.ready;stats_.skinValid+=bool(e->skin);stats_.cheapValid+=batched;++stats_.fastValid;}
-        else {output={};if(status==Status::Unsupported)++stats_.unsupported;}
         if(batched&&++fastCount_>=ReadyClockStride){const auto now=BoundsClock::now();readyNanoseconds_+=elapsedNs(now,fastMark_);fastMark_=now;fastCount_=0;}
         return true;
     }

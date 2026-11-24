@@ -194,6 +194,10 @@ inline void touch(Store& s,Slot& c){   // one capture read in this frame
     else {c.frames=1;c.requestedSpan=0;}
     c.lastFrame=s.frame;
 }
+inline bool readable(const Slot& c,UINT off,UINT size,bool requireComplete){
+    return c.state.load()==Slot::Valid&&(!requireComplete||c.complete)&&
+        !(c.locks&&c.locks->load())&&size&&std::uint64_t(off)+size<=c.size;
+}
 }
 // The bytes at [off,off+size) of the buffer at its replay position, pinned until unpin(); null when no valid copy (slot is set when the buffer
 // is tracked at all, to let the caller try a fill). key: the raw or the exposed pointer. Not served while any lock is outstanding (a pending write implies one).
@@ -201,8 +205,19 @@ inline const unsigned char* read(const void* key,UINT off,UINT size,Slot*& slot,
     slot=nullptr;Store& s=store();std::lock_guard<std::mutex> g(s.m);
     auto it=s.registry.find(key);if(it==s.registry.end())return nullptr;
     Slot& c=*it->second;slot=&c;detail::touch(s,c);
-    if(c.state.load()!=Slot::Valid||(requireComplete&&!c.complete)||(c.locks&&c.locks->load())||!size||std::uint64_t(off)+size>c.size)return nullptr;
+    if(!detail::readable(c,off,size,requireComplete))return nullptr;
     pinRef(c);c.used=++s.clock;return c.data.data()+off;
+}
+
+// Small draw-time reads can finish under the store mutex without a COM pin.
+inline bool copy(const void* key,UINT off,UINT size,void* output,bool* hasBuffer=nullptr){
+    Store& s=store();std::lock_guard<std::mutex> g(s.m);
+    const auto it=s.registry.find(key);
+    if(hasBuffer)*hasBuffer=it!=s.registry.end()&&it->second->state.load()==Slot::Valid;
+    if(it==s.registry.end())return false;
+    Slot& c=*it->second;detail::touch(s,c);
+    if(!detail::readable(c,off,size,false))return false;
+    std::memcpy(output,c.data.data()+off,size);c.used=++s.clock;return true;
 }
 // Drops one pin; the bytes go if the slot was dropped meanwhile. The wrapper reference is released last, outside the mutex (it may be the final one).
 inline void unpin(Slot& c){

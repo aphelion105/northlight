@@ -180,6 +180,7 @@
                 {std::lock_guard<std::mutex> lock(mutex);publication=published;if(builtGeometry)pendingPlan=builtGeometry->plan;}
                 if(publication){if(publication->bvh)publication->bvh->accountMemory(memory);if(publication->meshPlan)publication->meshPlan->accountMemory(memory);
                     NorthlightGI::accountProbeAtlas(memory,publication->atlas);if(publication->coarseAtlas)NorthlightGI::accountProbeAtlas(memory,*publication->coarseAtlas);memory.vector(Metadata,publication->localLights);
+                    if(publication->localLightIndex)memory.vector(Metadata,*publication->localLightIndex);
                     if(publication->fogField)memory.allocation(Fog,publication->fogField.get(),sizeof(*publication->fogField));}
                 if(pendingPlan)pendingPlan->accountMemory(memory);
                 if(plan)plan->accountMemory(memory);if(scratch)scratch->accountMemory(memory);if(pages)pages->accountMemory(memory);
@@ -279,6 +280,7 @@
         NorthlightGI::DynamicProbeLayer dynamicProbes;
         std::vector<NorthlightGI::PointLight> sceneLights;
         std::vector<NorthlightLocalLights::Light> rawSceneLights;
+        std::shared_ptr<const NorthlightEquipmentLights::StaticLightIndex> sceneLightIndex;
         std::shared_ptr<const NorthlightLightAttachments::Records> sceneLightAttachments;
         std::shared_ptr<NorthlightGI::BVH> actors;
         NorthlightActorGeometry::TexelKeys actorTexelKeys;
@@ -300,6 +302,7 @@
             if(scenePlan)scenePlan->accountMemory(memory);
             coarseProbes.accountMemory(memory);probeCache.accountMemory(memory);relightCache.accountMemory(memory);dynamicProbes.accountMemory(memory);visibilityCache.accountMemory(memory);
             NorthlightGI::accountProbeAtlas(memory,displayFallback);memory.vector(Metadata,sceneLights);memory.vector(Metadata,rawSceneLights);memory.vector(Metadata,actorTexelKeys);
+            if(sceneLightIndex)memory.vector(Metadata,*sceneLightIndex);
             if(sceneFog)memory.allocation(Fog,sceneFog.get(),sizeof(*sceneFog));
             if(previousLighting){NorthlightGI::accountProbeAtlas(memory,previousLighting->atlas);if(previousLighting->coarseAtlas)NorthlightGI::accountProbeAtlas(memory,*previousLighting->coarseAtlas);if(previousLighting->bvh)previousLighting->bvh->accountMemory(memory);if(previousLighting->meshPlan)previousLighting->meshPlan->accountMemory(memory);}
             logCpuFootprint("gi-worker-reachable",stage,id,memory);
@@ -332,7 +335,7 @@
                         auto next=std::make_shared<NorthlightGI::BVH>();std::string error;
                         if(geometry.scene&&!geometry.scene->triangles.empty()&&!next->build(std::move(*geometry.scene),error,quality.giFastBVH!=0))continue;
                         bvh=std::move(next);menuGeometryHash=geometry.hash;sceneMap=r.map;sceneCenter=r.camera;
-                        scenePlan=std::make_shared<NorthlightWorldMesh::WorldMeshUploadPlan>();scenePrepared.reset();sceneFog.reset();rawSceneLights.clear();sceneLightAttachments.reset();
+                        scenePlan=std::make_shared<NorthlightWorldMesh::WorldMeshUploadPlan>();scenePrepared.reset();sceneFog.reset();rawSceneLights.clear();sceneLightIndex.reset();sceneLightAttachments.reset();
                         actors.reset();actorTexelKeys.clear();actorMemo={};solvedActorHash=0;dynamicProbes.reset(nullptr);
                     }
                     menuActorMemo.remember(r.actorJob);
@@ -351,6 +354,10 @@
             if(adopted){
                 bvh=std::move(adopted->bvh);scenePlan=std::move(adopted->plan);scenePrepared=std::move(adopted->prepared);sceneFog=std::move(adopted->fog);
                 sceneLights=std::move(adopted->lights);rawSceneLights=std::move(adopted->rawLights);sceneLightAttachments=std::move(adopted->lightAttachments);sceneMap=std::move(adopted->map);sceneCenter=adopted->center;
+                sceneLightIndex.reset();
+                if(!rawSceneLights.empty())try{
+                    sceneLightIndex=std::make_shared<const NorthlightEquipmentLights::StaticLightIndex>(NorthlightEquipmentLights::indexStaticLights(rawSceneLights));
+                }catch(const std::bad_alloc&){/* The published lights can still use the linear search. */}
                 sceneBuild=adopted->id;superseded+=adopted->superseded;if(stalled){if(stallMap==sceneMap)stallMs+=GetTickCount()-stallStart;stalled=false;} /* an episode begun on another map is not this region's stall */
             }else if(!r.menu&&(!bvh||NorthlightWorldStreaming::needsGeometry(sceneMap,sceneCenter,r.map,r.geometryCenter))){
                 // The builder is replacing this region. Borrow the published
@@ -397,6 +404,7 @@
                  else if(previousLighting&&previousLighting->map==sceneMap)*geometry=*previousLighting;
                  geometry->bvh=bvh;geometry->meshPlan=scenePlan;geometry->prepared=scenePrepared;geometry->retirementBytes=bvh->retainedBytes()+scenePlan->cpuBytes()+sizeof(Snapshot);
                  geometry->map=sceneMap;geometry->center=sceneCenter;geometry->fogField=sceneFog;geometry->localLights=rawSceneLights;geometry->lightAttachments=sceneLightAttachments;
+                 geometry->localLightIndex=sceneLightIndex;
                  published=geometry;previousLighting.reset();
                  if(NorthlightDiagnostics::enabled())logf("WORLD geometry published buildId=%llu latestId=%llu buildMs=%lu cameraLag=%.2f retainedGI=%u refreshDistance=32 coverageDistance=96 concurrentSolves=%u stallMs=%lu",
                      (unsigned long long)sceneBuild,(unsigned long long)request.id,(unsigned long)result->geometryMs,
@@ -483,6 +491,7 @@
             // Geometry was already handed off before actor work. A second
             // request-ID gate here discarded useful work on every camera move.
             result->fogField=sceneFog;result->bvh=bvh;result->meshPlan=scenePlan;result->prepared=scenePrepared;result->retirementBytes=bvh->retainedBytes()+scenePlan->cpuBytes()+sizeof(Snapshot);result->localLights=rawSceneLights;result->lightAttachments=sceneLightAttachments;result->origin=NorthlightGI::probeWindowOrigin(r.probeCenter);
+            result->localLightIndex=sceneLightIndex;
             result->lightingGeneration=lightingGeneration;
             if(preparedLight.valid()){
                 const auto& light=preparedLight.values();

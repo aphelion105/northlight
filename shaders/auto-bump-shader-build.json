@@ -1,7 +1,7 @@
 {
   "normal_source_sha256": "16c6b3db23989eff94cd4be7e4496195827cca3f97254bd1c23e9a20451db4ab",
   "parallax_source_sha256": {
-    "auto_parallax.hlsl": "d256d10b900cfc8e00ed61fd8ee87b950bd40f814bc1a432b3f5cdf3300db727",
+    "auto_parallax.hlsl": "c9abf07370787498aca254bb102f3e360baaf2b18e6ecf915e550542de13adb6",
     "auto_parallax_prefix.hlsl": "5a5a6f29c2143e998602e1ae0d2687faf2158bb5db09a61b63345f238cefb6cb",
     "auto_material_height.hlsl": "d8b2cf9d1cafc553f336bfcbb83da62eb326a0d9396a68773966ca0a8554b1bd"
   },
@@ -10,14 +10,14 @@
   "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
   "shaders": {
     "BumpOpaque": {
-      "sha256": "34663d8702c1b40f89d728194aa781c086a54b50323c10aee75b50c1cc820095",
-      "static_instruction_slots": 283,
+      "sha256": "9de85f94ff16acbb45a29bdefcd918ba8f9319542b328de7843fb46b5e090b8f",
+      "static_instruction_slots": 282,
       "temporary_registers": 11,
       "samplers": [
         2
       ],
       "instructions": {
-        "mov": 21,
+        "mov": 20,
         "mul": 58,
         "rcp": 11,
         "add": 62,
@@ -43,15 +43,15 @@
       }
     },
     "BumpLayer": {
-      "sha256": "76106ed100740118783f89ca810d939e8cd4f3d6ea0b16c792719f9696ef0f50",
-      "static_instruction_slots": 283,
+      "sha256": "9fc66e559f5bbfa92873e61d4b0521fcf6b12d34b7ced55a34c1d5bcc12c7ad5",
+      "static_instruction_slots": 282,
       "temporary_registers": 12,
       "samplers": [
         1,
         2
       ],
       "instructions": {
-        "mov": 21,
+        "mov": 20,
         "add": 61,
         "texkill": 2,
         "texld": 1,
@@ -79,15 +79,15 @@
       }
     },
     "BumpWall": {
-      "sha256": "8db5facd23fd25dbda0c7a97ea53bc2010105c6c09d6bc309dc3927ce46468da",
-      "static_instruction_slots": 288,
+      "sha256": "93dfe33ac5d9b3764ff7b4f73058ac9343df40a75df25bf02f6f6024544b40cf",
+      "static_instruction_slots": 287,
       "temporary_registers": 11,
       "samplers": [
         0,
         2
       ],
       "instructions": {
-        "mov": 23,
+        "mov": 22,
         "mul": 58,
         "rcp": 11,
         "add": 62,
@@ -113,8 +113,8 @@
       }
     },
     "BumpGrass": {
-      "sha256": "b06535774027604711b395fc7aabcb13eeafff00b894d5baea8b0552d77ecf97",
-      "static_instruction_slots": 284,
+      "sha256": "d667a5efdf32f6aa93d6f0217069e4fa877d0aba3d6c7310bfe9242fb72f158c",
+      "static_instruction_slots": 283,
       "temporary_registers": 12,
       "samplers": [
         0,
@@ -123,7 +123,7 @@
       "instructions": {
         "texld": 1,
         "mul": 58,
-        "mov": 22,
+        "mov": 21,
         "add": 61,
         "texkill": 2,
         "rcp": 11,
@@ -148,14 +148,14 @@
       }
     },
     "BumpWallOpaque": {
-      "sha256": "f4dbff13964ed6115638cf04d6339fa53134ff5cacf71c9a94a9f93600c967c8",
-      "static_instruction_slots": 283,
+      "sha256": "6b359ec95a7b05df777b1fe1e836adf7e858681c30f051fdd7abf4619bbf7f6c",
+      "static_instruction_slots": 282,
       "temporary_registers": 12,
       "samplers": [
         2
       ],
       "instructions": {
-        "mov": 22,
+        "mov": 21,
         "add": 62,
         "texkill": 2,
         "mul": 57,
@@ -181,8 +181,8 @@
       }
     },
     "BumpComposite": {
-      "sha256": "dbc53eed92b19181e0b4486e49665d62756ec62c081de110ca1fa88fc1c29534",
-      "static_instruction_slots": 500,
+      "sha256": "84b8cae6b5da1dd39ca4153baab033e58d0617f23ede14ccd1596922a8c79463",
+      "static_instruction_slots": 498,
       "temporary_registers": 15,
       "samplers": [
         0,
@@ -191,7 +191,7 @@
         3
       ],
       "instructions": {
-        "mov": 38,
+        "mov": 36,
         "mul": 95,
         "rcp": 17,
         "add": 107,
@@ -217,8 +217,8 @@
       }
     },
     "BumpNative": {
-      "sha256": "169f032ec901025f44cc256c681948f6007b5ea8573a3acbd614062e0d15b254",
-      "static_instruction_slots": 285,
+      "sha256": "53c13c34de3680956d4ee6a3053f5ac132723508c3f34f88a71ee4f6ed621901",
+      "static_instruction_slots": 284,
       "temporary_registers": 12,
       "samplers": [
         2
@@ -226,7 +226,7 @@
       "instructions": {
         "add": 63,
         "mul": 58,
-        "mov": 22,
+        "mov": 21,
         "texkill": 2,
         "rcp": 11,
         "cmp": 26,
@@ -250,14 +250,14 @@
       }
     },
     "BumpSharedOpaque": {
-      "sha256": "a6830e7bda85394f359a7afd8fe802e9ea74937a945d557ecdab33c647e96110",
-      "static_instruction_slots": 290,
+      "sha256": "9c64ff6f765c1df01a38fe61a75aff86b7350a43b20d058b6cbbd563f434462a",
+      "static_instruction_slots": 289,
       "temporary_registers": 11,
       "samplers": [
         2
       ],
       "instructions": {
-        "mov": 24,
+        "mov": 23,
         "mul": 58,
         "rcp": 11,
         "add": 65,
@@ -283,15 +283,15 @@
       }
     },
     "BumpSharedLayer": {
-      "sha256": "d7699d0a8c96a4a13d6fcb1aad4cee32d3b2d8c99cc00e01edbed26e12bb0f18",
-      "static_instruction_slots": 291,
+      "sha256": "926bafd681fb2a00a77d8a32826cf35d0a674527873ad1b0699b8f56d73db2ee",
+      "static_instruction_slots": 290,
       "temporary_registers": 12,
       "samplers": [
         1,
         2
       ],
       "instructions": {
-        "mov": 25,
+        "mov": 24,
         "mul": 57,
         "rcp": 11,
         "add": 64,
@@ -319,15 +319,15 @@
       }
     },
     "BumpSharedWall": {
-      "sha256": "799693f1f9d2dc1edb3cea3377ddb66e60959f609ebbba85d2593dd51420d39e",
-      "static_instruction_slots": 295,
+      "sha256": "61ffe625ebbeaae37814bf20981901372fd95abc88c2862b0a6e531d58228c31",
+      "static_instruction_slots": 294,
       "temporary_registers": 12,
       "samplers": [
         0,
         2
       ],
       "instructions": {
-        "mov": 26,
+        "mov": 25,
         "mul": 58,
         "rcp": 11,
         "add": 65,
@@ -353,15 +353,15 @@
       }
     },
     "BumpSharedGrass": {
-      "sha256": "2d0cb9ea3897d96f93b3c13006209eed51d6f4528470f00effaafa5fb10e3037",
-      "static_instruction_slots": 292,
+      "sha256": "f3f03139dd5ba8163b5a73f71a2a46ea7b2b57275272fe68deff5a540bbc5ec6",
+      "static_instruction_slots": 291,
       "temporary_registers": 12,
       "samplers": [
         0,
         2
       ],
       "instructions": {
-        "mov": 26,
+        "mov": 25,
         "mul": 58,
         "rcp": 11,
         "add": 64,
@@ -388,14 +388,14 @@
       }
     },
     "BumpSharedWallOpaque": {
-      "sha256": "065539e83b83b12bcf98fbd401aa4d142a7976d0dfabf8821df668609026cb58",
-      "static_instruction_slots": 291,
+      "sha256": "e4eee4f0e9b054d5e99e53673a71eac287cd781d1726db0d843e7cdbef25921b",
+      "static_instruction_slots": 290,
       "temporary_registers": 12,
       "samplers": [
         2
       ],
       "instructions": {
-        "mov": 26,
+        "mov": 25,
         "mul": 57,
         "rcp": 11,
         "add": 65,
@@ -421,8 +421,8 @@
       }
     },
     "BumpSharedComposite": {
-      "sha256": "e14940b3cd2df276d9a22f963d664f1d6a643427bf6f26b69ac962fba9292abd",
-      "static_instruction_slots": 508,
+      "sha256": "2d437ae4c531dea7e0bc8c3d09ff299b430b0a3f67b2ecb04ee6f29da7c0c08d",
+      "static_instruction_slots": 506,
       "temporary_registers": 15,
       "samplers": [
         0,
@@ -431,7 +431,7 @@
         3
       ],
       "instructions": {
-        "mov": 42,
+        "mov": 40,
         "add": 110,
         "texkill": 1,
         "mul": 95,
@@ -457,14 +457,14 @@
       }
     },
     "BumpSharedNative": {
-      "sha256": "82def67ff9acf0d4ee03899d2dc798168802970a8ccf6050085bd3ad5452a123",
-      "static_instruction_slots": 293,
+      "sha256": "0e8fc5800bba1bbdb499e8aa1658e78d3a3a7e2fcf9edfe683bd07c1e854121f",
+      "static_instruction_slots": 292,
       "temporary_registers": 12,
       "samplers": [
         2
       ],
       "instructions": {
-        "mov": 26,
+        "mov": 25,
         "mul": 58,
         "rcp": 11,
         "add": 66,
@@ -490,14 +490,14 @@
       }
     },
     "BumpTerrainOpaque": {
-      "sha256": "acc1dff5ab2e9dbc1a33fe0d089debe046ae29cf3d715a8dad4dc8c2f993cf25",
-      "static_instruction_slots": 306,
+      "sha256": "5df4854d27744ce7c2922abbf6c4edeedc3e8aaa27b307eac67250a6d852538f",
+      "static_instruction_slots": 305,
       "temporary_registers": 11,
       "samplers": [
         2
       ],
       "instructions": {
-        "mov": 21,
+        "mov": 20,
         "mul": 63,
         "rcp": 11,
         "add": 67,
@@ -523,15 +523,15 @@
       }
     },
     "BumpTerrainLayer": {
-      "sha256": "0ff6f01b6b1ec9e0265d54192a5132c2db9d7f7a40c90f62ebe3c99d8ab2e70a",
-      "static_instruction_slots": 306,
+      "sha256": "3aeb7f2de37c0432786d9ebbec08d2e1914bf2d1313bb2bb68238a9fb52dfd81",
+      "static_instruction_slots": 305,
       "temporary_registers": 12,
       "samplers": [
         1,
         2
       ],
       "instructions": {
-        "mov": 21,
+        "mov": 20,
         "add": 66,
         "texkill": 2,
         "texld": 1,
@@ -559,14 +559,14 @@
       }
     },
     "BumpSharedTerrainOpaque": {
-      "sha256": "a7848d320f55d773a6bd7eb71bca266c6971dc12f9923ab6f8a2e03ab3eca079",
-      "static_instruction_slots": 313,
+      "sha256": "199434158250ee5d3cef1b6e183390de950397338089520c5c7481bb911f829d",
+      "static_instruction_slots": 312,
       "temporary_registers": 11,
       "samplers": [
         2
       ],
       "instructions": {
-        "mov": 24,
+        "mov": 23,
         "mul": 63,
         "rcp": 11,
         "add": 70,
@@ -592,15 +592,15 @@
       }
     },
     "BumpSharedTerrainLayer": {
-      "sha256": "fbf546d3c91cfd515bfcdb03c1d243ef0c55f527f7e1087d9e6a9e7ab54daf9c",
-      "static_instruction_slots": 314,
+      "sha256": "40067075aba975891c044d7157c4e57f86acd7222be119c06e15b78cc1ef0d28",
+      "static_instruction_slots": 313,
       "temporary_registers": 12,
       "samplers": [
         1,
         2
       ],
       "instructions": {
-        "mov": 25,
+        "mov": 24,
         "mul": 62,
         "rcp": 11,
         "add": 69,

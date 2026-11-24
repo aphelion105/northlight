@@ -969,6 +969,55 @@ def dxvk_adapter_evidence():
             raise AssertionError('Accepted DXVK enumeration without an exclusive selected adapter')
 
 
+def artifact_lifecycle():
+    with TemporaryDirectory(dir=fp.output_dir()) as temporary:
+        root = Path(temporary).resolve()
+        run = root / 'run'
+        client = root / 'client'
+        run.mkdir()
+        client.mkdir()
+        (run / 'prior-WTF').mkdir()
+        (run / 'prior-WTF/Config.wtf').write_bytes(b'original')
+        (client / 'WTF').mkdir()
+        (client / 'WTF/Config.wtf').write_bytes(b'generated')
+        (client / 'Cache').mkdir()
+        (client / 'Cache/material.bin').write_bytes(b'cached')
+        shared = client / 'world-cache'
+        shared.mkdir()
+        original = shared / 'model.fgs'
+        original.write_bytes(b'fixture input')
+        stand = run / 'stand'
+        (stand / 'world-cache').mkdir(parents=True)
+        runner.os.link(original, stand / 'world-cache/model.fgs')
+        (stand / runner.LOG).write_bytes(b'replay log')
+        (run / 'plan').mkdir()
+        (run / 'plan/scene.nljoin').write_bytes(b'joined binary')
+        (run / 'plan/trace.dump').write_bytes(b'regenerable text')
+
+        report = {}
+        runner.restore_client_state(client, run, ('WTF', 'Cache'), report, keep=False)
+        runner.discard_work(report, run, ('stand/world-cache', 'plan/trace.dump'))
+        assert not report, report
+        assert (client / 'WTF/Config.wtf').read_bytes() == b'original'
+        assert not (client / 'Cache').exists()
+        assert not (run / 'prior-WTF').exists()
+        assert not (stand / 'world-cache').exists()
+        assert not (run / 'plan/trace.dump').exists()
+        assert original.read_bytes() == b'fixture input'
+        assert (stand / runner.LOG).read_bytes() == b'replay log'
+        assert (run / 'plan/scene.nljoin').read_bytes() == b'joined binary'
+
+        (client / 'Cache').mkdir()
+        runner.restore_client_state(client, run, ('Cache',), report, keep=True)
+        assert not report and (run / 'generated-Cache').is_dir()
+        runner.discard_work(report, run, ('../client',))
+        assert report['scratch_cleanup_errors'] and original.is_file()
+        runner.prepare_parity_images(run / 'frame-parity', raw=False)
+        runner.prepare_parity_images(run / 'external-reader', raw=True)
+        assert (run / 'frame-parity' / runner.BLOBS).is_dir()
+        assert not (run / 'external-reader' / runner.BLOBS).exists()
+
+
 if __name__ == '__main__':
     packets()
     crowd_packets()
@@ -990,5 +1039,6 @@ if __name__ == '__main__':
     interior_refresh()
     terrain_capture()
     dxvk_adapter_evidence()
+    artifact_lifecycle()
     end_to_end()
     print('PASS Northrend fixture packet layout and baseline gates')

@@ -774,6 +774,7 @@ void DisplacementStateTestAccess::primitiveLimit(){
     g.materials[&d.vs].uv=g.materials[&d.vs].view;g.materials[&d.vs].uv.textureCoordinates=true;
     d.vs.AddRef();g.shaders[&d.vs].patched=&d.vs;
     std::vector<float> vertices(8193*3*4);for(unsigned i=0;i<8193*3;++i)vertices[i*4+3]=1;
+    vertices[4]=1.f;vertices[9]=1.f;
     NorthlightAutoDisplacement::Args args{{D3DPT_TRIANGLELIST,0,0,8193*3,0,8193,false},nullptr,D3DFMT_UNKNOWN,vertices.data(),16};
     assert(!g.prepare(&d.vs,1,1,args)&&g.primitiveRejected==1&&g.readsThisFrame==0&&d.texture.levels==0&&g.textures.empty()&&!g.buildsThisFrame);
     // Existing exact entries retain priority over the cold-build limit.
@@ -969,6 +970,14 @@ struct MaterialCaptureStateTestAccess {
         b.beginDraw();b.capture(&d.vs,[&]{++draws;return D3D_OK;},true,&args);assert(!b.earlyRangeRejected&&d.pixelQueries>0);
         b.endFrame();for(unsigned i=0;i<3;++i)vertices[4*i+2]=10;const auto queries=d.pixelQueries;
         b.beginDraw();b.capture(&d.vs,[&]{++draws;return D3D_OK;},true,&args);assert(b.earlyRangeRejected==1&&d.pixelQueries==queries+1);
+        b.endFrame();b.range=48;
+        for(unsigned i=0;i<3;++i){vertices[4*i]+=10;vertices[4*i+2]=3;}
+        b.beginDraw();b.capture(&d.vs,[&]{++draws;return D3D_OK;},true,&args);
+        assert(b.displacementLodSide==1&&!b.pomInRange&&!b.earlyRangeRejected);
+        b.endFrame();
+        for(unsigned i=0;i<3;++i){vertices[4*i]=(vertices[4*i]-10)*.1f;vertices[4*i+1]*=.1f;}
+        b.beginDraw();b.capture(&d.vs,[&]{++draws;return D3D_OK;},true,&args);
+        assert(b.displacementLodSmall==1&&!b.pomInRange&&!b.earlyRangeRejected);
         std::puts("MATERIAL_EARLY_DISPLACEMENT_PASS max_capture_geometry_range far_no_capture_setup near_consumer_retained");
         std::puts("MATERIAL_EFFECT_RANGE_PASS normal_48 cavity_shadow_shared_8 inactive_0 rigid_m2_far_skipped crossing_retained");
     }

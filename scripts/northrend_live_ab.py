@@ -107,6 +107,7 @@ def run(args):
             path = output / name
             result = baseline.run_client(argparse.Namespace(stage=stage, output=path, target='world',
                 scene='crowd', windows=args.windows, timeout=args.timeout, manual=False, capture_wrapper=None, background=background,
+                keep_work=getattr(args, 'keep_work', False),
                 package_runtime=runtime, live_dll=payload['d3d9.dll'], live_assets=payload['northlight-assets.bin']))
             receipt = path / 'validation.json'
             live = json.loads(receipt.read_bytes())
@@ -160,6 +161,7 @@ def main():
     parser.add_argument('--particles', choices=('0', '1'), default='0')
     parser.add_argument('--windows', type=int, choices=range(3, 11), default=5)
     parser.add_argument('--background', action='store_true', help='Keep the test client in the background for all four arms')
+    parser.add_argument('--keep-work', action='store_true', help='Retain disposable client state from each arm')
     parser.add_argument('--timeout', type=int, choices=range(30, 301), default=180)
     return run(parser.parse_args())
 

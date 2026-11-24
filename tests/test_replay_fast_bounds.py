@@ -137,6 +137,7 @@ int main(int argc,char** argv){
     matrixEdges();
     auto palettePrg=p;palettePrg.definitions.push_back({40,{1,0,0,900}});auto paletteDef=EnvelopeCache::prepareProgram(palettePrg,declaration,4);assert(paletteDef);
     std::mt19937 rng(137);float c[1024],inverse[16];size_t meshes=0,poses=0,vertices=0,fast=0,slow=0,rejected=0;EnvelopeCache cache;
+    bool testedCheapDeferral=false;
     for(unsigned m=0;m<160;++m){const bool wild=m%4==3;auto mesh=std::make_shared<const Mesh>(randomMesh(rng,30+rng()%900,1+rng()%75,wild));++meshes;
         SkinEnvelope skin;for(unsigned n=0;n<mesh->vertexCount;++n){Four in[16]={};for(unsigned k=0;k<3;++k)assert(decodeElement(mesh->streams[0].bytes.data()+n*32+declaration[k].Offset,declaration[k].Type,in[k]));assert(skin.add(in));}
         for(unsigned pose=0;pose<12;++pose){randomPalette(rng,c,wild);randomView(rng,inverse);++poses;
@@ -146,11 +147,24 @@ int main(int argc,char** argv){
             assert(r==n&&same(reference,current));
             const size_t before=fastTaken;Info cheapInfo,heavyInfo;const auto a=phase(cache,*prepared,mesh,c,inverse,Stage::Cheap,cheapInfo);const auto b=phase(cache,*prepared,mesh,c,inverse,Stage::Heavy,heavyInfo);
             assert(same(a,b)&&same(a,reference));assert(fastTaken==before+size_t(a.valid)); /* cheap: fast lane; heavy: Timer lane */
+            if(a.valid&&!testedCheapDeferral){
+                cache.beginFrame(false);
+                Budget limited;limited.maxOperations=cheapInfo.operations-1;
+                Info deferred;Bounds retry=a;
+                assert(cache.calculatePrepared(*prepared,*mesh,mesh,c,inverse,limited,retry,Stage::Cheap,&deferred)==Status::Budget);
+                assert(!retry.valid&&!limited.operations&&deferred.kind==Kind::Cheap&&deferred.operations==cheapInfo.operations);
+                assert(cache.stats().operationDeferred==1);
+                limited.maxOperations=cheapInfo.operations;
+                assert(cache.calculatePrepared(*prepared,*mesh,mesh,c,inverse,limited,retry,Stage::Cheap,&deferred)==Status::Valid);
+                assert(same(retry,a)&&limited.operations==cheapInfo.operations);
+                testedCheapDeferral=true;
+            }
             if(a.valid){++fast;vertices+=enclosed(p,*mesh,c,inverse,a);}else ++rejected;
             /* A DEF inside the palette keeps the copying Timer path, with its DEF. */
             const size_t mid=fastTaken;Info di;const auto d=phase(cache,*paletteDef,mesh,c,inverse,Stage::Cheap,di);assert(fastTaken==mid);if(d.valid){++slow;enclosed(palettePrg,*mesh,c,inverse,d);}
         }
     }
+    assert(testedCheapDeferral);
     const auto& stats=cache.stats();(void)stats;
     std::printf("PASS fast ready bounds: %zu meshes x %zu poses, %zu valid (bit-identical to 0.3.136 evaluator and Timer path), %zu rejected (NaN/denormal gates), %zu palette-DEF slow-path bounds, %zu shader-emulated vertices enclosed\n",meshes,poses,fast,rejected,slow,vertices);
 }

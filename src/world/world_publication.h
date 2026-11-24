@@ -23,6 +23,7 @@ protected:
         std::vector<NorthlightGI::ProbeAtlasEntry> atlas;
         std::shared_ptr<const std::vector<NorthlightGI::ProbeAtlasEntry>> coarseAtlas;
         std::vector<NorthlightLocalLights::Light> localLights;
+        std::shared_ptr<const NorthlightEquipmentLights::StaticLightIndex> localLightIndex;
         std::shared_ptr<const NorthlightLightAttachments::Records> lightAttachments;
         V origin, center;
         std::string map, message;

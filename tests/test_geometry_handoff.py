@@ -28,6 +28,7 @@ using DWORD=uint32_t;
 #endif
 namespace NorthlightRegionalFog {struct Field {};}
 namespace NorthlightLocalLights {struct Light {};}
+namespace NorthlightEquipmentLights {using StaticLightIndex=std::vector<std::pair<float,size_t>>;}
 namespace NorthlightLightAttachments {struct Records {};}
 template<class... T> void logf(const char*,T...){}
 struct Fixture {
@@ -43,6 +44,7 @@ SNAPSHOT
  std::shared_ptr<NorthlightWorldMesh::WorldMeshUploadPlan> scenePlan=std::make_shared<NorthlightWorldMesh::WorldMeshUploadPlan>();
  std::shared_ptr<const NorthlightRegionalFog::Field> sceneFog=std::make_shared<NorthlightRegionalFog::Field>();
  std::shared_ptr<const NorthlightLightAttachments::Records> sceneLightAttachments=std::make_shared<NorthlightLightAttachments::Records>();
+ std::shared_ptr<const NorthlightEquipmentLights::StaticLightIndex> sceneLightIndex=std::make_shared<NorthlightEquipmentLights::StaticLightIndex>();
  std::shared_ptr<const PreparedCommit> scenePrepared=std::make_shared<PreparedCommit>();
  std::vector<NorthlightLocalLights::Light> rawSceneLights;
  std::shared_ptr<Snapshot> published,previousLighting,result=std::make_shared<Snapshot>();
@@ -74,7 +76,7 @@ int main(){
   assert(f.published->center.x==0&&f.published->map=="Azeroth"&&f.published->serial==17&&f.published->atlas.size()==2);
   assert(old->bvh!=f.bvh&&old->center.x==0&&old->serial==17); // immutable fallback
   assert(f.published->fogField==f.sceneFog&&f.published->prepared==f.scenePrepared); // paired with meshPlan
-  assert(f.published->lightAttachments==f.sceneLightAttachments);
+  assert(f.published->lightAttachments==f.sceneLightAttachments&&f.published->localLightIndex==f.sceneLightIndex&&!old->localLightIndex);
   if(distance<=64){assert(f.enteredGI==1&&f.retargeted==1&&!f.pending&&f.consumed.actorJob==19&&f.consumed.id==9);
    assert(f.result->center.x==0&&f.result->requestedAt==200&&f.result->requestId==9);}
   else assert(!f.enteredGI&&f.pending&&f.retargeted==0); // geometry useful, GI needs a newer build

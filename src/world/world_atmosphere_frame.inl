@@ -60,9 +60,10 @@
         lightAttachments.forgetInactive(localLightTracker);
         if(equipmentLightsOn()){
             if(active&&equipmentMap!=active->map){equipmentLights.reset();equipmentMap=active->map;}
-            if(currentLights)equipmentLights.observeScene(nativeSceneFrame,visualTime(),*currentLights,context.camera,lightAttachments.claimedNative.data(),lightAttachments.claimedNativeCount);
+            const auto* fixedIndex=active&&currentLights==&active->localLights?active->localLightIndex.get():nullptr;
+            if(currentLights)equipmentLights.observeScene(nativeSceneFrame,visualTime(),*currentLights,context.camera,lightAttachments.claimedNative.data(),lightAttachments.claimedNativeCount,fixedIndex);
             particleLights.projectSky(context.inverseView,context.camera);
-            equipmentLights.publish(visualTime(),currentLights);
+            equipmentLights.publish(visualTime(),currentLights,fixedIndex);
             if(equipmentLights.suppressedCount){
                 auto ids=equipmentLights.suppressed;std::sort(ids.begin(),ids.begin()+equipmentLights.suppressedCount);
                 localLightTracker.forgetSorted(ids.data(),equipmentLights.suppressedCount);

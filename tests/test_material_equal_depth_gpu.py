@@ -55,8 +55,8 @@ if a.m2_admission:
  # Only the redundant proof/source lookup is reenabled in the control.
  old='rangeAttempted=true;';assert source.count(old)==1
  source=source.replace(old,'rangeAttempted=northlightReadOnlyPolicy==2;',1)
- old='domain==4&&(deferredAllowed||source)?&geometrySource:nullptr';assert source.count(old)==1
- source=source.replace(old,'domain==4&&deferredAllowed&&northlightReadOnlyPolicy==2?&geometrySource:nullptr',1)
+ old='domain==4&&(coarseOnly||deferredAllowed||source)?&geometrySource:nullptr';assert source.count(old)==1
+ source=source.replace(old,'domain==4&&(coarseOnly||(deferredAllowed&&northlightReadOnlyPolicy==2))?&geometrySource:nullptr',1)
  cpp=test_cpp.read_text(encoding='utf-8')
  old='unsigned scenario=0;scenario<(benchmark||negative?1:25);++scenario';assert cpp.count(old)==1
  cpp=cpp.replace(old,'unsigned scenario: {6u,23u,24u}',1)
@@ -113,8 +113,8 @@ struct AdmissionClock : std::chrono::steady_clock {
 #define NORTHLIGHT_REPLAY_BOUNDS_CLOCK AdmissionClock
 '''+cpp
   source=header.read_text(encoding='utf-8').replace('class NorthlightAutoBump {','extern unsigned northlightReadOnlyPolicy;\nclass NorthlightAutoBump {',1)
-  marker='displacement.geometryRange(domain)),&geometrySource';assert source.count(marker)==1
-  source=source.replace(marker,'displacement.geometryRange(domain)),northlightReadOnlyPolicy==2?&geometrySource:nullptr',1)
+  marker='std::max(materialRange,geometryRange),&geometrySource';assert source.count(marker)==1
+  source=source.replace(marker,'std::max(materialRange,geometryRange),northlightReadOnlyPolicy==2?&geometrySource:nullptr',1)
   (overlay/'auto_displacement_renderer.h').write_text(fp.src('auto_displacement_renderer.h').read_text(encoding='utf-8'),encoding='utf-8',newline='\n')
   # Bone 0 triggers the far scheduling hint while other bones cross the range.
   # The preflight must retain this draw and its full, current source snapshot.

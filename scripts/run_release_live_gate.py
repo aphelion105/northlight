@@ -214,6 +214,7 @@ def gate(args):
             result = baseline.run_client(argparse.Namespace(stage=root, output=path, target=target,
                 scene='crowd' if target == 'world' else 'solo', windows=int(target == 'world'),
                 timeout=args.live_timeout, manual=False, capture_wrapper=None, package_runtime=runtime, background=background,
+                keep_work=getattr(args, 'keep_work', False),
                 live_dll=paths['d3d9.dll'], live_assets=paths['northlight-assets.bin'], output_mode=output_mode))
             live_path = path / 'validation.json'
             live = json.loads(live_path.read_bytes())
@@ -243,6 +244,7 @@ def main():
         parser.add_argument('--' + name, required=True, type=Path)
     parser.add_argument('--live-timeout', type=int, choices=range(5, 301), default=120, metavar='SECONDS')
     parser.add_argument('--background', action='store_true', help='Qualify packaged output and a background World timing interval')
+    parser.add_argument('--keep-work', action='store_true', help='Retain disposable client state from each case')
     try:
         return gate(parser.parse_args())
     except (OSError, ValueError) as error:

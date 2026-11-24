@@ -110,7 +110,15 @@ int main(){
     }
 
     NorthlightParticleUploads::Cache uploads;int key=0;unsigned in[4]={1,2,3,4},out[4]={};
+    bool hasBuffer=true;
+    assert(!uploads.read(&key,16,4,out,&hasBuffer)&&!hasBuffer); // An empty cache still records demand.
+    uploads.forget(&key);
+    uploads.write(&key,1,16,in,sizeof in,true);assert(uploads.bytes()==0);
+    assert(!uploads.read(&key,16,4,out));
+    uploads.write(&key,1,16,in,sizeof in,true);assert(uploads.read(&key,16,4,out)&&out[0]==1);
+    uploads.clear();
     uploads.write(&key,1,16,in,sizeof in,false);assert(uploads.read(&key,16,sizeof out,out)&&out[3]==4);
+    assert(!uploads.read(&key,0,4,out,&hasBuffer)&&hasBuffer); // Another range can still be sampled.
     uploads.invalidate(&key,20,4);assert(!uploads.read(&key,16,4,out));
     uploads.write(&key,1,16,in,sizeof in,true);assert(uploads.read(&key,20,4,out)&&out[0]==2);
     uploads.invalidate(&key,0,4,true);assert(!uploads.read(&key,20,4,out));

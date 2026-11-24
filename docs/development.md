@@ -15,9 +15,15 @@ Run commands from the repository root. Start with [the architecture map](archite
 | `northlight_paths.py` | the only place that knows where the client, toolchain and outputs are |
 | `client-config/` | factory profile `.ini` files for packages and settings reset; personal client profiles may differ |
 | `*.py` (top level) | the art layer (MPQ patch) builder `build_art_layer.py` and its steps, `mpq.py`, `client_archives.py`, `renderer_status.py` (install/uninstall on macOS) |
-| `out/` | build and test output (ignored) |
+| `out/`, `.local/out/` | ignored build and test output. `northlight_paths.py` resolves the configured output directory |
 
 `tools/` and `backups/` are local and untracked.
+
+The test runner streams each test's output to one log and removes the test's
+private OS temporary directory on exit. Write evidence that should outlive
+the test to `fp.output_dir()`. The
+[Northrend harness](northrend-baseline.md) uses a reusable client stage and
+removes per-attempt caches and replay scratch by default.
 
 For the local Forever extraction, missing import fields and preserved research
 artifacts, start with [the Forever data audit](forever-data-audit.md).

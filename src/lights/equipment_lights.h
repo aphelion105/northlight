@@ -74,8 +74,31 @@ inline bool positionAndAttenuation(const Native& source,const float* position,co
     for(unsigned k=0;k<3;++k)if(std::fabs(source.attenuation[k]-denominator[k])>1e-4f*std::max(1.f,denominator[k]))return false;
     return true;
 }
-inline bool staticDuplicate(const Native& n,const std::vector<NorthlightLocalLights::Light>& lights){
-    for(const auto& l:lights)if(distance2(n.position,l.position)<.25f*.25f&&NorthlightLocalLights::valid(l)&&hueClose(n.color,l.diffuse))return true;
+using StaticLightIndex=std::vector<std::pair<float,size_t>>;
+inline StaticLightIndex indexStaticLights(const std::vector<NorthlightLocalLights::Light>& lights){
+    StaticLightIndex index;
+    index.reserve(lights.size());
+    for(size_t i=0;i<lights.size();++i)
+        if(std::isfinite(lights[i].position[0]))index.emplace_back(lights[i].position[0],i);
+    std::sort(index.begin(),index.end());
+    return index;
+}
+inline bool staticDuplicate(const Native& n,const std::vector<NorthlightLocalLights::Light>& lights,
+                            const StaticLightIndex* index=nullptr){
+    const auto matches=[&](const NorthlightLocalLights::Light& l){
+        return distance2(n.position,l.position)<.25f*.25f&&NorthlightLocalLights::valid(l)&&hueClose(n.color,l.diffuse);
+    };
+    if(index&&std::isfinite(n.position[0])){
+        // The immutable authored lights retain their original order in the
+        // renderer. Look up only candidates within the duplicate radius in X.
+        const double low=double(n.position[0])-.25,high=double(n.position[0])+.25;
+        const auto first=std::lower_bound(index->begin(),index->end(),low,
+            [](const auto& entry,double x){return entry.first<x;});
+        for(auto it=first;it!=index->end()&&it->first<=high;++it)
+            if(matches(lights[it->second]))return true;
+        return false;
+    }
+    for(const auto& l:lights)if(matches(l))return true;
     return false; // Conservative suppression: a lamp already represented by FGL is never added twice, even with a different falloff fit.
 }
 // Fit the native denominator to the existing compact linear-light batch.
@@ -138,8 +161,8 @@ struct Tracker {
         const unsigned slot=banks++%MemoBanks;
         frameFingerprints[slot]=fingerprint;frameBanks[slot]=key;if(!actor)++backgroundBanks;return true;
     }
-    void observe(const Native& n,std::uint32_t now,const std::vector<NorthlightLocalLights::Light>& fixed,const float* camera=nullptr,std::uint64_t nativeId=0,std::uint32_t flags=0,std::uint32_t fixtureTag=0){
-        ++observed;if(staticDuplicate(n,fixed)){++duplicates;return;}
+    void observe(const Native& n,std::uint32_t now,const std::vector<NorthlightLocalLights::Light>& fixed,const float* camera=nullptr,std::uint64_t nativeId=0,std::uint32_t flags=0,std::uint32_t fixtureTag=0,const StaticLightIndex* fixedIndex=nullptr){
+        ++observed;if(staticDuplicate(n,fixed,fixedIndex)){++duplicates;return;}
         if(!nativeId){Entry* match=nullptr;bool ambiguous=false;
             for(unsigned i=0;i<count;++i)if(entries[i].nativeId&&positionAndAttenuation(n,entries[i].source.position,entries[i].source.attenuation)){
                 if(match){ambiguous=true;break;}match=&entries[i];}
@@ -168,7 +191,7 @@ struct Tracker {
         }
         else{entries[at].source=n;entries[at].seen=now;if(nativeId){entries[at].nativeId=nativeId;entries[at].flags=flags;entries[at].fixtureTag=fixtureTag;}}
     }
-    void observeScene(const NorthlightNativeLights::Snapshot& scene,std::uint32_t now,const std::vector<NorthlightLocalLights::Light>& fixed,const float* camera,const uint64_t* claimed=nullptr,unsigned claimedCount=0){
+    void observeScene(const NorthlightNativeLights::Snapshot& scene,std::uint32_t now,const std::vector<NorthlightLocalLights::Light>& fixed,const float* camera,const uint64_t* claimed=nullptr,unsigned claimedCount=0,const StaticLightIndex* fixedIndex=nullptr){
         const auto owned=[&](uint64_t id){return claimed&&std::binary_search(claimed,claimed+claimedCount,id);};
         for(unsigned i=0;i<count;++i)if(entries[i].nativeId&&owned(entries[i].nativeId)){
             entries[i].seen=now-unsigned(LifeSeconds*1000);entries[i].gain=0;
@@ -205,7 +228,7 @@ struct Tracker {
             // identity so a matching particle cannot replace its light.
             const auto flags=p.flags&(NorthlightNativeLights::WorldFixture|NorthlightNativeLights::MenuFixture)?
                 NorthlightLocalLights::CastShadow:NorthlightLocalLights::NativeSceneEmitter;
-            observe(n,now,fixed,camera,p.id,flags,p.reserved);
+            observe(n,now,fixed,camera,p.id,flags,p.reserved,fixedIndex);
             for(unsigned j=0;j<count;++j)if(entries[j].nativeId==p.id){std::copy_n(p.emitterOffset,3,entries[j].emitterOffset.begin());break;}
         }
         // A draw can have reported the new hue before the scene snapshot
@@ -226,12 +249,12 @@ struct Tracker {
         for(unsigned i=0;i<count;++i)if((0xfec0000000000000ull|entries[i].id)==source&&entries[i].fixtureTag&&entries[i].flags==NorthlightLocalLights::CastShadow)return &entries[i];
         return nullptr;
     }
-    void publish(std::uint32_t now,const std::vector<NorthlightLocalLights::Light>* fixed=nullptr){
+    void publish(std::uint32_t now,const std::vector<NorthlightLocalLights::Light>* fixed=nullptr,const StaticLightIndex* fixedIndex=nullptr){
         const float dt=updated?std::min(float(std::uint32_t(now-updated))*.001f,.1f):0;updated=now;outputCount=suppressedCount=0;
         for(unsigned i=0;i<count;){auto& e=entries[i];const auto age=std::uint32_t(now-e.seen);const float target=age<FreshMilliseconds?1.f:std::clamp((LifeSeconds-float(age)*.001f)/(LifeSeconds-FreshMilliseconds*.001f),0.f,1.f);
             // Scene publication can add a static lamp after this entry was
             // observed. Drop it now, including the local selection's old tail.
-            if(fixed&&staticDuplicate(e.source,*fixed)){suppressed[suppressedCount++]=0xfec0000000000000ull|e.id;++duplicates;entries[i]=entries[--count];continue;}
+            if(fixed&&staticDuplicate(e.source,*fixed,fixedIndex)){suppressed[suppressedCount++]=0xfec0000000000000ull|e.id;++duplicates;entries[i]=entries[--count];continue;}
             const float step=dt/FadeSeconds;e.gain+=std::clamp(target-e.gain,-step,step);
             if(age>=unsigned(LifeSeconds*1000)&&e.gain<=.0001f){suppressed[suppressedCount++]=0xfec0000000000000ull|e.id;entries[i]=entries[--count];continue;}
             if(e.gain>.0001f){auto l=light(e.source,e.id,e.gain);l.flags=e.flags;for(unsigned k=0;k<3;++k)l.position[k]+=e.emitterOffset[k];output[outputCount++]=l;}++i;}

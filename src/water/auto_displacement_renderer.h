@@ -132,6 +132,7 @@ class NorthlightAutoDisplacement {
     bool& indexedEntries=geometry.indexedEntries;uint64_t& entrySerial=geometry.entrySerial;
     std::vector<float> uvScratch;
     Entry* current=nullptr;float controls[5][4]={},lastDepthLower=0,lastDepthUpper=INFINITY;
+    bool rejectedDetail=false;
     NorthlightSourceIdentity::Handle preparedSourceIdentity;
     struct ModelOverlay {std::unique_ptr<Entry> mesh;NorthlightSourceIdentity::Handle sourceIdentity;NorthlightDrawSnapshot::Draw draw;float bank[256*4]={},controls[5][4]={};std::vector<uint32_t> position;bool rows[256]={};};
     std::vector<std::unique_ptr<ModelOverlay>> modelOverlays;size_t modelOverlayBytes=0;bool currentOverlay=false;uint64_t modelOverlayRecorded=0,modelOverlayMatched=0,modelOverlayDeferred=0,modelOverlayDrawn=0,modelOverlayPreflightRejected=0,modelOverlayPoseReads=0;
@@ -326,13 +327,29 @@ class NorthlightAutoDisplacement {
     }
     static bool readTerrain(NorthlightReplayBounds::detail::Value& v){if(!std::isfinite(v.value)||!std::isfinite(v.error))return false;if(v.value!=0&&std::fabs(v.value)<std::numeric_limits<float>::min())v.error+=std::fabs(v.value);return true;}
     static bool validTerrain(NorthlightReplayBounds::detail::Value v){return std::isfinite(v.value)&&std::isfinite(v.error)&&v.error>=0;}
-    static bool terrainDepth(const Program& p,const float* low,const float* high,const float* bank,float& nearest){
+    using DisplacementLod=NorthlightMaterialViewBounds::DisplacementLod;
+    static bool depthFromView(const NorthlightReplayBounds::detail::Vector& view,float& nearest,float* farthest,DisplacementLod* lod){
+        const double lo=double(view[2].value)-view[2].error,hi=double(view[2].value)+view[2].error;
+        if(!std::isfinite(lo)||!std::isfinite(hi))return false;
+        if(farthest)*farthest=std::nextafter(float(std::max(std::fabs(lo),std::fabs(hi))),INFINITY)+.001f;
+        nearest=std::max(0.f,std::nextafter(float(lo>0?lo:hi<0?-hi:0),-INFINITY)-.001f);
+        if(lod){
+            double low[3],high[3];
+            for(unsigned axis=0;axis<3;++axis){
+                low[axis]=double(view[axis].value)-view[axis].error;
+                high[axis]=double(view[axis].value)+view[axis].error;
+            }
+            lod->classify(low,high);
+        }
+        return true;
+    }
+    static bool terrainDepth(const Program& p,const float* low,const float* high,const float* bank,float& nearest,DisplacementLod* lod){
  using namespace NorthlightReplayBounds::detail;Vector pos={};for(unsigned k=0;k<3;++k){float mid=float((double(low[k])+high[k])*.5);pos[k]={mid,std::max(double(mid)-low[k],double(high[k])-mid)};}pos[3]={1,0};
  Vector c[4];for(unsigned i=0;i<4;++i){for(unsigned k=0;k<4;++k)c[i][k]={bank[4*i+k],0};for(const auto& def:p.definitions)if(def.reg==i)for(unsigned k=0;k<4;++k)c[i][k].value=def.value[k];}
  Vector tmp;for(unsigned k=0;k<4;++k){Value a=c[1][k],b=pos[1];if(!readTerrain(a)||!readTerrain(b))return false;tmp[k]=mul(a,b);if(!validTerrain(tmp[k]))return false;}
  for(unsigned op=0;op<2;++op)for(unsigned k=0;k<4;++k){Value a=pos[op==0?0:2],b=c[op==0?0:2][k],v=tmp[k];if(!readTerrain(a)||!readTerrain(b)||!readTerrain(v))return false;Value product=mul(a,b),r;if(product.value==0&&product.error==0)r=v;else{r=add(product,v);r.error+=roundError(std::fabs(double(a.value)*b.value)+std::fabs(v.value));}if(!validTerrain(r))return false;tmp[k]=r;}
  for(unsigned k=0;k<4;++k){Value a=tmp[k],b=c[3][k];if(!readTerrain(a)||!readTerrain(b))return false;tmp[k]=add(a,b);if(!validTerrain(tmp[k]))return false;}
- if(tmp[3].value!=1.f||tmp[3].error!=0)return false;double lo=double(tmp[2].value)-tmp[2].error,hi=double(tmp[2].value)+tmp[2].error;if(!std::isfinite(lo)||!std::isfinite(hi))return false;nearest=std::max(0.f,std::nextafter(float(lo>0?lo:hi<0?-hi:0),-INFINITY)-.001f);return true;
+ return tmp[3].value==1.f&&tmp[3].error==0&&depthFromView(tmp,nearest,nullptr,lod);
 }
 
     static bool wallDepthProgram(const Program& p){
@@ -340,25 +357,22 @@ class NorthlightAutoDisplacement {
         constexpr unsigned code[4]={9,9,1,9};constexpr std::uint32_t dest[4]={0x80010000,0x80020000,0x80080000,0x80040000},a[4]={0xa0e4001f,0xa0e40020,0xa0000000,0xa0e40021},b[4]={0x90e40000,0x90e40000,0,0x90e40000};
         for(unsigned i=0;i<4;++i){const auto& o=p.operations[i];if(o.code!=code[i]||o.destination!=dest[i]||o.source[0].token!=a[i]||o.source[1].token!=b[i]||o.source[2].token||o.source[0].address||o.source[1].address||o.source[2].address)return false;}return true;
     }
-    static bool wallDepth(const Program& p,const float* low,const float* high,const float* bank,float& nearest){
+    static bool wallDepth(const Program& p,const float* low,const float* high,const float* bank,float& nearest,DisplacementLod* lod){
         using namespace NorthlightReplayBounds::detail;Vector pos={};for(unsigned k=0;k<3;++k){const float mid=float((double(low[k])+high[k])*.5);pos[k]={mid,std::max(double(mid)-low[k],double(high[k])-mid)};}pos[3]={1,0};
         Vector view={};for(unsigned op=0;op<4;++op){const unsigned reg=op==2?0:op==3?33:31+op;Vector constant={};for(unsigned k=0;k<4;++k)constant[k].value=bank[reg*4+k];for(const auto& d:p.definitions)if(d.reg==reg)for(unsigned k=0;k<4;++k)constant[k].value=d.value[k];
             if(op==2){Value w=constant[0];if(!readTerrain(w)||!validTerrain(w))return false;view[3]=w;continue;}
             Vector a={},b={};for(unsigned k=0;k<4;++k){a[k]=constant[k];b[k]=pos[k];if(!readTerrain(a[k])||!readTerrain(b[k]))return false;}
             Value sum;double magnitude=0;for(unsigned k=0;k<4;++k){Value term=mul(a[k],b[k]);magnitude+=std::fabs(term.value)+term.error;sum=add(sum,term);}sum.error+=roundError(magnitude)*8;if(!validTerrain(sum))return false;view[op==3?2:op]=sum;
         }
-        if(view[3].value!=1.f||view[3].error!=0)return false;const double lo=double(view[2].value)-view[2].error,hi=double(view[2].value)+view[2].error;if(!std::isfinite(lo)||!std::isfinite(hi))return false;nearest=std::max(0.f,std::nextafter(float(lo>0?lo:hi<0?-hi:0),-INFINITY)-.001f);return true;
+        return view[3].value==1.f&&view[3].error==0&&depthFromView(view,nearest,nullptr,lod);
     }
-    static bool nearestViewDepth(const Program& program,unsigned input,const float* low,const float* high,const float* bank,float& nearest,unsigned terrainEligible=0,float* farthest=nullptr){
-        if(input>=16||!bank)return false;if(terrainEligible&&input==0&&!farthest)return terrainEligible==2?wallDepth(program,low,high,bank,nearest):terrainDepth(program,low,high,bank,nearest);
+    static bool nearestViewDepth(const Program& program,unsigned input,const float* low,const float* high,const float* bank,float& nearest,unsigned terrainEligible=0,float* farthest=nullptr,DisplacementLod* lod=nullptr){
+        if(input>=16||!bank)return false;if(terrainEligible&&input==0&&!farthest)return terrainEligible==2?wallDepth(program,low,high,bank,nearest,lod):terrainDepth(program,low,high,bank,nearest,lod);
         using namespace NorthlightReplayBounds::detail;Vector view;
         auto fill=[&](Vector& position){for(unsigned k=0;k<3;++k){const float middle=float((double(low[k])+high[k])*.5);position[k]={middle,std::max(double(middle)-low[k],double(high[k])-middle)};}position[3]={1,0};};
         if(program.inputs.size()==1&&program.inputs[0].reg==input){Vector position={};fill(position);if(!evaluateIntervals<true>(program,&position,bank,view,false,input))return false;}
         else{Vector inputs[16]={};fill(inputs[input]);if(!evaluateIntervals(program,inputs,bank,view))return false;}
-        const double lo=double(view[2].value)-view[2].error,hi=double(view[2].value)+view[2].error;
-        if(!std::isfinite(lo)||!std::isfinite(hi))return false;
-        if(farthest)*farthest=std::nextafter(float(std::max(std::fabs(lo),std::fabs(hi))),INFINITY)+.001f;
-        nearest=std::max(0.f,std::nextafter(float(lo>0?lo:hi<0?-hi:0),-INFINITY)-.001f);return true;
+        return depthFromView(view,nearest,farthest,lod);
     }
     static bool sameSource(const Entry& e,const std::shared_ptr<const Mesh>& source,bool equivalent){return e.source==source||(equivalent&&e.source->vertexCount==source->vertexCount&&e.source->primitiveCount==source->primitiveCount&&e.source->topology==source->topology&&e.source->indexed==source->indexed&&e.source->streams[0].bytes==source->streams[0].bytes&&e.source->indices==source->indices);}
     static uint64_t sourceFingerprint(const Mesh& source){
@@ -708,6 +722,7 @@ public:
     bool prepared()const{return current!=nullptr;}
     bool preparedHeightGPU()const{return current&&current->height;}
     float nearestPreparedDepth()const{return lastDepthLower;}
+    bool rejectedDisplacementDetail()const{return rejectedDetail;}
     float farthestPreparedDepth()const{return lastDepthUpper;}
     float geometryRange(unsigned domain)const{return (domain==4?modelStrength:worldStrength)>0?(domain==4?modelRange:worldRange):0;}
     void reportHeightGPU()const{logf("DISPLACEMENT heightGPU supported=%u draws=%llu subdivisionReuses=%llu outsideRange=%llu poseBudgetRejected=%llu poseEnvelopeHits=%llu poseFallbackVertices=%llu objectBoundsVertices=%llu boundsHits=%llu boundsMisses=%llu boundsEntries=%zu boundsBytes=%zu primitiveRejected=%llu sourceAliases=%llu",unsigned(gpuHeightSupported),(unsigned long long)gpuDraws,(unsigned long long)subdivisionReuses,(unsigned long long)distanceRejected,(unsigned long long)poseBudgetRejected,(unsigned long long)poseEnvelopeHits,(unsigned long long)poseFallbackVertices,(unsigned long long)objectBoundsVertices,(unsigned long long)boundsHits,(unsigned long long)boundsMisses,bounds.size(),boundsBytes,(unsigned long long)primitiveRejected,(unsigned long long)sourceAliases);}
@@ -739,7 +754,8 @@ public:
     // Rigid affine bounds and cached skin envelopes. Unknown/budget-limited
     // draws retain per-pixel checks. UP skin draws have no reusable source owner.
     bool nearestMaterialDepth(IDirect3DVertexShader9* original,const Args& args,float& nearest,bool geometrySource=false,const NorthlightCaptureMetadata::PositionBounds* captured=nullptr,float* farthest=nullptr,CaptureSource* captureSource=nullptr,bool coarseOnly=false,
-                              const std::shared_ptr<const Mesh>* sourceHint=nullptr,const DeviceMirror* mirror=nullptr){
+                              const std::shared_ptr<const Mesh>* sourceHint=nullptr,const DeviceMirror* mirror=nullptr,DisplacementLod* lod=nullptr,
+                              double singleBoneLimit=NorthlightModelNormalRange::FarDepth){
         using P=NorthlightMaterialProfile;P::Scope timing(profile,P::BoundsPose);
         auto shader=materials.find(original);if(shader==materials.end())return false;
         const auto& program=shader->second.view;
@@ -780,14 +796,14 @@ public:
         if(position==elements+count)return false;
         if(!skin&&!args.vertices&&position->Method==D3DDECLMETHOD_DEFAULT&&captured&&captured->known&&captured->owner==&args&&captured->shader==original&&
            captured->low[0]<=captured->high[0]&&captured->low[1]<=captured->high[1]&&captured->low[2]<=captured->high[2]&&
-           nearestViewDepth(program,input,captured->low,captured->high,rangeConstants,nearest,shader->second.terrainDepthEligible,farthest)){++capturedBoundsHits;return true;}
+           nearestViewDepth(program,input,captured->low,captured->high,rangeConstants,nearest,shader->second.terrainDepthEligible,farthest,lod)){++capturedBoundsHits;return true;}
         // All rigid material modes need only a conservative position box for
         // distance admission. Full snapshots still belong to replay consumers.
         if(!skin&&!args.vertices&&position->Method==D3DDECLMETHOD_DEFAULT){
             float low[3],high[3];P::Scope scan(profile,P::Snapshot);const auto before=positionBounds.bytesRead();
             const bool known=positionBounds.read(d,args.draw,position->Offset,low,high);
             const auto bytes=positionBounds.bytesRead()-before;scan.work(bytes/12,bytes);scan.next(P::BoundsPose);
-            if(known)return nearestViewDepth(program,input,low,high,rangeConstants,nearest,shader->second.terrainDepthEligible,farthest);
+            if(known)return nearestViewDepth(program,input,low,high,rangeConstants,nearest,shader->second.terrainDepthEligible,farthest,lod);
         }
         Mesh local;std::shared_ptr<const Mesh> source;
         P::Scope read(profile,P::Snapshot);
@@ -822,8 +838,14 @@ public:
             // every skin-envelope group. This is only a lower bound; larger
             // configured ranges still keep the draw and its per-pixel checks.
             if(shader->second.rangeKind==NorthlightModelNormalRange::Single){
-                if(modelRangeProof.outside(source,elements,count,rangeConstants,shader->second.rangeKind)){
-                    nearest=48.01f;if(farthest)*farthest=INFINITY;publish(nullptr);return true;
+                double closest;
+                if(modelRangeProof.outside(source,elements,count,rangeConstants,shader->second.rangeKind,singleBoneLimit,&closest)){
+                    constexpr double farLimit=NorthlightModelNormalRange::FarDepth;
+                    nearest=singleBoneLimit<farLimit?std::nextafter(float(singleBoneLimit),INFINITY):float(farLimit);
+                    if(farthest)*farthest=INFINITY;
+                    // The other consumers still interpret a far handoff as 48.01 yards.
+                    if(closest>farLimit)publish(nullptr);
+                    return true;
                 }
                 if(captureSource&&captureSource->bank.bank)captureSource->unprovenSingleRange=original;
             }
@@ -858,6 +880,7 @@ public:
             publish(&result);
             if(farthest)*farthest=NorthlightMaterialViewBounds::farthest(result);
             nearest=NorthlightMaterialViewBounds::nearest(result);
+            if(lod)lod->classify(result.low,result.high);
             if(coarseOnly&&nearest>modelRange)poseEnvelopes.coarseCulled();return true;
         }
         auto found=cachedBounds(source);
@@ -867,10 +890,10 @@ public:
             found=retainBounds(source,std::move(b));
         }else if(!resolveObjectBounds(found->second,*source,position->Offset))return false;
         auto& b=found->second;touchBounds(b);
-        return nearestViewDepth(program,input,b.object.low,b.object.high,rangeConstants,nearest,shader->second.terrainDepthEligible,farthest);
+        return nearestViewDepth(program,input,b.object.low,b.object.high,rangeConstants,nearest,shader->second.terrainDepthEligible,farthest,lod);
     }
     unsigned preparedPrimitives()const{return current?current->primitives:0;}
-    void beginDraw(){current=nullptr;preparedSourceIdentity.reset();currentOverlay=false;lastDepthLower=0;lastDepthUpper=INFINITY;}
+    void beginDraw(){current=nullptr;preparedSourceIdentity.reset();currentOverlay=false;lastDepthLower=0;lastDepthUpper=INFINITY;rejectedDetail=false;}
     void setMemoryPressure(bool on,NorthlightStreaming::CpuRetirement* retirement=nullptr,NorthlightStreaming::CpuRetirementBatch* batch=nullptr){
         current=nullptr;clearModelOverlays();memoryPressure=on;
         using Clock=std::chrono::steady_clock;const bool timed=NorthlightRenderThreadProbe::profiling();
@@ -938,7 +961,7 @@ public:
         if(captureSource)captureSource->clear();
         preparedSourceIdentity.reset();
         using P=NorthlightMaterialProfile;P::Scope timing(profile,P::Admission);
-        current=nullptr;currentOverlay=false;preparedDraw=args.draw;lastDepthLower=0;lastDepthUpper=INFINITY;strength=domain==4?modelStrength:worldStrength;range=domain==4?modelRange:worldRange;detail=domain==4?modelDetail:domain==3?std::min(worldDetail,3u):worldDetail;auto shader=materials.find(original);auto patched=shaders.find(original);if(shader==materials.end()||strength<=0||domain>4||patched==shaders.end()||(!patched->second.pending&&!patched->second.patched)){++shaderRejected;return false;}
+        current=nullptr;currentOverlay=false;preparedDraw=args.draw;lastDepthLower=0;lastDepthUpper=INFINITY;rejectedDetail=false;strength=domain==4?modelStrength:worldStrength;range=domain==4?modelRange:worldRange;detail=domain==4?modelDetail:domain==3?std::min(worldDetail,3u):worldDetail;auto shader=materials.find(original);auto patched=shaders.find(original);if(shader==materials.end()||strength<=0||domain>4||patched==shaders.end()||(!patched->second.pending&&!patched->second.patched)){++shaderRejected;return false;}
         Admission admission;if(!captured){d->GetRenderState(D3DRS_ZENABLE,&admission.z);d->GetRenderState(D3DRS_ZWRITEENABLE,&admission.write);d->GetRenderState(D3DRS_ALPHABLENDENABLE,&admission.blend);
             if(admission.blend&&admission.write){d->GetRenderState(D3DRS_ALPHATESTENABLE,&admission.alpha);d->GetRenderState(D3DRS_SRCBLEND,&admission.src);d->GetRenderState(D3DRS_DESTBLEND,&admission.dst);d->GetRenderState(D3DRS_ALPHAFUNC,&admission.func);}captured=&admission;}
         if(!captured->allows(domain,material)){++stateRejected;return false;}
@@ -984,7 +1007,7 @@ public:
             if(captureSource&&trustedConstants){NorthlightConstantEpoch::Stamp current;current.requestHeld=true;
                 if(constantReader&&constantReader(constantContext,current)&&NorthlightConstantEpoch::exact(constantStamp,current))
                     captureSource->pose.publishFar(current,source.get(),original,decl.p);}
-            lastDepthLower=48.01f;++distanceRejected;return false;
+            lastDepthLower=48.01f;rejectedDetail=true;++distanceRejected;return false;
         }
         // Palette translation is only a scheduling hint, never a range proof.
         coarseLookupReuses+=missingCoarseShape;
@@ -1000,7 +1023,7 @@ public:
                 const auto view=materialView.inView(coarse);publishPose(view);
                 lastDepthUpper=NorthlightMaterialViewBounds::farthest(view);
                 lastDepthLower=NorthlightMaterialViewBounds::nearest(view);
-                poseEnvelopes.coarseCulled();++distanceRejected;return false;
+                poseEnvelopes.coarseCulled();rejectedDetail=true;++distanceRejected;return false;
             }
         }
         // Cached geometry may retain an older, byte-identical buffer revision.
@@ -1036,7 +1059,7 @@ public:
         // Reuse only the already computed outward envelope and the original raw
         // source. No additional evaluation, scan, admission or cache entry.
         if(poseBounds.valid)publishPose(poseViewBounds);
-        if(distant){++distanceRejected;return false;}
+        if(distant){rejectedDetail=true;++distanceRejected;return false;}
         // Skinning without an audited envelope uses posed vertices below, never object-space
         // bounds. Building/scanning/retaining those before a budget refusal was
         // unbounded work with no consumer, especially when the source churned.
@@ -1101,7 +1124,11 @@ public:
         }else{touchBounds(foundBounds->second);const auto& b=foundBounds->second.object;
             nearestViewDepth(shader->second.view,shader->second.rangeRegister==17?rangeInput(shader->second.view):shader->second.rangeRegister,b.low,b.high,constants,lastDepthLower,shader->second.terrainDepthEligible);
             for(unsigned r=0;r<3;++r){low[r]=high[r]=controls[r][3];for(unsigned k=0;k<3;++k){const float a=controls[r][k]*b.low[k],z=controls[r][k]*b.high[k];low[r]+=std::min(a,z);high[r]+=std::max(a,z);}}}
-        float closestSquared=0;for(unsigned r=0;r<3;++r){float v=low[r]>0?low[r]:high[r]<0?high[r]:0;closestSquared+=v*v;}if(closestSquared>=range*range){++distanceRejected;return false;}
+        float closestSquared=0;for(unsigned r=0;r<3;++r){float v=low[r]>0?low[r]:high[r]<0?high[r]:0;closestSquared+=v*v;}
+        if(closestSquared>=range*range){rejectedDetail=true;++distanceRejected;return false;}
+        if(NorthlightMaterialViewBounds::belowDisplacementSize(double(high[0])-low[0],double(high[1])-low[1],double(high[2])-low[2])){
+            rejectedDetail=true;return false;
+        }
         if(shader->second.skinned){const float a=range*range,b=a*.5625f;controls[0][0]=strength*std::clamp((a-closestSquared)/(a-b),0.f,1.f);controls[0][1]=controls[0][2]=controls[0][3]=0;}
         if(!ensureVariant(patched->second)){++shaderRejected;return false;}
         // Native colour and private material depth must use the same relief.

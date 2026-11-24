@@ -39,6 +39,7 @@ using DWORD=uint32_t;
 namespace NorthlightWorldMesh {struct WorldMeshUploadPlan {size_t cpuBytes()const{return 16;}};}
 namespace NorthlightRegionalFog {struct Field {};}
 namespace NorthlightLocalLights {struct Light {};}
+namespace NorthlightEquipmentLights {using StaticLightIndex=std::vector<std::pair<float,size_t>>;}
 namespace NorthlightLightAttachments {struct Records {};}
 static DWORD now=0;static unsigned solveCalls=0;static std::function<void()> afterSolve,onTick;
 static DWORD GetTickCount(){if(onTick)onTick();return now;}
@@ -69,6 +70,7 @@ PUBLISH_METHOD
  std::shared_ptr<NorthlightWorldMesh::WorldMeshUploadPlan> scenePlan=std::make_shared<NorthlightWorldMesh::WorldMeshUploadPlan>();
  std::shared_ptr<const NorthlightRegionalFog::Field> sceneFog;
  std::shared_ptr<const NorthlightLightAttachments::Records> sceneLightAttachments=std::make_shared<NorthlightLightAttachments::Records>();
+ std::shared_ptr<const NorthlightEquipmentLights::StaticLightIndex> sceneLightIndex=std::make_shared<NorthlightEquipmentLights::StaticLightIndex>();
  std::shared_ptr<const PreparedCommit> scenePrepared=std::make_shared<PreparedCommit>();
  std::vector<NorthlightLocalLights::Light> rawSceneLights;
  std::vector<NorthlightGI::PointLight> sceneLights;
@@ -106,6 +108,7 @@ int main(){
  reset();Fixture cold;onTick=[&]{cold.observe();};cold.run();assert(!cold.pending&&cold.published&&!cold.published->partial&&cold.published->processedProbes==W&&cold.completedBaseId==1);assert(cold.observed.front().value->partial&&cold.observed.front().value->processedProbes==8&&cold.observed.front().at==8);const unsigned interval=NorthlightGI::ProbePublicationCadence::IntervalMs;assert(cold.observed.size()>5&&cold.observed.size()<=W/interval+3);
  DWORD lastTick=0;for(const auto& o:cold.observed)if(o.value->partial){if(lastTick)assert(o.at-lastTick>=interval);lastTick=o.at;assert(o.value->lightingGeneration==1);}cold.immutable();
  assert(cold.published->lightAttachments==cold.sceneLightAttachments);
+ assert(cold.published->localLightIndex==cold.sceneLightIndex);
  {reset();Fixture fixed;onTick=[&]{fixed.observe();};fixed.run(16,true);
   assert(fixed.observed.size()==1&&fixed.published->processedProbes==W&&!fixed.published->partial);
   assert(fixed.published->coarseAtlas&&occupied(*fixed.published->coarseAtlas)>0&&fixed.completedBaseId==1);

@@ -8,6 +8,7 @@
 // Each vertex selects one bone. All selected transforms must prove it is far.
 namespace NorthlightModelNormalRange {
 enum Kind {None,Rigid,Single,Envelope};
+inline constexpr double FarDepth=48.01;
 // A producer may supply its compile(code,count,p,false,2) for the same shader.
 inline Kind classify(const uint32_t* code,size_t count,bool allowEnvelope=false,const NorthlightActorDeformation::Program* prepared=nullptr){
   try{
@@ -43,8 +44,9 @@ public:
     static_assert(sizeof(entries)+512*(sizeof(NorthlightSourceIdentity::Retained<Mesh>)+32)<(1u<<20),"Bounded rigid proof storage");
     void beginFrame(){scanVertices=tested=culled=singleTests=singleUniform=singleMixed=mixedCulled=deferred=0;workMilliseconds=0;}
     void clear(){for(auto& e:entries)e={};clock=0;beginFrame();}
-    bool outside(const std::shared_ptr<const Mesh>& mesh,const D3DVERTEXELEMENT9* layout,UINT count,const float* bank,Kind kind=Rigid){
-        return bank&&outsideRead(mesh,layout,count,[&](unsigned first,unsigned n,float* out){std::memcpy(out,bank+first*4,n*16);return true;},kind);
+    bool outside(const std::shared_ptr<const Mesh>& mesh,const D3DVERTEXELEMENT9* layout,UINT count,const float* bank,
+                 Kind kind=Rigid,double limit=FarDepth,double* nearest=nullptr){
+        return bank&&outsideView(mesh,layout,count,[&](unsigned first,unsigned,float*){return bank+first*4;},kind,limit,nearest);
     }
     // Only projection c2..c5 and the selected bones' three affine rows enter
     // this proof. A failed read declines it; accepted draws still capture all
@@ -56,20 +58,21 @@ public:
     }
     // Each view remains valid until its scratch array is reused or the proof
     // returns. A same-draw bank can supply both spans without copying.
-    template<class View> bool outsideView(const std::shared_ptr<const Mesh>& mesh,const D3DVERTEXELEMENT9* layout,UINT count,View view,Kind kind=Rigid){
-        return evaluate(mesh,layout,count,view,kind,nullptr);
+    template<class View> bool outsideView(const std::shared_ptr<const Mesh>& mesh,const D3DVERTEXELEMENT9* layout,UINT count,View view,
+                                          Kind kind=Rigid,double limit=FarDepth,double* nearest=nullptr){
+        return evaluate(mesh,layout,count,view,kind,nullptr,limit,nearest);
     }
     template<class Read> bool viewBoundsRead(const std::shared_ptr<const Mesh>& mesh,const D3DVERTEXELEMENT9* layout,UINT count,
                                             Read read,Kind kind,NorthlightReplayBounds::Bounds& bounds){
         auto view=[&](unsigned first,unsigned rows,float* scratch)->const float*{
             return read(first,rows,scratch)?scratch:nullptr;
         };
-        bounds={};if(!evaluate(mesh,layout,count,view,kind,&bounds)){bounds={};return false;}
+        bounds={};if(!evaluate(mesh,layout,count,view,kind,&bounds,FarDepth,nullptr)){bounds={};return false;}
         return bounds.valid;
     }
 private:
     template<class View> bool evaluate(const std::shared_ptr<const Mesh>& mesh,const D3DVERTEXELEMENT9* layout,UINT count,View& view,
-                                      Kind kind,NorthlightReplayBounds::Bounds* viewBounds){
+                                      Kind kind,NorthlightReplayBounds::Bounds* viewBounds,double limit,double* nearest){
         if(!viewBounds){++tested;singleTests+=kind==Single;}
         if(!mesh||!layout||!count||count>MAXD3DDECLLENGTH||(kind!=Rigid&&kind!=Single))return false;
         const D3DVERTEXELEMENT9* position=nullptr;for(UINT i=0;i<count;++i)if(layout[i].Stream!=0xff&&layout[i].Usage==D3DDECLUSAGE_POSITION&&!layout[i].UsageIndex){if(position)return false;position=layout+i;}
@@ -100,7 +103,7 @@ private:
         if(projection[12]!=0||projection[13]!=0||projection[15]!=0||(projection[14]!=1&&projection[14]!=-1))return false;
         // Near origins decline this optional proof, even if local vertices are far.
         const float* matrix=view(31+3*bone,3,matrixScratch);
-        if(!matrix||(!viewBounds&&!(projection[14]*matrix[11]>48.01f)))return false;
+        if(!matrix||(!viewBounds&&!(projection[14]*matrix[11]>limit)))return false;
         // A bounded warm proof needs no timing calls or cold-scan allowance.
         if(!entry){
             const auto start=std::chrono::steady_clock::now();
@@ -135,16 +138,22 @@ private:
         if(!entry->boneCount||!NorthlightFloatChecks::bounded<16,0x49742400u>(projection))return false;
         // Each bone sees a subset of the same immutable object-space box.
         // Reuse the first row triplet already read for cold-scan admission.
+        double closest=INFINITY;
         for(unsigned i=0;i<entry->boneCount;++i){
             if(i){matrix=view(31+3*entry->bones[i],3,matrixScratch);if(!matrix)return false;}
             if(viewBounds){
                 if(!includeBone(*entry,matrix,*viewBounds))return false;
-            }else if(!outsideBone(*entry,matrix,projection[14])){
-                // An animated section crossing the boundary often keeps the
-                // same near bone. Try its current transform first next draw.
-                std::swap(entry->bones[0],entry->bones[i]);return false;
+            }else{
+                const double depth=lowerDepth(*entry,matrix,projection[14]);
+                if(!(depth>limit)){
+                    // An animated section crossing the boundary often keeps the
+                    // same near bone. Try its current transform first next draw.
+                    std::swap(entry->bones[0],entry->bones[i]);return false;
+                }
+                if(nearest)closest=std::min(closest,depth);
             }
         }
+        if(nearest)*nearest=closest;
         if(!viewBounds){++culled;mixedCulled+=entry->boneCount>1;}
         return true;
     }
@@ -167,12 +176,12 @@ private:
         sum.error+=roundError(magnitude)*8;
         return sum;
     }
-    static bool outsideBone(const Entry& entry,const float* matrix,float sign){
-        if(!boundedBone(entry,matrix))return false;
+    static double lowerDepth(const Entry& entry,const float* matrix,float sign){
+        if(!boundedBone(entry,matrix))return -INFINITY;
         const auto sum=boneAxis(entry,matrix+8);
-        if(!std::isfinite(sum.value)||!std::isfinite(sum.error))return false;
+        if(!std::isfinite(sum.value)||!std::isfinite(sum.error))return -INFINITY;
         const double lower=sign>0?double(sum.value)-sum.error:-double(sum.value)-sum.error;
-        return std::nextafter(lower,-INFINITY)>48.01;
+        return std::nextafter(lower,-INFINITY);
     }
     static bool includeBone(const Entry& entry,const float* matrix,NorthlightReplayBounds::Bounds& view){
         if(!boundedBone(entry,matrix))return false;

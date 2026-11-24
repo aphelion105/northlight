@@ -176,11 +176,15 @@ struct WorldScreenEffectsTest {
   auto& actor=retained.actorMaps;
   assert(actor.createShaders(d,caps,true,false));
   auto* filter=actor.filter_;
+  const auto checkTarget=[](HRESULT hr,const char*){return SUCCEEDED(hr);};
+  const auto makeTarget=[&](UINT w,UINT h,D3DFORMAT format,IDirect3DTexture9** texture,IDirect3DSurface9** surface){
+   return NorthlightWorldRenderTarget::ensure(d,w,h,format,*texture,*surface,checkTarget,"scene texture","scene surface");
+  };
   unsigned allocations=0;
   auto allocate=[&](UINT w,UINT h,D3DFORMAT format,IDirect3DTexture9** texture,IDirect3DSurface9** surface){
    if(*texture)return true;
    if(++allocations==2)return false;
-   return retained.target(w,h,format,texture,surface);
+   return makeTarget(w,h,format,texture,surface);
   };
   assert(!actor.createTargets(64,64,allocate)&&allocations==2);
   auto* first=actor.depth(0).texture;
@@ -198,7 +202,7 @@ struct WorldScreenEffectsTest {
    --allocationsLeft;allocationOrder.emplace_back(w,format);return true;
   };
   const auto allocateMap=[&](UINT w,UINT h,D3DFORMAT format,IDirect3DTexture9** texture,IDirect3DSurface9** surface){
-   return (*texture&&*surface)||(take(w,h,format)&&retained.target(w,h,format,texture,surface));
+   return (*texture&&*surface)||(take(w,h,format)&&makeTarget(w,h,format,texture,surface));
   };
   const auto allocateDepth=[&](UINT w,UINT h,IDirect3DSurface9** surface,const char*){
    return *surface||(take(w,h,D3DFMT_D24S8)&&

@@ -265,8 +265,8 @@ Individual settings (Quality / Balanced / Performance):
   AutoBump 1 / 0 / 0   See the quality INI for the allowed range.
   AutoBumpStrength 75 / 60 / 40   See the quality INI for the allowed range.
   AutoBumpDistance 48 / 36 / 24   See the quality INI for the allowed range.
-  AutoBumpTerrain 3 / 1 / 1   See the quality INI for the allowed range.
-  AutoBumpWalls 3 / 1 / 1   See the quality INI for the allowed range.
+  AutoBumpTerrain 2 / 1 / 1   See the quality INI for the allowed range.
+  AutoBumpWalls 2 / 1 / 1   See the quality INI for the allowed range.
   AutoBumpGrass 1 / 1 / 1   See the quality INI for the allowed range.
   AutoParallaxDepth 100 / 75 / 50   See the quality INI for the allowed range.
   AutoParallaxDistance 16 / 12 / 8   See the quality INI for the allowed range.
@@ -274,7 +274,7 @@ Individual settings (Quality / Balanced / Performance):
   AutoDisplacementStrength 100 / 75 / 50   See the quality INI for the allowed range.
   AutoDisplacementDistance 12 / 8 / 6   See the quality INI for the allowed range.
   AutoDisplacementDetail 4 / 3 / 2   See the quality INI for the allowed range.
-  AutoBumpModels 3 / 1 / 1   See the quality INI for the allowed range.
+  AutoBumpModels 1 / 1 / 1   See the quality INI for the allowed range.
   AutoBumpModelMinPixels 0 / 0 / 0   Screen-size cutoff for distant skinned material detail, relative to 1080p. 0 disables the cutoff.
   AutoModelDisplacementStrength 25 / 15 / 10   See the quality INI for the allowed range.
   AutoModelDisplacementDistance 8 / 6 / 4   See the quality INI for the allowed range.

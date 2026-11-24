@@ -305,7 +305,12 @@ static void copiesTests(){
   b.raw->readLocks=0;assert(readSame(b,16,100));assert(b.raw->readLocks==1&&m.copyFills.load()==1); // the fill: ONE read of the whole buffer
   const auto base=served();b.raw->readLocks=0;
   assert(readSame(b,0,4096)&&readSame(b,200,10)&&b.raw->readLocks==0&&served()==base+2);
+  unsigned char immediate[32];
+  assert(C::copy(b.raw,128,sizeof immediate,immediate)&&!std::memcmp(immediate,b.raw->mem.data()+128,sizeof immediate));
+  bool hasCopy=false;
+  assert(!C::copy(b.raw,4090,sizeof immediate,immediate,&hasCopy)&&hasCopy);
   replayWrite(b,128,64,D3DLOCK_NOOVERWRITE,2);assert(readSame(b,0,4096)&&b.raw->readLocks==0);
+  assert(C::copy(b.vb,128,sizeof immediate,immediate)&&!std::memcmp(immediate,b.raw->mem.data()+128,sizeof immediate));
   replayWrite(b,1000,500,0,3);assert(readSame(b,990,520)&&b.raw->readLocks==0);
   replayWrite(b,0,0,D3DLOCK_DISCARD,4);assert(readSame(b,0,4096)&&b.raw->readLocks==0); // size 0 = to the end
   replayWrite(b,4000,96,0,5);assert(readSame(b,3990,106)&&b.raw->readLocks==0);
@@ -343,6 +348,8 @@ static void copiesTests(){
  // a write lock outstanding (pass-through): not served; the pointer the game writes through is mirrored at Unlock
  {VB b=makeVB(owner,1024);replayWrite(b,0,1024,0,7);assert(readSame(b,0,8));b.raw->readLocks=0;
   void* p=nullptr;assert(b.vb->Lock(100,50,&p,0)==S_OK);std::memset(p,0x5a,50);
+  unsigned char immediate=0xff;
+  assert(!C::copy(b.raw,100,sizeof immediate,&immediate)&&immediate==0xff);
   const auto f0=fallback();{C::Reader<IDirect3DVertexBuffer9> r(b.raw);void* q=nullptr;assert(r.lock(0,8,&q)==S_OK&&r.unlock()==S_OK);}assert(fallback()==f0+1&&b.raw->readLocks==1);
   // the read-back lock goes to the RAW buffer (invisible to the wrapper), so the pending write is closed by its own Unlock and mirrored exactly: the copy stays valid
   assert(b.vb->Unlock()==S_OK);b.raw->readLocks=0;assert(readSame(b,90,70)&&b.raw->readLocks==0&&readSame(b,90,70)&&b.raw->readLocks==0);

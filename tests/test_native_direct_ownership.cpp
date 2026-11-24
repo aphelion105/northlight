@@ -67,6 +67,10 @@ static void bankMemoParity(){
         assert(!std::memcmp(value.values,expected.values,sizeof value.values));assert(!std::memcmp(value.valid,expected.valid,sizeof value.valid));assert(value.bindings==expected.bindings);
     };
     for(unsigned count=1;count<=4;++count){check(count,bindings,4,0);check(count,bindings,4,1);}
+    bank[16]=1.25f;check(4,bindings,4,0);
+    bank[16]=0.f;check(4,bindings,4,1); // Model sections can revisit a non-adjacent bank.
+    bank[3]=1.f;check(4,bindings,4,0); // Same position hash, different bank bytes.
+    bank[3]=0.f;check(4,bindings,4,0);
     // Every key component, including unused floats, signed zero and NaN
     // payloads, is compared exactly; no rejected slot retains older output.
     for(unsigned group=0;group<3;++group){float* input=group==0?bank:group==1?view:camera;const unsigned size=group==0?44:group==1?16:3;

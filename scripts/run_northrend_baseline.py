@@ -17,6 +17,7 @@ import time
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import northlight_paths as fp
 from prepare_native_scene import digest, pe32, tool_runtime
+from capture_files import BLOBS
 import northrend_fixture_server as fixture
 from compile_native_replay_plan import client_code_inputs, load_json, packet_reads, snapshot_inputs
 import northrend_frame_parity as parity
@@ -51,6 +52,7 @@ GRAPHICS = set('componenttexturelevel environmentdetail extshadowquality farclip
                'shadowlevel skycloudlod specular texturefilteringmode timingmethod videooptionsversion '
                'weatherdensity'.split())
 SOUND_DISABLED = 'SET Sound_EnableAllSound "0"'
+RUN_SCRATCH = ('temp', 'shader-cache', 'state-cache')
 
 
 def write_json(path, data):
@@ -490,6 +492,45 @@ def child_environment(run):
     return env
 
 
+def prepare_parity_images(images, raw):
+    images.mkdir()
+    if not raw:
+        (images / BLOBS).mkdir()
+
+
+def discard_work(report, owner, names):
+    """Remove only disposable children of a run-owned directory."""
+    for name in names:
+        path = owner / name
+        try:
+            if (not path.is_relative_to(owner) or path == owner or owner.resolve() != owner or
+                    path.is_symlink() or path.resolve() != path):
+                raise ValueError(f'Refusing to remove redirected scratch path: {path}')
+            if path.is_dir():
+                shutil.rmtree(path)
+            else:
+                path.unlink(missing_ok=True)
+        except (OSError, ValueError) as error:
+            report.setdefault('scratch_cleanup_errors', []).append(str(error))
+
+
+def restore_client_state(client, run, names, report, keep):
+    for name in names:
+        current = client / name
+        try:
+            if current.is_symlink() or current.resolve() != current:
+                raise ValueError(f'Refusing to retire redirected client state: {current}')
+            if keep and current.exists():
+                current.replace(run / f'generated-{name}')
+            else:
+                discard_work(report, client, (name,))
+            previous = run / f'prior-{name}'
+            if previous.exists():
+                previous.rename(current)
+        except (OSError, ValueError) as error:
+            report.setdefault('scratch_cleanup_errors', []).append(str(error))
+
+
 def dxvk_adapter(log, required=None):
     data = log.read_bytes()
     text = data.decode('utf-8').replace('\r\n', '\n')
@@ -747,9 +788,13 @@ def run_client(args):
         raise ValueError('The live fixture requires a Windows desktop and GPU')
     root, run = args.stage.resolve(), args.output.resolve()
     manifest = json.loads((root / 'baseline.json').read_text(encoding='utf-8'))
-    client = root / 'client'
-    if not run.is_relative_to(root) or run.is_relative_to(client):
+    client = (root / 'client').resolve()
+    if run == root or not run.is_relative_to(root) or run.is_relative_to(client):
         raise ValueError('Put run results under the private stage, outside client/')
+    installed = fp.client_root(required=False)
+    if (installed and client.is_relative_to(installed.resolve()) or
+            not (client.is_relative_to(root) or client.is_relative_to(fp.out().resolve()))):
+        raise ValueError('The private client must belong to the stage or configured output directory')
     inputs = manifest['input_sha256']
     fixed = ('Wow.exe', 'd3d9.dll', 'northlight-assets.bin', 'backend_d3d9.dll',
              'northlight-renderer.ini', 'northlight-quality.ini', REALMLIST)
@@ -869,7 +914,7 @@ def run_client(args):
     env = child_environment(run)
     images = run / 'frame-parity'
     if frame_parity:
-        images.mkdir()
+        prepare_parity_images(images, getattr(args, 'raw_parity', False))
         env['NORTHLIGHT_FRAME_PARITY_ROOT'] = str(images)
         if draw_probe:
             env['NORTHLIGHT_APITRACE_DRAW_PROBE'] = draw_probe
@@ -894,6 +939,7 @@ def run_client(args):
     realmlist = client / REALMLIST
     original_realmlist = run / 'staged-realmlist.wtf'
     replaced_payload = []
+    private_state = []
     lock = client.resolve().parent / 'client-running.lock'
     with lock.open('x', encoding='ascii') as owner:
         owner.write(str(os.getpid()))
@@ -933,8 +979,11 @@ def run_client(args):
 
         for name in ('WTF', 'Cache'):
             previous = client / name
-            if previous.is_dir():
+            if previous.is_symlink() or previous.resolve() != previous:
+                raise ValueError(f'The private client state must be local to the stage: {previous}')
+            if previous.exists():
                 previous.replace(run / f'prior-{name}')
+            private_state.append(name)
         for relative, path in mutable.items():
             target = client / relative
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -1144,18 +1193,19 @@ def run_client(args):
         if server is not None and server.poll() is None:
             server.terminate()
             server.wait(timeout=10)
-        if package_runtime and process is not None:
+        if process is not None:
             try:
-                names = ('d3d9.dll', 'northlight-assets.bin', *package_runtime.keys())
-                report['runtime_payload_after'] = {
-                    name: digest(client / name) if (client / name).is_file() else None for name in names}
+                if package_runtime:
+                    names = ('d3d9.dll', 'northlight-assets.bin', *package_runtime.keys())
+                    report['runtime_payload_after'] = {
+                        name: digest(client / name) if (client / name).is_file() else None for name in names}
                 if report.get('error') or report['exit_code']:
                     for crash in (client / 'Errors').glob('*'):
-                        if (crash.suffix.lower() in ('.txt', '.dmp') and crash.is_file() and
-                                crash.resolve().is_relative_to(client.resolve()) and crash.stat().st_mtime_ns >= process_start_ns):
+                        if (crash.suffix.lower() in ('.txt', '.dmp') and not crash.is_symlink() and crash.is_file() and
+                                crash.resolve().is_relative_to(client) and crash.stat().st_mtime_ns >= process_start_ns):
                             saved_crash = run / 'crash' / crash.name
                             saved_crash.parent.mkdir(exist_ok=True)
-                            shutil.copyfile(crash, saved_crash)
+                            crash.replace(saved_crash)
                             report.setdefault('crash_files', []).append(saved_crash.relative_to(run).as_posix())
             except OSError as error:
                 report.setdefault('error', str(error))
@@ -1170,9 +1220,15 @@ def run_client(args):
             original_assets.replace(shader_bundle)
         if original_realmlist.is_file():
             original_realmlist.replace(realmlist)
+        keep_work = getattr(args, 'keep_work', False)
+        restore_client_state(client, run, private_state, report, keep_work)
+        if not keep_work:
+            discard_work(report, run, RUN_SCRATCH)
+        if report.get('scratch_cleanup_errors'):
+            report.setdefault('error', 'Could not retire scratch files or restore the staged client state')
         if process is not None and log.is_file():
             frozen_log = run / LOG
-            shutil.copyfile(log, frozen_log)
+            log.replace(frozen_log)
             report['log_sha256'] = digest(frozen_log)
             lines = log_lines(frozen_log)
             state = scan(lines, spawn)
@@ -1302,7 +1358,8 @@ def run_client(args):
         elif 'error' not in report:
             report['error'] = 'Measured output, renderer identity, trace or shutdown did not satisfy the run contract'
         write_json(run / 'validation.json', report)
-        lock.unlink()
+        if not any((run / f'prior-{name}').exists() for name in private_state):
+            lock.unlink()
     print(f'{report["status"]}: {run / "validation.json"}')
     return 0 if report['status'] == 'PASS' else 1
 
@@ -1809,7 +1866,7 @@ def replay(args):
                         not (lifecycle['initial_menu'] and lifecycle['returned_to_menu'])):
                     raise ValueError('The capture menu cycle receipt differs from the closed logs')
             if requested is None:
-                images.mkdir()
+                prepare_parity_images(images, getattr(args, 'raw_parity', False))
             present_frames = set(frames)
             if light_history_audit:
                 history_frames = light_history_frames(frames, history_predecessors)
@@ -1828,17 +1885,16 @@ def replay(args):
                     command.extend(['--checkpoint-frame', str(frame)])
             for frame in sorted(present_frames):
                 command.extend(['--present-frame', str(frame)])
-        if run_logged(command, run, env, 'compile-plan', args.timeout):
+        try:
+            compile_exit = run_logged(command, run, env, 'compile-plan', args.timeout)
+        finally:
+            if not getattr(args, 'keep_work', False):
+                discard_work(report, run, ('plan/trace.dump',))
+        if compile_exit:
             raise ValueError('Strict trace/snapshot join refused; see compile-plan.stderr and plan/validation.json')
         joined = json.loads((plan / 'validation.json').read_text(encoding='utf-8'))
         if joined.get('pass') is not True or joined.get('authored_transport_only') is not False:
             raise ValueError('Compiler did not certify the genuine trace join')
-        # Retrace consumes the joined binary plan. The text dump can be rebuilt
-        # from the capture and would otherwise cost hundreds of MiB per replay.
-        try:
-            (plan / 'trace.dump').unlink(missing_ok=True)
-        except OSError:
-            report['retained_plan_dump'] = True
         report['trace_join_validated'] = True
         report['trace_summary'] = joined['summary']
         if window_resize:
@@ -2294,6 +2350,11 @@ def replay(args):
     except (OSError, ValueError, subprocess.TimeoutExpired) as error:
         report['error'] = str(error)
     finally:
+        if not getattr(args, 'keep_work', False):
+            discard_work(report, run, (*RUN_SCRATCH, 'stand/world-cache', 'stand/Cache'))
+        if report.get('scratch_cleanup_errors') and report['status'] == 'PASS':
+            report['status'] = 'INCOMPLETE'
+            report['error'] = 'Could not retire replay scratch files'
         write_json(run / 'validation.json', report)
     print(f'{report["status"]}: {run / "validation.json"}')
     return 0 if report['status'] == 'PASS' else 1
@@ -2590,6 +2651,8 @@ def end_to_end(args):
                                                   background=getattr(args, 'background', False),
                                                   capture_wrapper=args.capture_wrapper,
                                                   camera_turn=camera_turn,
+                                                  keep_work=getattr(args, 'keep_work', False),
+                                                  raw_parity=getattr(args, 'raw_parity', False),
                                                   fixed_visual_clock=fixed_visual_clock,
                                                   align_far_shadow_presents=getattr(args, 'align_far_shadow_presents', False),
                                                   light_history_audit=getattr(args, 'light_history_audit', False),
@@ -2613,6 +2676,8 @@ def end_to_end(args):
         replay_exit = replay(argparse.Namespace(stage=root, capture=capture, output=replay_output,
                                                 tool_root=args.tool_root, host=args.host, timeout=args.timeout,
                                                 stand_dll=args.stand_dll, stand_assets=args.stand_assets,
+                                                keep_work=getattr(args, 'keep_work', False),
+                                                raw_parity=getattr(args, 'raw_parity', False),
                                                 match_geometry_start=match_geometry_start))
         replay_path = replay_output / 'validation.json'
         result = json.loads(replay_path.read_text(encoding='utf-8'))
@@ -2643,6 +2708,11 @@ def replay_tool_options(parser):
     parser.add_argument('--stand-dll', type=Path, default=fp.RENDERER / 'frd9-stand-replay.dll')
     parser.add_argument('--stand-assets', type=Path, default=fp.RENDERER / 'frd9-stand-replay.assets.bin')
     parser.add_argument('--timeout', type=int, default=120)
+
+
+def artifact_options(parser):
+    parser.add_argument('--keep-work', action='store_true', help='Retain disposable client or replay files for debugging')
+    parser.add_argument('--raw-parity', action='store_true', help='Write raw parity images for tools that cannot read compact captures')
 
 
 def indexed_draw_selector(value):
@@ -2704,6 +2774,7 @@ def main():
     run.add_argument('--light-history-audit', action='store_true', help='Capture lighting inputs on the two parity Presents')
     run.add_argument('--live-dll', type=Path, help='Use a candidate DLL on the existing private stage')
     run.add_argument('--live-assets', type=Path, help='Asset bundle built with --live-dll')
+    artifact_options(run)
     run.set_defaults(action=run_client)
     retrace = commands.add_parser('replay')
     for name in ('capture', 'output'):
@@ -2791,6 +2862,7 @@ def main():
     retrace.add_argument('--point-shadow-audit', action='store_true',
                          help='Collect caster batch census with profiling, or cube faces with image capture')
     replay_tool_options(retrace)
+    artifact_options(retrace)
     retrace.set_defaults(action=replay)
     compare = commands.add_parser('compare-replays', help='Compare two existing replay outputs for the exact same trace')
     for name in ('reference', 'candidate', 'output'):
@@ -2823,6 +2895,7 @@ def main():
     paired.add_argument('--background', action='store_true', help='Launch the private capture client without requesting focus')
     paired.add_argument('--live-timeout', type=int, default=90, choices=range(5, 301), metavar='SECONDS')
     replay_tool_options(paired)
+    artifact_options(paired)
     paired.set_defaults(action=end_to_end)
     args = parser.parse_args()
     return args.action(args)
