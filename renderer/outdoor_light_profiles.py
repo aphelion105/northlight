@@ -4,6 +4,7 @@ A profile pins one model asset by sha256 (asset_sha256, position, rgb, intensity
 Optional "variants" pin other assets of the same model path, e.g. the stock 3.3.5a model where the
 profile was authored on an HD pack: {sha256: {position, position_basis, [rgb, intensity, start,
 end, family]}}; omitted fields are the profile's own.
+An optional max_world_end limits the primary asset's scaled attenuation range for placed lights.
 """
 import hashlib,json,math,re
 from pathlib import Path
@@ -13,6 +14,8 @@ VARIANT_FIELDS={'asset','family','position','position_basis','rgb','intensity','
 
 def check(p):
     if 'casts_shadows' in p and type(p['casts_shadows']) is not bool:raise ValueError('Invalid shadow policy')
+    if 'max_world_end' in p and (type(p['max_world_end']) not in (float,int) or not 0<p['max_world_end']<=2000):
+        raise ValueError('Invalid world-space emitter range limit')
     if len(p['position'])!=3 or len(p['rgb'])!=3:raise ValueError('Emitter vector size')
     if not all(math.isfinite(v) for v in [*p['position'],*p['rgb'],p['intensity'],p['start'],p['end']]):raise ValueError('Nonfinite emitter')
     if any(abs(v)>100 for v in p['position']) or not all(0<=v<=1 for v in p['rgb']) or max(p['rgb'])<=0 or not 0<p['intensity']<=4 or not 0<=p['start']<p['end']<=32:raise ValueError('Emitter outside bounded policy')
@@ -44,6 +47,24 @@ def load(path=None):
                 for emitter in v['emitters']:check(emitter)
         if 'injected_sha256' in p and p['injected_sha256'] not in p.get('variants',{}):raise ValueError('Unpinned injected model: '+name)
     return data['profiles']
+
+def native_placement_ranges():
+    extension=Path(__file__).with_name('wotlk-emitter-profiles.json')
+    if not extension.exists():return {}
+    ranges={}
+    for map_name,entries in json.loads(extension.read_text()).get('native_placement_ranges',{}).items():
+        for entry in entries:
+            model,sha,end=entry['model'],entry['asset_sha256'],entry['end']
+            if (not model.startswith('world\\') or not model.endswith('.m2')
+                    or model!=model.lower().replace('/','\\') or not re.fullmatch('[0-9a-f]{64}',sha)
+                    or type(end) not in (int,float) or not 0<end<=32):
+                raise ValueError('Invalid native placement range: '+model)
+            for uid in entry['placements']:
+                key=(map_name,model,uid)
+                if type(uid) is not int or not 0<uid<2**64 or key in ranges:
+                    raise ValueError('Invalid or duplicate native range placement: '+model)
+                ranges[key]=(sha,end)
+    return ranges
 
 def pinned(p):
     """{asset sha256: emitter fields} of every asset a profile covers, the profile's own first."""

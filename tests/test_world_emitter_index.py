@@ -16,7 +16,7 @@ fp.use_source_modules()
 import world_emitter_index as index
 from m2_emitter_patch import append_lights, verify_lights
 from test_world_emitter_coverage import fixture
-from world_lights_builder import m2_sources
+from world_lights_builder import instance_lights, m2_sources
 
 
 PATH = 'world\\anonymous.m2'
@@ -76,6 +76,13 @@ class WorldEmitterIndex(unittest.TestCase):
         self.assertEqual((records[0][1][2], records[0][3]), (1.15, 10.))
         self.assertEqual(json.loads(value.payload())['models'][PATH]['basis'], 'reviewed')
 
+        updated = self.read(payload=value.payload())
+        updated.catalog[PATH] = dict(value.catalog[PATH], position=[0., 0., 3.], casts_shadows=False)
+        refreshed, = index.records(updated.get(PATH, self.blob))
+        self.assertEqual(refreshed[0], (0., 0., 3.))
+        self.assertEqual(refreshed[4:6], records[0][4:6])
+        self.assertEqual(refreshed[6], 0)
+
     def test_explicit_shadow_intent_survives_compact_build_and_roundtrip(self):
         for emission in ('energy','fire','candle'):
             for shadow in (False,True):
@@ -117,6 +124,19 @@ class WorldEmitterIndex(unittest.TestCase):
                 self.assertEqual(actual[0][:-1],native[0][:-1])
                 self.assertEqual(bool(actual[0][-1]&index.CAST_SHADOW),not candle)
         self.assertEqual(native[0][-1],index.CAST_SHADOW)
+
+    def test_authored_range_limit_preserves_world_position_and_falloff_ratio(self):
+        authored, = index.records({'emitters': [source()]})
+        native = (*authored[:4],0,2,authored[-1])
+        small = (bytes(32),1,3,*([0.]*6),1,0,0,0,1,0,0,0,1,5,6,7)
+        large = (*small[:9],8,0,0,0,8,0,0,0,8,*small[-3:])
+        self.assertEqual(instance_lights([authored],small,PATH,max_world_end=24)[0][6:8],(1.,8.))
+        unbounded, native_original = instance_lights([authored,native],large,PATH)
+        bounded, native_after = instance_lights([authored,native],large,PATH,max_world_end=24)
+        self.assertEqual(bounded[:6],unbounded[:6])
+        self.assertEqual(bounded[6:8],(3.,24.))
+        self.assertEqual(bounded[8:],unbounded[8:])
+        self.assertEqual(native_after,native_original)
 
     def test_malformed_schema_is_refused(self):
         malformed = [[], None, {}, {'version': 1, 'owner': 'northlight-local-direct'},

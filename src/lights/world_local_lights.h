@@ -13,6 +13,7 @@
 namespace NorthlightLocalLights {
 inline constexpr uint32_t Baked=1,CastShadow=2,FirePulse=4,CandlePulse=8,GlassEmitter=16,Flash=32,RequiresNative=64;
 inline constexpr uint32_t NativeSceneEmitter=128; // Runtime provenance for unshadowed, identified M2 emitters.
+inline constexpr uint32_t FireDrift=256;
 struct Light {
     float position[3],diffuse[3],attenuationStart,attenuationEnd;
     uint64_t sourceId;
@@ -25,11 +26,12 @@ inline bool valid(const Light& l) {
     for(float x:l.diffuse) {if(!std::isfinite(x)||x<0||x>10000)return false;peak=std::max(peak,x);}
     return peak>0&&std::isfinite(l.attenuationStart)&&std::isfinite(l.attenuationEnd)&&
         l.attenuationStart>=0&&l.attenuationStart<l.attenuationEnd&&l.attenuationEnd<=2000&&
-        (l.kind==1||l.kind==2||l.kind==3)&&(l.flags&~(CastShadow|FirePulse|CandlePulse|GlassEmitter|Flash|RequiresNative|NativeSceneEmitter))==(l.kind==1?Baked:0u)&&
+        (l.kind==1||l.kind==2||l.kind==3)&&(l.flags&~(CastShadow|FirePulse|CandlePulse|GlassEmitter|Flash|RequiresNative|NativeSceneEmitter|FireDrift))==(l.kind==1?Baked:0u)&&
         (!(l.flags&NativeSceneEmitter)||(l.kind==2&&l.flags==NativeSceneEmitter&&(l.sourceId>>52)==0xfec))&&
         (!(l.flags&RequiresNative)||(l.kind==2&&l.flags==(CastShadow|RequiresNative)))&&
         (!(l.flags&Flash)||(l.kind==2&&l.flags==Flash&&(l.sourceId>>52)==0xfed))&&
         (!(l.flags&(FirePulse|CandlePulse))||l.kind==3)&&
+        (!(l.flags&FireDrift)||(l.flags&(CastShadow|FirePulse))==(CastShadow|FirePulse))&&
         (!(l.flags&GlassEmitter)||((l.kind==1||l.kind==3)&&(l.flags&CastShadow)))&&
         ((l.flags&(FirePulse|CandlePulse))!=(FirePulse|CandlePulse));
 }
@@ -54,6 +56,15 @@ inline float pulseGain(const Light& l,uint32_t now){
     const auto triangle=[](uint32_t t,uint32_t p){return 1.f-std::fabs(2.f*float(t%p)/float(p)-1.f);};
     const float amount=(l.flags&CandlePulse)?.05f:.10f;
     return 1.f+amount*(triangle(now+phase,period)-.5f)+amount*.6f*(triangle(now+phase*3,period*3)-.5f);
+}
+inline void driftFire(Light& light,uint32_t now){
+    if(!(light.flags&FireDrift))return;
+    // Hold a pose for 96 ms so the light and its six cube faces share an origin
+    // without rebuilding the complete cube on every rendered frame.
+    const float angle=6.2831853f*float((now/96+light.sourceId%24)%24)/24.f;
+    light.position[0]+=.12f*std::sin(angle);
+    light.position[1]+=.09f*std::cos(angle);
+    light.position[2]+=.16f*std::sin(2.f*angle+.7f);
 }
 // Authored range with bounded linear fade. This is explicit transport policy,
 // not a claim that a baked classic WMO originally used this precise falloff.

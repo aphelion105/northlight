@@ -163,7 +163,7 @@ def extract_m2(b,stats):
         except Unsupported as exc:stats['unsupported_'+str(exc)]+=1
     return result
 
-def instance_lights(lights,record,path):
+def instance_lights(lights,record,path,*,max_world_end=None):
     key,uid,kind,*floats=record
     matrix=tuple(tuple(floats[6+i*3+j] for j in range(3)) for i in range(3))
     translation=floats[15:18]
@@ -181,7 +181,11 @@ def instance_lights(lights,record,path):
     for position,color,start,end,index,source,flags in lights:
         p=matvec(matrix,position);p=tuple(p[i]+translation[i] for i in range(3))
         if source==2:color,start,end=native_transport(color)
-        else:start*=scale;end*=scale
+        else:
+            start*=scale;end*=scale
+            if source==3 and max_world_end is not None and end>max_world_end:
+                start*=max_world_end/end
+                end=max_world_end
         if not valid_light(p,color,start,end):raise Unsupported('world_light_value_range')
         identity=hashlib.sha256(key+struct.pack('<QII',uid,kind,index)).digest()
         source_id=int.from_bytes(identity[:8],'little')
@@ -201,14 +205,34 @@ def m2_sources(path,blob,native,emitter_index):
     return sources
 
 
+def drak_bonfire(records, owners, provenance):
+    # These two adjacent doodads form the stone-bowl fire beside the hanging runes.
+    fire = r'world\exteriordesigners\zuldrak\ed_zuldrakbridge_fire.m2'
+    glow = r'world\expansion01\doodads\generic\draenei\glow\dr_glow.m2'
+    if (provenance.get(fire, {}).get('asset_sha256') != '7ee708d3d9b4393b65f39fcfa4cb0682219516ae106c5c3d90c8394169844ad1'
+            or provenance.get(glow, {}).get('asset_sha256') != 'fa3ed7e3632bd04b5936e472023577dd0d234d9d136bb73a8a3191b2c393fa31'):
+        return records
+    proxy = [light for light in records if owners[light[8]] == (3, 9480539010499056)]
+    flame = [light for light in records if owners[light[8]] == (3, 9480539010499055)]
+    if len(proxy) != 9 or any(light[9:] != (3, 0) for light in proxy) or len(flame) != 1:
+        return records
+    core = max(proxy, key=lambda light: max(light[3:6]))
+    if math.dist(core[:2], flame[0][:2]) > .15 or not 1 < core[2] - flame[0][2] < 3:
+        return records
+    from world_emitter_index import CAST_SHADOW, FIRE, FIRE_DRIFT
+    return [light for light in records if owners[light[8]] != (3, 9480539010499056)] + [
+        (*core[:3], 1.70, .48, 1.92, .7, 15., core[8], 3, CAST_SHADOW | FIRE | FIRE_DRIFT)]
+
+
 def build(cache,output,maps,assets=None,manifest='manifest.json'):
     import world_emitter_index
     import point_transmission_builder
     import light_attachments
     from world_fixture_emission import native_fixture_offsets
     catalog=outdoor_light_profiles.load()
+    native_ranges=outdoor_light_profiles.native_placement_ranges()
     started=time.time();assets=assets or Assets();stats=collections.Counter();extracted={};provenance={};errors=[];reports=[]
-    placement_cache={};placement_provenance={};unsupported_assets={};attachment_templates={};native_templates={}
+    placement_cache={};placement_provenance={};unsupported_assets={};attachment_templates={};native_templates={};world_end_limits={}
     emitter_index=world_emitter_index.Index(assets)
     def read_placement_wmo(path):
         if path not in placement_cache:
@@ -278,13 +302,23 @@ def build(cache,output,maps,assets=None,manifest='manifest.json'):
                         rejected={k:v for k,v in (stats-before).items() if k.startswith('unsupported_')}
                         if rejected:unsupported_assets[path]=rejected
                         if extracted[path]:
+                            asset_sha=hashlib.sha256(blob).hexdigest()
+                            reviewed_profile=catalog.get(path)
+                            if reviewed_profile and reviewed_profile['asset_sha256']==asset_sha and 'max_world_end' in reviewed_profile:
+                                world_end_limits[path]=reviewed_profile['max_world_end']
                             provenance[path]={'archive':assets.origin(path),
-                                'asset_sha256':hashlib.sha256(blob).hexdigest(),'light_records':[x[4] for x in extracted[path]],
+                                'asset_sha256':asset_sha,'light_records':[x[4] for x in extracted[path]],
                                 'kind':('WMO MOLT and/or enclosed lamp' if path.endswith('.wmo') else ('Authored model emitter' if extracted[path][0][5]==3 else 'M2 constant default tracks'))}
                     except (ValueError,FileNotFoundError,IndexError,KeyError,struct.error) as exc:
                         extracted[path]=[];errors.append({'asset':path,'error':str(exc)})
                 try:
-                    placed=instance_lights(extracted[path],r,path);records.extend(placed)
+                    placed=instance_lights(extracted[path],r,path,max_world_end=world_end_limits.get(path))
+                    native_range=native_ranges.get((mapname,path,uid))
+                    if native_range and provenance.get(path,{}).get('asset_sha256')==native_range[0]:
+                        end=native_range[1]
+                        placed=[(*light[:7],end,*light[8:]) if light[9:]==(2,0) and light[6]<end<light[7] else light
+                                for light in placed]
+                    records.extend(placed)
                     attachments.extend(light_attachments.placed(attachment_templates.get(path,[]),r,
                         [(source[4],light) for source,light in zip(extracted[path],placed)]))
                     attachments.extend(light_attachments.placed_native(native_templates.get(path,[]),r,
@@ -322,6 +356,8 @@ def build(cache,output,maps,assets=None,manifest='manifest.json'):
                     adt_count+=1
                 except (ValueError,FileNotFoundError,IndexError,KeyError,struct.error) as exc:
                     errors.append({'placement_adt':path,'error':str(exc)})
+            if mapname == 'DrakTheronKeep':
+                records=drak_bonfire(records,owners,provenance)
             records,suppressed=outdoor_light_profiles.deduplicate_parent_lights(records,owners)
             records.sort(key=lambda r:r[8])
             if len({r[8] for r in records})!=len(records):raise ValueError("Duplicate light source identity")
