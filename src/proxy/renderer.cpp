@@ -4673,7 +4673,7 @@ static HMODULE backend() {
     if(artInputs.blocked){
         const bool russian=PRIMARYLANGID(GetUserDefaultUILanguage())==LANG_RUSSIAN;
         const auto text=NorthlightArtInputs::message(artInputs,russian);
-        MessageBoxW(nullptr,text.c_str(),russian?L"Northlight РІР‚вЂќ Р Р…РЎС“Р В¶Р Р…Р В° Р С—Р ВµРЎР‚Р ВµРЎРѓР В±Р С•РЎР‚Р С”Р В°":L"Northlight РІР‚вЂќ rebuild required",MB_OK|MB_ICONWARNING|MB_SETFOREGROUND);
+        MessageBoxW(nullptr,text.c_str(),russian?L"Northlight — нужна пересборка":L"Northlight — rebuild required",MB_OK|MB_ICONWARNING|MB_SETFOREGROUND);
         ExitProcess(ERROR_BAD_ENVIRONMENT);
     }
     // The Win32 producer can read ordinary M2 batch arguments only for this
