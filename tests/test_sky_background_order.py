@@ -21,7 +21,7 @@ assert 'renderSkyBackground(' not in effects
 hook = source[source.index('    template<class Capture,class Draw> HRESULT drawHook('):]
 hook = hook[:hook.index('    // 0.3.154: blob shadow claim')]
 assert hook.count('composeSkyBackground();') == 2
-assert hook.index('composeSkyBackground();') < hook.index('spellDraw(') < hook.index('const HRESULT hr=waterMrtDraw(')
+assert hook.index('composeSkyBackground();') < hook.index('spellDraw(') < hook.index('auto submit=[&]{return waterMrtDraw(')
 
 fixture = r'''
 #include <cassert>
