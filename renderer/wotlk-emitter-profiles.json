@@ -35,6 +35,44 @@
     ]
   },
   "profiles": {
+    "world\\expansion01\\doodads\\generic\\draenei\\tempestkeep\\narru_crystal_corrupted_no_lightning.m2": {
+      "asset_sha256": "442b1b5c4a5d7e2d8c75b9b2f03c470fc859cad1cdb9005a13c3e6290b915668",
+      "family": "wotlk_energy",
+      "position": [0, -0.067, -3.2],
+      "position_basis": "Two fill points follow the crystal axis. The shadowed point sits outside the near face, preserving red light at the base and reducing spill on the far stone in The Eye.",
+      "rgb": [1, 0.262, 0.262],
+      "intensity": 0.79,
+      "start": 1,
+      "end": 6.2,
+      "max_world_end": 23,
+      "casts_shadows": false,
+      "emitters": [
+        {
+          "position": [0, -0.067, -3.2],
+          "rgb": [1, 0.262, 0.262],
+          "intensity": 0.79,
+          "start": 1,
+          "end": 6.2,
+          "casts_shadows": false
+        },
+        {
+          "position": [0, 0.95, -1.4],
+          "rgb": [1, 0.262, 0.262],
+          "intensity": 1.16,
+          "start": 0.8,
+          "end": 5.8,
+          "casts_shadows": true
+        },
+        {
+          "position": [0, 0.15, 2.25],
+          "rgb": [1, 0.262, 0.262],
+          "intensity": 0.60,
+          "start": 0.8,
+          "end": 5.2,
+          "casts_shadows": false
+        }
+      ]
+    },
     "world\\expansion01\\doodads\\silvermyst\\crystals\\silvermystcrystalsmall02.m2": {
       "asset_sha256": "c1b5355ed29c7472f5f2ab99d46c5c1f44e8875db2830c1668d562ffd00e1a6e",
       "family": "wotlk_energy",
