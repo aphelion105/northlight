@@ -21,8 +21,8 @@ installed art layer). Steps, each on the previous step's archive, as the HD chai
 8. weather_textures  procedural rain streak (1:16), red rain and snow flake (1:2) BLPs
    (build_weather_textures), replacing the client's; generated, no client bytes. Plus the client's
    weather mist puffs resampled to 1:4 (the renderer's signature to skip them in rain)
-9. atrium_flower_tint  reduce the baked tint of one overexposed Botanica planting in the
-   reviewed WMO revision.
+9. placement tints  reduce baked tints of reviewed overexposed placements in Botanica and
+   Sethekk Halls.
 
 Reviewed world-model emitters are supplied by world-cache/lights. Do not also inject
 them into patch-Z: the client's native lighting would add the same source a second time.
@@ -74,6 +74,15 @@ INPUTS_FILE = 'northlight-art-inputs.ini'
 ATRIUM_WMO = 'world\\wmo\\dungeon\\ol_tempestkeep\\tk_atrium.wmo'
 ATRIUM_WMO_SHA256 = 'faa0ce096ab2e85e4a38e629d248f019fd647822397d0de8d20c47605f4f6e57'
 ATRIUM_FLOWER_TINT_OFFSET = 33232  # MODD[515] BGRA, silvermoonflower02
+SETHEKK_WMO = 'world\\wmo\\dungeon\\ol_auchindoun\\demon_wing.wmo'
+SETHEKK_WMO_SHA256 = '38a99ee06be4e309d275ebb6a7daa38e824fc6c6fbc9c01223d3868db1715117'
+SETHEKK_MODD_OFFSET = 9880
+SETHEKK_GREEN_RUG_TINTS = {
+    569: (255, 181, 117, 255),
+    584: (255, 199, 94, 255),
+    1213: (255, 191, 111, 255),
+    1303: (255, 218, 95, 255),
+}
 
 
 @contextlib.contextmanager
@@ -143,26 +152,45 @@ def unchanged_files(payload, assets):
     return sorted(unchanged)
 
 
-def atrium_flower_tint(assets):
-    """Apply the reviewed placement tint only to the exact source WMO revision."""
-    step = {'step': 'atrium_flower_tint', 'asset': ATRIUM_WMO, 'placement': 515}
+def patch_placement_tints(assets, step, expected_sha256, edits):
+    """Apply placement colours only against the reviewed source WMO."""
+    asset = step['asset']
     try:
-        original = assets.read(ATRIUM_WMO)
+        original = assets.read(asset)
     except (FileNotFoundError, ReadError):
         step['skipped'] = 'Source WMO unavailable'
         return {}, step
     digest = hashlib.sha256(original).hexdigest()
     step['source_sha256'] = digest
-    if digest != ATRIUM_WMO_SHA256:
+    if digest != expected_sha256:
         step['skipped'] = 'Unreviewed WMO revision'
         return {}, step
-    offset = ATRIUM_FLOWER_TINT_OFFSET
-    before = bytes((209, 113, 114, 255))
-    after = bytes((4, 2, 2, 255))
-    if original[offset:offset + 4] != before:
-        raise ValueError('Unexpected Botanica flower placement colour')
-    step.update(before_bgra=list(before), after_bgra=list(after))
-    return {ATRIUM_WMO: original[:offset] + after + original[offset + 4:]}, step
+    patched = bytearray(original)
+    for offset, before, after in edits:
+        if original[offset:offset + 4] != bytes(before):
+            raise ValueError(f'Unexpected placement colour at {offset} in {asset}')
+        patched[offset:offset + 4] = bytes(after)
+    return {asset: bytes(patched)}, step
+
+
+def atrium_flower_tint(assets):
+    before = (209, 113, 114, 255)
+    after = (4, 2, 2, 255)
+    step = {'step': 'atrium_flower_tint', 'asset': ATRIUM_WMO, 'placement': 515}
+    payload, step = patch_placement_tints(assets, step, ATRIUM_WMO_SHA256, [(ATRIUM_FLOWER_TINT_OFFSET, before, after)])
+    if payload:
+        step.update(before_bgra=list(before), after_bgra=list(after))
+    return payload, step
+
+
+def sethekk_green_rug_tint(assets):
+    after = (46, 36, 16, 255)
+    step = {'step': 'sethekk_green_rug_tint', 'asset': SETHEKK_WMO,
+            'placements': [{'index': index, 'before_bgra': list(before), 'after_bgra': list(after)}
+                           for index, before in SETHEKK_GREEN_RUG_TINTS.items()]}
+    edits = [(SETHEKK_MODD_OFFSET + index * 40 + 36, before, after)
+             for index, before in SETHEKK_GREEN_RUG_TINTS.items()]
+    return patch_placement_tints(assets, step, SETHEKK_WMO_SHA256, edits)
 
 
 def write_archive(path, payload):
@@ -264,9 +292,10 @@ def build(client, output, world_cache, locale=None, letter='z', archives='all', 
         textures.update(build_weather_textures.mist_textures(assets.read, decode_blp))   # 0.3.199 (rain mist)
         payload.update(textures)
         report['steps'].append({'step': 'weather_textures', 'files': sorted(textures)})
-        tint_payload, tint_step = atrium_flower_tint(assets)
-        payload.update(tint_payload)
-        report['steps'].append(tint_step)
+        for review_tint in (atrium_flower_tint, sethekk_green_rug_tint):
+            tint_payload, tint_step = review_tint(assets)
+            payload.update(tint_payload)
+            report['steps'].append(tint_step)
         report['steps'].append({'step': 'world_model_lights', 'skipped': 'Rendered from world-cache/lights'})
         last = None   # the payload is no longer a step's archive
         unchanged = unchanged_files(payload, assets)

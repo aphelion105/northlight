@@ -45,6 +45,15 @@ report = {}
 model_steps = {'world_model_lights', 'equipment_model_lights', 'spell_model_lights',
                'creature_model_lights', 'glue_model_lights', 'mount_model_lights', 'gameobject_model_lights'}
 metadata = {world_emitter_index.ARCHIVE_PATH, build_art_layer.OWNER_FILE}
+tint_edits = {
+    'atrium_flower_tint': {33232: ((209, 113, 114, 255), (4, 2, 2, 255))},
+    'sethekk_green_rug_tint': {
+        32676: ((255, 181, 117, 255), (46, 36, 16, 255)),
+        33276: ((255, 199, 94, 255), (46, 36, 16, 255)),
+        58436: ((255, 191, 111, 255), (46, 36, 16, 255)),
+        62036: ((255, 218, 95, 255), (46, 36, 16, 255)),
+    },
+}
 
 
 def sky_payload_files(names):
@@ -78,12 +87,14 @@ def model_checks(view, folder, result):
     view_files = tables | set(view_textures)
     sky_files = sky_payload_files(result['files'])
     assert all(n.lower().endswith(('.m2','.skin','.anim','.blp','.dbc')) for n in sky_files)
-    tint_step, = (s for s in result['steps'] if s['step'] == 'atrium_flower_tint')
-    tint_asset = build_art_layer.ATRIUM_WMO
-    if 'skipped' not in tint_step:
-        view_files.add(tint_asset)
-    else:
-        assert tint_asset not in result['files']
+    tint_steps = {s['step']: s for s in result['steps'] if s['step'] in tint_edits}
+    assert tint_steps.keys() == tint_edits.keys()
+    for tint_step in tint_steps.values():
+        tint_asset = tint_step['asset']
+        if 'skipped' not in tint_step:
+            view_files.add(tint_asset)
+        else:
+            assert tint_asset not in result['files']
     view_files |= sky_files
     models = set(result['files']) - view_files - metadata
     assert metadata <= set(result['files']), result['files']
@@ -105,14 +116,19 @@ def model_checks(view, folder, result):
                     assert hashlib.sha256(blob).hexdigest() == result['files'][name]
                     if name.lower() == 'textures\\moon02.blp':
                         assert not any(decode_blp(blob,4096)[2]), 'Native moon texture stays transparent'
-                if tint_asset in view_files:
+                for name, tint_step in tint_steps.items():
+                    if 'skipped' in tint_step:
+                        continue
+                    tint_asset = tint_step['asset']
                     original = assets.read(tint_asset)
                     patched = archive.read(tint_asset)
-                    offset = build_art_layer.ATRIUM_FLOWER_TINT_OFFSET
                     assert hashlib.sha256(original).hexdigest() == tint_step['source_sha256']
                     assert hashlib.sha256(patched).hexdigest() == result['files'][tint_asset]
-                    assert original[offset:offset + 4] == bytes((209, 113, 114, 255))
-                    assert patched == original[:offset] + bytes((4, 2, 2, 255)) + original[offset + 4:]
+                    expected = bytearray(original)
+                    for offset, (before, after) in tint_edits[name].items():
+                        assert original[offset:offset + 4] == bytes(before)
+                        expected[offset:offset + 4] = bytes(after)
+                    assert patched == expected
                 for name, data in view_textures.items():
                     assert (assets.read(name) if name in dropped else archive.read(name)) == data
                 payload = archive.read(world_emitter_index.ARCHIVE_PATH)
@@ -145,7 +161,7 @@ stock = out / 'stock'
 shutil.rmtree(stock, ignore_errors=True)
 r = build_art_layer.build(client, stock, cache, archives='stock')
 stock_models = model_checks('stock', stock, r)
-skipped = {s['step']: s['skipped'] for s in r['steps'] if 'skipped' in s and s['step'] not in model_steps | {'atrium_flower_tint'}}
+skipped = {s['step']: s['skipped'] for s in r['steps'] if 'skipped' in s and s['step'] not in model_steps | tint_edits.keys()}
 assert set(skipped) == {'orgrimmar', 'outdoor_sun', 'outdoor_moon'}, r['steps']
 sky_skipped = {s['step']: s['sky_clone_skipped'] for s in r['steps'] if 'sky_clone_skipped' in s}
 assert set(sky_skipped) == {'mulgore', 'stormwind'}, r['steps']
