@@ -191,6 +191,18 @@
       "max_world_end": 18,
       "casts_shadows": true
     },
+    "world\\expansion01\\doodads\\hellfirecitadel\\passivedoodads\\torches\\hellfire_gastorch01.m2": {
+      "asset_sha256": "1296d498ac0d3d49a0f7b300c122d297656276d1c4483369a762c355ce6ca720",
+      "family": "wotlk_fire",
+      "position": [-0.0011720091570168734, -1.5262620449066162, 1.7491426467895508],
+      "position_basis": "At the base of the blue jet. Paired Shattered Halls captures verify cool light on the stone beside the nozzle and preserve the flame colour.",
+      "rgb": [0.13, 0.56, 1],
+      "intensity": 0.60,
+      "start": 1,
+      "end": 6.6,
+      "max_world_end": 6.6,
+      "casts_shadows": true
+    },
     "world\\expansion02\\doodads\\generic\\scourge\\sc_brazier1_long_orange.m2": {
       "asset_sha256": "deca4107a2d3759d21d0d7aceeaed454f5fbfbf3b2e38e8ea30f89b635d79f91",
       "family": "wotlk_fire",
