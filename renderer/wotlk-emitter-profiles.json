@@ -35,6 +35,36 @@
     ]
   },
   "profiles": {
+    "world\\expansion01\\doodads\\generic\\naga\\distiller\\na_distiller.m2": {
+      "asset_sha256": "d3ab34d9666efb3372e19d8e3535cb10a04c221a8126e88b4ed73ab465a8c094",
+      "family": "wotlk_energy",
+      "position": [1.62, 1.56, 1.62],
+      "position_basis": "Just outside the four lower violet inserts. The Serpentshrine Cavern check shows light on the bronze housing and nearby floor, with shadow from the frame.",
+      "rgb": [0.76, 0.1, 1],
+      "intensity": 0.47,
+      "start": 0.45,
+      "end": 5.2,
+      "max_world_end": 5.2,
+      "casts_shadows": true,
+      "emitters": [
+        {"position": [1.62, 1.56, 1.62], "rgb": [0.76, 0.1, 1], "intensity": 0.47, "start": 0.45, "end": 5.2},
+        {"position": [1.62, -1.52, 1.62], "rgb": [0.76, 0.1, 1], "intensity": 0.47, "start": 0.45, "end": 5.2},
+        {"position": [-1.64, 1.56, 1.62], "rgb": [0.76, 0.1, 1], "intensity": 0.47, "start": 0.45, "end": 5.2},
+        {"position": [-1.64, -1.52, 1.62], "rgb": [0.76, 0.1, 1], "intensity": 0.47, "start": 0.45, "end": 5.2}
+      ]
+    },
+    "world\\expansion01\\doodads\\generic\\bloodelf\\cookpot\\be_cookpot01.m2": {
+      "asset_sha256": "ac3fb4d68eb92f2c319c553ebe7e8c312c9e527133679fd0cc63c29842882646",
+      "family": "wotlk_energy",
+      "position": [-0.02, -0.011, 0.25],
+      "position_basis": "Inside the blue crystal below the bowl. The close point lights the floor around the feet and preserves the white steam above the bowl.",
+      "rgb": [0.28, 0.77, 1],
+      "intensity": 0.32,
+      "start": 0.3,
+      "end": 4.2,
+      "max_world_end": 4.6,
+      "casts_shadows": true
+    },
     "world\\expansion01\\doodads\\generic\\draenei\\tempestkeep\\narru_crystal_corrupted_no_lightning.m2": {
       "asset_sha256": "442b1b5c4a5d7e2d8c75b9b2f03c470fc859cad1cdb9005a13c3e6290b915668",
       "family": "wotlk_energy",
