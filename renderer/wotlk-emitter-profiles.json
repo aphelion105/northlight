@@ -10,6 +10,36 @@
     }
   },
   "profiles": {
+    "world\\kalimdor\\kalidar\\passivedoodads\\moonwellwater\\moowellwaterfx.m2": {
+      "family": "blue_moonwell",
+      "asset_sha256": "179771b482774588d8e3266e5a3ce383e499b179e7c5d8634d6a2d61edc8ccca",
+      "position": [
+        0,
+        0,
+        1.85
+      ],
+      "rgb": [
+        0.35,
+        0.62,
+        1
+      ],
+      "intensity": 0.82,
+      "start": 1.5,
+      "end": 11,
+      "position_basis": "Within the lower blue beam, high enough to reach the stone rim. The stock and installed assets share the same water vertices and WMO child transform.",
+      "casts_shadows": false,
+      "variants": {
+        "e10f97b2156d16301d29af280dc8a8424acf475a510d90e6e5dc8763b7bd1dc9": {
+          "asset": "Installed patch-D visual replacement",
+          "position": [
+            0,
+            0,
+            1.85
+          ],
+          "position_basis": "Water vertices and attachment match the stock model and use the same height within the lower blue beam."
+        }
+      }
+    },
     "world\\expansion02\\doodads\\dalaran\\dalaran_sconce_indoor_01.m2": {
       "asset_sha256": "b0714c55c58c08cbd8112241a0de1f8a9ba53e754c16a0cb2a0109258a1ea811",
       "family": "wotlk_compact_source",

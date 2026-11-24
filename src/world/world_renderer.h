@@ -2103,15 +2103,24 @@ public:
         return true;
     }
     void pollMaterialProfile(){materialPixelAudit.poll();}
-    void setMaterialDetail(IDirect3DTexture9* texture,float gain,float distance,IDirect3DTexture9* occlusion=nullptr,float occlusionDistance=8,bool captureResident=false){materialDetail=texture;materialBumpGain=gain;materialBumpDistance=distance;materialOcclusion=occlusion;materialOcclusionDistance=occlusionDistance;materialCaptureResident=captureResident||texture!=nullptr;}
+    bool materialFoliageCaptured=false;
+    void setMaterialDetail(IDirect3DTexture9* texture,float gain,float distance,IDirect3DTexture9* occlusion=nullptr,float occlusionDistance=8,bool captureResident=false,bool foliageCaptured=false){
+        materialDetail=texture;materialBumpGain=gain;materialBumpDistance=distance;
+        materialOcclusion=occlusion;materialOcclusionDistance=occlusionDistance;
+        materialCaptureResident=captureResident||texture!=nullptr;materialFoliageCaptured=texture&&foliageCaptured;
+    }
+    bool solidMaterialSpecularWanted()const{
+        return paletteFrameValid&&NorthlightQuality::foreverCelestial(quality)&&
+            (framePalette.sunSurfaceSpecular>0||framePalette.sunWetStoneSpecular>0||framePalette.localSurfaceSpecular>0);
+    }
     void setHdrBaseCompositeEnabled(bool enabled){composite.permitBase(enabled);}
     void setTemporalZeroWeightEnabled(bool enabled){history.permitZeroWeight(enabled);}
     void setModelNormals(IDirect3DTexture9* texture){modelNormals=texture;}
     static constexpr float MoonTerrainSpecularDistance=128.f;
-    float sunSurfaceSpecularGain()const{
+    float sunSurfaceSpecularGain(float wetness=0)const{
         if(!hasContext()||!celestialValid||!paletteFrameValid||!NorthlightQuality::foreverCelestial(quality)||
            NorthlightGI::dot(sourceColors[0],sourceColors[0])<=1e-10f)return 0;
-        return framePalette.sunSurfaceSpecular*std::clamp((sourceWeights[0]-.6f)*2.5f,0.f,1.f);
+        return std::max(framePalette.sunSurfaceSpecular,framePalette.sunWetStoneSpecular*wetness)*std::clamp((sourceWeights[0]-.6f)*2.5f,0.f,1.f);
     }
     float moonTerrainSpecularGain()const{
         return hasContext()&&celestialValid&&paletteFrameValid&&NorthlightQuality::foreverCelestial(quality)&&
@@ -3874,11 +3883,23 @@ public:
         const unsigned shadowDiagnosticCapture=debug==1&&gpuDiagnosticArmed&&gpuDiagnosticCaptures<4?gpuDiagnosticCaptures+1:0;
         const unsigned diagnosticCapture=normalDiagnosticCapture?gpuDiagnosticCaptures+1:shadowDiagnosticCapture;
         const float moonTerrainSpecular=materialWanted&&materialBumpGain>0?moonTerrainSpecularGain():0.f;
-        float sunSurfaceSpecular=materialWanted&&materialBumpGain>0?sunSurfaceSpecularGain():0.f;
-        if(sunSurfaceSpecular>0&&!composite.prepareSolar(d,hdrMode,
-            [&](const char* message){deferLogf("%s",message);}))sunSurfaceSpecular=0;
+        const bool materialSpecular=materialWanted&&materialBumpGain>0;
+        float stoneWetness=0;
+        if(materialSpecular&&paletteFrameValid&&framePalette.sunWetStoneSpecular>0&&sourceWeights[0]>.6f){
+            const float rain=weatherEffects().rain;
+            if(rain>0&&supplementalWeatherOutdoors())stoneWetness=rain;
+        }
+        float sunSurfaceSpecular=materialSpecular?sunSurfaceSpecularGain(stoneWetness):0.f;
+        const unsigned foliageSource=sourceWeights[1]>sourceWeights[0]?1:0;
+        const float foliageGain=materialWanted&&materialFoliageCaptured&&moonTerrainSpecular==0&&paletteFrameValid&&
+            celestialValid&&NorthlightQuality::foreverCelestial(quality)
+            ?framePalette.foliageTransmission[foliageSource]*sourceWeights[foliageSource]*
+                (foliageSource?-1.f:std::clamp((.72f-sourceDirections[0].z)*2.2f,0.f,1.f)):0.f;
+        const bool solarMaterial=(sunSurfaceSpecular>0||foliageGain!=0)&&composite.prepareSolar(d,hdrMode,
+            [&](const char* message){deferLogf("%s",message);});
+        if(!solarMaterial)sunSurfaceSpecular=0;
         const auto material=composite.selectMaterial(materialWanted,hdrMode,hdrCombineAllowed&&moonTerrainSpecular==0,
-            diagnosticCapture!=0,sunSurfaceSpecular>0);
+            diagnosticCapture!=0,solarMaterial);
         const bool fullMaterial=material.full,combinedMaterial=material.combined;
         const auto wantedFormat=hdrMode?D3DFMT_A16B16G16R16F:fmt;
         if(!composite.prepareScratch(d,w,h,wantedFormat,!foldScene||(fullMaterial&&!combinedMaterial),materialCaptureResident,
@@ -4198,7 +4219,8 @@ public:
             foldScene,hdrBase,screenFallbacks.dither(),screenFallbacks.zero(),history.produced().light.texture,
             fogResult.image.texture?fogResult.image.texture:screenFallbacks.ao(),screenLighting.raw().texture,effectCoverage,materialOcclusion,
             materialDetail,worldNormals.texture(),screenLighting.prelit().texture,textures[3],textures[7],profile,materialProfile,
-            localCapture,NorthlightWorldLocalLighting::LocalDirectInputs,regionalFog.texture()
+            localCapture,NorthlightWorldLocalLighting::LocalDirectInputs,regionalFog.texture(),
+            {stoneWetness,framePalette.sunTerrainIce,framePalette.sunTerrainSnow,foliageGain}
         };
         const auto composition=composite.draw(d,compositeInputs,rainMask,
              [&](HRESULT hr,const char* name){return check(hr,name);},[&]{

@@ -768,7 +768,7 @@
     }
     // sharedState belongs only to an uninterrupted batch with identical inputs
     // and settings. Standalone and diagnostic calls retain complete setup.
-    bool renderPointLighting(IDirect3DTexture9* depth,IDirect3DTexture9* waterMask,UINT w,UINT h,float nearZ,float farZ,float minZ,float maxZ,float strength,float sunlitCut,float shadowStrength,float sunEnergy,NorthlightLightingCapture::Capture* capture=nullptr,bool* sharedState=nullptr,NorthlightLightingCapture::Capture* inputs=nullptr){
+    bool renderPointLighting(IDirect3DTexture9* depth,IDirect3DTexture9* waterMask,UINT w,UINT h,float nearZ,float farZ,float minZ,float maxZ,float strength,float sunlitCut,float shadowStrength,float sunEnergy,NorthlightLightingCapture::Capture* capture=nullptr,bool* sharedState=nullptr,NorthlightLightingCapture::Capture* inputs=nullptr,float reflectionGain=0){
         if(!pointSlot().ready)return false;
         if(pointCubeIsWhite(pointSlot())){++pointWork.whiteLightingSkipped;return true;}
         NorthlightWorldPointLighting::Inputs pass{depth,waterMask,worldNormals.texture(),screenLighting.baseline().texture,
@@ -784,6 +784,7 @@
         constants[11][0]=sourceDirections[0].x;constants[11][1]=sourceDirections[0].y;constants[11][2]=sourceDirections[0].z;
         const auto* origin=pointSlot().cubeOrigin();
         for(unsigned i=0;i<3;++i)pass.cubeOffset[i]=origin[i]-constants[7][i];
+        pass.cubeOffset[3]=reflectionGain;
         pass.bump[0]=materialDetail?materialBumpGain:0.f;pass.bump[1]=materialBumpDistance;
         return pointLighting.draw(d,pass,quality.softShadows,sharedState,localLighting.scissor(),localScissorView,
             [&](HRESULT hr,const char* operation){return pointCheck(hr,operation);},

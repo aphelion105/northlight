@@ -230,7 +230,7 @@
         if(world&&debugMode==0){
             auroraSources.end();
             traceWorld=0;
-            world->setMaterialDetail(autoBump?autoBump->texture():nullptr,autoBump?autoBump->gain():0.f,autoBump?autoBump->distance():48.f,autoBump?autoBump->occlusionTexture():nullptr,autoBump?autoBump->occlusionDistance():8.f,autoBump&&autoBump->active()&&autoBump->hasCaptureResources());
+            world->setMaterialDetail(autoBump?autoBump->texture():nullptr,autoBump?autoBump->gain():0.f,autoBump?autoBump->distance():48.f,autoBump?autoBump->occlusionTexture():nullptr,autoBump?autoBump->occlusionDistance():8.f,autoBump&&autoBump->active()&&autoBump->hasCaptureResources(),autoBump&&autoBump->capturedFoliage());
             world->setModelNormals(modelNormals?modelNormals->texture():nullptr);
             world->setNameMask(maskOn?worldDepth:nullptr);
             world->setEffectCoverage(coverage,effectCoverage.hasEmission());

@@ -193,7 +193,7 @@ float4 LocalShadowResolve(float2 uv:TEXCOORD0):COLOR0 {
     return float4(v,v,v,1);
 }
 // 0: PCF; 1: legacy resolved capture; 2: fused PCSS.
-float4 localLightingValue(float2 uv,int filter) {
+float4 localLightingValue(float2 uv,int filter,bool glint=false) {
     float2 screen=uv;
     uv=localDepthUV(uv);float depth=localDepth(uv);
     if(depth>=.99999)return 0;
@@ -223,12 +223,20 @@ float4 localLightingValue(float2 uv,int filter) {
         visibility=localVisibilityInRange(ray,geometricNormal,length(ray),filter==2);
     }
     float occlusion=1-visibility;
-    return float4(-contribution*(occlusion*relevance*LocalDepthInfo.z),0);
+    float3 corrected=-contribution*(occlusion*relevance*LocalDepthInfo.z);
+    if(glint){
+        const float response=materialLampResponse(uv,localDistance(depth),normalize(LocalInverseView[3].xyz-p),n,-delta*inv);
+        const float visible=1-occlusion*saturate(LocalDepthInfo.z);
+        corrected+=LocalColor.rgb*(atten*atten*LocalGain.x*(1-LocalGain.y*sunlit)*response*visible*LocalShadowOffset.w);
+    }
+    return float4(corrected,0);
 }
 float4 LocalLighting(float2 uv:TEXCOORD0):COLOR0{return localLightingValue(uv,0);}
 // Retained for replaying captures from the former two-pass point pipeline.
 float4 LocalLightingSoft(float2 uv:TEXCOORD0):COLOR0{return localLightingValue(uv,1);}
 float4 LocalLightingPcss(float2 uv:TEXCOORD0):COLOR0{return localLightingValue(uv,2);}
+float4 LocalLightingGlint(float2 uv:TEXCOORD0):COLOR0{return localLightingValue(uv,0,true);}
+float4 LocalLightingGlintPcss(float2 uv:TEXCOORD0):COLOR0{return localLightingValue(uv,2,true);}
 
 // Native material endpoints are evaluated by the original VS/PS programs.
 // Mixing their results preserves authored saturation, fog and every other

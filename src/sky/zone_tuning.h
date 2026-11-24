@@ -145,6 +145,10 @@ inline std::string valuesJson(const Values& v){
     }
     one("moon_terrain_specular",p.moonTerrainSpecular);
     one("sun_surface_specular",p.sunSurfaceSpecular);
+    one("sun_wet_stone_specular",p.sunWetStoneSpecular);
+    one("sun_terrain_ice",p.sunTerrainIce);one("sun_terrain_snow",p.sunTerrainSnow);
+    one("sun_foliage_transmission",p.foliageTransmission[0]);one("moon_foliage_transmission",p.foliageTransmission[1]);
+    one("local_surface_specular",p.localSurfaceSpecular);
     one("terrain_radius",v.terrainRadius);one("ground_fog_day_scale",v.fogDay);one("ground_fog_night_scale",v.fogNight);one("ground_fog_day_add",v.fogDayAdd);o+="\"ground_fog_night_add\":"+jsonNumber(v.fogNightAdd)+"}";
     return o;
 }

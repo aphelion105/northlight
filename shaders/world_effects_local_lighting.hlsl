@@ -31,11 +31,22 @@ float4 regionalFogAt(float2 uv,out float coverage) {
         dot(weights,float4(a.y,b.y,c.y,d.y)),dot(weights,float4(a.z,b.z,c.z,d.z)),
         dot(valid,float4(a.w,b.w,c.w,d.w))*inv);
 }
+// The index and gain of one opted-in source share the spare batch constant.
+float4 ReflectingLamp[2] : register(c157);
+float3 directLampGlint(float2 uv,float3 p,float3 n,float z){
+    float4 lamp=ReflectingLamp[0],color=ReflectingLamp[1];
+    float3 toLight=lamp.xyz-p;
+    float inv=rsqrt(max(dot(toLight,toLight),.0025));
+    float reach=saturate((lamp.w-1/inv)*color.w);
+    [branch]if(reach<=0)return 0;
+    float response=materialLampResponse(uv,z,normalize(Camera.xyz-p),n,toLight*inv,LocalLightInfo.w<0);
+    return color.rgb*(reach*reach*response*abs(LocalLightInfo.w));
+}
 // Direct light from the nearest authored local sources (lanterns, braziers,
 // fires) on nearby surfaces. The game only glows the lamp model itself; this
 // lights the ground and walls around it. The separate point passes subtract
 // exactly the occluded contribution of each selected shadow-casting source.
-float4 localDirectValue(float2 uv,int lightCount) {
+float4 localDirectValue(float2 uv,int lightCount,bool reflection) {
     float2 halfUV=uv;
     uv=depthUV(uv);
     float d=normalizedDepth(uv);
@@ -57,14 +68,17 @@ float4 localDirectValue(float2 uv,int lightCount) {
         float lambert=saturate(dot(n,toLight)*inv);
         result+=LocalLightColor[i].rgb*(reach*reach*lambert);
     }
+    if(reflection)result+=directLampGlint(uv,p,n,viewDistance(d));
     return float4(result*(LocalLightInfo.y*(1-LocalLightInfo.z*sunlit)),0);
 }
-float4 LocalDirect(float2 uv:TEXCOORD0):COLOR0{return localDirectValue(uv,8);}
-float4 LocalDirect1(float2 uv:TEXCOORD0):COLOR0{return localDirectValue(uv,1);}
+float4 LocalDirect(float2 uv:TEXCOORD0):COLOR0{return localDirectValue(uv,8,false);}
+float4 LocalDirect1(float2 uv:TEXCOORD0):COLOR0{return localDirectValue(uv,1,false);}
+float4 LocalDirectGlint(float2 uv:TEXCOORD0):COLOR0{return localDirectValue(uv,8,true);}
+float4 LocalDirect1Glint(float2 uv:TEXCOORD0):COLOR0{return localDirectValue(uv,1,true);}
 // Sixteen lamps in one pass (local_light_batches.h wide(): two neighbouring 8-lamp batches whose joint rect costs less than
 // both): the same term as LocalDirect per lamp, the lamps in entry uniforms c84..c99 (position, w attenuation end) and
 // c100..c115 (colour, w 1/(end-start)); c73..c78 retain material controls; unused slots are zero. c52 (LocalLightInfo.yz) and s12 as for LocalDirect.
-float4 LocalDirect16(float2 uv:TEXCOORD0,uniform float4 LampPos[16]:register(c84),uniform float4 LampColor[16]:register(c100)):COLOR0 {
+float4 localDirectWide(float2 uv,float4 LampPos[16],float4 LampColor[16],bool reflection) {
     float2 halfUV=uv;
     uv=depthUV(uv);
     float d=normalizedDepth(uv);if(d>=.99999||waterDistance(uv,d)>0)return 0;
@@ -79,7 +93,14 @@ float4 LocalDirect16(float2 uv:TEXCOORD0,uniform float4 LampPos[16]:register(c84
         float lambert=saturate(dot(n,toLight)*inv);
         result+=LampColor[i].rgb*(reach*reach*lambert);
     }
+    if(reflection)result+=directLampGlint(uv,p,n,viewDistance(d));
     return float4(result*(LocalLightInfo.y*(1-LocalLightInfo.z*sunlit)),0);
+}
+float4 LocalDirect16(float2 uv:TEXCOORD0,uniform float4 LampPos[16]:register(c84),uniform float4 LampColor[16]:register(c100)):COLOR0 {
+    return localDirectWide(uv,LampPos,LampColor,false);
+}
+float4 LocalDirect16Glint(float2 uv:TEXCOORD0,uniform float4 LampPos[16]:register(c84),uniform float4 LampColor[16]:register(c100)):COLOR0 {
+    return localDirectWide(uv,LampPos,LampColor,true);
 }
 // Only batches containing an actual discharge use the inverse-square variant.
 float4 LocalFlash(float2 uv:TEXCOORD0):COLOR0 {

@@ -266,9 +266,11 @@ float4 WorldUnlitCompositeHdr(float2 uv:TEXCOORD0,float2 pixel:VPOS):COLOR0 {flo
 float4 WorldPrelitComposite(float2 uv:TEXCOORD0,float2 pixel:VPOS):COLOR0 {float3 effect;return worldComposite(uv,pixel,true,false,FogBuffer,effect,true);}
 float4 WorldPrelitCompositeHdr(float2 uv:TEXCOORD0,float2 pixel:VPOS):COLOR0 {float3 effect;return worldComposite(uv,pixel,true,true,FogBuffer,effect,true);}
 
+// c116..153 are owned by imported Forever fog.
+float4 MaterialResponse : register(c154); // wet stone, ice, snow, signed foliage transmission
 float moonTerrainSpecular(float2 uv,float distance,float3 position,float3 normal,float3 detail){
     float4 capture=tex2Dlod(BumpMaterial,float4(uv,0,0));
-    if(capture.r>=0||capture.a<=.02||abs(abs(capture.b)/max(capture.a,.02)-distance)>=max(.025,distance*.0015))return 0;
+    if(capture.r>=0||capture.g<0||!materialDepthMatches(capture,distance))return 0;
     float3 eye=-normalize(position);
     float3 light=MaterialDirection[1].xyz;
     float2 across=float2(-light.y,light.x);
@@ -292,18 +294,31 @@ float moonTerrainSpecular(float2 uv,float distance,float3 position,float3 normal
     float fade=saturate((MaterialColor[1].w-distance)*.0125);
     return lobe*grazing*ridge*grain*saturate(4*(normal.z-.65))*fade*MaterialDirection[1].w;
 }
-float sunSurfaceSpecular(float2 uv,float distance,float3 position,float3 normal,float3 detail){
+float3 surfaceLightResponse(float2 uv,float distance,float3 position,float3 normal,float3 detail,float3 occlusion){
     float4 capture=tex2Dlod(BumpMaterial,float4(uv,0,0));
+    if(!materialDepthMatches(capture,distance))return 0;
     bool terrain=capture.r<0;
-    if((!terrain&&capture.g>=0)||capture.a<=.02||
-       abs(abs(capture.b)/max(capture.a,.02)-distance)>=max(.025,distance*.0015))return 0;
-    float3 light=MaterialDirection[0].xyz;
+    bool structure=capture.g<0;
+    if(!terrain&&!structure)return 0;
     float3 eye=-normalize(position);
-    float3 halfVector=normalize(light+eye);
-    float lobe=pow(max(saturate(dot(normalize(detail),halfVector)),.00001),terrain?24:40);
-    float front=saturate(4*min(dot(normal,light),dot(normal,eye)));
     float fade=saturate((BumpControl.y-distance)/max(.25*BumpControl.y,1));
-    return lobe*front*fade*(terrain?.75:.48)*MaterialDirection[0].w;
+    if(terrain&&structure){
+        bool moon=MaterialResponse.w<0;
+        float3 light=(moon?MaterialDirection[1]:MaterialDirection[0]).xyz;
+        float3 color=(moon?MaterialColor[1]:MaterialColor[0]).rgb;
+        float back=saturate(-dot(eye,light));
+        float edge=1-.65*abs(dot(normal,eye));
+        return color*(back*back*edge*fade*abs(MaterialResponse.w)*(moon?occlusion.g:occlusion.r));
+    }
+    float3 light=MaterialDirection[0].xyz;
+    float3 halfVector=normalize(light+eye);
+    float power=terrain?24-8*MaterialResponse.y-12*MaterialResponse.z:40+60*MaterialResponse.x;
+    float lobe=pow(max(saturate(dot(detail,halfVector)),.00001),power);
+    // Ice spreads along the light axis. Snow keeps only a soft response from material relief.
+    float side=dot(eye.xy,float2(-light.y,light.x));
+    float finish=terrain?(.75-.32*MaterialResponse.z)*lerp(1,exp2(-22*side*side),MaterialResponse.y):(.48+.24*MaterialResponse.x);
+    float front=saturate(4*min(dot(normal,light),dot(normal,eye)));
+    return MaterialColor[0].rgb*(lobe*front*fade*finish*MaterialDirection[0].w*occlusion.r);
 }
 // Full-resolution material relighting. The base composition has already handled
 // shadows, GI, AO and fog; only the normal-dependent directional difference is
@@ -366,7 +381,7 @@ float4 materialComposite(float2 uv,bool hdrMode,float4 color,float3 effect,bool 
     float3 transmission=1-effect;
     float3 materialLight=normalScore<100?albedoT*(delta*visibility+cavity):0;
     [branch]if(terrainGlint){
-        if(solar)materialLight+=MaterialColor[0].rgb*(sunSurfaceSpecular(q,z,relative,normal,detail)*visibility*legacyT*occlusion.r);
+        if(solar)materialLight+=surfaceLightResponse(q,z,relative,normal,detail,occlusion)*(visibility*legacyT);
         else materialLight+=MaterialColor[1].rgb*(moonTerrainSpecular(q,z,relative,normal,detail)*visibility*legacyT*occlusion.g);
     }
     color.rgb=max(color.rgb+materialLight*tex2D(MaterialFog,uv).a*transmission,0);

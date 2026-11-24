@@ -17,6 +17,8 @@ class NorthlightWorldLocalLighting {
     IDirect3DPixelShader9 *localDirectPS=nullptr,*localDirect16PS=nullptr,*localFlashPS=nullptr;
     IDirect3DPixelShader9 *localFogPS=nullptr,*localFogCombinePS=nullptr,*localDirectSinglePS=nullptr;
     bool localDirectSingleRefused=false;
+    IDirect3DPixelShader9* localGlint_[3]={};
+    bool localGlintRefused_[3]={};
     IDirect3DSurface9* profileSplitSurface=nullptr;
     bool profileSplitFailed=false;
     NorthlightLocalLightScissor::DrawState scissor_;
@@ -51,6 +53,17 @@ class NorthlightWorldLocalLighting {
             if(FAILED(d->CreatePixelShader(kLocalDirect1Shader,&localDirectSinglePS))||!localDirectSinglePS){drop(localDirectSinglePS);localDirectSingleRefused=true;}
         }
         return localDirectSinglePS?localDirectSinglePS:localDirectPS;
+    }
+
+    IDirect3DPixelShader9* localGlintShader(IDirect3DDevice9* d,unsigned count){
+        const unsigned slot=count==1?0:count>NorthlightLocalLightSelection::DirectBatchSize?2:1;
+        if(!localGlint_[slot]&&!localGlintRefused_[slot]){
+            const DWORD* code[]={kLocalDirect1GlintShader,kLocalDirectGlintShader,kLocalDirect16GlintShader};
+            if(FAILED(d->CreatePixelShader(code[slot],&localGlint_[slot]))||!localGlint_[slot]){
+                drop(localGlint_[slot]);localGlintRefused_[slot]=true;
+            }
+        }
+        return localGlint_[slot];
     }
 
 public:
@@ -92,6 +105,7 @@ public:
         drop(localFlashPS);
         drop(localDirectSinglePS);
         localDirectSingleRefused=false;
+        for(unsigned i=0;i<3;++i){drop(localGlint_[i]);localGlintRefused_[i]=false;}
         drop(profileSplitSurface);
         profileSplitFailed=false;
         drop(localFogPS);
@@ -158,7 +172,17 @@ public:
                     const NorthlightLocalLightScissor::Rect* rects,const NorthlightLocalLightScissor::View& view,
                     float lampStrength,float lampSunlitCut,const float (&shadowTuning)[4],
                     NorthlightGpuProfile* profile,NorthlightLightingCapture::Capture* lightingCapture,
-                    NorthlightLocalLightTrace::Frame& trace,const Check& check){
+                    NorthlightLocalLightTrace::Frame& trace,const Check& check,int reflection=-1,float reflectionGain=0){
+        const auto batchReflection=[&](unsigned first,unsigned count){
+            if(reflection<int(first)||reflection>=int(first+count))return static_cast<IDirect3DPixelShader9*>(nullptr);
+            auto* shader=localGlintShader(d,count);
+            if(!shader)return shader;
+            const std::array<std::array<float,4>,2> lamp={localLights.position[reflection],localLights.color[reflection]};
+            return SUCCEEDED(d->SetPixelShaderConstantF(157,lamp[0].data(),2))?shader:nullptr;
+        };
+        // Negative gain requests the wide stone sheen for the tagged well source.
+        if(reflection>=0&&(localLights.sources[reflection].flags&NorthlightLocalLights::Moonwell))
+            reflectionGain=-std::min(1.f,reflectionGain*2.f);
         profileSplit(d,profile,target); /* terminate the preceding render pass before timing local batches */
         d->SetPixelShader(localDirectPS);d->SetRenderState(D3DRS_SCISSORTESTENABLE,NorthlightLocalLightScissor::Enabled);
         // s12 still holds current sun visibility from WorldLighting.
@@ -175,8 +199,10 @@ public:
             const auto& a=view.valid?rects[index]:whole;const auto& b=view.valid&&pair?rects[index+1]:whole;
             if(pair&&NorthlightLocalLightBatches::wide(a,b)){
                 const auto batch=localLights.directBatch<2*N>(firstLight);const auto joint=NorthlightLocalLightBatches::unite(a,b);
-                const float info[4]={float(batch.count),lampStrength,lampSunlitCut,0};
-                if(bound!=localDirect16PS){d->SetPixelShader(localDirect16PS);bound=localDirect16PS;}
+                auto* glint=batchReflection(firstLight,batch.count);
+                auto* shader=glint?glint:localDirect16PS;
+                const float info[4]={float(batch.count),lampStrength,lampSunlitCut,glint?reflectionGain:0.f};
+                if(bound!=shader){d->SetPixelShader(shader);bound=shader;}
                 d->SetPixelShaderConstantF(84,batch.position[0].data(),2*N);d->SetPixelShaderConstantF(100,batch.color[0].data(),2*N);
                 d->SetPixelShaderConstantF(52,info,1);++widePasses_;
                 const bool drawn=scissor_.apply(d,view,joint);const HRESULT hr=drawn?NorthlightScreen::drawViewportQuad(d,w/2,h/2):S_OK;
@@ -186,8 +212,9 @@ public:
                 firstLight+=2*N;continue;
             }
             const auto batch=localLights.directBatch<N>(firstLight);
-            const float info[4]={float(batch.count),lampStrength,lampSunlitCut,0};
-            const auto shader=flashBatch?localFlashPS:localDirectShader(d,batch.count);
+            auto* glint=flashBatch?nullptr:batchReflection(firstLight,batch.count);
+            const float info[4]={float(batch.count),lampStrength,lampSunlitCut,glint?reflectionGain:0.f};
+            const auto shader=flashBatch?localFlashPS:glint?glint:localDirectShader(d,batch.count);
             if(bound!=shader){d->SetPixelShader(shader);bound=shader;}
             d->SetPixelShaderConstantF(36,batch.position[0].data(),N);
             d->SetPixelShaderConstantF(44,batch.color[0].data(),N);

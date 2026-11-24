@@ -9,6 +9,12 @@ int main(int argc,char** argv) {
     std::vector<Light> lights;
     assert(readFile(fixture+"/Alpha.fgl",lights)&&lights.size()==3);
     assert(lights[0].position[0]==0&&lights[0].sourceId==1&&lights[1].sourceId==2);
+    Light well=lights[0];well.kind=3;well.flags=Moonwell;
+    assert(valid(well));
+    well.flags|=CastShadow;
+    assert(!valid(well));
+    well.flags=Moonwell;well.kind=2;
+    assert(!valid(well));
     for(int i=0;i<10;++i) {
         std::vector<Light> preserved=lights;
         assert(!readFile(fixture+"/bad"+std::to_string(i)+".fgl",preserved));
