@@ -2,7 +2,6 @@
 from array import array
 import hashlib
 from heapq import merge
-from itertools import pairwise
 import json
 import math
 import re
@@ -10,6 +9,7 @@ import struct
 import sys
 
 from capture_files import read_bytes
+from northrend_compat import pairwise, strict_zip
 
 
 FRAME_COUNT = 2
@@ -276,7 +276,7 @@ def compare_history(folders, size, frames, saved):
         if saved[0][str(frame)].keys() != saved[1][str(frame)].keys():
             raise ValueError(f'Compare the same light history inputs at Present {frame}')
         left, right = (history_images(folder, size, frame) for folder in folders)
-        for (name, (left_sha, a)), (_, (right_sha, b)) in zip(left, right, strict=True):
+        for (name, (left_sha, a)), (_, (right_sha, b)) in strict_zip(left, right):
             if (left_sha, right_sha) != tuple(item[str(frame)][name] for item in saved):
                 raise ValueError(f'Light history input changed after validation: Present {frame} {name}')
             if a is None or b is None:
@@ -383,7 +383,7 @@ def compare_gi(folders, size, frames, saved):
     result = {}
     for frame in frames:
         left, right = (gi_products(folder, size, frame) for folder in folders)
-        for observed, evidence in zip((left, right), saved, strict=True):
+        for observed, evidence in strict_zip((left, right), saved):
             if observed[0] != evidence[str(frame)]:
                 raise ValueError(f'GI evidence changed after validation at Present {frame}')
         metadata = {key: [left[0][key], right[0][key]] for key in ('mode', 'resident', 'atlas_serial', 'world_serial')
@@ -459,7 +459,7 @@ def directional_inputs(folder, size, frames):
 
 def compare_directional(folders, size, frames, saved):
     observed = [directional_inputs(folder, size, frames) for folder in folders]
-    if any(report != previous for report, previous in zip(observed, saved, strict=True)):
+    if any(report != previous for report, previous in strict_zip(observed, saved)):
         raise ValueError('Directional projection evidence changed after validation')
     reference, candidate = observed
     result = {}
@@ -477,7 +477,7 @@ def compare_directional(folders, size, frames, saved):
                 x, y = a[slot][name], b[slot][name]
                 if x != y:
                     differences[name] = ([x, y] if x is None or y is None else
-                                         {str(i): [u, v] for i, (u, v) in enumerate(zip(x, y, strict=True)) if u != v})
+                                         {str(i): [u, v] for i, (u, v) in enumerate(strict_zip(x, y)) if u != v})
             maps[str(slot)] = differences
         result[key] = {'anchor_differences': anchors, 'map_differences': maps,
                        'reference_only': sorted(a.keys() - b.keys()), 'candidate_only': sorted(b.keys() - a.keys())}
@@ -522,7 +522,7 @@ def local_light_input_frames(lines, last_present):
         if not line.startswith('LOCAL_INPUTS '):
             continue
         data = re.split(r' (\w+)=', line)
-        row = dict(zip(data[1::2], data[2::2], strict=True))
+        row = dict(strict_zip(data[1::2], data[2::2]))
         if not row.get('rendererFrame', '').isdecimal() or any(field not in row for field in LOCAL_LIGHT_INPUT_FIELDS):
             raise ValueError('Malformed local-light input audit')
         frame = int(row['rendererFrame'])
@@ -636,7 +636,7 @@ def gi_timeline(lines, first, last):
             raise ValueError(f'Malformed {prefix} timeline evidence')
         present, *data = map(int, match.groups())
         if first <= present <= last:
-            row = dict(zip(fields[1:], data, strict=True))
+            row = dict(strict_zip(fields[1:], data))
             events.setdefault(prefix, {}).setdefault(str(present), []).append(row)
     return events
 
@@ -716,9 +716,9 @@ def compare_directional_depth(live, stand, presents, frozen, *, allow_skipped=Fa
     report = {}
     for frame in presents:
         row = report[str(frame)] = {}
-        for (name, (live_sha, a)), (_, (stand_sha, b)) in zip(
+        for (name, (live_sha, a)), (_, (stand_sha, b)) in strict_zip(
                 directional_depth_images(live, frame, allow_skipped=allow_skipped),
-                directional_depth_images(stand, frame, allow_skipped=allow_skipped), strict=True):
+                directional_depth_images(stand, frame, allow_skipped=allow_skipped)):
             if name not in frozen.get(str(frame), {}) or frozen[str(frame)][name] != live_sha:
                 raise ValueError(f'Live {name} image changed after capture at Present {frame}')
             row[name] = {'live_sha256': live_sha, 'stand_sha256': stand_sha}
@@ -732,7 +732,7 @@ def compare_directional_depth(live, stand, presents, frozen, *, allow_skipped=Fa
 def pixel_difference(left, right, width, changed=None):
     count, first = 0, None
     if left != right:
-        for offset, (a, b) in enumerate(zip(left, right, strict=True)):
+        for offset, (a, b) in enumerate(strict_zip(left, right)):
             if a != b:
                 count += 1
                 if changed is not None:
@@ -835,7 +835,7 @@ def hdr_boundary_images(folder, frame, size):
     width, height = size
     header = struct.pack('<4s4I', b'FGR1', width, height, 113, 8)
     images = {}
-    for name, path in zip(names, paths, strict=True):
+    for name, path in strict_zip(names, paths):
         data = read_bytes(path)
         if len(data) != len(header) + width * height * 8 or not data.startswith(header):
             raise ValueError(f'Invalid {name} at Present {frame}')
@@ -853,9 +853,9 @@ def compare_hdr_boundaries(folders, frame, size, frozen):
 
 
 def compare_composition(folders, journals, frame, size, color):
-    products = [composition_products(folder, frame, size, journal) for folder, journal in zip(folders, journals, strict=True)]
+    products = [composition_products(folder, frame, size, journal) for folder, journal in strict_zip(folders, journals)]
     result = {}
-    for (name, left_receipt, left), (_, right_receipt, right) in zip(*products, strict=True):
+    for (name, left_receipt, left), (_, right_receipt, right) in strict_zip(*products):
         state = left_receipt['state'] if left_receipt['state'] == right_receipt['state'] else 'different-use'
         row = result[name] = {'live': left_receipt, 'stand': right_receipt, 'state': state}
         if state != 'current':
@@ -891,12 +891,12 @@ def compare(live, stand, size, frames, present_calls):
         folders = (live, stand)
         journals = [frame_journal(folder, frame, size) for folder in folders]
         primary = [dict(planes(folder, frame, size, quality, journal=rows))
-                   for folder, rows in zip(folders, journals, strict=True)]
+                   for folder, rows in strict_zip(folders, journals)]
         for name in PLANES:
             (left_hash, left), (right_hash, right) = (side[name] for side in primary)
             row[name] = {'live_sha256': left_hash, 'stand_sha256': right_hash, **pixel_difference(left, right, size[0])}
         native = [native_color_plane(folder, frame, size, quality, journal=rows)
-                  for folder, rows in zip(folders, journals, strict=True)]
+                  for folder, rows in strict_zip(folders, journals)]
         row['native_color'] = compare_native_color(*native, primary, size)
         scene_input = [scene_input_color_plane(folder, frame, size) for folder in folders]
         row['scene_input_color'] = compare_native_color(*scene_input, primary, size)

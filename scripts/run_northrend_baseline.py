@@ -25,6 +25,7 @@ import northrend_frame_timing as frame_timing
 import northrend_point_shadows as point_shadows
 import northrend_capture_work as capture_work
 import northrend_native_batches as native_batches
+from northrend_compat import strict_zip
 
 
 SPAWN = fixture.SPAWN
@@ -179,7 +180,7 @@ def world_clock_window(journal, packets, frames, minute):
     first, last = min(frames), max(frames)
     expected = struct.pack('<f', minute / 1440)
     observed = {}
-    for row, data in zip(journal, packets, strict=True):
+    for row, data in strict_zip(journal, packets):
         frame = row['frame']
         if row['trigger'] != 2 or not first <= frame <= last:
             continue
@@ -2465,7 +2466,7 @@ def compare_replays(args):
             modern = any('stand_world_checkpoints' in item for item in inputs)
             schedule = observed_world_checkpoints(capture_lines, frames, 'light_history_inputs' in live) if modern else None
             present = schedule[-1]['geometry'] if schedule else observed_geometry_start(capture_lines, frames, epoch_first)
-            for checkpoint, item in zip(checkpoints, inputs, strict=True):
+            for checkpoint, item in strict_zip(checkpoints, inputs):
                 if checkpoint is None:
                     continue
                 summary = item['trace_summary']
@@ -2482,7 +2483,7 @@ def compare_replays(args):
                 if call is None or checkpoint != expected:
                     raise ValueError('Replay geometry checkpoint differs from the authenticated capture Present')
         saved = []
-        for folder, item in zip(folders, inputs, strict=True):
+        for folder, item in strict_zip(folders, inputs):
             plan = load_json(folder / 'plan/validation.json', limit=32 << 20)
             if (plan['pass'] is not True or plan['authored_transport_only'] is not False or
                     plan['inputs'].get(str(trace)) != trace_hash or plan['summary'] != item['trace_summary'] or
@@ -2499,20 +2500,20 @@ def compare_replays(args):
             frame = row['present_ordinal']
             for name in parity.PLANES:
                 plane = row[name]
-                for label, key, evidence in zip(('reference', 'candidate'), ('live_sha256', 'stand_sha256'), saved, strict=True):
+                for label, key, evidence in strict_zip(('reference', 'candidate'), ('live_sha256', 'stand_sha256'), saved):
                     actual = plane.pop(key)
                     if actual != evidence[frame][name]['stand_sha256']:
                         raise ValueError(f'Replay image changed after validation: {label} Present {frame} {name}')
                     plane[f'{label}_sha256'] = actual
             for name in ('native_color', 'scene_input_color'):
                 color = row[name]
-                for label, key, evidence in zip(('reference', 'candidate'), ('live', 'stand'), saved, strict=True):
+                for label, key, evidence in strict_zip(('reference', 'candidate'), ('live', 'stand'), saved):
                     actual = color.pop(key)
                     frozen = evidence[frame].get(name)
                     if frozen is not None and actual != frozen['stand']:
                         raise ValueError(f"Replay {name.replace('_', ' ')} image changed after validation: {label} Present {frame}")
                     color[label] = actual
-            for label, key, evidence in zip(('reference', 'candidate'), ('live', 'stand'), saved, strict=True):
+            for label, key, evidence in strict_zip(('reference', 'candidate'), ('live', 'stand'), saved):
                 frozen = evidence[frame].get('composition')
                 for name, product in row['composition'].items():
                     actual = product.pop(key)
@@ -2530,7 +2531,7 @@ def compare_replays(args):
             if history_calls[0] != history_calls[1] or any(
                     not isinstance(window, dict) or not calls.keys() <= window.keys() or window.keys() != audit.keys() or
                     any(frame not in presents or presents[frame] != call for frame, call in window.items())
-                    for window, audit, presents in zip(history_calls, history_audits, selected, strict=True)):
+                    for window, audit, presents in strict_zip(history_calls, history_audits, selected)):
                 raise ValueError('Light history inputs do not certify the same Present calls')
             history_frames = sorted(map(int, history_calls[0]))
             report['light_history_trace_calls'] = history_calls[0]
@@ -2554,7 +2555,7 @@ def compare_replays(args):
         cube_match = True
         if all(audit_cubes):
             cube_inputs = [point_shadows.cube_products(folder / 'frame-parity', frames) for folder in folders]
-            if any(cubes != item['point_cubes'] for cubes, item in zip(cube_inputs, inputs, strict=True)):
+            if any(cubes != item['point_cubes'] for cubes, item in strict_zip(cube_inputs, inputs)):
                 raise ValueError('Point cube images changed after validation')
             cubes = point_shadows.compare_cubes(*cube_inputs)
             different = any(any(row['different_faces'].values()) for row in cubes.values())
@@ -2569,7 +2570,7 @@ def compare_replays(args):
         normal_match = True
         if all(audit_normals):
             normal_inputs = [parity.normal_hashes(folder / 'frame-parity', size, frames) for folder in folders]
-            if any(products != item['normal_products'] for products, item in zip(normal_inputs, inputs, strict=True)):
+            if any(products != item['normal_products'] for products, item in strict_zip(normal_inputs, inputs)):
                 raise ValueError('Normal images changed after validation')
             before, after = normal_inputs
             normal_match = before == after
@@ -2594,7 +2595,7 @@ def compare_replays(args):
                            'stand_crowd_bounds_operations', 'stand_point_adaptive_motion'))
         report.update(status='PASS' if comparison['match'] and cube_match and normal_match else 'FAIL', trace_sha256=trace_hash,
                       mode='A/A' if same_inputs else 'A/B', comparison=comparison)
-        for label, path, sha, item in zip(('reference', 'candidate'), paths, hashes, inputs, strict=True):
+        for label, path, sha, item in strict_zip(('reference', 'candidate'), paths, hashes, inputs):
             report[label] = {'path': str(path), 'sha256': sha, 'dll_sha256': item['stand_sha256'],
                              'identity': item['stand_identity']}
             if 'stand_quality' in item:

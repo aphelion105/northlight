@@ -2,6 +2,7 @@
 
 import math
 from statistics import median
+from northrend_compat import strict_zip
 
 
 def summarize(windows, *, background=False):
@@ -32,7 +33,7 @@ def summarize(windows, *, background=False):
             samples = [tick * 1000.0 / hz for tick in ticks]
             ordered = sorted(samples)
             expected = (sum(samples) / count, median(samples), ordered[113], ordered[-1])
-            for field, value in zip(('meanMs', 'p50Ms', 'p95Ms', 'maxMs'), expected, strict=True):
+            for field, value in strict_zip(('meanMs', 'p50Ms', 'p95Ms', 'maxMs'), expected):
                 if not math.isclose(float(row[field]), value, rel_tol=0, abs_tol=0.00051):
                     raise ValueError(f'{field} disagrees with the raw intervals')
         except (KeyError, ValueError) as error:

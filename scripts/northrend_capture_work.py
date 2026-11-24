@@ -1,7 +1,10 @@
 """Join diagnostic capture work at the renderer draw boundary."""
 
+from northrend_compat import strict_zip
+
+
 CONSUMERS = ('material', 'normals', 'world')
-LANES = dict(zip((1, 2, 4), CONSUMERS, strict=True))
+LANES = dict(strict_zip((1, 2, 4), CONSUMERS))
 WORK = ('charged_bytes', 'snapshot_hits', 'snapshot_misses', 'packets', 'geometry_reuses',
         'bank_reuses', 'bounds_tests', 'float_get_registers', 'float_handoff_registers',
         'range_read_registers', 'range_handoff_registers')
@@ -43,8 +46,8 @@ def buffer_summary(rows):
             spans[key] = spans.get(key, 0) | read['lane']
             if path != 'C':
                 locks[key] = locks.get(key, 0) | read['lane']
-        shared_draws += any(lanes.bit_count() > 1 for lanes in spans.values())
-        shared_lock_draws += any(lanes.bit_count() > 1 for lanes in locks.values())
+        shared_draws += any(lanes & (lanes - 1) for lanes in spans.values())
+        shared_lock_draws += any(lanes & (lanes - 1) for lanes in locks.values())
     return dict(consumers=counts, shared_exact_span_draws=shared_draws,
                 shared_exact_lock_span_draws=shared_lock_draws)
 

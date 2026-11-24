@@ -1,6 +1,7 @@
 """Join prepared world batch checks to warm producer frames."""
 
 import re
+from northrend_compat import strict_zip
 
 
 FIELDS = ('producerFrame', 'wmo', 'wmoRanges', 'wmoBounds', 'adt', 'adtRanges',
@@ -36,7 +37,7 @@ def observe(lines, warm_frames, required):
         match = ROW.fullmatch(line)
         if not match:
             raise ValueError('Malformed native world batch counts')
-        row = dict(zip(FIELDS, map(int, match.groups()[:-1]), strict=True))
+        row = dict(strict_zip(FIELDS, map(int, match.groups()[:-1])))
         row['adtBounds'] = int(match['bounds'] or 0)
         frame = row['producerFrame']
         if (frame in by_frame or row['wmoBounds'] > row['wmoRanges'] or row['wmoRanges'] > row['wmo'] or

@@ -7,6 +7,7 @@ import struct
 
 from capture_files import read_bytes
 from northrend_frame_parity import pixel_difference
+from northrend_compat import strict_zip
 
 
 FACE_HEADER = struct.pack('<4s4I', b'FGR1', 256, 256, 114, 4)
@@ -90,7 +91,7 @@ def compare_cubes(reference, candidate):
                     any(before[key] != after[key] for key in projection_keys)):
                 different_projection.append(source)
                 continue
-            comparable[source] = [side for side, (a, b) in enumerate(zip(before['faces'], after['faces'], strict=True))
+            comparable[source] = [side for side, (a, b) in enumerate(strict_zip(before['faces'], after['faces']))
                                   if a != b]
         frames[frame] = dict(reference_only=sorted(left.keys() - right.keys()),
                              candidate_only=sorted(right.keys() - left.keys()),
@@ -183,7 +184,7 @@ def compare_sampled(folders, size, frames, saved):
             matches[key] = {'source_match': x['source'] == y['source'], 'bank_match': x['bank'] == y['bank'],
                             'state_differences': {name: [x[name], y[name]] for name in ('soft', 'scissor', 'complete', 'budget_held')
                                                   if x[name] != y[name]},
-                            'different_faces': [i for i, (u, v) in enumerate(zip(x['faces'], y['faces'], strict=True)) if u != v]}
+                            'different_faces': [i for i, (u, v) in enumerate(strict_zip(x['faces'], y['faces'])) if u != v]}
         p, q = live_planes[frame], stand_planes[frame]
         result[frame] = {'live_only': sorted(a.keys() - b.keys()), 'replay_only': sorted(b.keys() - a.keys()),
                          'order_matches': left['order'] == right['order'], 'comparable_sources': matches,

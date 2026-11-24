@@ -12,6 +12,7 @@ import zipfile
 import run_northrend_baseline as baseline
 from build_renderer import source_identity
 from build_renderer_assets import verify_pair
+from northrend_compat import strict_zip
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -104,7 +105,7 @@ def parse_native_capabilities(text):
     if not match:
         raise ValueError('System D3D9 capability probe did not return a complete result')
     vendor, device, *bits = match.groups()
-    caps = {name: bit == '1' for name, bit in zip(NATIVE_CAPS, bits, strict=True)}
+    caps = {name: bit == '1' for name, bit in strict_zip(NATIVE_CAPS, bits)}
     return {'status': 'SUPPORTED' if all(caps.values()) else 'UNSUPPORTED', 'adapter': 0,
             'vendor': vendor, 'device': device, 'capabilities': caps}
 
