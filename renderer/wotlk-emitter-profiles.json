@@ -1,6 +1,13 @@
 {
   "version": 1,
   "native_anchors": {
+    "world\\generic\\orc\\passive doodads\\firepits\\largefirepit01.m2": {
+      "model_sha256": "106968b38aebdd3946d7aac5dc91f029d637d2542c0f3f5ff5afe86090af7d22",
+      "skin_sha256": "09a9c0ddafa4826751866feba9353a3b07e3e27ce49b5ed463298ccb0c7bafb7",
+      "source": 0,
+      "position": [0.009, -0.011, 1.38],
+      "basis": "Lower part of the visible flame above the firewood. Raising the native point lets warm light reach paving in Shadowmoon Valley and soil, plants, and crates in Ashenvale. The fire pit still occludes the ground beneath it."
+    },
     "world\\generic\\dwarf\\passive doodads\\lampposts\\anvilmarlamppost.m2": {
       "model_sha256": "7c85a27936f38420e1b542488f1514356bec48e7c695bfc01cc15ddf30eab8f9",
       "skin_sha256": "56b55dd1e66c49cd94130d7cf927f701b8188486e611954abfa7e42e88167bb2",
