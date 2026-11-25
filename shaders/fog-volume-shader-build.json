@@ -17,8 +17,8 @@
     "world_view.hlsl": "bbcbc95ee157a8b196befc2ec01ff9d890b6ed349447c5aba582ac7aed919ce8",
     "shadow_transition.hlsl": "8bd611b0b646eae536c1d36baccb2b3159fafbc522d43234f474b123e9a69dd9"
   },
-  "compiler": "Microsoft d3dcompiler_47 10.0.17134.12 IEEE strict",
-  "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
+  "compiler": "Microsoft d3dcompiler_47 10.0.26100.9457 IEEE strict",
+  "compiler_sha256": "1da540a0ddbc54de4142570c8ec4a4566ef610fce72c181efb55a9332c480790",
   "shaders": {
     "VolumeInject": {
       "target": "ps_3_0",

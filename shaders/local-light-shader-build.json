@@ -2,8 +2,8 @@
   "derivative_hoist_sha256": "a65aec9fbca6b0fcc60a6268998d86960dad39fd1c9a3e3f6b9886c387646317",
   "bump_include_sha256": "98ac7cb40315531dce77643d808aac216e0b432a83360b2d1cb60b5011c9e4e0",
   "source_sha256": "20fb1706bdd9413df4470d26f5003edbf1d7fc176fd9d4e2aaff10231ef59255",
-  "compiler": "Microsoft d3dcompiler_47 10.0.17134.12 IEEE strict",
-  "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
+  "compiler": "Microsoft d3dcompiler_47 10.0.26100.9457 IEEE strict",
+  "compiler_sha256": "1da540a0ddbc54de4142570c8ec4a4566ef610fce72c181efb55a9332c480790",
   "game_launched": false,
   "device_created": false,
   "shaders": {

@@ -116,9 +116,14 @@ For the rejected-probe, relight-cache and visibility-plane changes, see
 - clang++ and c++ (Xcode command line tools) for the native tests.
 - Optional:
   - a WoW 3.3.5a client (game data, world cache);
-  - Wine and Microsoft's redistributable `d3dcompiler_47.dll` 10.0.17134.12 (x64), for the shader
-    compilers only (`scripts/shaders/compile_*_shaders.py`): put the DLL in
-    `tools/d3dcompiler_47-10.0.17134.12-x64/` (it is not in git; `shader_compiler.py` pins its SHA-256);
+  - Microsoft's x64 `d3dcompiler_47.dll` 10.0.26100.9457, for the offline shader compilers
+    (`scripts/shaders/compile_*_shaders.py`). Use `Redist\D3D\x64\d3dcompiler_47.dll` from the
+    [Windows 11 SDK 10.0.26100.9457](https://learn.microsoft.com/en-us/windows/apps/windows-sdk/downloads)
+    and copy it to `d3dcompiler_47-10.0.26100.9457-x64/` under `NORTHLIGHT_TOOLS` (default `tools/`).
+    Alternatively, extract `fil3585cb2ea5db13cc0838f8d06b5c9679` from the
+    [Microsoft SDK cabinet](https://download.microsoft.com/download/46742ab5-6592-4968-a793-129e7f3bc55a/KIT_BUNDLE_WINDOWSSDK_MEDIACREATION/Installers/61d57a7a82309cd161a854a6f4619e52.cab)
+    and rename it to `d3dcompiler_47.dll`. The tools verify its SHA-256. macOS shader builds also require Wine.
+    `--compatible-compiler` can use the previously accepted SDK 10.0.17134.12 DLL when the new DLL is absent.
   - StormLib, for reading MPQs;
   - the external archive and `backups/`, for differential tests against old versions.
 

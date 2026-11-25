@@ -1,5 +1,5 @@
 // Standalone build tool. This program never loads the game or a rendering device.
-// It compiles with Microsoft's d3dcompiler_47.dll 10.0.17134.12 (x64) placed next to the
+// It compiles with Microsoft's pinned d3dcompiler_47.dll (x64) placed next to the
 // executable (shader_compiler.py pins its SHA-256) and refuses any other module, so Wine's
 // builtin reimplementation can never stand in for it.
 #include <windows.h>
@@ -9,8 +9,13 @@
 #include <cstring>
 #include <cwchar>
 
+#ifndef NL_SHADER_COMPILER_BUILD
+#define NL_SHADER_COMPILER_BUILD 26100
+#define NL_SHADER_COMPILER_REVISION 9457
+#endif
+
 // The module must be the file next to this executable, a real PE (not a Wine builtin or
-// placeholder, which carry "Wine " in the DOS stub) and FileVersion 10.0.17134.12.
+// placeholder, which carry "Wine " in the DOS stub) with the expected FileVersion.
 static bool microsoft_compiler(HMODULE module, const wchar_t *expected) {
     wchar_t loaded[MAX_PATH * 4];
     DWORD length = GetModuleFileNameW(module, loaded, MAX_PATH * 4);
@@ -29,10 +34,12 @@ static bool microsoft_compiler(HMODULE module, const wchar_t *expected) {
         VS_FIXEDFILEINFO fixed;
         std::memcpy(&fixed, data + i, sizeof fixed);
         if (fixed.dwSignature != 0xFEEF04BD) continue;
-        if (fixed.dwFileVersionMS == MAKELONG(0, 10) && fixed.dwFileVersionLS == MAKELONG(12, 17134)) return true;
-        std::fprintf(stderr, "d3dcompiler_47 FileVersion %lu.%lu.%lu.%lu, expected 10.0.17134.12\n",
+        if (fixed.dwFileVersionMS == MAKELONG(0, 10) &&
+            fixed.dwFileVersionLS == MAKELONG(NL_SHADER_COMPILER_REVISION, NL_SHADER_COMPILER_BUILD)) return true;
+        std::fprintf(stderr, "d3dcompiler_47 FileVersion %lu.%lu.%lu.%lu, expected 10.0.%d.%d\n",
             (unsigned long)HIWORD(fixed.dwFileVersionMS), (unsigned long)LOWORD(fixed.dwFileVersionMS),
-            (unsigned long)HIWORD(fixed.dwFileVersionLS), (unsigned long)LOWORD(fixed.dwFileVersionLS));
+            (unsigned long)HIWORD(fixed.dwFileVersionLS), (unsigned long)LOWORD(fixed.dwFileVersionLS),
+            NL_SHADER_COMPILER_BUILD, NL_SHADER_COMPILER_REVISION);
         return false;
     }
     std::fprintf(stderr, "d3dcompiler_47 has no version resource\n");

@@ -6,8 +6,8 @@
     "auto_material_height.hlsl": "d8b2cf9d1cafc553f336bfcbb83da62eb326a0d9396a68773966ca0a8554b1bd"
   },
   "source_sha256": "87287d925905ae657af0d5dca10ad2ed592293afa0f6a84e2610a31b65d9c36d",
-  "compiler": "Microsoft d3dcompiler_47 10.0.17134.12 IEEE strict",
-  "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
+  "compiler": "Microsoft d3dcompiler_47 10.0.26100.9457 IEEE strict",
+  "compiler_sha256": "1da540a0ddbc54de4142570c8ec4a4566ef610fce72c181efb55a9332c480790",
   "shaders": {
     "BumpOpaque": {
       "sha256": "9de85f94ff16acbb45a29bdefcd918ba8f9319542b328de7843fb46b5e090b8f",

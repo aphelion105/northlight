@@ -16,8 +16,8 @@
     "auto_bump_normal.hlsl": "98ac7cb40315531dce77643d808aac216e0b432a83360b2d1cb60b5011c9e4e0",
     "world_view.hlsl": "bbcbc95ee157a8b196befc2ec01ff9d890b6ed349447c5aba582ac7aed919ce8"
   },
-  "compiler": "Microsoft d3dcompiler_47 10.0.17134.12 IEEE strict",
-  "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
+  "compiler": "Microsoft d3dcompiler_47 10.0.26100.9457 IEEE strict",
+  "compiler_sha256": "1da540a0ddbc54de4142570c8ec4a4566ef610fce72c181efb55a9332c480790",
   "game_launched": false,
   "shaders": {
     "ForeverFogNoNoiseTransition": {
