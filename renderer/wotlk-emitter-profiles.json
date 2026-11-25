@@ -7089,38 +7089,38 @@
     },
     "world\\expansion02\\doodads\\generic\\scarletonslaught\\scarleto_brazier_lit.m2": {
       "position": [
-        -0.046810150146484375,
-        -0.03149932622909546,
-        2.2693906277418137
+        0.0,
+        -0.92,
+        4.12
       ],
       "rgb": [
         1.0,
         0.22276150592491517,
         0.01987447748037477
       ],
-      "intensity": 1.15,
+      "intensity": 0.85,
       "start": 1.0,
-      "end": 14.0,
+      "end": 11.0,
       "emitters": [
         {
           "position": [
-            -0.046810150146484375,
-            -0.03149932622909546,
-            2.2693906277418137
+            0.0,
+            -0.92,
+            4.12
           ],
           "rgb": [
             1.0,
             0.22276150592491517,
             0.01987447748037477
           ],
-          "intensity": 1.15,
+          "intensity": 0.85,
           "start": 1.0,
-          "end": 14.0
+          "end": 11.0
         }
       ],
       "family": "wotlk_compact_source",
       "asset_sha256": "966ba628b476fa59a4babe6584d15a31fbefce2e81b32aeb22db39f2ea6d840c",
-      "position_basis": "static weighted unlit additive island world\\expansion02\\doodads\\howlingfjord\\firefx\\t_vfx_fire_anim02_128_full_desat.blp; static weighted unlit additive island world\\expansion02\\doodads\\howlingfjord\\firefx\\t_vfx_fire_anim02_128_full_desat.blp",
+      "position_basis": "The opening above the front of the bowl clears the opaque logs. In-game comparisons at two placements show warm light on the nearby stone while the bowl still casts a shadow.",
       "injected_sha256": "bd15d39147bd764c90dc12a9d3b8434e977411eea9f096f7c80102877e94f542",
       "variants": {
         "bd15d39147bd764c90dc12a9d3b8434e977411eea9f096f7c80102877e94f542": {
