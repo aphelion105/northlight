@@ -2928,7 +2928,9 @@ public:
                 (different(lastRequest.light.sunDirection,r.light.sunDirection,.02f)?4u:0u)|(different(lastRequest.light.sunIrradiance,r.light.sunIrradiance,.03f)?8u:0u)|((!NorthlightGI::sameAngularSky(lastRequest.light,r.light)||different(lastRequest.light.skyRadiance,r.light.skyRadiance,.01f))?16u:0u)|
                 (lastRequest.light.additionalDirections.empty()||different(lastRequest.light.additionalDirections[0].direction,r.light.additionalDirections[0].direction,.02f)||different(lastRequest.light.additionalDirections[0].irradiance,r.light.additionalDirections[0].irradiance,.03f)?32u:0u)|
                 (NorthlightWorldStreaming::leadMoved(lastRequest.camera,lastRequest.geometryCenter,r.camera,r.geometryCenter)?128u:0u);
-            if(r.reason){queueRequestLocked(r,GetTickCount(),true);settingsRequestDirty=false;wake.notify_one();
+            const bool deferSky=r.reason==16u&&r.giEnabled&&NorthlightGI::deferAnimatedAuroraRefresh(
+                lastRequest.light,r.light,pending||workerBusy.load(std::memory_order_relaxed));
+            if(r.reason&&!deferSky){queueRequestLocked(r,GetTickCount(),true);settingsRequestDirty=false;wake.notify_one();
                 if(NorthlightDiagnostics::enabled())logf("GI request tick=%lu id=%llu reason=%u camera=(%.2f %.2f %.2f) sun=(%.5f %.5f %.5f)",(unsigned long)r.queuedAt,(unsigned long long)r.id,r.reason,r.camera.x,r.camera.y,r.camera.z,r.light.sunDirection.x,r.light.sunDirection.y,r.light.sunDirection.z);
             }
             // 0.3.156 watchdog (log only): the builder waited for a free geometry generation

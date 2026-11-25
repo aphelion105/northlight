@@ -27,6 +27,11 @@ ProbeRelightCache cache;cache.configure(before,256);ProbeGridKey key{0,0,1};cach
 Lighting other=l;other.aurora=source(5);auto after=prepareLighting(other);cache.configure(after,256);auto hit=cache.solve(open,key,{0,0,8},after,256,73);equal(hit,solveProbePrepared(open,{0,0,8},after,256,73));assert(cache.stats().hits==stats.hits+1&&cache.stats().resets==stats.resets);
 Lighting off=l;off.aurora.reset();auto disabled=prepareLighting(off);cache.configure(disabled,256);auto offHit=cache.solve(open,key,{0,0,8},disabled,256,73);equal(offHit,solveProbePrepared(open,{0,0,8},disabled,256,73));assert(cache.stats().bytes<=ProbeRelightCache::BudgetBytes);cache.configure(before,256);equal(cache.solve(open,key,{0,0,8},before,256,73),solveProbePrepared(open,{0,0,8},before,256,73));
 assert(!sameStaticLighting(l,other)&&!sameStaticLighting(l,off));auto unchanged=std::make_shared<Source>(*l.aurora);++unchanged->revision;other.aurora=unchanged;assert(sameStaticLighting(l,other));++unchanged->selection;assert(!sameStaticLighting(l,other));
+Lighting animated=l;animated.aurora=source(2);
+assert(deferAnimatedAuroraRefresh(l,animated,true)&&!deferAnimatedAuroraRefresh(l,animated,false));
+assert(!deferAnimatedAuroraRefresh(l,off,true)&&!deferAnimatedAuroraRefresh(off,l,true));
+assert(!deferAnimatedAuroraRefresh(l,other,true));
+animated.skyRadiance.x+=.02f;assert(!deferAnimatedAuroraRefresh(l,animated,true));
 for(unsigned bad=0;bad<4;++bad){auto invalid=source(0);if(bad==0)invalid->complete=false;if(bad==1)invalid->selection=0;if(bad==2)invalid->radiance[17][1]=-1;if(bad==3)invalid->radiance[3][2]=std::numeric_limits<float>::quiet_NaN();other.aurora=invalid;assert(!prepareLighting(other).valid());}
 // Moving-path replay retains exactly the same directional emission.
 StaticPathRecord record;MovingSolveStats movingStats;auto replay=solveProbeMoving(open,{0,0,3},before,256,73,sealed,record,1,&movingStats);equal(replay,solveProbePrepared(open,{0,0,3},before,256,73,&sealed));auto moved=solveProbeMoving(open,{0,0,3},after,256,73,sealed,record,2,&movingStats);equal(moved,solveProbePrepared(open,{0,0,3},after,256,73,&sealed));

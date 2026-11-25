@@ -37,6 +37,12 @@ inline bool sameAngularSky(const Lighting& a,const Lighting& b,float tolerance=.
     }
     return true;
 }
+inline bool deferAnimatedAuroraRefresh(const Lighting& previous,const Lighting& next,bool solveInFlight) {
+    // The next frame can sample the latest animation once this solve publishes.
+    // A skybox selection or ambient change still needs its own generation.
+    return solveInFlight&&previous.aurora&&next.aurora&&previous.aurora->selection==next.aurora->selection&&
+           staticGlobalVectorWithin(previous.skyRadiance,next.skyRadiance,.01f);
+}
 inline bool sameStaticLighting(const Lighting& a,const Lighting& b) {
     if(!sameAngularSky(a,b)||!staticGlobalVectorWithin(a.sunDirection,b.sunDirection,.02f)||
        !staticGlobalVectorWithin(a.sunIrradiance,b.sunIrradiance,.03f)||
