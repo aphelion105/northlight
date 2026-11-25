@@ -63,6 +63,8 @@ class PlayerWaterCore(unittest.TestCase):
         self.assertIn('"Tideglass " TIDEGLASS_VERSION "; cooperative core started', logged)
         self.assertTrue(bp.TIDEGLASS_MARKER.fullmatch(f'Tideglass {version};'.encode()))
         self.assertEqual(bp.combo_version('0.3.217', version), f'0.3.217-tideglass-{version}')
+        self.assertTrue(bp.is_combo_version(f'0.3.217.16-tideglass-{version}', '0.3.217', version))
+        self.assertFalse(bp.is_combo_version(f'0.3.216.16-tideglass-{version}', '0.3.217', version))
 
     def test_a_core_that_can_rewrite_code_is_refused(self):
         for name in sorted(bp.CODE_WRITE_IMPORTS):

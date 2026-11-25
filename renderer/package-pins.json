@@ -168,6 +168,7 @@
     "sha256_source": "GitHub release asset digest",
     "member": "dxvk-3.1.1/x32/d3d9.dll",
     "member_sha256": "265888c31ca78dffa290c39cb7e50bfb02762590e41927906e46fb32f01497fa",
+    "x64_member_sha256": "c126316f7478eaff1ad8087702eda5930f2400187b9c8b3592219c34f6632780",
     "license_file": "dxvk-3.1.1-download/LICENSE",
     "license_sha256": "a5cb1a6ded7d2d7e92d550ba28edd21be2d1d4044662b399887351023e30ce64",
     "license": "zlib"
@@ -181,6 +182,7 @@
     "sha256_source": "GitHub release asset digest (release.json)",
     "member": "dxvk-2.7.1/x32/d3d9.dll",
     "member_sha256": "00ecd422b3b12e9d3b309785f3f19431405389d80eb4a37018ebc63e2d87d900",
+    "x64_member_sha256": "2740233a94774fa64a1e07c6eaf94f67027a3c7594ff3b48f7a1c9801777e5a9",
     "license_file": "dxvk-2.7.1-download/LICENSE",
     "license_sha256": "a5cb1a6ded7d2d7e92d550ba28edd21be2d1d4044662b399887351023e30ce64",
     "license": "zlib"
