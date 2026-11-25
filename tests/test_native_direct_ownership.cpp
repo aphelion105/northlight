@@ -140,6 +140,38 @@ int main(){
         std::puts("NATIVE_OBSERVED_OWNER_PASS missing_scene_inventory exact_selected_draw_source fresh_100ms fade clock_wrap identity_hue_position_falloff_and_expiry_controls no_shadow_flag_added");
     }
     assert(ownershipGain(light,point)==1); // Attached/root classification cannot toggle direct RGB ownership.
+    {
+        // The selected light comes from the completed frame. The receiver's
+        // bank follows the current pose, which can cross the 5 mm match gate.
+        auto current=point;
+        auto selected=light;
+        for(float& channel:selected.diffuse)channel*=.75f;
+        for(float motion:{.002f,.02f,.05f,.001f}){
+            current.position[0]=point.position[0]+motion;
+            current.color[0]=point.color[0]+motion;
+            const float gain=sceneOwnershipGain(selected,current,point,point.position);
+            assert(gain==.75f);
+            struct Binding {const NorthlightNativeLights::Point* native;const NorthlightLocalLights::Light* authored;float ownerGain;};
+            const Binding binding{&current,nullptr,gain};
+            BankMatch match;match.valid[0]=true;
+            auto& slot=match.values[0];
+            std::copy_n(current.position,3,slot.position);
+            std::copy_n(current.color,3,slot.color);
+            std::copy_n(current.attenuation,3,slot.attenuation);
+            match.bindings=matchDecoded(match.values,match.valid,1,&binding,1);
+            float bank[16]={slot.color[0],slot.color[1],slot.color[2],1.f},rgb[16];
+            assert(ownedBank(bank,1,match,&binding,rgb)==1);
+            for(unsigned k=0;k<3;++k)assert(rgb[k]==bank[k]*.25f);
+            assert(rgb[3]==bank[3]);
+        }
+        current.position[0]=point.position[0]+.02f;
+        assert(!ownershipGain(selected,current));
+        ++current.id;
+        assert(!sceneOwnershipGain(selected,current,point,point.position));
+        --current.id;
+        selected.position[0]+=.02f;
+        assert(!sceneOwnershipGain(selected,current,point,point.position));
+    }
     point.flags=NorthlightNativeLights::RootAnchor;
     assert(ownershipGain(light,point)==1);
     for(float fade:{0.f,.25f,.5f,1.f}){auto selected=light;for(float& c:selected.diffuse)c*=fade;assert(ownershipGain(selected,point)==fade);}

@@ -2427,8 +2427,18 @@ public:
             const uint32_t ownerNow=GetTickCount();
             if(screenLighting.raw().texture&&worldNormals.texture()&&composite.standardShader()&&localLighting.directShader()&&localLightMap==active->map)for(unsigned i=0;i<atmosphere.lights.count;++i){
                 const auto& selected=atmosphere.lights.sources[i];const auto* native=nativeDirectSource(selected,nativeDirectScene);
-                NorthlightNativeLights::Point observed;const auto resolved=native?nativeDirectEmitter(selected,*native):std::array<float,3>{};
-                float gain=native?NorthlightNativeDirect::ownershipGain(selected,*native,resolved.data()):0;bool drawWitness=false;
+                NorthlightNativeLights::Point observed;float gain=0;bool drawWitness=false;
+                if(native&&nativeSceneFrame.valid&&nativeSceneFrame.scene==nativeDirectScene.scene&&nativeSceneFrame.time!=nativeDirectScene.time){
+                    const auto* published=nativeDirectSource(selected,nativeSceneFrame);
+                    if(published){
+                        const auto previousEmitter=nativeDirectEmitter(selected,*published);
+                        gain=NorthlightNativeDirect::sceneOwnershipGain(selected,*native,*published,previousEmitter.data());
+                    }
+                }
+                if(native&&!(gain>0)){
+                    const auto resolved=nativeDirectEmitter(selected,*native);
+                    gain=NorthlightNativeDirect::ownershipGain(selected,*native,resolved.data());
+                }
                 if(!native)for(unsigned j=0;j<equipmentLights.count;++j){const auto& entry=equipmentLights.entries[j];
                     gain=NorthlightNativeDirect::observedOwnershipGain(selected,entry,ownerNow,nativeDirectScene);if(!(gain>0))continue;
                     std::copy_n(entry.source.position,3,observed.position);std::copy_n(entry.source.color,3,observed.color);std::copy_n(entry.source.attenuation,3,observed.attenuation);
