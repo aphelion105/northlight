@@ -116,6 +116,25 @@
     ]
   },
   "profiles": {
+    "world\\expansion02\\doodads\\dalaran\\dalaran_mageportal_01.m2": {
+      "asset_sha256": "eb9eb82ac108678c539e39aa498bd9140da6e6b8281af9ec317c61bf3665650a",
+      "family": "wotlk_energy",
+      "position_basis": "Raise the portal point to the sill and retain a bounded blue footprint on the floor in both Dalaran placements.",
+      "position": [
+        -0.26625007607939477,
+        -3.5515365059531523,
+        -0.1
+      ],
+      "rgb": [
+        0.200439828030504,
+        0.5213696509282716,
+        1.0
+      ],
+      "intensity": 1.22,
+      "start": 0.8,
+      "end": 10.0,
+      "casts_shadows": false
+    },
     "world\\expansion02\\doodads\\generic\\vrykul\\signs\\vr_signpost_snow01.m2": {
       "asset_sha256": "e764a8615545cb06b9f0d354cd8793bcea72725aecbefeb13f66c7ce41e682b3",
       "family": "wotlk_energy",
