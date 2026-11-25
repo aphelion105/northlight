@@ -3210,6 +3210,25 @@
       "injected_sha256": "8e9ddbf197ed913b779dbb7291b79d93b4817fd4e608f66eb091c1c1e0b3628e",
       "casts_shadows": true
     },
+    "world\\generic\\human\\passive doodads\\lamps\\plaguelandslamp.m2": {
+      "position": [
+        0.23,
+        -0.1,
+        0.76
+      ],
+      "rgb": [
+        0.38,
+        1.0,
+        0.151059893785
+      ],
+      "intensity": 0.13904613775,
+      "start": 0.5,
+      "end": 2.0,
+      "family": "green_fire",
+      "asset_sha256": "989483275a5af4ee6fe89193131bb73b2cb3fab72caf180366e52f8ff572dbab",
+      "position_basis": "Open side of the green flame beside the holder. The short green reach on the floor and the holder shadow were checked in Naxxramas.",
+      "casts_shadows": true
+    },
     "world\\generic\\human\\passive doodads\\lamps\\westernplaguelandslampost01.m2": {
       "position": [
         -0.1,
