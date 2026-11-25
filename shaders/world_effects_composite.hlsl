@@ -176,6 +176,15 @@ float4 worldCompositeInputs(float2 uv,float2 pixel,bool surfaceLighting,bool hdr
         // probes attenuate that layer and add bounce independently of daylight.
         // As for local lamps, native transported RGB supplies a bounded material
         // estimate; this is not an extraction of the original diffuse texture.
+        if(prelit&&!hdrMode){
+            // The prelit buffer adds light on top of already lit SDR colours.
+            // Leave low contributions linear and compress highlights together
+            // before any one channel hits the display limit.
+            float3 demand=(albedoT*bounce)/max(1-original.rgb,.00001);
+            float peak=max(demand.r,max(demand.g,demand.b));
+            float excess=1-.5/max(peak,.5);
+            bounce*=1-excess*excess;
+        }
         color=mad(albedoT,bounce,original.rgb);
         // A proven room light bank includes authored fill, not just outdoor
         // ambient. Preserve it: probe occlusion cannot identify its components.
