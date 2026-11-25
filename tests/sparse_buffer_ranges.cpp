@@ -70,13 +70,25 @@ static void sparseProofs(){
     // A subset selecting the other overlapping copy must also see the rewrite.
     cache.read(result,128,64);for(unsigned i=0;i<64;++i)CHECK(result[i]==(i<32?0x29:0x71));
     cache.clear();cache.discard();
-    for(unsigned i=0;i<8;++i)cache.remember(i*(5u<<20),64,source,RangeShadowBudgetBytes-cache.capacity());
+    constexpr unsigned spans=RangeShadowSpans,gap=3u<<20;
+    for(unsigned i=0;i<spans;++i)cache.remember(i*gap,64,source,RangeShadowBudgetBytes-cache.capacity());
     CHECK(cache.canRead(1024,32));
-    cache.remember(8*(5u<<20),64,source,RangeShadowBudgetBytes-cache.capacity());
-    CHECK(!cache.canRead(0,32)&&!cache.canRead(1024,32)); // ninth interval evicts and revokes DISCARD proof
-    CHECK(cache.covers(8*(5u<<20),64)&&cache.capacity()<=RangeShadowItemBytes);
+    cache.remember(spans*gap,64,source,RangeShadowBudgetBytes-cache.capacity());
+    CHECK(!cache.canRead(0,32)&&!cache.canRead(1024,32)); // one interval past the span count evicts and revokes DISCARD proof
+    CHECK(cache.covers(spans*gap,64)&&cache.capacity()<=RangeShadowItemBytes);
     CHECK(!cache.canRead(UINT32_MAX-8,16));
-    cache.invalidate();CHECK(!cache.canRead(8*(5u<<20),64));cache.clear();
+    cache.invalidate();CHECK(!cache.canRead(spans*gap,64));cache.clear();
+    // A slot pool (the client's terrain VB): 8120-byte slots written in one ascending run, then
+    // rewritten scattered. Joins stop at RangeShadowJoinBytes, so the whole run stays readable.
+    std::vector<unsigned char> slot(8120,0x44);
+    for(unsigned i=0;i<256;++i)cache.remember(i*8120u,8120,slot.data(),RangeShadowBudgetBytes-cache.capacity());
+    constexpr unsigned scattered=40u<<20;   // 64 slots 2 apart: no joins, more ranges than the old 8
+    for(unsigned i=0;i<64;++i)cache.remember(scattered+i*2*8120u,8120,slot.data(),RangeShadowBudgetBytes-cache.capacity());
+    for(unsigned i=0;i<64;++i)CHECK(cache.canRead(scattered+i*2*8120u,8120));
+    for(unsigned i=0;i<256;i+=7)CHECK(cache.canRead(i*8120u,8120));
+    for(unsigned i=0;i<256;i+=7){slot[0]=std::uint8_t(i);cache.remember(i*8120u,8120,slot.data(),RangeShadowBudgetBytes-cache.capacity());}
+    for(unsigned i=0;i<256;i+=7){cache.read(result,i*8120u,64);CHECK(result[0]==std::uint8_t(i)&&result[1]==0x44);}
+    CHECK(cache.capacity()<=RangeShadowItemBytes);cache.clear();
     // Two buffers share the existing global ceiling. A third cannot allocate
     // proof; replacing a span under pressure must never exceed either ceiling.
     BufferRangeShadow second,third;std::vector<unsigned char> large(1u<<20,0x5a);
