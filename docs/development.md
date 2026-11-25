@@ -200,6 +200,56 @@ and the `shaders/*-shader-build.json` manifest. Every shader uses the one toolch
 `scripts/shaders/shader_compiler.py` (IEEE strict, O3; Wine's builtin compiler is refused).
 `build_environment.py` keeps the Wine prefix outside the client folder.
 
+## Experimental Windows x64 D3D9 proxy
+
+```powershell
+python scripts/build_renderer.py --x64
+python tests/test_renderer_assets_dll.py --x64
+```
+
+Copy `d3d9.dll` and `northlight-assets.bin` from `out/x64-proxy/` (under
+`NORTHLIGHT_OUT` if configured) beside `WowClient64.exe` in a separate client
+directory. Start the client with its D3D9 launcher, for example `WowClient64.exe -d3d`.
+Check the loaded path in the client log and the `NORTHLIGHT X64 D3D9` and
+`CreateDevice HRESULT` lines in `northlight-renderer.log`.
+
+The x64 build defaults to system D3D9. For DXVK, explicitly select `Backend=dxvk`
+and provide an AMD64 `dxvk_d3d9.dll` at the configured backend path. Use
+`--dxvk <path-to-amd64-d3d9.dll>` with the x64 device test to check this backend.
+For native HDR use `Backend=native`, `ExperimentalHDR=1`, and 1× MSAA. On a
+Windows HDR display, `python tests/test_renderer_assets_dll.py --x64 --hdr`
+checks native scRGB presentation across Reset. `python tests/test_settings_overlay_gpu.py --x64`
+checks settings-panel pixels on a private FP16 surface with system D3D9.
+If the active driver lacks the capabilities required by the effects, the x64
+proxy leaves the device with the backend. Explicit calls to the D3D9Ex and 9On12
+exports pass through to the backend. Native Vulkan uses its own renderer.
+The x64 DXVK build uses `CommandStream` from `northlight-quality.ini`. Set
+`CommandStream=0` to use direct submission for comparison. Native D3D9On12 uses
+direct submission. Tideglass surface water is available for the supported AMD64
+client through the standalone combo build below.
+With x64 DXVK, `CommandStream` and 1× MSAA, `NORTHLIGHT_X64_M2_NORMAL_MRT=1`
+opts into writing normals for eligible opaque skinned models in the game draw.
+`RenderProfile` logs the MRT writes and the remaining CPU replay packets.
+In the same configuration with HDR active, `NORTHLIGHT_X64_HDR_M2_FUSION=1`
+opts into writing M2 material detail alongside game color on the legacy scene
+target. The material target and source textures stay on the GPU.
+The HDR material option runs with the normal replay path. Either option uses
+replay for draws that fall outside its admission rules.
+GI and detailed shadows can read the map, camera, view stack, and outdoor
+light in the AMD64 client built from `8a1b491e7f66`. The proxy checks the loaded
+image and its scene-reader signatures before using this layout. In game,
+`WORLD context validated` confirms admission. With diagnostics enabled,
+`GI activated` reports which probe result the renderer picked up.
+The shadow provider takes over once its cascades are ready and restores the
+client's configured exterior shadow quality when Northlight shadows are disabled.
+The existing packages are for the x86 renderer.
+
+For an isolated 32-bit comparison, `python scripts/build_renderer.py --x86-on12`
+writes a standalone proxy and assets to `out/x86-on12-proxy/`. Use
+`Backend=native`, `ExperimentalHDR=1`, windowed presentation and 1× MSAA.
+This variant uses direct submission with native HDR. Its device smoke test is
+`python tests/test_renderer_assets_dll.py --x86-on12 --hdr --gpu-transfer`.
+
 ## Tideglass
 
 The optional Tideglass 0.1.0 core uses the cooperative D3D9 API. The export
@@ -219,6 +269,15 @@ preserves both water INIs and generates the reflection archive list from the
 client's archive chain. With the art layer enabled, the combo package uses
 daylight lighting underwater. Water settings are under **Water** in the
 in-game overlay. Changing **Use Tideglass** requires a restart.
+
+For the standalone AMD64 client, put the x86_64 LLVM-MinGW tools on PATH and
+run `python scripts/build_combo.py --x64 --storm-source <clean-pinned-StormLib-checkout>`.
+Copy `d3d9.dll`, `northlight-assets.bin` and `water-core.dll` from `out/x64-proxy/`
+beside `WowClient64.exe`. Set `Enable=1` in the `[WaterIntegration]` section of
+`water-host.ini` and select the client's D3D9 backend. The x64 adapter supplies
+camera, projection, and world lighting for surface water. Client-specific
+underwater detection, boat wakes, and indoor slime or lava replacement use
+the x86 adapter.
 
 Tideglass runs with SDR and HDR output, including multisampled targets.
 The HDR path uses the legacy scene before Northlight decodes it into linear

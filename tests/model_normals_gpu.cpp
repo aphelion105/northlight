@@ -149,17 +149,25 @@ int main(int argc,char**argv){
     }
     auto modelPS=ps(dir+"ModelPS.bin");auto alphaModelPS=ps(dir+"ModelAlphaPS.bin");
     auto sourceMesh=read(dir+"human-0.mesh");unsigned meshVertices,meshIndices;std::memcpy(&meshVertices,sourceMesh.data()+4,4);std::memcpy(&meshIndices,sourceMesh.data()+8,4);assert(sourceMesh.size()==12+meshVertices*48+meshIndices*4);
+    const bool streamOnly=argc==6&&std::string(argv[5])=="--stream-only";
 #ifdef NORTHLIGHT_MODEL_NORMALS_CONSTANT_TEST
-    // The bank and pixel oracle uses the stock model, independent of terrain.
-    float bank[256][4]={};bank[2][0]=1.275f;bank[3][1]=1.7f;
-    bank[4][2]=500.f/499.5f;bank[4][3]=-.5f*bank[4][2];bank[5][2]=bank[28][3]=1;
-    for(unsigned bone=0;bone<75;++bone){const unsigned r=31+3*bone;
-        bank[r][1]=-1;bank[r+1][2]=1;bank[r+1][3]=-.3f;bank[r+2][0]=-1;bank[r+2][3]=1.25f;}
-    ok(d->SetVertexShaderConstantF(0,bank[0],256));ok(d->SetPixelShader(modelPS));
-    normalConstants(dir,modelDecl,modelVS,sourceMesh,meshVertices,meshIndices);
-    modelDecl->Release();modelVS->Release();modelPS->Release();alphaModelPS->Release();
-    d->Release();api->Release();FreeLibrary(module);DestroyWindow(window);return 0;
+    const bool modelOnly=true;
+#else
+    const bool modelOnly=streamOnly;
 #endif
+    if(modelOnly){
+        float bank[256][4]={};bank[2][0]=1.275f;bank[3][1]=1.7f;
+        bank[4][2]=500.f/499.5f;bank[4][3]=-.5f*bank[4][2];bank[5][2]=bank[28][3]=1;
+        for(unsigned bone=0;bone<75;++bone){const unsigned r=31+3*bone;
+            bank[r][1]=-1;bank[r+1][2]=1;bank[r+1][3]=-.3f;bank[r+2][0]=-1;bank[r+2][3]=1.25f;}
+        ok(d->SetVertexShaderConstantF(0,bank[0],256));ok(d->SetPixelShader(modelPS));
+        if(streamOnly)normalStream(modelVS,modelDecl,meshVertices,meshIndices,sourceMesh,dir);
+#ifdef NORTHLIGHT_MODEL_NORMALS_CONSTANT_TEST
+        else normalConstants(dir,modelDecl,modelVS,sourceMesh,meshVertices,meshIndices);
+#endif
+        modelDecl->Release();modelVS->Release();modelPS->Release();alphaModelPS->Release();
+        d->Release();api->Release();FreeLibrary(module);DestroyWindow(window);return 0;
+    }
     auto bytes=read(dir+"terrain.bin");unsigned count,samples;Vec3 center;std::memcpy(&count,bytes.data(),4);std::memcpy(&samples,bytes.data()+4,4);std::memcpy(&center,bytes.data()+8,12);assert(bytes.size()==20+count*sizeof(Vertex)+samples*12);auto vertices=(const Vertex*)(bytes.data()+20);auto points=(const Vec3*)(bytes.data()+20+count*sizeof(Vertex));
     auto shadowVS=vs(dir+"ShadowVS.bin"),rasterVS=vs(dir+"RasterVS.bin");auto shadowPS=ps(dir+"ShadowPS.bin"),normalPS=ps(dir+"WorldNormals.bin"),fixedNormalPS=ps(dir+"WorldNormalsFixed.bin"),lightingPS=ps(dir+"ActorShadow.bin"),tilePS=ps(dir+"ActorTiles.bin"),rasterPS=ps(dir+"RasterPS.bin");
     D3DVERTEXELEMENT9 decl[]={{0,0,D3DDECLTYPE_FLOAT3,0,D3DDECLUSAGE_POSITION,0},{0,12,D3DDECLTYPE_FLOAT3,0,D3DDECLUSAGE_NORMAL,0},{0,24,D3DDECLTYPE_FLOAT2,0,D3DDECLUSAGE_TEXCOORD,0},D3DDECL_END()};IDirect3DVertexDeclaration9* declaration=nullptr;ok(d->CreateVertexDeclaration(decl,&declaration));
@@ -192,7 +200,6 @@ int main(int argc,char**argv){
                 native[r+1][0]=up.x;native[r+1][1]=up.y;native[r+1][2]=up.z;native[r+1][3]=NorthlightGI::dot(relative,up);
                 native[r+2][0]=forward.x;native[r+2][1]=forward.y;native[r+2][2]=forward.z;native[r+2][3]=NorthlightGI::dot(relative,forward);}
             ok(d->SetVertexShaderConstantF(0,native[0],256));
-            if(argc==6&&std::string(argv[5])=="--stream-only"){if(frame<8)continue;normalStream(modelVS,modelDecl,meshVertices,meshIndices,sourceMesh,dir);return 0;}
 #ifdef NORTHLIGHT_NATIVE_ADMISSION_REFERENCE
             if(argc==6&&std::string(argv[5])=="--cold-only"){
                 if(frame<8)continue;normalColdAdmission(modelVS,modelDecl,meshVertices,meshIndices,sourceMesh);return 0;

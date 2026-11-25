@@ -1,22 +1,24 @@
 # Architecture and ownership
 
-The current renderer is an x86 D3D9 proxy in the client process. This map describes
+Northlight runs as a D3D9 proxy in the client process on x86 and x64. This map describes
 the implemented boundaries. Historical investigations and release reports remain
 in `renderer/docs/`; they do not replace the current contracts or prove current performance.
 
 ## Tideglass
 
-The producer captures Tideglass camera and liquid inputs at the existing World
-snapshot and shares them with the matching UI boundary. Direct mode reads these
-inputs on the device's calling thread. The D3D9 device uses the existing water
-distance and coverage mask and lends the resolved depth to Tideglass.
+On x86 the producer captures Tideglass camera and liquid inputs at the existing
+World snapshot and shares them with the matching UI boundary. Direct mode reads
+those inputs on the device's calling thread. On x64 the device owner passes the
+validated camera, projection, and world lighting already decoded by Northlight.
+The x64 path does this before the first recognised water draw. Both paths use
+the existing water distance and coverage mask and lend the resolved depth to Tideglass.
 Liquid shading runs on the legacy scene before the effects copy. The core
 resolves multisampled colour into its snapshot textures and keeps the game's
 multisampled targets for liquid shading. A conversion at the handoff expands
 the compact distance mask into the distance and coverage channels the core
 expects. The rain mask retains streaks from the native scene at the composite
-boundary. The underwater pass runs before HDR decode, or on the completed
-world target in SDR, including frames without a visible liquid draw.
+boundary. On x86 the underwater pass runs before HDR decode, or on the
+completed world target in SDR, including frames without a visible liquid draw.
 Frame completion closes the Tideglass session, Reset releases
 default-pool resources, and teardown destroys the context on the device owner.
 
@@ -87,6 +89,14 @@ generation. The range proof borrows rows directly from a same-draw material
 bank under the mirror gate. It requires coverage through c33 for rigid programs
 or c255 for one-bone programs, and falls back to stamped mirror reads when
 coverage or the generation check fails. Queued packets keep their own storage.
+For buffered indexed draws, the normal recorder can recover an existing mesh
+from the mirror's current shader, declaration and buffer bindings. Tracked
+vertex and index revisions must match the stored draw's range. Unknown bindings
+and source misses use the ordinary snapshot reader.
+On x86 and x64 DXVK with CommandStream, a completed frame with at least 4,096 normal
+packets enables the mirrored lookup and raises the material cache allowance to
+64 MiB within the shared 96 MiB scene limit. The renderer returns to the regular
+path below 3,072 packets. Memory pressure restores the 32 MiB material limit.
 Buffered model capture for shadows also borrows its four projection rows from
 the material bank under the held mirror gate. The projection check consumes
 the rows immediately and falls back to the device getter when the loan is
@@ -101,6 +111,13 @@ geometry and palette data through the existing packet owners.
 [M2 producer](../src/stream/m2_draw_12340.h) · [Normal consumer](../src/proxy/model_normal_renderer.h)
 UP draws retain the material guard and the original caller memory contract.
 [Draw handoff](../src/proxy/draw_capture_route.h) · [Geometry alias test](../tests/test_capture_handoff.py) · [Normal consumer test](../tests/test_model_normal_consumers.py)
+
+Native overlay coverage and additive emission write auxiliary targets alongside
+the game draw. On x86 and x64 DXVK with CommandStream, the device mirror can
+retain a coverage attachment after restoring the logical slot to empty. The
+next compatible draw reuses that binding. Other draws, target and depth
+changes, clears, state blocks and raw access materialize outstanding detaches.
+[Coverage planes](../src/proxy/effect_coverage.h) · [Device state](../src/proxy/device_mirror.h)
 
 AutoBump submits adjacent opaque material packets together when their resident
 geometry and material state match. The shared palette shader proof keeps each
@@ -131,6 +148,12 @@ one quarter of its length. A quiet gap or eviction clears that demand.
 Small buffers and full regular-buffer requests qualify immediately. The
 separate large-buffer allowance keeps its existing backoff and pressure
 checks. [Replay copies](../src/proxy/replay_copies.h)
+
+On x64 DXVK, the producer captures the verified client's camera, view stack,
+sky lighting and native shadow state at the existing draw triggers. The replay
+owner reads those fields from the matching snapshot, which expires at Present
+or Reset. Missing reads use the renderer's ordinary unavailable-input paths.
+[Snapshot capture](../src/stream/game_snapshot.h)
 
 World shadow replay packets hold a reference to their vertex float bank.
 Packets share the bank after a matching epoch or a certified block comparison.
@@ -169,7 +192,10 @@ restoration for both the scene and rain depth snapshots. The Device unbinds the
 rain MRT before the copy and keeps the per-frame `captured` and early-resolve
 latches. Scene-copy failures can disable effects. Rain-copy failures discard
 only the rain snapshot. Native D3D9 uses a write-disabled point draw before
-the trigger. [Depth copy](../src/proxy/scene_depth_resolve.h) · [State and failure checks](../tests/test_saved_state.cpp)
+the trigger. With the x64 native HDR backend, 1× scenes use an INTZ depth
+attachment. The same snapshot boundaries sample it into R32F, with the
+depth attachment unbound for the copy and restored before the game resumes.
+[Depth copy](../src/proxy/scene_depth_resolve.h) · [State and failure checks](../tests/test_saved_state.cpp)
 
 The proxy resolves the private or game root before loading its backend and
 external shader bundle. Its logger owns rotation, synchronization, batching

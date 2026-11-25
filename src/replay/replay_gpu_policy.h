@@ -15,7 +15,7 @@ struct Stats {
     unsigned probationEvictions=0,residentEvictions=0,countOnlyProbationEvictions=0;
     unsigned warmup=0,uploadDeferred=0,admissionRejected=0;
     unsigned scanPasses=0,scanVisits=0,scanMemoHits=0;
-    unsigned evictionChecks=0,lruMoves=0;
+    unsigned evictionChecks=0,lruMoves=0,ownerVictimVisits=0;
     unsigned attemptDeferred=0,uploadByteDeferred=0,expiredEntries=0;
     unsigned timeDeferred=0,created=0;double createMs=0;
     size_t expiredBytes=0;

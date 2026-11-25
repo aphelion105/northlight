@@ -1,6 +1,6 @@
 // Coordinates the single native submission and its capture and replay adapters.
     template<class Capture,class Draw> HRESULT drawHook(D3DPRIMITIVETYPE t,UINT count,Capture capture,Draw draw,bool* nativeSky=nullptr,bool* skyCaptured=nullptr,[[maybe_unused]] const NorthlightAutoDisplacement::Args* geometry=nullptr){
-#ifdef NORTHLIGHT_WATER
+#if defined(NORTHLIGHT_WATER) && !defined(_WIN64)
         cooperativeSurfaceDraw=WaterHostLiquidUnknown;
         cooperativeDrawArgs=geometry;
 #endif
@@ -64,7 +64,7 @@
         }
         skyLayersReplay(skyRole,!claimed&&!mist,draw);
         auto submit=[&]{return waterMrtDraw(nativeDraw,[&]{return nameMaskDraw(rainBlend,claimed||mist,nativeDraw);});};
-#ifdef NORTHLIGHT_WATER
+#if defined(NORTHLIGHT_WATER) && !defined(_WIN64)
         const HRESULT hr=cooperativeWaterEnabled
             ? cooperativeSurface(t,geometry?geometry->stride:0,particleSkipped,submit) : submit();
 #else

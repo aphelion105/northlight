@@ -85,7 +85,7 @@ constexpr std::size_t kLockSlack=4096;   // bytes past a staged range / a shadow
 
 // A Task runs on the replay thread while the game thread waits (pumped): pass-through locks, creates under memory
 // pressure, GetData(FLUSH), Reset, the defaults batch, final release. fn executes with the replay-side core.
-struct Task {void (*fn)(void*,StreamCore&);void* arg;};
+struct Task {void (*fn)(void*,StreamCore&);void* arg;Cmd diagnosticLabel=Cmd::Quiesce;};
 
 // The retirement link shares the allocation with the bytes so a queued
 // reader can keep a discarded slice alive without any further allocation.
@@ -447,7 +447,7 @@ template<Cmd C,class... A> typename MethodTraits<C>::Ret ProxyBase::syncCall(Cmd
 template<class F> inline bool runTask(StreamCore& c,F&& fn,Cmd label=Cmd::Quiesce){   // label: the census name of this sync call
     if(inPumpedWait){add(c.q.stats.nestedSyncs);return false;}
     using Fn=typename std::remove_reference<F>::type;
-    Task t{[](void* a,StreamCore& core){(*static_cast<Fn*>(a))(core);},&fn};
+    Task t{[](void* a,StreamCore& core){(*static_cast<Fn*>(a))(core);},&fn,label};
     Task* p=&t;own(c.q.stats.census[(std::size_t)label]);own(c.q.stats.syncCalls);
     std::memcpy(c.q.reserve((std::uint16_t)Cmd::Quiesce,sizeof p,kFlagWaitTarget),&p,sizeof p);c.q.commit();   // 0.3.196 (task 12): flagged, the wait below targets it
     c.q.waitReplayed(c.q.recordedSeq(),WaitKind::Sync);

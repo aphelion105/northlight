@@ -13,7 +13,7 @@
     };
     FusedM2Draw fusedM2;
     std::unordered_map<IDirect3DPixelShader9*,NativeCapture> fusedM2Pixels[2][3];
-    bool allowFusedM2=false,checkedFusedM2Caps=false,fusedM2Caps=false;
+    bool allowFusedM2=false,fusedM2Warmup=false,checkedFusedM2Caps=false,fusedM2Caps=false;
     unsigned fusedM2Draws=0,fusedM2Fallbacks=0,fusedM2Candidates=0;
     unsigned fusedM2Rejections[5]={};
     IDirect3DSurface9 *fusedM2Samples=nullptr,*fusedM2ResolvedSurface=nullptr,*fusedM2MergedSurface=nullptr;
@@ -183,7 +183,14 @@ private:
         const bool packed=fusedM2.multisampled&&fusedM2DepthBase;
         auto& shaders=fusedM2Pixels[packed][slot-1];
         const auto found=shaders.find(bound);
-        if(found!=shaders.end())return found->second.shader?&found->second:nullptr;
+        if(found!=shaders.end()){
+            auto& cached=found->second;
+            if(cached.readyAfter!=ShaderClock::time_point{}){
+                if(ShaderClock::now()<cached.readyAfter)return nullptr;
+                cached.readyAfter={};
+            }
+            return cached.shader?&cached:nullptr;
+        }
         if(shaders.size()>=512)return nullptr;
         auto& result=shaders.try_emplace(bound).first->second;
         result.source=bound;bound->AddRef();
@@ -197,6 +204,10 @@ private:
                result.constant,false,false,false,true,slot,packed))return nullptr;
         if(bound!=original&&!coverage->compose(patched))return nullptr;
         if(FAILED(d->CreatePixelShader(reinterpret_cast<const DWORD*>(patched.data()),&result.shader)))drop(result.shader);
+        if(result.shader&&fusedM2Warmup){
+            result.readyAfter=ShaderClock::now()+std::chrono::milliseconds(50);
+            return nullptr;
+        }
         return result.shader?&result:nullptr;
     }catch(const std::bad_alloc&){return nullptr;}
 

@@ -496,7 +496,9 @@ class Impl final : public Overlay {
         device->SetTextureStageState(0,D3DTSS_RESULTARG,D3DTA_CURRENT);
         device->SetStreamSourceFreq(0,1);
         if(hdrWhite>0){
-            if(!hdrShader&&FAILED(device->CreatePixelShader(reinterpret_cast<const DWORD*>(kHdrOverlay),&hdrShader))){fail("HDR overlay shader unavailable");return;}
+            // ImGui uses fixed-function vertices. The PS 2.0 transfer reads their
+            // COLOR0 and TEXCOORD0 on both native D3D9 and DXVK.
+            if(!hdrShader&&FAILED(device->CreatePixelShader(reinterpret_cast<const DWORD*>(kHdrFixedAdditive),&hdrShader))){fail("HDR overlay shader unavailable");return;}
             // The backend initializes fixed-function state before processing callbacks.
             // Insert our transfer after that setup for each command list.
             auto* data=ImGui::GetDrawData();

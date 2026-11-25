@@ -63,9 +63,24 @@ python scripts/run_northrend_baseline.py run --stage <parity-stage> --output <pa
 
 For a binary A/B, pass `--live-dll` and `--live-assets` to an untraced `run`. The runner verifies the loaded shader bundle, records both candidate hashes and restores the staged files after the client exits.
 
+### Ratchet camera pan
+
+`ratchet-pan` uses a separate Kalimdor stage. The test starts on the waterfront road inside Ratchet, with the player surrounded by 32 idle characters in eight appearances. Half use enchanted weapons. Northlight must report water draw coverage, equipment and particle lights, and active CommandStream replay with frame skipping disabled before measurement begins.
+
+```powershell
+python scripts/run_northrend_baseline.py stage --scene ratchet-pan --x64 --dll <Northlight-x64-d3d9.dll> --assets <northlight-assets.bin> --backend <DXVK-x64-D3D9.dll> --output <stage> --resolution 3840x2160 --msaa 1
+python scripts/run_northrend_baseline.py run --scene ratchet-pan --windows 0 --dxvk-direct-adapter --stage <stage> --output <stage>/pan-a --timeout 120
+```
+
+The runner uses an inactive Windows desktop to keep focus fixed. The staged client add-on allows 20 seconds for warm-up after world entry. It then marks four stationary seconds and rotates the camera in opposite directions for 4.5 seconds each. Each sweep must cover at least 300 degrees in Northlight's camera log. The report includes the median, p95, maximum and slowest Present intervals for each phase and the three seconds after the camera stops. A sweep or the recovery period fails if its maximum exceeds twice the stationary median (bounded to 33.3–50 ms) or its p95 exceeds 1.35 times the stationary p95 (at least 33.3 ms). Keep the resolution, MSAA and DXVK adapter settings fixed across repeats. The report joins the slowest Presents to logged EVENT waits when available.
+
+For a DXVK compiler A/B, add `--dxvk-compiler-threads 8` to the candidate run. Use `--dxvk-gpl-only` to test the background pipeline optimization separately. The runner records the settings confirmed by the DXVK log under `dxvk_pipeline_options`.
+
+On x64 DXVK 3.1.1 with CommandStream, new native local-light shader variants get 50 ms for background compilation before first use. Draws use an eligible existing variant or the original shader during that interval. Set `NORTHLIGHT_DXVK_NATIVE_SHADER_GRACE=0` for the immediate-first-use control.
+
 ### M2 stress benchmark
 
-`--scene m2-stress` places 512 equipped characters in 16 dense rows within the starting view. The runner uses an inactive Windows desktop and starts timing after it verifies the spawn hash, name queries for at least three-quarters of the roster, and two ready-world samples with at least 6,000 audited M2 draws each. The report records those draw counts alongside the background frame times. Use a stage with `Diagnostics=1` and use the same staged quality and video settings on both sides of an A/B. Allow time for the roster and complete 120-frame timing windows.
+`--scene m2-stress` places 512 equipped characters in 16 dense rows within the starting view. The runner uses an inactive Windows desktop and starts timing after it verifies the spawn hash, name queries for at least three-quarters of the roster, and two dense draw samples. On x86 each sample requires at least 6,000 audited M2 draws in the ready world. On x64 it requires at least 6,000 compact draws in a completed model-normal pass. The report records those draw counts alongside the background frame times. Use a stage with `Diagnostics=1` and use the same staged quality and video settings on both sides of an A/B. Allow time for the roster and complete 120-frame timing windows.
 
 ```powershell
 python scripts/run_northrend_baseline.py run --stage <stage> --output <stage>/m2-stress-run --scene m2-stress --timeout 240

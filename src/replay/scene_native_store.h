@@ -14,6 +14,7 @@ using Placement=NorthlightReplayGPU::Placement;
 enum class Consumer:unsigned {Material=0,Shadow=1};
 class NativeStore {
 public:
+ static constexpr size_t MaterialLimit=32u<<20,ShadowLimit=64u<<20;
  using Stats=NorthlightReplayGPU::Stats;
  using Population=NorthlightReplayGPU::Population;
  using ClearStats=NorthlightReplayGPU::ClearStats;
@@ -53,9 +54,13 @@ private:
  std::array<std::vector<Entry*>,2> pending_;
  Entry* oldest_=nullptr;Entry* newest_=nullptr;IDirect3DDevice9* device_=nullptr;UINT maxVertexIndex_=0;
  Entry** removalCursor_=nullptr; // Stack-owned during eviction/trim; removals skip erased siblings.
+ struct OwnerScan {Entry* next=nullptr;bool started=false;};
+ OwnerScan ownerScans_[2];
  std::uint64_t frame_=0;bool explicitClock_=false,orderedFrames_=true;Entry* untrackedFirst_=nullptr;
- size_t limit_[2]={32u<<20,64u<<20},gpu_[2]={},metadata_[2]={},reserved_[2]={},attempted_[2]={};
- size_t retain_[2]={32u<<20,64u<<20};size_t totalLimit_=SIZE_MAX;
+ const size_t materialLimit_;
+ size_t limit_[2]={MaterialLimit,ShadowLimit},gpu_[2]={},metadata_[2]={},reserved_[2]={},attempted_[2]={};
+ size_t retain_[2]={MaterialLimit,ShadowLimit};size_t totalLimit_;
+ bool denseNormalCapture_=false,memoryEpisode_=false;
  unsigned attempts_[2]={},groups_[2]={};bool committed_[2]={},ignoreTime_[2]={},timeDeferred_[2]={};
  Stats stats_[2];Counters counters_[2];ClearStats clears_[2];BatchStats batchStats_[2];
  static constexpr size_t EntryLimit=8192,UploadLimit=4u<<20;
@@ -77,9 +82,30 @@ private:
    if(id?NorthlightSourceIdentity::same(id,e.identity):!e.identity&&(sameSource(e,mesh)||e.source.lock()==mesh))return it;
   }return entries_.end();
  }
- void unlink(Entry& e){if(e.previous)e.previous->next=e.next;else oldest_=e.next;if(e.next)e.next->previous=e.previous;else newest_=e.previous;e.previous=e.next=nullptr;}
+ void unlink(Entry& e){
+  for(auto& scan:ownerScans_)if(scan.next==&e)scan.next=e.next;
+  if(e.previous)e.previous->next=e.next;else oldest_=e.next;if(e.next)e.next->previous=e.previous;else newest_=e.previous;e.previous=e.next=nullptr;
+ }
  void append(Entry& e){e.previous=newest_;e.next=nullptr;if(newest_)newest_->next=&e;else oldest_=&e;newest_=&e;}
  void touch(Entry& e){if(e.touched==frame_)return;e.touched=frame_;if(!e.bytes)probation_.touch(e);if(newest_!=&e){unlink(e);append(e);++stats_[e.owner].lruMoves;}}
+ // Within an ordered frame, new or moved entries are protected at the LRU tail.
+ // Reuse the already searched prefix on repeated admissions for this owner.
+ Entry* oldestEvictableOwner(unsigned lane){
+  auto& scan=ownerScans_[lane];
+  if(!scan.started){scan.next=oldest_;scan.started=true;}
+  while(scan.next){
+   auto* e=scan.next;
+   ++stats_[lane].ownerVictimVisits;
+   if(e->touched==frame_){scan.next=nullptr;break;}
+   if(e->owner==lane)return e;
+   scan.next=e->next;
+  }
+  return nullptr;
+ }
+ void changeOwner(Entry& e,unsigned lane){
+  if(e.touched!=frame_)ownerScans_[lane]={};
+  e.owner=lane;
+ }
  size_t charged(unsigned lane)const{return gpu_[lane]+metadata_[lane]+reserved_[lane];}
  void dropBatch(Batch* batch){
   const auto slot=batch->slot;assert(slot<batches_.size()&&batches_[slot].get()==batch);gpu_[batch->owner]-=batch->capacity;
@@ -133,7 +159,9 @@ private:
     if(ownerPressure!=ownerScan){scan.next=oldest_;ownerScan=ownerPressure;}
     // Revisit other owners when local pressure gives way to aggregate pressure.
     // Keep the original first eligible LRU victim.
-    while(scan.next){auto* e=scan.next;scan.next=e->next;
+    if(ownerPressure&&!current&&orderedFrames_)victim=oldestEvictableOwner(lane);
+    else while(scan.next){auto* e=scan.next;scan.next=e->next;
+     if(ownerPressure)++stats_[lane].ownerVictimVisits;
      if((current||e->touched!=frame_)&&(!ownerPressure||e->owner==lane)){victim=e;break;}}
    }else{
     // Skip resident GPU meshes when looking for metadata-only victims. Pending
@@ -157,7 +185,7 @@ private:
  }
  bool transferMetadata(Entry& e,unsigned lane){
   if(e.owner==lane)return true;if(!room(lane,e.metadata,true,false,SIZE_MAX,0))return false;
-  metadata_[e.owner]-=e.metadata;metadata_[lane]+=e.metadata;e.owner=lane;return true;
+  metadata_[e.owner]-=e.metadata;metadata_[lane]+=e.metadata;changeOwner(e,lane);return true;
  }
  template<class Buffer>static bool write(Buffer* b,UINT offset,const void* data,size_t bytes){
   void* out=nullptr;if(FAILED(b->Lock(offset,UINT(bytes),&out,NorthlightUpload::FreshBufferLock)))return false;
@@ -237,19 +265,21 @@ private:
    if(!fits(batch->capacity+meta))return false;
    gpu_[source]-=batch->capacity;gpu_[other]+=batch->capacity;batch->owner=other;
    for(auto* e=batch->first;e;){auto* next=e->batchNext;
-    metadata_[source]-=e->metadata;metadata_[other]+=e->metadata;e->owner=other;
+    metadata_[source]-=e->metadata;metadata_[other]+=e->metadata;changeOwner(*e,other);
     if(!e->users)erase(*e);e=next;
    }return true;
   }
   if(entry.pending)release(entry);
   const auto need=entry.bytes+entry.metadata;if(!fits(need))return false;
-  gpu_[source]-=entry.bytes;gpu_[other]+=entry.bytes;metadata_[source]-=entry.metadata;metadata_[other]+=entry.metadata;entry.owner=other;return true;
+  gpu_[source]-=entry.bytes;gpu_[other]+=entry.bytes;metadata_[source]-=entry.metadata;metadata_[other]+=entry.metadata;changeOwner(entry,other);return true;
  }
 public:
- NativeStore()=default;NativeStore(const NativeStore&)=delete;NativeStore& operator=(const NativeStore&)=delete;
+ explicit NativeStore(bool shareMaterialCapacity=false):materialLimit_(shareMaterialCapacity?ShadowLimit:MaterialLimit),
+  totalLimit_(shareMaterialCapacity?MaterialLimit+ShadowLimit:SIZE_MAX){}
+ NativeStore(const NativeStore&)=delete;NativeStore& operator=(const NativeStore&)=delete;
  ~NativeStore(){clearAll();}
  void advance(std::uint64_t frame){
-  if(frame_==frame)return;orderedFrames_=entries_.empty()||(orderedFrames_&&frame>frame_);frame_=frame;for(unsigned i=0;i<2;++i){stats_[i]={};counters_[i]={};attempted_[i]=attempts_[i]=groups_[i]=0;timeDeferred_[i]=false;}
+  if(frame_==frame)return;orderedFrames_=entries_.empty()||(orderedFrames_&&frame>frame_);frame_=frame;for(unsigned i=0;i<2;++i){ownerScans_[i]={};stats_[i]={};counters_[i]={};attempted_[i]=attempts_[i]=groups_[i]=0;timeDeferred_[i]=false;}
   // Only entries without a source certificate expire with their CPU owner.
   for(auto* e=untrackedFirst_;e;){auto* next=e->untrackedNext;if(e->source.expired()){++stats_[e->owner].expiredEntries;stats_[e->owner].expiredBytes+=e->bytes;erase(*e);}e=next;}
   commit(0);commit(1);
@@ -329,6 +359,7 @@ public:
  size_t bytes(Consumer consumer)const{return gpu_[index(consumer)];}
  size_t chargedBytes(Consumer consumer)const{return charged(index(consumer));}
  size_t limit(Consumer consumer)const{return limit_[index(consumer)];}
+ size_t defaultLimit(Consumer consumer)const{return consumer==Consumer::Material?(denseNormalCapture_?materialLimit_:MaterialLimit):ShadowLimit;}
  const Counters& counters(Consumer consumer)const{return counters_[index(consumer)];}
  const Stats& stats(Consumer consumer){auto lane=index(consumer);stats_[lane].identityBytes=metadata_[lane];return stats_[lane];}
  const ClearStats& clearStats(Consumer consumer)const{return clears_[index(consumer)];}
@@ -338,7 +369,7 @@ public:
  template<class Visit>void buffers(Visit visit)const{for(const auto& batch:batches_){visit(batch->vb);visit(batch->ib);}for(const auto& item:entries_)if(!item.second.batch){for(auto* vb:item.second.vb)visit(vb);visit(item.second.ib);}}
  size_t bytes()const{return gpu_[0]+gpu_[1];}size_t chargedBytes()const{return charged(0)+charged(1);}
  static constexpr size_t entryLimit(){return EntryLimit;}
- void clearAll(){oldest_=newest_=untrackedFirst_=nullptr;probation_.clear();for(auto& p:pending_)p.clear();entries_.clear();orderedFrames_=true;batches_.clear();device_=nullptr;for(unsigned i=0;i<2;++i){gpu_[i]=metadata_[i]=reserved_[i]=0;committed_[i]=false;}}
+ void clearAll(){oldest_=newest_=untrackedFirst_=nullptr;probation_.clear();for(auto& p:pending_)p.clear();entries_.clear();orderedFrames_=true;batches_.clear();device_=nullptr;for(unsigned i=0;i<2;++i){ownerScans_[i]={};gpu_[i]=metadata_[i]=reserved_[i]=0;committed_[i]=false;}}
  void trim(Consumer consumer,size_t bytes){
   const auto lane=index(consumer);retain_[lane]=std::min(limit_[lane],bytes);if(charged(lane)<=bytes)return;
   // Preserve only transfers OUT of this lane. A forward scan therefore keeps
@@ -350,7 +381,24 @@ public:
    if(!preserve(*victim,1-lane))evict(*victim,lane,true);
   }
  }
- void setLimit(Consumer consumer,size_t bytes){const auto lane=index(consumer);limit_[lane]=std::min(bytes,size_t(lane?64u<<20:32u<<20));trim(consumer,limit_[lane]);}
+ void setLimit(Consumer consumer,size_t bytes){const auto lane=index(consumer);limit_[lane]=std::min(bytes,defaultLimit(consumer));trim(consumer,limit_[lane]);}
+ bool setNormalCaptureDemand(unsigned previousPackets){
+  // Use the completed frame for admission. Leave room for changes in coverage
+  // and camera position before shrinking a cache that has already warmed.
+  const bool dense=materialLimit_>MaterialLimit&&previousPackets>=(denseNormalCapture_?3072u:4096u);
+  if(dense!=denseNormalCapture_){
+   denseNormalCapture_=dense;
+   if(!memoryEpisode_)setLimit(Consumer::Material,defaultLimit(Consumer::Material));
+  }
+  return dense;
+ }
+ void setMemoryPressure(bool episode,bool critical){
+  memoryEpisode_=episode;
+  const size_t normalLimit=materialLimit_>MaterialLimit?MaterialLimit+ShadowLimit:SIZE_MAX;
+  setTotalLimit(episode&&critical?MaterialLimit:normalLimit);
+  setLimit(Consumer::Material,episode?MaterialLimit:defaultLimit(Consumer::Material));
+  setLimit(Consumer::Shadow,episode?MaterialLimit:ShadowLimit);
+ }
  void clear(Consumer consumer){const auto lane=index(consumer);++clears_[lane].calls;clears_[lane].entries+=population(consumer).entries;clears_[lane].bytes+=gpu_[lane];for(auto& item:entries_)item.second.users&=~(1u<<lane);trim(consumer,0);committed_[lane]=false;}
 };
 class NativeClient {
@@ -361,6 +409,7 @@ public:
  void clear(){store_.clear(consumer_);}void beginFrame(){store_.boundary(consumer_);}
  void trimTo(size_t bytes){store_.trim(consumer_,bytes);}void setLimit(size_t bytes){store_.setLimit(consumer_,bytes);}
  size_t limit()const{return store_.limit(consumer_);}size_t bytes()const{return store_.bytes(consumer_);}size_t chargedBytes()const{return store_.chargedBytes(consumer_);}size_t queueBytes()const{return 0;}
+ size_t defaultLimit()const{return store_.defaultLimit(consumer_);}
  size_t uploaded()const{return store_.counters(consumer_).uploaded;}size_t reused()const{return store_.counters(consumer_).reused;}unsigned hits()const{return store_.counters(consumer_).hits;}
  const Stats& stats()const{return store_.stats(consumer_);}const ClearStats& clearStats()const{return store_.clearStats(consumer_);}Population population()const{return store_.population(consumer_);}
  static constexpr size_t entryLimit(){return NativeStore::entryLimit();}bool timeDeferredLast()const{return store_.timeDeferred(consumer_);}void ignoreTimeBudget(bool on){store_.ignoreTime(consumer_,on);}

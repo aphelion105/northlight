@@ -744,9 +744,7 @@ public:
                         std::shared_ptr<const Mesh>& source){
         if(!mirror||!draw.indexed)return false;
         UINT extent[4];
-        if(!declarations.captureLayout(declaration,extent)||!mirror->heldByThisThread()||!mirror->active()||
-           !mirror->vertexShaderKnown||mirror->vertexShader!=shader||!mirror->declarationKnown||mirror->declaration!=declaration||
-           !mirror->indicesKnown||!mirror->streams[0].known||!mirror->frequencyKnown[0]||mirror->frequency[0]!=1)return false;
+        if(!declarations.captureLayout(declaration,extent)||!mirror->knownIndexedStreamZero(shader,declaration))return false;
         const auto& stream=mirror->streams[0];
         if(!capture.readResidentIndexed(declaration,draw,extent,stream.buffer,stream.offset,stream.stride,mirror->indices,source))return false;
         ++mirroredSnapshotReuses;return true;

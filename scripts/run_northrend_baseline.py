@@ -22,6 +22,7 @@ import northrend_fixture_server as fixture
 from compile_native_replay_plan import client_code_inputs, load_json, packet_reads, snapshot_inputs
 import northrend_frame_parity as parity
 import northrend_frame_timing as frame_timing
+import northrend_camera_pan as camera_pan
 import northrend_point_shadows as point_shadows
 import northrend_capture_work as capture_work
 import northrend_native_batches as native_batches
@@ -35,6 +36,8 @@ DXVK_ADAPTER_ENV = 'DXVK_FILTER_DEVICE_NAME'
 DXVK_LOG = 'Wow_d3d9.log'
 LOOPBACK = '127.0.0.1'
 REALMLIST = 'Data/enGB/realmlist.wtf'
+PAN_ADDON = 'NorthlightRatchetPan'
+PAN_ADDON_FILES = tuple(f'Interface/AddOns/{PAN_ADDON}/{PAN_ADDON}.{suffix}' for suffix in ('toc', 'lua'))
 PACKAGE_RUNTIME_FILES = frozenset((
     'northlight-renderer.ini', 'northlight-quality.ini', 'celestial-profiles.ini',
     'shadow-range-profiles.ini', 'forever-atmosphere.bin',
@@ -113,20 +116,25 @@ def renderer_profile(text):
     return ''.join(f'[{name}]\n' + '\n'.join(lines) + '\n' for name, lines in sections.items())
 
 
-def copies(source):
-    for name in ('Wow.exe', 'northlight-quality.ini', 'Battle.net.dll', 'DivxDecoder.dll',
+def copies(source, world=SCENE, game='Wow.exe', tiles=None):
+    if game == 'WowClient64.exe':
+        yield Path('WardenWorker32.exe')
+        yield Path('Wow.exe')
+    for name in (game, 'northlight-quality.ini', 'Battle.net.dll', 'DivxDecoder.dll',
                  'XvidDecoder.dll', 'msvcr80.dll', 'Microsoft.VC80.CRT.manifest',
                  'world-cache.instances.json', 'forever-atmosphere.bin', 'northlight-emission.bin',
-                 'fogdata.bin', 'shadow-range-profiles.ini', 'celestial-profiles.ini'):
+                 'fogdata.bin', 'shadow-range-profiles.ini', 'celestial-profiles.ini', 'water-core.dll'):
         if (source / name).is_file():
             yield Path(name)
     yield from (p.relative_to(source) for p in (source / 'Data').rglob('*')
                 if p.is_file() and p.suffix.lower() == '.mpq')
     cache = source / 'world-cache'
-    # Include only meshes referenced by Northrend tile records. The runtime
+    # Include only meshes referenced by the staged tile records. The runtime
     # can select new neighboring tiles along the same test route.
     models = set()
-    for path in sorted((cache / SCENE).glob('*.fg3')):
+    for path in sorted((cache / world).glob('*.fg3')):
+        if tiles is not None and path.stem not in tiles:
+            continue
         tile = path.read_bytes()
         if tile[:4] != b'FGS3' or len(tile) < 12 or (len(tile) - 12) % 116:
             raise ValueError(f'Unsupported static placement file: {path}')
@@ -135,17 +143,17 @@ def copies(source):
     for name in sorted(models):
         path = cache / 'models' / name
         if not path.is_file():
-            raise ValueError(f'Northrend placement refers to a missing model: {path}')
+            raise ValueError(f'{world} placement refers to a missing model: {path}')
         yield path.relative_to(source)
-    for folder in (SCENE, 'lights', 'fog', 'celestial'):
+    for folder in (world, 'lights', 'fog', 'celestial'):
         # Per-light working caches and other maps are generated independently.
         candidates = sorted((cache / folder).glob('*'))
-        if folder == 'fog' and (cache / folder / SCENE).is_dir():
-            candidates += sorted((cache / folder / SCENE).glob('*'))
+        if folder == 'fog' and (cache / folder / world).is_dir():
+            candidates += sorted((cache / folder / world).glob('*'))
         for path in candidates:
-            if folder == 'lights' and path.name not in ('Northrend.fgl', 'Northrend.fga', 'native-fixtures.bin'):
+            if folder == 'lights' and path.name not in (f'{world}.fgl', f'{world}.fga', 'native-fixtures.bin'):
                 continue
-            if path.is_file() and not (folder == SCENE and path.suffix == '.fg3'):
+            if path.is_file() and not (folder == world and path.suffix == '.fg3'):
                 yield path.relative_to(source)
 
 
@@ -217,19 +225,43 @@ def visual_clock(lines, frames):
     return {'hz': 60, 'tick_ms': {str(frame): ticks[frame] for frame in frames}}
 
 
+def stage_pe(path, game):
+    if game == 'Wow.exe':
+        pe32(path)
+        return
+    with path.open('rb') as binary:
+        header = binary.read(64)
+        if len(header) == 64 and header[:2] == b'MZ':
+            binary.seek(struct.unpack_from('<I', header, 60)[0])
+            coff = binary.read(26)
+            if len(coff) == 26 and coff[:6] == b'PE\0\0\x64\x86' and coff[24:] == b'\x0b\x02':
+                return
+    raise ValueError(f'Expected PE32+ AMD64: {path}')
+
+
 def stage(args):
     source, out = args.client.resolve(), args.output.resolve()
     if out.is_relative_to(source) or source.is_relative_to(out):
         raise ValueError('Private output and installed client must be disjoint')
     if args.frame_parity and args.msaa != 2:
         raise ValueError('Frame parity requires a 2× MSAA stage')
-    pe32(source / 'Wow.exe')
-    pe32(args.dll)
-    pe32(args.backend)
-    if not (source / 'Data/enGB/base-enGB.MPQ').is_file() or not (source / 'world-cache/Northrend').is_dir():
-        raise ValueError('The Northrend fixture requires enGB MPQs and the installed Northrend cache')
+    ratchet = getattr(args, 'scene', None) == fixture.RATCHET_PAN
+    game = 'WowClient64.exe' if getattr(args, 'x64', False) else 'Wow.exe'
+    map_id, _, world = fixture.map_for(fixture.RATCHET_PAN if ratchet else 'solo')
+    if args.frame_parity and (ratchet or game != 'Wow.exe'):
+        raise ValueError('Fixed-clock replay parity requires the original x86 Northrend stage')
+    for binary in (source / game, args.dll, args.backend):
+        stage_pe(binary, game)
+    if game == 'WowClient64.exe':
+        for name in ('WardenWorker32.exe', 'Wow.exe'):
+            pe32(source / name)
+    if not (source / 'Data/enGB/base-enGB.MPQ').is_file() or not (source / 'world-cache' / world).is_dir():
+        raise ValueError(f'The fixture requires enGB MPQs and the installed {world} cache')
     clock_image = fixed_clock_image((source / 'Wow.exe').read_bytes()) if args.frame_parity else None
-    files = list(copies(source))
+    tiles = {f'{x}_{y}' for x in range(38, 41) for y in range(32, 35)} if ratchet else None
+    files = list(copies(source, world, game, tiles))
+    if ratchet and Path('world-cache/Kalimdor/39_33.fg3') not in files:
+        raise ValueError('Missing the Ratchet static geometry tile')
     if args.resume and (out / 'baseline.json').exists():
         raise ValueError('A completed stage cannot be changed')
     out.mkdir(parents=True, exist_ok=args.resume)
@@ -237,6 +269,9 @@ def stage(args):
     files = {name: source / name for name in files}
     files.update({Path('d3d9.dll'): args.dll, Path('northlight-assets.bin'): args.assets,
                   Path('backend_d3d9.dll'): args.backend})
+    if ratchet:
+        for relative in map(Path, PAN_ADDON_FILES):
+            files[relative] = Path(__file__).with_name('fixtures') / 'ratchet-pan' / relative.name
     hashed, linked = {}, []
     for relative, origin in files.items():
         target = client / relative
@@ -266,10 +301,14 @@ def stage(args):
     quality = client / 'northlight-quality.ini'
     if not quality.is_file():
         raise ValueError('Provide a client with the baseline northlight-quality.ini')
-    if args.frame_parity:
+    if args.frame_parity or ratchet:
         settings = quality.read_text(encoding='utf-8-sig')
-        settings = re.sub(r'(?im)^\s*(?:CommandStream|StreamFrameSkip)\s*=[^\n]*\n?', '', settings)
-        settings, sections = re.subn(r'(?im)^\[Quality\][ \t]*$', '[Quality]\nCommandStream=1\nStreamFrameSkip=0', settings)
+        flags = ['CommandStream=1', 'StreamFrameSkip=0']
+        if ratchet:
+            flags += ['Diagnostics=1', 'RenderProfile=1']
+        keys = '|'.join(flag.split('=')[0] for flag in flags)
+        settings = re.sub(rf'(?im)^[ \t]*(?:{keys})[ \t]*=[^\n]*\n?', '', settings)
+        settings, sections = re.subn(r'(?im)^\[Quality\][ \t]*$', '\n'.join(('[Quality]', *flags)), settings)
         if sections != 1:
             raise ValueError('Expected exactly one [Quality] section in northlight-quality.ini')
         quality.write_text(settings, encoding='utf-8')
@@ -290,9 +329,11 @@ def stage(args):
     shutil.copyfile(renderer, out / renderer.name)
     for path in (renderer, config, realmlist):
         hashed[path.relative_to(client).as_posix()] = digest(path)
-    manifest = {'format': 1, 'map': SCENE, 'map_id': 571, 'spawn': SPAWN, 'realm': LOOPBACK,
+    manifest = {'format': 1, 'map': world, 'map_id': map_id, 'spawn': fixture.RATCHET_SPAWN if ratchet else SPAWN, 'realm': LOOPBACK,
                 'resolution': args.resolution, 'msaa': args.msaa, 'input_sha256': hashed,
                 'linked_assets': sorted(linked), 'frame_parity': args.frame_parity}
+    if game != 'Wow.exe':
+        manifest['game_exe'] = game
     if clock_image is not None:
         manifest['fixed_world_minute'] = fixture.WORLD_MINUTE
         manifest['original_client_sha256'] = STOCK_WOW_SHA256
@@ -300,7 +341,7 @@ def stage(args):
     print(f'Staged {len(hashed)} frozen client inputs at {client}', flush=True)
 
 
-def scan(lines, spawn=SPAWN):
+def scan(lines, spawn=SPAWN, world=SCENE, *, camera_history=False):
     result = {'identity': None, 'backend': None, 'world_seen': False, 'camera': None,
               'gi_tick': None, 'static_tick': None, 'frames': [], 'capture_active': False}
     for line in lines:
@@ -327,7 +368,7 @@ def scan(lines, spawn=SPAWN):
             result['output'] = {'resolution': line.split()[3], 'msaa': int(fields['msaa']) or 1}
         elif line.startswith('SDR primary target ') and fields.get('format') in ('21', '22'):
             result['sdr_output'] = {'resolution': line.split()[3], 'msaa': int(fields['msaa']) or 1}
-        elif line.startswith(f'WORLD probe atlas ready map={SCENE} '):
+        elif line.startswith(f'WORLD probe atlas ready map={world} '):
             result['world_seen'] = True
             result['gi_tick'] = int(fields['tick'])
         elif line.startswith('WORLD context validated: map="Menu:'):
@@ -342,6 +383,8 @@ def scan(lines, spawn=SPAWN):
                 if math.dist(eye, spawn[:3]) <= 32:
                     result.setdefault('first_camera_tick', row['tick'])
                 result['camera'] = row
+                if camera_history:
+                    result.setdefault('camera_samples', []).append(row)
         elif line.startswith('WORLD geometry transition ') and result['world_seen']:
             result['static_tick'] = int(fields['tick']) if fields.get('ready') == '1' else None
         elif line.startswith('FRAME interval '):
@@ -450,13 +493,13 @@ def parity_settled(state):
     return PARITY_SETTLE_MS <= age < 0x80000000
 
 
-def observe_crowd(lines, events, roster, expected_spawn):
+def observe_crowd(lines, events, roster, expected_spawn, map_name=SCENE):
     named = {int(event.split('=', 1)[1]) for event in events if event.startswith('CROWD_NAME guid=')}
     sample = {'native_published': 0, 'particle_accepted': 0, 'particle_published': 0}
     world = False
     for line in lines:
         if line.startswith('WORLD probe atlas ready map='):
-            world = line.startswith(f'WORLD probe atlas ready map={SCENE} ')
+            world = line.startswith(f'WORLD probe atlas ready map={map_name} ')
         if not world:
             continue
         if line.startswith('LOCAL_SOURCE frame='):
@@ -480,17 +523,31 @@ def observe_crowd(lines, events, roster, expected_spawn):
             'peak_lights': sample, 'ready': spawned and named == roster.keys() and all(sample.values())}
 
 
-def observe_m2_stress(lines, events, roster, expected_spawn):
+def observe_m2_stress(lines, events, roster, expected_spawn, *, x64=False):
+    crowd = observe_crowd(lines, events, roster, expected_spawn)
+    roster_ready = crowd['spawn_sha256'] and crowd['client_name_requests'] * 4 >= len(roster) * 3
+    if x64:
+        # The x64 proxy has no native client M2 hook. Use completed normal
+        # passes on distinct frames to confirm a sustained dense draw workload.
+        verified = any(re.match(r'^HOST exe=[^\r\n]+[\\/]WowClient64\.exe module=', line, re.I) for line in lines)
+        dense = {}
+        for line in lines:
+            if not line.startswith('MODEL_NORMALS frame='):
+                continue
+            row = dict(re.findall(r'(\w+)=(\d+)(?=\s|$)', line))
+            if (row.get('failed') == row.get('pending') == '0' and
+                    int(row.get('compactDraws', '0')) >= 6000):
+                dense[row['frame']] = int(row['compactDraws'])
+        return dict(crowd, proxy_compact_normal_draws=list(dense.values()),
+                    ready=bool(roster_ready and verified and len(dense) >= 2))
     audit = observe_native_m2(lines, 2)
     # Player name requests can lag well behind visible rendering. Require
     # most of the hashed roster and qualify density with the native M2 census.
     dense = [sample['seen'] for row in audit['samples'] if (sample := row['normals'])['seen'] >= 6000 and
              sample['domain'] == 'world-ready' and sample['immutable'] > 0 and
              sample['paletteChecks'] > 0 and not sample['paletteUnavailable']]
-    crowd = observe_crowd(lines, events, roster, expected_spawn)
     return dict(crowd, native_m2_draws=dense,
-                ready=bool(crowd['spawn_sha256'] and crowd['client_name_requests'] * 4 >= len(roster) * 3 and
-                           audit['verified_client'] and len(dense) >= 2))
+                ready=bool(roster_ready and audit['verified_client'] and len(dense) >= 2))
 
 
 def child_environment(run):
@@ -505,6 +562,44 @@ def child_environment(run):
                DXVK_CONFIG_FILE=str(run / 'dxvk.conf'), DXVK_LOG_PATH=str(run), DXVK_SHADER_CACHE_PATH=str(run / 'shader-cache'),
                DXVK_STATE_CACHE_PATH=str(run / 'state-cache'))
     return env
+
+
+def verify_dxvk_pipeline_options(path, options):
+    observed = {key: set() for key in options}
+    for line in log_lines(path):
+        if match := re.fullmatch(r'info:\s+(dxvk\.\w+) = (\S+)', line):
+            if match[1] in observed:
+                observed[match[1]].add(match[2])
+    for key, expected in options.items():
+        if observed[key] != {expected}:
+            raise ValueError(f'DXVK log did not confirm {key} = {expected}')
+
+
+def seed_dxvk_shader_cache(source, directory):
+    files = (source, source.with_suffix('.lut'))
+    if not source.name.endswith('.dxvk.bin') or not all(p.is_file() and p.stat().st_size for p in files):
+        raise ValueError('DXVK shader cache seed requires nonempty .dxvk.bin and .dxvk.lut files')
+    directory.mkdir()
+    inputs = {}
+    for path in files:
+        target = directory / path.name
+        shutil.copyfile(path, target)
+        inputs[path.name] = digest(target)
+    return inputs
+
+
+def verify_dxvk_shader_cache(path, name):
+    found = False
+    loaded = 0
+    for line in log_lines(path):
+        if line.endswith(name) and 'cache file: ' in line:
+            found = 'Found cache file: ' in line
+            loaded = 0
+        elif found and (match := re.fullmatch(r'info:\s+Cache: (\d+) shaders \(.*\)', line)):
+            loaded = int(match[1])
+    if not loaded:
+        raise ValueError(f'DXVK did not load shaders from the seeded cache {name}')
+    return loaded
 
 
 def prepare_parity_images(images, raw):
@@ -779,10 +874,14 @@ def observed_terrain_capture(lines):
     return {'ready': ready, 'renderer_line': recent or None}
 
 
-def advance_login(hwnd, events, actions, start, now, enter_world=True):
-    if 'login' not in actions and now - start >= 3:
+def advance_login(hwnd, events, actions, start, now, enter_world=True, *, x64=False):
+    if 'login' not in actions and now - start >= (7 if x64 else 3):
         login_input(hwnd)
         actions['login'] = now
+    if (x64 and 'login' in actions and 'login_retry' not in actions and 'REALM_LIST_SENT' not in events and
+            now - actions['login'] >= 6):
+        press_key(hwnd, 0x0d)
+        actions['login_retry'] = now
     if ('REALM_LIST_SENT' in events and 'WORLD_AUTH_OK' not in events and
             now - actions.setdefault('realm', now) >= 1):
         press_key(hwnd, 0x0d)
@@ -813,22 +912,39 @@ def run_client(args):
             not (client.is_relative_to(root) or client.is_relative_to(fp.out().resolve()))):
         raise ValueError('The private client must belong to the stage or configured output directory')
     inputs = manifest['input_sha256']
-    fixed = ('Wow.exe', 'd3d9.dll', 'northlight-assets.bin', 'backend_d3d9.dll',
+    game = manifest.get('game_exe', 'Wow.exe')
+    if game not in ('Wow.exe', 'WowClient64.exe'):
+        raise ValueError('Unrecognized fixture executable')
+    launch = [str(client / game), '-d3d9' if game == 'Wow.exe' else '-d3d']
+    fixed = (game, 'd3d9.dll', 'northlight-assets.bin', 'backend_d3d9.dll',
              'northlight-renderer.ini', 'northlight-quality.ini', REALMLIST)
+    if game == 'WowClient64.exe':
+        fixed += ('WardenWorker32.exe', 'Wow.exe')
+    if manifest.get('map') == 'Kalimdor':
+        fixed += PAN_ADDON_FILES
     mutable = {'WTF/Config.wtf': root / 'Config.wtf', 'northlight-renderer.ini': root / 'northlight-renderer.ini'}
     for relative in (*fixed, 'WTF/Config.wtf', *manifest.get('linked_assets', ())):
         if digest(mutable.get(relative, client / relative)) != inputs[relative]:
             raise ValueError(f'Frozen runtime input differs from the stage manifest: {relative}')
     wrapper = args.capture_wrapper.resolve() if args.capture_wrapper else None
     scene = getattr(args, 'scene', 'solo')
-    private_desktop = scene == 'm2-stress'
+    map_id, _, world = fixture.map_for(scene)
+    ratchet = scene == fixture.RATCHET_PAN
+    if world != manifest.get('map', SCENE) or map_id != manifest.get('map_id', 571):
+        raise ValueError('The scene and stage must use the same world map')
+    if wrapper and game != 'Wow.exe':
+        raise ValueError('Fixture trace capture requires Wow.exe')
+    m2_stress = scene == 'm2-stress'
+    private_desktop = m2_stress or ratchet
     game_window_class = 'GxWindowClassD3d' if private_desktop else None
-    timeout = args.timeout if args.timeout is not None else (240 if private_desktop else 90)
+    timeout = args.timeout if args.timeout is not None else (240 if m2_stress else 90)
     background = private_desktop or getattr(args, 'background', False)
     camera_turn = getattr(args, 'camera_turn', False)
     if camera_turn and (args.windows or args.target != 'world' or args.manual):
         raise ValueError('--camera-turn requires an automated World run with --windows 0')
     return_to_menu = getattr(args, 'return_to_menu', False)
+    if ratchet and (args.windows or args.target != 'world' or args.manual or wrapper or camera_turn or return_to_menu):
+        raise ValueError('Ratchet requires an automated, untraced World run with --windows 0')
     if return_to_menu and (args.windows or args.target != 'world' or args.manual or
                            (wrapper and not manifest.get('frame_parity'))):
         raise ValueError('--return-to-menu requires automated World operation with --windows 0 and a parity stage for tracing')
@@ -855,7 +971,7 @@ def run_client(args):
     if candidate is not None:
         candidate = candidate.resolve()
         assets = assets.resolve()
-        pe32(candidate)
+        stage_pe(candidate, game)
         assets_hash = digest(assets)
         renderer_hash = digest(candidate)
     spawn = fixture.spawn_for(scene)
@@ -916,7 +1032,7 @@ def run_client(args):
         if args.target != 'world':
             raise ValueError('The capture runner requires the Northrend world checkpoint')
     run.mkdir(parents=True, exist_ok=False)
-    mode = 'capture' if wrapper else 'baseline' if args.windows else 'smoke'
+    mode = 'camera-pan' if ratchet else 'capture' if wrapper else 'baseline' if args.windows else 'smoke'
     report = {'format': 2 if frame_parity else 1, 'status': 'INCOMPLETE', 'mode': mode,
               'target': args.target, 'scene': scene, 'baseline_sha256': digest(root / 'baseline.json'),
               'runtime_inputs': {name: inputs[name] for name in fixed},
@@ -932,6 +1048,18 @@ def run_client(args):
     original = run / 'staged-d3d9.dll'
     original_assets = run / 'staged-northlight-assets.bin'
     env = child_environment(run)
+    cache_seed = getattr(args, 'dxvk_shader_cache_seed', None)
+    if cache_seed:
+        report['dxvk_shader_cache'] = {'inputs': seed_dxvk_shader_cache(cache_seed, Path(env['DXVK_SHADER_CACHE_PATH']))}
+    pipeline_options = {}
+    if (threads := getattr(args, 'dxvk_compiler_threads', None)) is not None:
+        pipeline_options['dxvk.numCompilerThreads'] = str(threads)
+    if getattr(args, 'dxvk_gpl_only', False):
+        pipeline_options['dxvk.enableGraphicsPipelineLibrary'] = 'True'
+    if pipeline_options:
+        with (run / 'dxvk.conf').open('a', encoding='ascii') as config:
+            for name, value in pipeline_options.items():
+                config.write(f'{name} = {value}\n')
     if getattr(args, 'dxvk_direct_adapter', False):
         with (run / 'dxvk.conf').open('a', encoding='ascii') as config:
             config.write('d3d9.enumerateByDisplays = False\n')
@@ -1084,7 +1212,7 @@ def run_client(args):
             from northrend_private_desktop import Desktop
             desktop = Desktop()
             report['private_desktop'] = desktop.name
-            process = desktop.launch([str(client / 'Wow.exe'), '-d3d9'], client, env, run / 'client.stdout')
+            process = desktop.launch(launch, client, env, run / 'client.stdout')
         else:
             startup = None
             if background:
@@ -1092,10 +1220,10 @@ def run_client(args):
                 startup.dwFlags |= subprocess.STARTF_USESHOWWINDOW
                 startup.wShowWindow = 4  # SW_SHOWNOACTIVATE
             with (run / 'client.stdout').open('xb') as output:
-                process = subprocess.Popen([str(client / 'Wow.exe'), '-d3d9'], cwd=client, env=env,
+                process = subprocess.Popen(launch, cwd=client, env=env,
                                            stdout=output, stderr=subprocess.STDOUT, startupinfo=startup)
         report['client_pid'] = process.pid
-        print(f'Launched isolated Wow.exe PID {process.pid}', flush=True)
+        print(f'Launched isolated {game} PID {process.pid}', flush=True)
         start = time.monotonic()
         actions = {}
         focus_retry = start
@@ -1108,7 +1236,7 @@ def run_client(args):
             if desktop is not None:
                 desktop.confirm_inactive()
             lines = log_lines(log)
-            state = scan(lines, spawn)
+            state = scan(lines, spawn, world, camera_history=ratchet)
             events = log_lines(fixture_log)
             if logout_line is not None:
                 if observed_menu_return(lines, events, logout_line):
@@ -1122,8 +1250,8 @@ def run_client(args):
             if mode == 'smoke':
                 world_ready = world_ready and state['gi_tick']
             if roster:
-                observation = observe_m2_stress if private_desktop else observe_crowd
-                report['crowd'] = observation(lines, events, roster, expected_spawn)
+                report['crowd'] = (observe_m2_stress(lines, events, roster, expected_spawn, x64=game == 'WowClient64.exe') if m2_stress else
+                                   observe_crowd(lines, events, roster, expected_spawn, world))
                 world_ready = world_ready and report['crowd']['ready']
             if scene in ('rain', 'shoreline'):
                 report['rain'] = observed_rain(lines, events)
@@ -1131,6 +1259,31 @@ def run_client(args):
             if scene == 'shoreline':
                 report['water'] = observed_water(lines)
                 world_ready = world_ready and report['water']['ready']
+            if ratchet:
+                markers = camera_pan.markers(events)
+                if 'camera_ready_tick' not in report:
+                    if markers:
+                        raise ValueError('Camera fixture started before the water, crowd and warm Present checkpoint')
+                    report['water'] = observed_water(lines)
+                    backend = state.get('backend')
+                    warm = warm_windows(state, 1, background=background)
+                    if (world_ready and backend and backend != 'non-DXVK' and state.get('backend_fallback') is False and
+                            report['water']['ready'] and parity.stream_without_skips(lines) and warm):
+                        report['camera_ready_tick'] = int(warm[-1]['tick'])
+                        print('Ratchet scene ready. Waiting for the idle and camera sweeps.', flush=True)
+                if len(markers) == len(fixture.RATCHET_PHASES):
+                    phases = [{'name': name, 'start': start, 'end': end}
+                              for (name, start), (_, end) in zip(markers, markers[1:])]
+                    report['camera_phases'] = phases
+                    result = camera_pan.assess(state['frames'], phases, state.get('camera_samples', ()), spawn,
+                                               background=background)
+                    if result is not None:
+                        report['camera_pan'] = result
+                        report['checkpoint'] = 'ratchet-pan-measured'
+                        if not result['pass']:
+                            report['status'] = 'FAIL'
+                            report['error'] = 'Camera sweep or recovery exceeded the Present frame-time budget'
+                        break
             if scene == 'interior':
                 report['interior_lamps'] = observed_interior_lamps(lines)
                 world_ready = world_ready and report['interior_lamps']['ready']
@@ -1163,8 +1316,8 @@ def run_client(args):
                     any(line.startswith('CreateDevice HRESULT=0x00000000') for line in lines)):
                 report['checkpoint'] = 'menu-character-ready' if package_runtime else 'device'
                 break
-            if args.target == 'world' and world_ready and parity_ready:
-                if private_desktop and not stress_skip_intervals:
+            if args.target == 'world' and world_ready and parity_ready and not ratchet:
+                if m2_stress and not stress_skip_intervals:
                     # The first interval emitted after admission can include loading frames.
                     stress_skip_intervals = len(state['frames']) + 1
                 windows = warm_windows(state, args.windows, background=background,
@@ -1188,7 +1341,7 @@ def run_client(args):
                         report['foreground_attempts'] = report.get('foreground_attempts', 0) + 1
                         report['foreground_request'] = focus_private_window(handles[0])
                         focus_retry = now + 4
-                    advance_login(handles[0], events, actions, start, now,
+                    advance_login(handles[0], events, actions, start, now, x64=game != 'Wow.exe',
                                   enter_world=not return_to_menu or observed_menu_scene(lines))
             elif args.target == 'menu' and package_runtime and not args.manual and state['identity']:
                 handles = process_windows(process.pid)
@@ -1214,6 +1367,8 @@ def run_client(args):
                 raise ValueError('Terrain did not submit a sample of material capture without D3D errors')
             if camera_turn and 'camera_turn' not in report:
                 raise ValueError('The live renderer did not observe the requested camera turn')
+            if ratchet:
+                raise ValueError('Ratchet did not reach the water and timing checkpoint or complete both camera sweeps')
             if args.target == 'world' and args.windows and (world_ready or timing_windows):
                 raise ValueError(f'The private WoW window completed {len(timing_windows)} of '
                                  f"{args.windows} requested {report['window_mode']} warm Present windows")
@@ -1276,17 +1431,32 @@ def run_client(args):
             log.replace(frozen_log)
             report['log_sha256'] = digest(frozen_log)
             lines = log_lines(frozen_log)
-            state = scan(lines, spawn)
-            if private_desktop and 'checkpoint' in report:
+            state = scan(lines, spawn, world)
+            if 'camera_pan' in report:
+                report['camera_pan']['event_wait'] = camera_pan.event_wait_evidence(lines, report['camera_pan'])
+            dxvk_log = run / f'{Path(game).stem}_d3d9.log'
+            if pipeline_options:
                 try:
-                    report['crowd'] = observe_m2_stress(lines, log_lines(fixture_log), roster, expected_spawn)
+                    verify_dxvk_pipeline_options(dxvk_log, pipeline_options)
+                    report['dxvk_pipeline_options'] = pipeline_options
+                except (OSError, ValueError) as error:
+                    report.setdefault('error', str(error))
+            if cache_seed:
+                try:
+                    report['dxvk_shader_cache']['loaded_shaders'] = verify_dxvk_shader_cache(dxvk_log, cache_seed.name)
+                except (OSError, ValueError) as error:
+                    report.setdefault('error', str(error))
+            if m2_stress and 'checkpoint' in report:
+                try:
+                    report['crowd'] = observe_m2_stress(lines, log_lines(fixture_log), roster, expected_spawn,
+                                                       x64=game == 'WowClient64.exe')
                     if not report['crowd']['ready']:
                         raise ValueError('The closed log did not confirm the M2 stress scene')
                 except ValueError as error:
                     report.setdefault('error', str(error))
             if env.get(DXVK_ADAPTER_ENV) and state.get('backend') != 'non-DXVK':
                 try:
-                    report['dxvk_adapter'] = dxvk_adapter(run / DXVK_LOG, env[DXVK_ADAPTER_ENV])
+                    report['dxvk_adapter'] = dxvk_adapter(dxvk_log, env[DXVK_ADAPTER_ENV])
                 except (OSError, ValueError) as error:
                     report.setdefault('error', str(error))
             if return_to_menu and report.get('checkpoint') == 'menu-world-menu-ready':
@@ -1312,7 +1482,7 @@ def run_client(args):
             report['frame_intervals'] = len(state['frames'])
             if timing_windows:
                 report['timing_checkpoint'] = {'log_lines': timing_line_count, 'static_tick': timing_state['static_tick']}
-                if private_desktop:
+                if m2_stress:
                     report['timing_checkpoint']['skipped_intervals'] = stress_skip_intervals
                 if report['windows'] != timing_windows:
                     report.setdefault('error', 'The closed log changed the selected live Present windows')
@@ -2787,6 +2957,8 @@ def main():
     prepare.add_argument('--dll', type=Path, default=fp.RENDERER / 'frd9.dll')
     prepare.add_argument('--assets', type=Path, default=fp.RENDERER / 'northlight-assets.bin')
     prepare.add_argument('--backend', type=Path, required=True)
+    prepare.add_argument('--scene', choices=('solo', fixture.RATCHET_PAN), default='solo', help='Stage Northrend or the Ratchet waterfront')
+    prepare.add_argument('--x64', action='store_true', help='Stage WowClient64.exe and AMD64 DXVK')
     prepare.add_argument('--output', type=Path, required=True)
     prepare.add_argument('--resolution', choices=('1280x720', '1920x1080', '3840x2160'), default='3840x2160')
     prepare.add_argument('--msaa', type=int, choices=(1, 2), default=2)
@@ -2806,6 +2978,12 @@ def main():
                      help='Number of warm timing windows. Use 0 for a graphics readiness smoke.')
     run.add_argument('--background', action='store_true', help='Launch without requesting focus and time background windows')
     run.add_argument('--dxvk-direct-adapter', action='store_true', help='Use DXVK adapters without enumerating connected displays')
+    run.add_argument('--dxvk-compiler-threads', type=int, choices=range(129), metavar='COUNT',
+                     help='Number of DXVK compiler threads in this run (0 uses DXVK automatic selection)')
+    run.add_argument('--dxvk-gpl-only', action='store_true',
+                     help='Use graphics pipeline libraries without the background optimization pass in DXVK')
+    run.add_argument('--dxvk-shader-cache-seed', type=Path, metavar='CACHE.dxvk.bin',
+                     help='Copy a DXVK shader cache and its .lut into the private run and verify DXVK reused it')
     run.add_argument('--return-to-menu', action='store_true',
                      help='After World readiness, require a completed logout and a fresh character menu')
     run.add_argument('--camera-turn', action='store_true', help='Require a confirmed heading change after cold World entry')

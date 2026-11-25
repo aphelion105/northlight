@@ -37,20 +37,24 @@ static FARPROC WINAPI fakeGetProc(HMODULE,LPCSTR name){
 }
 static void record(const char*,...){++logs;}
 int main(){
-    static_assert(sizeof(E::ApplicationInfo)==28&&sizeof(E::InstanceCreateInfo)==32,"x86 Vulkan ABI");
+    static_assert(sizeof(E::ApplicationInfo)==(sizeof(void*)==8?48:28)&&
+                  sizeof(E::InstanceCreateInfo)==(sizeof(void*)==8?64:32),"Vulkan ABI");
     const auto realGetProc=E::systemGetProc;
     auto* image=static_cast<unsigned char*>(VirtualAlloc(nullptr,4096,MEM_COMMIT|MEM_RESERVE,PAGE_READWRITE));assert(image);
     auto* dos=reinterpret_cast<IMAGE_DOS_HEADER*>(image);dos->e_magic=IMAGE_DOS_SIGNATURE;dos->e_lfanew=128;
-    auto* nt=reinterpret_cast<IMAGE_NT_HEADERS32*>(image+128);nt->Signature=IMAGE_NT_SIGNATURE;
-    nt->OptionalHeader.Magic=IMAGE_NT_OPTIONAL_HDR32_MAGIC;nt->OptionalHeader.SizeOfImage=4096;
+    auto* nt=reinterpret_cast<IMAGE_NT_HEADERS*>(image+128);nt->Signature=IMAGE_NT_SIGNATURE;
+    nt->OptionalHeader.Magic=IMAGE_NT_OPTIONAL_HDR_MAGIC;nt->OptionalHeader.SizeOfImage=4096;
     nt->OptionalHeader.NumberOfRvaAndSizes=16;nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT]={512,40};
     auto* imports=reinterpret_cast<IMAGE_IMPORT_DESCRIPTOR*>(image+512);imports->Name=2000;imports->OriginalFirstThunk=1024;imports->FirstThunk=1200;
-    reinterpret_cast<IMAGE_THUNK_DATA32*>(image+1024)->u1.AddressOfData=1500;
+    auto* thunks=reinterpret_cast<IMAGE_THUNK_DATA*>(image+1024);
+    thunks[0].u1.Ordinal=IMAGE_ORDINAL_FLAG|7;
+    thunks[1].u1.AddressOfData=1500;
     std::memcpy(image+1502,"GetProcAddress",sizeof("GetProcAddress"));
-    auto** slot=reinterpret_cast<void**>(image+1200);*slot=E::pointer<void*>(realGetProc);
+    auto** iat=reinterpret_cast<void**>(image+1200);
+    auto** slot=iat+1;*slot=E::pointer<void*>(realGetProc);
     const auto systemBefore=::GetProcAddress(GetModuleHandleW(L"kernel32.dll"),"GetProcAddress");
     assert(!std::strcmp(E::install(reinterpret_cast<HMODULE>(image),&record),"active-module-pinned"));
-    assert(*slot==E::pointer<void*>(&E::getProc));
+    assert(*slot==E::pointer<void*>(&E::getProc)&&iat[0]==nullptr);
     assert(::GetProcAddress(GetModuleHandleW(L"kernel32.dll"),"GetProcAddress")==systemBefore);
     assert(!std::strcmp(E::install(reinterpret_cast<HMODULE>(image),&record),"getproc-already-intercepted"));
     VirtualFree(image,0,MEM_RELEASE);

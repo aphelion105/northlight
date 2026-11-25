@@ -24,7 +24,14 @@ int main(int argc,char** argv){
     while(std::fread(&count,4,1,in)==1){
         std::vector<std::uint32_t> words(count),patched;
         if(count&&std::fread(words.data(),4,count,in)!=count)return 4;
-        const char* reason=mrt?NorthlightWaterShaderPatch::patchMrt(words.data(),words.size(),patched):NorthlightWaterShaderPatch::patch(words.data(),words.size(),patched);
+        std::uint64_t samplers=0;
+        const char* reason=mrt?NorthlightWaterShaderPatch::patchMrt(words.data(),words.size(),patched):NorthlightWaterShaderPatch::patch(words.data(),words.size(),patched,&samplers);
+        if(!mrt&&!reason){
+            NorthlightWaterShaderPatch::Analysis analysis;
+            if(NorthlightWaterShaderPatch::analyse(words.data(),words.size(),analysis)||samplers!=analysis.used[10]){
+                std::fprintf(stderr,"patch did not retain the original sampler usage\n");return 8;
+            }
+        }
         if(mrt&&!reason){ // the runtime identity check: the MRT variant is the mask variant plus a def and the other suffix
             std::vector<std::uint32_t> mask;
             if(NorthlightWaterShaderPatch::patch(words.data(),words.size(),mask)||!NorthlightWaterShaderPatch::verifyMrt(words.data(),words.size(),mask,patched)){std::fprintf(stderr,"verifyMrt failed\n");return 5;}

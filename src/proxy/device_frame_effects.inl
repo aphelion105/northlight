@@ -94,7 +94,9 @@
         bool hdrWaterShaded=false,hdrWaterFinalized=false;
 #ifdef NORTHLIGHT_WATER
         if(cooperativeWaterEnabled&&debugMode==0&&worldDebug==0){
+#ifndef _WIN64
             prepareCooperativeWater(desc,saved.viewport,false);
+#endif
             if(cooperativeWater.Current()){
                 auto* liquidMask=cooperativeWater.Liquid()?tideglassCoverage(waterMask):nullptr;
                 const bool keepRain=liquidMask&&snapshotTideglassRain(saved.targets[0],rainMaskTex);
@@ -117,6 +119,9 @@
                 // Tideglass takes encoded game colour. HDR decodes that result once.
                 if(hdr.active)
                     hdrWaterFinalized=cooperativeWater.WorldDone(worldDepth,saved.targets[0],depthTex,&saved.viewport);
+#ifdef _WIN64
+                reportTideglassSurface();
+#endif
             }
         }
 #endif
@@ -275,8 +280,12 @@
             gpuProfile->mark("CelestialVeil");effectsBuckets.mark(Bucket::Veil);
         }
 #ifdef NORTHLIGHT_WATER
-        if(!hdr.active&&cooperativeWater.Current())
+        if(!hdr.active&&cooperativeWater.Current()){
             cooperativeWater.WorldDone(worldDepth,outputTarget,depthTex,&saved.viewport);
+#ifdef _WIN64
+            reportTideglassSurface();
+#endif
+        }
 #endif
         if(maskOn&&nameMask.debug)nameMaskDebugView(outputTarget); /* 0.3.212 (task 32): the last effect pass, the mask itself */
         hdrSceneReady=linearHdr;

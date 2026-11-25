@@ -71,6 +71,19 @@ class DevTuningBuild(unittest.TestCase):
         with self.assertRaisesRegex(SystemExit, 'profiling build'):
             bp.check_dll(fake_dll(b'NORTHLIGHT PROFILING BUILD'))
 
+    def test_x64_proxy_keeps_export_ordinals_and_has_separate_outputs(self):
+        with tempfile.TemporaryDirectory(dir=fp.output_dir()) as folder, \
+                mock.patch.object(br.northlight_paths, 'out', return_value=Path(folder)):
+            command = self.zig_command(['--x64'])
+            self.assertEqual(command[command.index('-target')+1], 'x86_64-windows-gnu')
+            self.assertEqual(Path(command[-1]), Path(folder)/'x64-proxy'/'d3d9.dll')
+            self.assertIn('-DNORTHLIGHT_WATER=1', command)
+            self.assertIn(str(fp.REPO / 'tideglass/src/surface_depth.cpp'), command)
+            exports, = (Path(arg).read_text() for arg in command if arg.endswith('.def'))
+            self.assertNotIn('=', exports)
+            self.assertIn('Direct3DCreate9 @37', exports)
+            self.assertIn('Direct3DCreate9Ex @38', exports)
+
     def test_windows_preflight_reports_sandbox_failure_before_build(self):
         with tempfile.TemporaryDirectory() as folder, \
                 mock.patch.object(br.check_layout, 'layout_problems', return_value=[]), \

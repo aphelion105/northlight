@@ -3,6 +3,7 @@
 #include "composite_distance_gpu.cpp"
 #undef main
 #include "effect_coverage.h"
+#include "device_mirror.h"
 #include "forwarders.h"
 #include <array>
 using namespace NorthlightEffectCoverage;
@@ -296,5 +297,32 @@ int main(int argc,char** argv){
         ok(d->EndScene());assert(submits==1&&!capture.active()&&!calls.failNext);
     }
     assert(negativeControls>0&&bannerCounterfactuals>0&&projectedCounterfactuals>0);std::printf("EFFECT_COVERAGE_PASS native=%u composites=%u mixedOrder=%u negativeControls=%u maxError=%g mrtMsaa=%u bannerCounterfactuals=%u projectedCounterfactuals=%u bannerLift=%g sm2 sm3 msaa0 msaa2 alpha premultiplied additive depth alphaTest opaqueOverwrite modulate modulate2x litAlphaErasesProportionally litBannerReceivesFog oldBlanketAlphaDarkControl projectedShadowBelowFog blackZeroEmission nativePixelsExact oneDrawPerInput batchedReplay opaqueOnlyNoDeviceCalls\n",cases,compositeCases,mixed,negativeControls,worst,unsigned(allowMsaa),bannerCounterfactuals,projectedCounterfactuals,bannerLift);
+    if(argc==5&&allowMsaa){
+        DeviceMirror mirror;ExtensionDevice ext(d,&mirror);MirrorGuard gate(mirror.gate);
+        std::vector<unsigned char> expected,expectedScene;
+        for(bool retain:{false,true}){
+            Capture tracked;
+            if(retain)tracked.setTargetRelease([](IDirect3DDevice9* device,unsigned slot,IDirect3DSurface9* image){
+                static_cast<ExtensionDevice*>(device)->releaseCoverageTarget(slot,image);
+            });
+            baseState();mirror.invalidate();ok(ext.SetDepthStencilSurface(nullptr));ok(ext.SetRenderTarget(0,surface));
+            ok(ext.Clear(0,nullptr,D3DCLEAR_TARGET,0,1,0));ok(ext.SetRenderState(D3DRS_ZENABLE,FALSE));
+            ok(ext.SetRenderState(D3DRS_ZWRITEENABLE,FALSE));ok(ext.SetPixelShader(native[1]));ok(ext.BeginScene());
+            const Vertex q[]={{-.5f,-.5f,.5f,1,0,0},{N-.5f,-.5f,.5f,1,1,0},{-.5f,N-.5f,.5f,1,0,1},{N-.5f,N-.5f,.5f,1,1,1}};
+            auto draw=[&]{return ext.DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,q,sizeof(Vertex));};
+            const float light[]={.05f,.1f,.025f,.2f};ok(ext.SetPixelShaderConstantF(0,light,1));
+            ok(ext.SetRenderState(D3DRS_ALPHABLENDENABLE,TRUE));ok(ext.SetRenderState(D3DRS_SRCBLEND,D3DBLEND_SRCALPHA));
+            ok(ext.SetRenderState(D3DRS_DESTBLEND,D3DBLEND_ONE));ok(tracked.draw(&ext,Write::Additive,draw));
+            ok(ext.SetRenderState(D3DRS_DESTBLEND,D3DBLEND_INVSRCALPHA));
+            for(unsigned i=0;i<8;++i)ok(tracked.draw(&ext,Write::Alpha,draw));
+            ok(ext.EndScene());assert(!mirror.deferredTargetMask);
+            auto* packed=tracked.texture(&ext,surface);assert(packed&&tracked.hasEmission());
+            IDirect3DSurface9* packedSurface=nullptr;ok(packed->GetSurfaceLevel(0,&packedSurface));
+            auto mask=pixels(packedSurface),sceneImage=pixels(surface);packedSurface->Release();
+            if(retain){assert(mask==expected&&sceneImage==expectedScene&&mirror.coverageTargetReuses>=12);
+                std::printf("EFFECT_COVERAGE_ATTACHMENT_PASS reuse=%u pixels=bitexact\n",mirror.coverageTargetReuses);}
+            else{expected=std::move(mask);expectedScene=std::move(sceneImage);assert(!mirror.coverageTargetReuses);}
+        }
+    }
     capture.reset();coverageBenchmark(d,native[1]);for(auto* p:native)p->Release();for(auto* p:nativeMrt)p->Release();for(auto* p:composites)p->Release();surface->Release();stage->Release();output->Release();outputStage->Release();scene->Release();d->Release();api->Release();FreeLibrary(module);DestroyWindow(window);
 }

@@ -70,7 +70,7 @@ struct World {
 };
 struct Bump {
  Env* e;bool active()const{return e->cfg.materialActive;}void beginDraw(){e->event(BeginBump);}void beforeNativeDraw(){e->event(BeforeNative);}
- void allowNativeM2Fusion(bool,void*,float){}void endNativeMaterialDraw(){}
+ void allowNativeM2Fusion(bool,void*,float,bool=false){}void endNativeMaterialDraw(){}
  template<class Draw>void capture(IDirect3DVertexShader9* vs,Draw draw,bool up,const NorthlightAutoDisplacement::Args* g,const NorthlightCaptureMetadata::PositionBounds* pos,NorthlightAutoDisplacement::CaptureSource* source,const std::shared_ptr<const NorthlightDrawSnapshot::Mesh>* hint=nullptr){
   assert(!hint);
   assert(vs==shader()&&g&&source);if(pos)assert(pos->owner==g&&pos->shader==vs);if(e->owner)assert(e->owner==g);e->action(Material,{up,bool(pos),pos&&pos->known,g->draw.indexed});source->mesh=17;source->pose=23;source->bank=29;source->declaration=reinterpret_cast<IDirect3DVertexDeclaration9*>(2);if(e->cfg.componentDraw)draw();
@@ -89,6 +89,7 @@ namespace NorthlightBackend {
  bool isPackagedDxvk(Kind){return true;}
 }
 struct Normals {
+ void setCaptureProfiling(bool){}
  Env* e;template<class Draw,class Desc>void capture(IDirect3DVertexShader9* vs,Draw draw,bool up,const Desc*,const void*,D3DFORMAT,const void*,UINT,const unsigned* mesh,IDirect3DVertexDeclaration9* decl,const unsigned* pose,unsigned* published=nullptr,IDirect3DVertexDeclaration9** publishedDeclaration=nullptr,bool terrain=false,const unsigned* bank=nullptr){
   assert(vs==shader());assert(mesh&&pose&&(*mesh==0||(*mesh==17&&*pose==23&&decl)));e->action(Normal,{up,*mesh,*pose,bool(decl)});if(e->cfg.componentDraw)draw();
  }

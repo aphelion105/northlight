@@ -11,6 +11,9 @@
 #ifdef _WIN32
 #include <windows.h>
 #endif
+#if defined(_WIN64) && !defined(NORTHLIGHT_REPLAY_STAND)
+#include "world_context_x64.h"
+#endif
 
 namespace NorthlightWorldContext {
 struct TerrainContext {
@@ -74,9 +77,9 @@ struct SelfReadStats {
     static inline std::atomic<Observer> observer{nullptr}; // Explicit native capture only.
 #endif
 };
-#ifdef NORTHLIGHT_REPLAY_STAND
+#if defined(NORTHLIGHT_REPLAY_STAND) || defined(_WIN64)
 inline bool readSelfLive(uintptr_t address,void* output,size_t size) {
-    // A stand never interprets recorded addresses as pointers in its own host.
+    // Only the Win32 client owns the live 12340 layout.
     (void)address;(void)output;(void)size;return false;
 }
 #else
@@ -112,6 +115,8 @@ inline bool supportedClient() {
 #ifdef NORTHLIGHT_REPLAY_STAND
     const auto* context=NorthlightStream::StandInputs::currentContext();
     if(!context||context->targetBase()!=0x400000)return false;
+#elif defined(_WIN64)
+    return false;
 #else
     if(reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr))!=0x400000)return false;
 #endif
@@ -131,24 +136,31 @@ inline bool supportedClient() {
 // Basename corresponds directly to Map.dbc Directory (Azeroth, Kalimdor,...). Instance
 // directories may carry an apostrophe or a space (Zul'gurub, Stratholme Raid).
 // On failure no partially read result is published to the caller.
-inline bool readMapAndCamera(char (&map)[64],float (&camera)[3]) {
-    static const bool supported=supportedClient();
-    if(!supported)return false;
-    uint32_t worldFrame=0,cameraPointer=0;float candidateCamera[3];char name[64];
-    if(!readSelf(0xb7436c,&worldFrame,4) || !worldFrame ||
-        !readSelf(uintptr_t(worldFrame)+0x7e20,&cameraPointer,4) || !cameraPointer ||
-        !readSelf(uintptr_t(cameraPointer)+8,candidateCamera,sizeof candidateCamera) ||
-        !readSelf(0xce06d0,name,sizeof name))return false;
+inline bool publishMapAndCamera(const char (&name)[64],const float* candidate,char (&map)[64],float (&camera)[3]){
     unsigned count=0;
     for(;count<sizeof name && name[count];++count) {
         const char c=name[count];
         if(!((c>='a'&&c<='z')||(c>='A'&&c<='Z')||(c>='0'&&c<='9')||c=='_'||c=='\''||c==' '))return false;
     }
     if(count==0 || count==sizeof name)return false;
-    for(float coordinate:candidateCamera)
-        if(!std::isfinite(coordinate)||std::fabs(coordinate)>100000.f)return false;
-    std::memcpy(map,name,count+1);std::memcpy(camera,candidateCamera,sizeof candidateCamera);
+    for(unsigned i=0;i<3;++i)
+        if(!std::isfinite(candidate[i])||std::fabs(candidate[i])>100000.f)return false;
+    std::memcpy(map,name,count+1);std::memcpy(camera,candidate,sizeof camera);
     return true;
+}
+inline bool readMapAndCamera(char (&map)[64],float (&camera)[3]){
+#if defined(_WIN64) && !defined(NORTHLIGHT_REPLAY_STAND)
+    NorthlightX64World::Scene scene;
+    return NorthlightX64World::readScene(scene)&&publishMapAndCamera(scene.map,scene.pose,map,camera);
+#else
+    static const bool supported=supportedClient();
+    if(!supported)return false;
+    uint32_t worldFrame=0,cameraPointer=0;float candidate[3];char name[64];
+    return readSelf(0xb7436c,&worldFrame,4)&&worldFrame&&
+        readSelf(uintptr_t(worldFrame)+0x7e20,&cameraPointer,4)&&cameraPointer&&
+        readSelf(uintptr_t(cameraPointer)+8,candidate,sizeof candidate)&&
+        readSelf(0xce06d0,name,sizeof name)&&publishMapAndCamera(name,candidate,map,camera);
+#endif
 }
 #endif
 } // namespace NorthlightWorldContext

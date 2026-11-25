@@ -147,11 +147,25 @@ static HMODULE backend() {
     bool exists=attrs!=INVALID_FILE_ATTRIBUTES;
     GetPrivateProfileStringW(L"Renderer",L"Backend",L"",value,64,config);
     GetPrivateProfileStringW(L"Renderer",L"BackendPath",L"",custom,MAX_PATH,config);
+#ifdef _WIN64
+    selectedBackend=value[0]?NorthlightBackend::parse(value,exists):NorthlightBackend::Kind::Native;
+#else
     selectedBackend=NorthlightBackend::parse(value,exists);
+#endif
     if(!exists&&configError!=ERROR_FILE_NOT_FOUND&&configError!=ERROR_PATH_NOT_FOUND)
         selectedBackend=NorthlightBackend::Kind::Invalid;
     const auto configured=selectedBackend;
-#ifndef NORTHLIGHT_REPLAY_STAND
+#if defined(_WIN64)
+    logf("NORTHLIGHT X64 D3D9: live 12340 memory and hooks disabled");
+    // The client can release its adapter-probe reference before reopening
+    // this DLL for rendering. Keep the proxy resident with its backend.
+    HMODULE pinned=nullptr;
+    if(!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS|GET_MODULE_HANDLE_EX_FLAG_PIN,
+                          reinterpret_cast<LPCWSTR>(selfModule),&pinned)){
+        logf("X64 D3D9 proxy lifetime initialization failed error=%lu",GetLastError());
+        return nullptr;
+    }
+#elif !defined(NORTHLIGHT_REPLAY_STAND)
     const auto artInputs=NorthlightArtInputs::check(rootPath);
     logf("ART INPUTS status=%s path=%ls",artInputs.status,artInputs.path.c_str());
     if(artInputs.blocked){
@@ -263,7 +277,7 @@ static HMODULE backend() {
     logf("LOG previous session log northlight-renderer.prev.log rotation=%s error=%lu",NorthlightLogRotation::name(logRotation),(unsigned long)logRotationError);
 #ifndef NORTHLIGHT_REPLAY_STAND
     if(!module)MessageBoxW(nullptr,
-        L"Renderer backend could not be loaded. Check northlight-renderer.ini and northlight-renderer.log. No other backend was selected. Restore the previous package or install the correct x86 DXVK DLL.",
+        L"Renderer backend could not be loaded. Check northlight-renderer.ini and northlight-renderer.log. Use a backend DLL that matches the client architecture.",
         L"Northlight renderer",MB_OK|MB_ICONERROR);
 #endif
     return module;

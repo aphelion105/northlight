@@ -144,7 +144,10 @@ class RuntimePatch(unittest.TestCase):
                  [0xfffe0300,0x0200001f,0x80000000,dst(6,0),0x02000001,dst(6,0,7),src(1,0),65535],
                  [0xfffe0300,0x0200001f,0x80000000,dst(6,0),0x0200001b,src(15,0),src(7,0),0x02000001,dst(6,0),src(1,0),0x0000001d,65535]]
         for kind,index in [(8,1),(9,0)]:w=sample(False);w[-1:-1]=[0x02000001,dst(kind,index),src(1,0)];rejects.append(w)
-        accepts=[sample(True),sample(False)]
+        sampled_vertex=sample(True)
+        sampled_vertex[-1:-1]=[0x0300005f,dst(0,0),src(6,0),src(10,3),
+                               0x02000001,dst(6,0),src(0,0)]
+        accepts=[sample(True),sample(False),sampled_vertex]
         with tempfile.TemporaryDirectory(prefix='water-patch-') as tmp:
             results=run_patcher([binary(w) for w in rejects+accepts],tmp)
         for code,result in zip(rejects,results):

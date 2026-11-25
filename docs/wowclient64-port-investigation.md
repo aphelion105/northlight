@@ -157,9 +157,8 @@ The necessary patches will be implemented and tested under his instructions and 
 
 ### PE and memory photos
 
-[dxvk_engine_name.h](../src/proxy/dxvk_engine_name.h) uses
-`IMAGE_NT_HEADERS32`, `IMAGE_THUNK_DATA32` and returns `requires-pe32` for
-This industry needs support from PE32+ and 64-bit imports.
+[dxvk_engine_name.h](../src/proxy/dxvk_engine_name.h) now reads native-width
+headers and import thunks for both PE32 and PE32+.
 
 [snapshot_store.h](../src/stream/snapshot_store.h) Determine code range
 with a base assumption `0x400000`. It should be adapted to the new

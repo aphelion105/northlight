@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 project(Tideglass LANGUAGES C CXX)
-if(NOT WIN32 OR NOT CMAKE_SIZEOF_VOID_P EQUAL 4)
-  message(FATAL_ERROR "Water requires a 32-bit Windows target")
+if(NOT WIN32)
+  message(FATAL_ERROR "Water requires a Windows target")
 endif()
 
 set(STORM_REVISION 116135c27e8c0dcf8ea0a0c549a6d737ce10fc73)
@@ -41,6 +41,6 @@ target_link_libraries(water-core PRIVATE "$<LINK_ONLY:storm>" wininet advapi32 d
 # A changed decoder, dependency or compiler must never reuse another build's decoded textures.
 file(SHA256 "${CMAKE_CURRENT_SOURCE_DIR}/source.json" source_hash)
 file(SHA256 "${CMAKE_CURRENT_LIST_FILE}" recipe_hash)
-string(SHA256 cache_recipe "${source_hash};${recipe_hash};${STORM_REVISION};${CMAKE_CXX_COMPILER_VERSION}")
+string(SHA256 cache_recipe "${source_hash};${recipe_hash};${STORM_REVISION};${CMAKE_CXX_COMPILER_VERSION};${CMAKE_SIZEOF_VOID_P}")
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/source.json")
 target_compile_definitions(water-core PRIVATE WATER_TEXTURE_RECIPE="${cache_recipe}")

@@ -621,12 +621,18 @@ public:
         std::uint64_t replayStart=0,replayEnd=0;
         const bool ran=runTask(core,[&](StreamCore& c){   // everything recorded so far has run; the game waits, pumped
             if(profile)replayStart=nowNs();
+#if defined(_WIN64) && !defined(NORTHLIGHT_REPLAY_STAND)
+            replayer.clearFrameSnapshot();
+#endif
             for(ProxyBase* k:sc0->kids)if(k&&k->inner&&k->refs.load()==0){c.reg.unbindInner(k);k->inner->Release();k->inner=nullptr;}   // one the game still holds keeps its object, as in D3D9   // back buffers must not outlive the swap chain's reset
             c.queryEpoch.fetch_add(1); // invalidate EVENT cache across Reset
             hr=c.target->Reset(p);c.coopState.store(c.target->TestCooperativeLevel());   // 0.3.204 (task 21): the replay thread publishes the new cooperative level; StreamDevice is not an IDirect3DDevice9Ex, so there is no ResetEx
             if(SUCCEEDED(hr)){IDirect3DSwapChain9* sc=nullptr;if(SUCCEEDED(c.target->GetSwapChain(0,&sc))&&sc){sc->GetPresentParameters(&sc0->pp);sc->Release();}}
             ensureBackBuffers(c);
             st.loadDefaults(c.target);c.replayFailure.store(false);if(profile)replayEnd=nowNs();},Cmd::SyncReset);
+#if defined(_WIN64) && !defined(NORTHLIGHT_REPLAY_STAND)
+        policy.beginFrame();
+#endif
         if(profile){const auto end=nowNs();char line[384];std::snprintf(line,sizeof line,"CSTREAM RESET end frame=%llu ran=%u result=0x%08lx coop=0x%08lx totalMs=%.3f beforeReplayMs=%.3f replayMs=%.3f afterReplayMs=%.3f",
             (unsigned long long)core.frameNo,unsigned(ran),(unsigned long)std::uint32_t(hr),(unsigned long)std::uint32_t(core.coopState.load()),double(end-start)/1e6,
             replayStart?double(replayStart-start)/1e6:0.0,replayEnd?double(replayEnd-replayStart)/1e6:0.0,replayEnd?double(end-replayEnd)/1e6:0.0);callerLog(line);}

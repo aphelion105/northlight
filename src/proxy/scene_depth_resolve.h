@@ -1,7 +1,53 @@
 #pragma once
 #include "saved_state.h"
+#if defined(_WIN64) || defined(NORTHLIGHT_X86_D3D9ON12)
+#include <wrl/client.h>
+#include "hdr_quad.h"
+#endif
 
 namespace NorthlightSceneDepth {
+#if defined(_WIN64) || defined(NORTHLIGHT_X86_D3D9ON12)
+inline constexpr auto Intz=static_cast<D3DFORMAT>(MAKEFOURCC('I','N','T','Z'));
+inline HRESULT bindSampleableDepth(IDirect3DDevice9* device,IDirect3DTexture9** depth){
+    using Microsoft::WRL::ComPtr;
+    ComPtr<IDirect3DSurface9> current;
+    D3DSURFACE_DESC desc{};
+    HRESULT hr=device->GetDepthStencilSurface(&current);
+    if(FAILED(hr))return hr;
+    if(FAILED(hr=current->GetDesc(&desc)))return hr;
+    if(desc.MultiSampleType!=D3DMULTISAMPLE_NONE)return D3DERR_NOTAVAILABLE;
+    if(desc.Format==Intz)return current->GetContainer(IID_PPV_ARGS(depth));
+    if(desc.Format!=D3DFMT_D24S8&&desc.Format!=D3DFMT_D24X8)return D3DERR_NOTAVAILABLE;
+    ComPtr<IDirect3DTexture9> texture;
+    ComPtr<IDirect3DSurface9> surface;
+    if(FAILED(hr=device->CreateTexture(desc.Width,desc.Height,1,D3DUSAGE_DEPTHSTENCIL,
+        Intz,D3DPOOL_DEFAULT,&texture,nullptr)))return hr;
+    if(FAILED(hr=texture->GetSurfaceLevel(0,&surface)))return hr;
+    if(FAILED(hr=device->SetDepthStencilSurface(surface.Get())))return hr;
+    *depth=texture.Detach();
+    return S_OK;
+}
+
+inline HRESULT sample(IDirect3DDevice9* device,NorthlightStateBlockPool& states,
+                      IDirect3DSurface9* source,IDirect3DTexture9* destination,IDirect3DPixelShader9* shader){
+    using Microsoft::WRL::ComPtr;
+    ComPtr<IDirect3DTexture9> depth;
+    ComPtr<IDirect3DSurface9> target;
+    D3DSURFACE_DESC desc{};
+    HRESULT hr=source->GetContainer(IID_PPV_ARGS(&depth));
+    if(FAILED(hr)||!depth)return D3DERR_NOTAVAILABLE;
+    if(FAILED(hr=destination->GetSurfaceLevel(0,&target))||FAILED(hr=target->GetDesc(&desc)))return hr;
+    SavedState saved(device,&states);
+    if(!saved.ok)return E_FAIL;
+    if(FAILED(hr=NorthlightHdr::quadState(device,target.Get(),desc.Width,desc.Height))||
+       FAILED(hr=device->SetPixelShader(shader))||
+       FAILED(hr=device->SetTexture(0,depth.Get())))return hr;
+    hr=NorthlightHdr::drawQuad(device,desc.Width,desc.Height);
+    device->SetTexture(0,nullptr);
+    const bool restored=saved.restore();
+    return !restored&&SUCCEEDED(hr)?E_FAIL:hr;
+}
+#endif
 // Borrow a source and a destination from the caller's frame. The caller
 // finishes any bound MRT writes before the state block captures the device.
 template<class Device,class Error>

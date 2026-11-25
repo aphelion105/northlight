@@ -93,10 +93,10 @@ inline const char* install(HMODULE module,Log callback,bool engine=true,bool pre
     auto* base=reinterpret_cast<unsigned char*>(module);if(!base)return "missing-module";
     const auto* dos=reinterpret_cast<const IMAGE_DOS_HEADER*>(base);
     if(dos->e_magic!=IMAGE_DOS_SIGNATURE||dos->e_lfanew<0||dos->e_lfanew>1048576)return "invalid-dos-header";
-    const auto* nt=reinterpret_cast<const IMAGE_NT_HEADERS32*>(base+dos->e_lfanew);
-    if(nt->Signature!=IMAGE_NT_SIGNATURE||nt->OptionalHeader.Magic!=IMAGE_NT_OPTIONAL_HDR32_MAGIC)return "requires-pe32";
+    const auto* nt=reinterpret_cast<const IMAGE_NT_HEADERS*>(base+dos->e_lfanew);
+    if(nt->Signature!=IMAGE_NT_SIGNATURE||nt->OptionalHeader.Magic!=IMAGE_NT_OPTIONAL_HDR_MAGIC)return "pe-architecture-mismatch";
     const auto size=nt->OptionalHeader.SizeOfImage;
-    auto valid=[&](uint32_t rva,size_t bytes){return rva&&rva<size&&bytes<=size-rva;};
+    auto valid=[&](uint64_t rva,size_t bytes){return rva&&rva<size&&bytes<=size-rva;};
     if(nt->OptionalHeader.NumberOfRvaAndSizes<=IMAGE_DIRECTORY_ENTRY_IMPORT)return "missing-import-directory";
     const auto imports=nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT];
     if(!valid(imports.VirtualAddress,imports.Size))return "invalid-import-directory";
@@ -104,10 +104,10 @@ inline const char* install(HMODULE module,Log callback,bool engine=true,bool pre
         const auto* item=reinterpret_cast<const IMAGE_IMPORT_DESCRIPTOR*>(base+imports.VirtualAddress+offset);
         if(!item->Name)break;
         if(!item->OriginalFirstThunk||!item->FirstThunk)continue;
-        for(uint32_t i=0;;i+=sizeof(IMAGE_THUNK_DATA32)){
-            if(!valid(item->OriginalFirstThunk+i,sizeof(IMAGE_THUNK_DATA32))||!valid(item->FirstThunk+i,sizeof(IMAGE_THUNK_DATA32)))break;
-            const auto name=reinterpret_cast<const IMAGE_THUNK_DATA32*>(base+item->OriginalFirstThunk+i)->u1.AddressOfData;
-            if(!name)break;if(name&IMAGE_ORDINAL_FLAG32)continue;
+        for(uint64_t i=0;;i+=sizeof(IMAGE_THUNK_DATA)){
+            if(!valid(item->OriginalFirstThunk+i,sizeof(IMAGE_THUNK_DATA))||!valid(item->FirstThunk+i,sizeof(IMAGE_THUNK_DATA)))break;
+            const auto name=reinterpret_cast<const IMAGE_THUNK_DATA*>(base+item->OriginalFirstThunk+i)->u1.AddressOfData;
+            if(!name)break;if(name&IMAGE_ORDINAL_FLAG)continue;
             if(!valid(name,sizeof(WORD)+sizeof("GetProcAddress")))continue;
             if(std::memcmp(base+name+sizeof(WORD),"GetProcAddress",sizeof("GetProcAddress")))continue;
             auto* slot=reinterpret_cast<void**>(base+item->FirstThunk+i);

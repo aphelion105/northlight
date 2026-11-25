@@ -86,7 +86,7 @@ inline const char* analyse(const Word* w,std::size_t count,Analysis& a) {
             }
         }
     if(!havePos)return "no position";
-    std::vector<std::size_t> params;
+    std::vector<std::size_t> outputOperands;
     int depth=0;unsigned mask=0,writes=0;std::size_t declEnd=1;
     for(const Op& o:ops) {
         const std::size_t p=o.p;const Word* args=w+p+1;
@@ -110,9 +110,11 @@ inline const char* analyse(const Word* w,std::size_t count,Analysis& a) {
             if(q>=o.n)return "operand count";
             const Word t=args[q];const unsigned k=regType(t),i=regIndex(t);
             if(!(t&0x80000000u))return "parameter marker";
-            use(k,i);params.push_back(p+1+q);
+            const bool output=k==posType&&i==posIndex;
+            use(k,i);
+            if(output)outputOperands.push_back(p+1+q);
             if(operand==0&&o.op!=27&&o.op!=65) {
-                if(k==posType&&i==posIndex) {
+                if(output) {
                     if(depth)return "conditional output";
                     mask|=(t>>16)&15;++writes;
                 } else if(!vertex&&(k==8||k==9))return "MRT/depth write";
@@ -146,8 +148,7 @@ inline const char* analyse(const Word* w,std::size_t count,Analysis& a) {
     }
     if(a.isUsed(kind,tex))return "no free varying";
     a.out.assign(w,w+count);
-    for(std::size_t p:params)
-        if(regType(a.out[p])==posType&&regIndex(a.out[p])==posIndex)a.out[p]=replaceReg(a.out[p],0,spare);
+    for(std::size_t p:outputOperands)a.out[p]=replaceReg(a.out[p],0,spare);
     std::size_t first=1; // after the version and the leading comments/defs: where a def goes
     while(first<count) {
         const unsigned op=w[first]&65535;
@@ -159,7 +160,7 @@ inline const char* analyse(const Word* w,std::size_t count,Analysis& a) {
     return nullptr;
 }
 // Returns nullptr and fills output on success, else the Python ValueError text.
-inline const char* patch(const Word* w,std::size_t count,std::vector<Word>& output) {
+inline const char* patch(const Word* w,std::size_t count,std::vector<Word>& output,std::uint64_t* samplers=nullptr) {
     Analysis a;if(const char* why=analyse(w,count,a))return why;
     const bool vertex=a.vertex;
     const Word suffix[]={0x02000001,dst(a.posType,a.posIndex),src(0,a.spare,vertex?0xe4:0xff),0x02000001,
@@ -171,7 +172,9 @@ inline const char* patch(const Word* w,std::size_t count,std::vector<Word>& outp
         const Word decl[]={0x0200001f,a.major==3?0x80070005u:0x80000000u,dst(a.kind,a.tex)};
         out.insert(out.begin()+std::ptrdiff_t(a.declEnd),decl,decl+3);
     }
-    output.swap(out);return nullptr;
+    output.swap(out);
+    if(samplers)*samplers=a.used[10];
+    return nullptr;
 }
 constexpr float kMrtCover=0.003f; // the consumers' coverage threshold: they test mask.g > .003
 // Words patchMrt() adds to patch()'s result for a pixel shader: 6 (def) - 7 (the mask suffix) + 18 (the MRT suffix).

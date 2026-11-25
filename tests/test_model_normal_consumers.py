@@ -32,6 +32,7 @@ struct Args {int draw=0,indices=0,format=0,vertices=0,stride=0;};
 struct CaptureSource {int mesh=0,pose=0,bank=0;void* declaration=nullptr;};
 }
 struct Normals {
+    void setCaptureProfiling(bool){}
     unsigned captures=0;const int* bank=nullptr;
     template<class... A> void capture(A&&... args){++captures;bank=std::get<sizeof...(A)-1>(std::forward_as_tuple(args...));}
 };

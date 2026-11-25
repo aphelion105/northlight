@@ -76,6 +76,11 @@ struct DeviceMirror {
     unsigned nPatchWrites=0;
     D3DVIEWPORT9 viewport={};bool viewportKnown=false;
     IDirect3DSurface9* targets[Targets]={};bool targetKnown[Targets]={},targetAbsent[Targets]={};
+    // DXVK may retain an internal coverage attachment between compatible
+    // draws. Its logical state is empty until the same attachment is rebound.
+    IDirect3DDevice9* deferredTargetDevice=nullptr;
+    IDirect3DSurface9* deferredTargets[Targets]={};
+    unsigned deferredTargetMask=0,coverageTargetReuses=0;
     unsigned targetWrites=0,pixelShaderWrites=0,viewportWrites=0;
     IDirect3DSurface9* depth=nullptr;bool depthKnown=false;
     using FloatRow=float[4];
@@ -112,6 +117,10 @@ struct DeviceMirror {
     // nothing else mutated the mirror during its own backend call (re-entry).
     std::uint64_t mutations=0;
     bool active()const{return enabled&&!recording&&!rawDepth;}
+    bool knownIndexedStreamZero(IDirect3DVertexShader9* shader,IDirect3DVertexDeclaration9* layout)const{
+        return heldByThisThread()&&active()&&vertexShaderKnown&&vertexShader==shader&&
+            declarationKnown&&declaration==layout&&indicesKnown&&streams[0].known&&frequencyKnown[0]&&frequency[0]==1;
+    }
     struct TargetWrite {
         DeviceMirror* mirror;unsigned slot;
         // A single RT setter cannot populate another empty slot. Keep those
@@ -120,6 +129,21 @@ struct DeviceMirror {
         explicit TargetWrite(DeviceMirror* p,unsigned changedSlot=Targets):mirror(p),slot(changedSlot){++mirror->targetWrites;clear();}
         ~TargetWrite(){clear();--mirror->targetWrites;}
     };
+    bool targetDeferred(unsigned slot)const{return slot<Targets&&(deferredTargetMask&(1u<<slot));}
+    bool finishDeferredTargets(){
+        if(!deferredTargetMask)return true;
+        TargetWrite write(this);
+        while(deferredTargetMask){
+            const auto slot=unsigned(__builtin_ctz(deferredTargetMask));
+            deferredTargetMask&=~(1u<<slot);
+            deferredTargets[slot]=nullptr;
+            if(FAILED(deferredTargetDevice->SetRenderTarget(slot,nullptr))){
+                invalidate();
+                return false;
+            }
+        }
+        return true;
+    }
     bool heldByThisThread()const{return MirrorGuard::heldByThisThread(gate);} /* 0.3.180 (C1): the in-place epoch source's precondition */
     // Borrow for the current draw. Consume before a write or gate release.
     const FloatRow* borrowKnownVertexFloats(unsigned first,unsigned count) const {
@@ -174,7 +198,7 @@ struct DeviceMirror {
         std::memset(vsIntKnown,0,sizeof vsIntKnown);std::memset(vsBoolKnown,0,sizeof vsBoolKnown);std::memset(psFloatKnown,0,sizeof psFloatKnown);
         std::memset(pending,0,sizeof pending);++mutations;++invalidations;
     }
-    void disable(const char* reason){MirrorGuard lock(gate);if(enabled){auto callback=beforeDisable;beforeDisable=nullptr;if(callback)callback(disableContext);enabled=false;disableReason=reason;}invalidate();}
+    void disable(const char* reason){MirrorGuard lock(gate);finishDeferredTargets();if(enabled){auto callback=beforeDisable;beforeDisable=nullptr;if(callback)callback(disableContext);enabled=false;disableReason=reason;}invalidate();}
     // Fixed-function processing may overwrite the programmable constant banks.
     void afterDraw(bool fixed=false){if(fixed||!programmableVS){constantEpoch.invalidate();if(synced)synced->clearAll();std::memset(vsFloatKnown,0,sizeof vsFloatKnown);std::memset(vsFloatWritten,0,sizeof vsFloatWritten);std::memset(vsIntKnown,0,sizeof vsIntKnown);std::memset(vsBoolKnown,0,sizeof vsBoolKnown);}}
 };
@@ -197,9 +221,10 @@ public:
     ULONG STDMETHODCALLTYPE AddRef() override{return InterlockedIncrement(&refs);}
     ULONG STDMETHODCALLTYPE Release() override{auto n=InterlockedDecrement(&refs);if(!n)delete this;return n;}
     HRESULT STDMETHODCALLTYPE GetDevice(IDirect3DDevice9** out) override{if(!out)return D3DERR_INVALIDCALL;*out=owner;owner->AddRef();return D3D_OK;}
-    HRESULT STDMETHODCALLTYPE Capture() override{MirrorGuard lock(mirror->gate,MirrorSite::StateBlock);return real->Capture();}
+    HRESULT STDMETHODCALLTYPE Capture() override{MirrorGuard lock(mirror->gate,MirrorSite::StateBlock);return mirror->finishDeferredTargets()?real->Capture():E_FAIL;}
     HRESULT STDMETHODCALLTYPE Apply() override{
         MirrorGuard lock(mirror->gate,MirrorSite::StateBlock);
+        if(!mirror->finishDeferredTargets())return E_FAIL;
         DeviceMirror::TargetWrite write(mirror);
         // Also invalidate failures: a backend may have changed part of the state.
         HRESULT hr=real->Apply();mirror->invalidate();return hr;
@@ -348,19 +373,23 @@ public:
     // Target 0 implicitly resets viewport (and scissor): never computed here.
     HRESULT STDMETHODCALLTYPE SetRenderTarget(DWORD n,IDirect3DSurface9* value) override{
         Guard lock(m->gate);
+        const bool reuse=m->targetDeferred(n)&&value==m->deferredTargets[n]&&m->active()&&!m->targetWrites;
+        if(reuse){m->deferredTargetMask&=~(1u<<n);m->deferredTargets[n]=nullptr;++m->coverageTargetReuses;}
+        else if(!m->finishDeferredTargets())return E_FAIL;
         DeviceMirror::TargetWrite write(m,n);
-        if(n==0&&m->synced)m->synced->viewport(); /* target 0 resets the viewport */const std::uint64_t serial=m->mutations+1;HRESULT hr=real->SetRenderTarget(n,value);const bool slot=n<DeviceMirror::Targets;if(slot)m->targetKnown[n]=false;
+        if(n==0&&m->synced)m->synced->viewport(); /* target 0 resets the viewport */const std::uint64_t serial=m->mutations+1;HRESULT hr=reuse?D3D_OK:real->SetRenderTarget(n,value);const bool slot=n<DeviceMirror::Targets;if(slot)m->targetKnown[n]=false;
         if(n==0){m->viewportKnown=false;m->forget(DeviceMirror::ViewportSlot);}
         if(accepted(hr)&&slot&&value){m->targets[n]=value;m->targetKnown[n]=m->written(DeviceMirror::TargetSlot+n,serial);}else if(slot)m->forget(DeviceMirror::TargetSlot+n);return hr;
     }
     HRESULT STDMETHODCALLTYPE GetRenderTarget(DWORD n,IDirect3DSurface9** out) override{
         Guard lock(m->gate);bool valid=n<DeviceMirror::Targets&&out;
+        if(valid&&m->targetDeferred(n)){++m->answered;*out=nullptr;return D3DERR_NOTFOUND;}
         if(valid&&m->active()&&!m->targetWrites&&m->targetKnown[n]){++m->answered;giveRef(m->targets[n],out);return m->targets[n]?D3D_OK:D3DERR_NOTFOUND;}
         const auto serial=m->mutations;++m->forwarded;HRESULT hr=real->GetRenderTarget(n,out);
         if(valid&&m->active()&&!m->targetWrites&&m->mutations==serial){m->observed(DeviceMirror::TargetSlot+n,SUCCEEDED(hr)&&*out==m->targets[n]);if(SUCCEEDED(hr)&&*out){m->targets[n]=*out;m->targetKnown[n]=true;}}return hr;
     }
     HRESULT STDMETHODCALLTYPE SetDepthStencilSurface(IDirect3DSurface9* value) override{
-        Guard lock(m->gate);const std::uint64_t serial=m->mutations+1;HRESULT hr=real->SetDepthStencilSurface(value);m->depthKnown=false;
+        Guard lock(m->gate);if(!m->finishDeferredTargets())return E_FAIL;const std::uint64_t serial=m->mutations+1;HRESULT hr=real->SetDepthStencilSurface(value);m->depthKnown=false;
         if(accepted(hr)&&value){m->depth=value;m->depthKnown=m->written(DeviceMirror::DepthSlot,serial);}else m->forget(DeviceMirror::DepthSlot);return hr;
     }
     HRESULT STDMETHODCALLTYPE GetDepthStencilSurface(IDirect3DSurface9** out) override{
@@ -528,7 +557,7 @@ public:
         return nullptr;
     }
     HRESULT STDMETHODCALLTYPE BeginStateBlock() override{
-        Guard lock(m->gate);HRESULT hr=real->BeginStateBlock();m->invalidate();if(SUCCEEDED(hr))m->recording=true;else m->disable("state-block-begin-failed");return hr;
+        Guard lock(m->gate);if(!m->finishDeferredTargets())return E_FAIL;HRESULT hr=real->BeginStateBlock();m->invalidate();if(SUCCEEDED(hr))m->recording=true;else m->disable("state-block-begin-failed");return hr;
     }
     HRESULT STDMETHODCALLTYPE EndStateBlock(IDirect3DStateBlock9** out) override{
         Guard lock(m->gate);if(!out){HRESULT hr=real->EndStateBlock(out);m->disable("state-block-end-null");return hr;}
@@ -537,20 +566,20 @@ public:
         return wrapBlock(hr,block,out);
     }
     HRESULT STDMETHODCALLTYPE CreateStateBlock(D3DSTATEBLOCKTYPE type,IDirect3DStateBlock9** out) override{
-        Guard lock(m->gate);if(!out)return real->CreateStateBlock(type,out);
+        Guard lock(m->gate);if(!m->finishDeferredTargets())return E_FAIL;if(!out)return real->CreateStateBlock(type,out);
         IDirect3DStateBlock9* block=nullptr;HRESULT hr=real->CreateStateBlock(type,&block);return wrapBlock(hr,block,out);
     }
     HRESULT STDMETHODCALLTYPE DrawPrimitiveUP(D3DPRIMITIVETYPE type,UINT count,const void* data,UINT stride) override{
-        Guard lock(m->gate);const bool fixed=!m->programmableVS;const auto serial=m->mutations;HRESULT hr=real->DrawPrimitiveUP(type,count,data,stride);m->afterDraw(fixed||m->mutations!=serial);m->streams[0].known=false;m->forget(DeviceMirror::StreamSlot);accepted(hr);return hr;
+        Guard lock(m->gate);if(!m->finishDeferredTargets())return E_FAIL;const bool fixed=!m->programmableVS;const auto serial=m->mutations;HRESULT hr=real->DrawPrimitiveUP(type,count,data,stride);m->afterDraw(fixed||m->mutations!=serial);m->streams[0].known=false;m->forget(DeviceMirror::StreamSlot);accepted(hr);return hr;
     }
     HRESULT STDMETHODCALLTYPE DrawIndexedPrimitiveUP(D3DPRIMITIVETYPE type,UINT minimum,UINT vertices,UINT count,const void* indices,D3DFORMAT format,const void* data,UINT stride) override{
-        Guard lock(m->gate);const bool fixed=!m->programmableVS;const auto serial=m->mutations;HRESULT hr=real->DrawIndexedPrimitiveUP(type,minimum,vertices,count,indices,format,data,stride);m->afterDraw(fixed||m->mutations!=serial);m->streams[0].known=false;m->indicesKnown=false;m->forget(DeviceMirror::StreamSlot);m->forget(DeviceMirror::IndicesSlot);accepted(hr);return hr;
+        Guard lock(m->gate);if(!m->finishDeferredTargets())return E_FAIL;const bool fixed=!m->programmableVS;const auto serial=m->mutations;HRESULT hr=real->DrawIndexedPrimitiveUP(type,minimum,vertices,count,indices,format,data,stride);m->afterDraw(fixed||m->mutations!=serial);m->streams[0].known=false;m->indicesKnown=false;m->forget(DeviceMirror::StreamSlot);m->forget(DeviceMirror::IndicesSlot);accepted(hr);return hr;
     }
-    HRESULT STDMETHODCALLTYPE DrawPrimitive(D3DPRIMITIVETYPE type,UINT start,UINT count) override{Guard lock(m->gate);const bool fixed=!m->programmableVS;const auto serial=m->mutations;HRESULT hr=real->DrawPrimitive(type,start,count);m->afterDraw(fixed||m->mutations!=serial);accepted(hr);return hr;}
-    HRESULT STDMETHODCALLTYPE DrawIndexedPrimitive(D3DPRIMITIVETYPE type,INT base,UINT minimum,UINT vertices,UINT start,UINT count) override{Guard lock(m->gate);const bool fixed=!m->programmableVS;const auto serial=m->mutations;HRESULT hr=real->DrawIndexedPrimitive(type,base,minimum,vertices,start,count);m->afterDraw(fixed||m->mutations!=serial);accepted(hr);return hr;}
+    HRESULT STDMETHODCALLTYPE DrawPrimitive(D3DPRIMITIVETYPE type,UINT start,UINT count) override{Guard lock(m->gate);if(!m->finishDeferredTargets())return E_FAIL;const bool fixed=!m->programmableVS;const auto serial=m->mutations;HRESULT hr=real->DrawPrimitive(type,start,count);m->afterDraw(fixed||m->mutations!=serial);accepted(hr);return hr;}
+    HRESULT STDMETHODCALLTYPE DrawIndexedPrimitive(D3DPRIMITIVETYPE type,INT base,UINT minimum,UINT vertices,UINT start,UINT count) override{Guard lock(m->gate);if(!m->finishDeferredTargets())return E_FAIL;const bool fixed=!m->programmableVS;const auto serial=m->mutations;HRESULT hr=real->DrawIndexedPrimitive(type,base,minimum,vertices,start,count);m->afterDraw(fixed||m->mutations!=serial);accepted(hr);return hr;}
     HRESULT STDMETHODCALLTYPE ProcessVertices(UINT source,UINT destination,UINT count,IDirect3DVertexBuffer9* buffer,IDirect3DVertexDeclaration9* decl,DWORD flags) override{Guard lock(m->gate);HRESULT hr=real->ProcessVertices(source,destination,count,buffer,decl,flags);m->afterDraw(true);accepted(hr);return hr;}
     HRESULT STDMETHODCALLTYPE Reset(D3DPRESENT_PARAMETERS* params) override{
-        Guard lock(m->gate);DeviceMirror::TargetWrite write(m);m->invalidate();HRESULT hr=real->Reset(params);m->invalidate();if(SUCCEEDED(hr))m->recording=false;return hr;
+        Guard lock(m->gate);m->finishDeferredTargets();DeviceMirror::TargetWrite write(m);m->invalidate();HRESULT hr=real->Reset(params);m->invalidate();if(SUCCEEDED(hr))m->recording=false;return hr;
     }
     // A setter may fail after changing state, or normalize its argument.
     // Learn the returned mode only between writes, including raw/state-block writes.
@@ -656,6 +685,7 @@ public:
     }
     void setIndexedPair(void* context,void(*flush)(void*),bool(*allowsFloats)(void*,UINT,const float*,UINT),
                         bool(*allowsTexture)(void*,DWORD,IDirect3DBaseTexture9*)=nullptr){
+        m->finishDeferredTargets();
         indexedPairContext=context;indexedPairFlush=flush;indexedPairAllowsFloats=allowsFloats;
         indexedPairAllowsTexture=allowsTexture;
         indexedPairOwner=flush?this:nullptr;
@@ -671,6 +701,7 @@ public:
         explicit RawScope(ExtensionDevice& owner)
             :device(&owner),lock(owner.m->gate,MirrorSite::Raw),previous(currentRaw){
             owner.indexedBarrier();
+            owner.m->finishDeferredTargets();
             owner.m->invalidate();++owner.m->rawDepth;++owner.m->rawScopes;
             currentRaw=this;
         }
@@ -685,6 +716,18 @@ public:
 #include "extension_raw_methods.inl"
 
     ExtensionDevice(IDirect3DDevice9* device,DeviceMirror* mirror):MirrorDevice(device,mirror){}
+    void releaseCoverageTarget(unsigned slot,IDirect3DSurface9* surface){
+        // Only the owner of the just-submitted private draw may hide this
+        // attachment. In raw/recording mode the backend remains authoritative.
+        if(!slot||slot>=DeviceMirror::Targets||!surface||!m->heldByThisThread()||!m->active()||
+           m->targetWrites||m->targets[slot]!=surface||indexedPairOwner==this){SetRenderTarget(slot,nullptr);return;}
+        m->deferredTargetDevice=real;
+        m->deferredTargets[slot]=surface;
+        m->deferredTargetMask|=1u<<slot;
+        m->targetKnown[slot]=m->targetAbsent[slot]=false;
+        m->forget(DeviceMirror::TargetSlot+slot);
+        ++m->mutations;
+    }
     const DeviceMirror* constantMirror()const{return m;}
     NorthlightConstantEpoch::TrustedSource trustedConstantSource(){
         return NorthlightConstantEpoch::TrustedSource(static_cast<IDirect3DDevice9*>(this),[](void* context,NorthlightConstantEpoch::Stamp& stamp){return static_cast<ExtensionDevice*>(static_cast<IDirect3DDevice9*>(context))->constantStamp(stamp);},[](void* context,unsigned first,unsigned count,float* out,NorthlightConstantEpoch::Stamp& stamp){return static_cast<ExtensionDevice*>(static_cast<IDirect3DDevice9*>(context))->knownVertexConstantSpan(first,count,out,stamp);},
@@ -715,7 +758,7 @@ public:
         MirrorGuard lock(m->gate,MirrorSite::Device);
         if(!m->active()||m->targetWrites||m->viewportWrites||!m->viewportKnown||
            !m->targetKnown[0]||!m->targets[0]||!m->depthKnown||!m->depth)return false;
-        for(unsigned i=1;i<DeviceMirror::Targets;++i)if(!m->targetAbsent[i])return false;
+        for(unsigned i=1;i<DeviceMirror::Targets;++i)if(!m->targetAbsent[i]&&!m->targetDeferred(i))return false;
         const auto* known=m->renderStateKnown;
         const auto* values=m->renderStates;
         if(!known[D3DRS_ALPHATESTENABLE]||!known[D3DRS_ALPHABLENDENABLE])return false;
@@ -741,7 +784,7 @@ public:
         // Private absence proofs leave public Get* HRESULT/output semantics intact.
         // Every unknown slot needs an authoritative read with initialized output.
         for(unsigned i=1;i<DeviceMirror::Targets;++i){
-            if(m->targetAbsent[i]){++m->answered;continue;}
+            if(m->targetAbsent[i]||m->targetDeferred(i)){++m->answered;continue;}
             const auto serial=m->mutations;IDirect3DSurface9* surface=nullptr;++m->forwarded;
             const HRESULT hr=real->GetRenderTarget(i,&surface);const bool absent=!surface&&(SUCCEEDED(hr)||hr==D3DERR_NOTFOUND);
             if(surface)surface->Release();

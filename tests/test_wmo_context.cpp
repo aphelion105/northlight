@@ -13,6 +13,19 @@ int main(){
     Lighting light;assert(decodeGlobalLighting(sky.data(),sky.size(),eye,light));
     assert(std::fabs(light.lightDirection[0]-.6f)<1e-6f&&std::fabs(light.lightDirection[2]-.8f)<1e-6f);
     assert(light.direct[0]==160.f/255&&light.ambient[2]==96.f/255&&light.dayFraction==.75f);
+    {
+        // AMD64 retains the same camera fields and moves the directional pair.
+        std::array<unsigned char,0x1d4> x64{};
+        std::memcpy(x64.data(),sky.data(),sky.size());
+        std::memcpy(x64.data()+0x1c0,sky.data()+0x19c,20);
+        Lighting decoded;
+        assert(decodeSkyLighting(x64.data(),x64.size(),eye,0x1c0,0x1cc,0x1d0,decoded));
+        assert(decoded.direct[0]==light.direct[0]&&decoded.ambient[2]==light.ambient[2]);
+        assert(!decoded.slotsConsistent&&!decoded.slotsProven&&!decoded.predictors);
+        float staleCamera[]={eye[0]+50,eye[1],eye[2]};
+        assert(!decodeSkyLighting(x64.data(),x64.size(),staleCamera,0x1c0,0x1cc,0x1d0,decoded));
+        assert(!decodeSkyLighting(x64.data(),x64.size()-1,eye,0x1c0,0x1cc,0x1d0,decoded));
+    }
     // the 18 light slots at +0xd4 (slot 10 = band 10 sunHalo at +0xfc); unproven until a read proves the code.
     assert(light.slots[0]==0&&!light.slotsProven);
     color(0xd4,0xff2e2538);color(0xfc,0xff243f32);color(0xd4+17*4,0xff123456);

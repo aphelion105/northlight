@@ -80,10 +80,12 @@ struct NativePixel {
     unsigned addedSlots()const{unsigned cost=0;for(unsigned i=0;i<count;++i)cost+=writes[i]==Write::Additive||writes[i]==Write::Modulate?2:writes[i]==Write::LitAlpha||writes[i]==Write::LitPremultiplied?4:3;return cost;}
 };
 struct PixelSubmission {
+    using ReleaseTarget=void(*)(IDirect3DDevice9*,unsigned,IDirect3DSurface9*);
     IDirect3DDevice9* device;
     IDirect3DPixelShader9* original=nullptr;
     IDirect3DSurface9* primary=nullptr;
     bool failed=false,restoreFailed=false;
+    ReleaseTarget releaseTarget=nullptr;
     ~PixelSubmission(){if(primary)primary->Release();if(original)original->Release();}
     bool read(){return SUCCEEDED(device->GetPixelShader(&original));}
     bool readPrimary(){
@@ -145,8 +147,10 @@ public:
         if(!capsOk)return fallback();
         IDirect3DSurface9* aux=nullptr;DWORD color=0;D3DSURFACE_DESC current{};
         unsigned slot=1;D3DRENDERSTATETYPE colorState=D3DRS_COLORWRITEENABLE1;
-        struct Restore {IDirect3DDevice9* d;IDirect3DSurface9*& aux;DWORD& color;unsigned& slot;D3DRENDERSTATETYPE& colorState;bool keep=false,changed=false,maskChanged=false;
-            ~Restore(){if(maskChanged)d->SetRenderState(colorState,color);if(changed&&!keep)d->SetRenderTarget(slot,nullptr);drop(aux);}} restore{d,aux,color,slot,colorState};
+        struct Restore {PixelSubmission& pixel;IDirect3DSurface9*& aux;DWORD& color;unsigned& slot;D3DRENDERSTATETYPE& colorState;
+            IDirect3DSurface9* attached=nullptr;bool keep=false,maskChanged=false;
+            ~Restore(){auto* d=pixel.device;if(maskChanged)d->SetRenderState(colorState,color);
+                if(attached&&!keep){if(pixel.releaseTarget)pixel.releaseTarget(d,slot,attached);else d->SetRenderTarget(slot,nullptr);}drop(aux);}} restore{submission,aux,color,slot,colorState};
         HRESULT got=d->GetRenderTarget(1,&aux);
         while(SUCCEEDED(got)&&aux&&!(boundDevice==d&&boundSlot==slot&&aux==(msaa?msaa:surface))&&slot+1<targets){drop(aux);++slot;got=d->GetRenderTarget(slot,&aux);}
         colorState=slot==1?D3DRS_COLORWRITEENABLE1:slot==2?D3DRS_COLORWRITEENABLE2:D3DRS_COLORWRITEENABLE3;
@@ -181,7 +185,7 @@ public:
         if(!attached||(changeMask&&FAILED(d->SetRenderState(colorState,required)))){
             if(changeMask)d->SetRenderState(colorState,color);
             d->SetRenderTarget(slot,nullptr);valid=false;return fallback();}
-        restore.changed=true;restore.maskChanged=changeMask;
+        restore.attached=msaa?msaa:surface;restore.maskChanged=changeMask;
         if(changeMask)++maskOverrides;
         NativePixel pixel;
         if(activePixel&&*activePixel&&(*activePixel)->matches(ps))pixel=**activePixel;else pixel.source=ps;
@@ -225,6 +229,7 @@ class Capture {
     std::unique_ptr<NorthlightStateBlockPool> states;
     bool packed=false;
     Write batchWrite=Write::None;
+    PixelSubmission::ReleaseTarget releaseTarget=nullptr;
 public:
     unsigned draws=0,bindings=0,pairedDraws=0;
     ~Capture(){reset();}
@@ -235,6 +240,7 @@ public:
     unsigned writeMaskOverrides()const{return coverage.maskOverrides+emission.maskOverrides;}
     bool hasEmission()const{return packed;}
     const NativePixel* nativePixel()const{return activePixel;}
+    void setTargetRelease(PixelSubmission::ReleaseTarget release){releaseTarget=release;}
     IDirect3DTexture9* aoTexture(IDirect3DDevice9* d,IDirect3DSurface9* scene){endBatch();return coverage.texture(d,scene);}
     void allowMultisample(bool allow){coverage.allowMultisample(allow);emission.allowMultisample(allow);}
     void endBatch(){emission.endBatch();coverage.endBatch();batchWrite=Write::None;}
@@ -253,6 +259,7 @@ public:
         const bool writesPlanes=cw!=Write::None||ew!=Write::None;
         if(!writesPlanes&&!replacement){endBatch();return submit();}
         PixelSubmission pixel{d};
+        pixel.releaseTarget=releaseTarget;
         const bool shaderKnown=pixel.read();
         auto native=[&]{
             if(!replacement)return submit();

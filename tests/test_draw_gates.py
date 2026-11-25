@@ -194,7 +194,7 @@ ctor=renderer[renderer.index('    Device(IDirect3DDevice9* d,IDirect3D9* p'):ren
 code=re.sub(r'"(?:[^"\\]|\\.)*"','""',re.sub(r'/\*.*?\*/|//[^\n]*','',renderer))  # no comments, no string literals
 writes=lambda name,text=None:re.findall(r'(?<![.>:\w])'+name+r'\s*=(?!=)\s*([^;,]*)',code if text is None else text)
 checks['enabled: frame-boundary pipeline refresh combines F10 and enabled effects']=(
-    sorted(writes('enabled'))==['!extensionFault&&masterEnabled&&(!world||world->effectsEnabled())','false','true'] and 'masterEnabled=!masterEnabled;' in member(finish,'if(masterPressed)')
+    sorted(writes('enabled'))==['(!hdr.nativeOutput||nativeSceneDepth)&&!extensionFault&&masterEnabled&&(!world||world->effectsEnabled())','false','true'] and 'masterEnabled=!masterEnabled;' in member(finish,'if(masterPressed)')
     and 'if(!overlay||!overlay->masterHotkey(focus,masterPressed))masterPressed=k10&&!key10;' in finish
     and finish.index('if(masterPressed)')<finish.index('refreshPipeline();')<finish.index('latchDrawGates();'))
 checks['failed=false only in Reset (latched there) and the retry in finishFrameImpl']=(len(re.findall(r'\bfailed\s*=\s*false',code))==3  # + the member initialiser

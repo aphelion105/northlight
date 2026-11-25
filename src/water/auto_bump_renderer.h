@@ -200,7 +200,8 @@ class NorthlightAutoBump {
     VertexIdentity vertexIdentity=nullptr;void* vertexIdentityContext=nullptr;bool vertexOverflow=false;
     std::unordered_map<IDirect3DPixelShader9*,unsigned> pixels;
     IDirect3DPixelShader9* shaders[8]={},*sharedShaders[8]={},*normalShaders[8]={};
-    struct NativeCapture {IDirect3DPixelShader9* source=nullptr,*shader=nullptr;unsigned constant=128,first=256,last=0,samplers=0;bool deferredSafe=false,pixelFloatOnly=false;};
+    using ShaderClock=std::chrono::steady_clock;
+    struct NativeCapture {IDirect3DPixelShader9* source=nullptr,*shader=nullptr;unsigned constant=128,first=256,last=0,samplers=0;bool deferredSafe=false,pixelFloatOnly=false;ShaderClock::time_point readyAfter{};};
     // Rare CPU creation work can happen outside sampled draw scopes, including
     // recognized vertex registration while materials are disabled.
     struct ColdWork {unsigned vertexSources=0,vertexQueued=0,modelMisses=0,modelBuilt=0,staticCreates=0,staticBuilt=0,pendingMaterialRejected=0;uint64_t sourceBytes=0;double vertexMs=0,modelMs=0,staticMs=0;} cold;
@@ -211,7 +212,8 @@ class NorthlightAutoBump {
     }
     bool compileVertex(IDirect3DVertexShader9* original,Vertex& vertex,const DWORD* code,size_t count){
         std::vector<std::uint32_t> patched;
-        if(NorthlightWaterShaderPatch::patch(reinterpret_cast<const std::uint32_t*>(code),count,patched))return false;
+        std::uint64_t samplers=0;
+        if(NorthlightWaterShaderPatch::patch(reinterpret_cast<const std::uint32_t*>(code),count,patched,&samplers))return false;
         if(vertex.kind==1)vertex.smoothTerrain=NorthlightAutoBumpVertex::terrainNormal(reinterpret_cast<const uint32_t*>(code),count,patched);
         NorthlightAutoBumpVertex::constantRange(reinterpret_cast<const uint32_t*>(code),count,vertex.constantFirst,vertex.constantCount);
         if(vertex.smoothTerrain){vertex.constantCount=std::max(3u,vertex.constantFirst+vertex.constantCount);vertex.constantFirst=0;}
@@ -219,7 +221,7 @@ class NorthlightAutoBump {
         if(FAILED(d->CreateVertexShader(reinterpret_cast<const DWORD*>(patched.data()),shader.out()))||!shader.p)return false;
         const auto usage=NorthlightShaderConstants::analyze(patched.data(),patched.size(),vertex.kind==1||vertex.kind==3?1:2);
         vertex.floatOnly=usage.analyzed&&!usage.integers.count&&!usage.booleans.count;
-        NorthlightWaterShaderPatch::Analysis analysis;if(!NorthlightWaterShaderPatch::analyse(reinterpret_cast<const uint32_t*>(code),count,analysis))vertex.deferredSafe=analysis.used[10]==0;
+        vertex.deferredSafe=samplers==0;
         displacement.registerMaterial(original,code,count,vertex.kind);displacement.registerVariant(shader.p,reinterpret_cast<const DWORD*>(patched.data()),patched.size(),displacement.skinned(original),vertex.kind==2);
         vertex.patched=shader.p;shader.p=nullptr;return true;
     }
@@ -502,7 +504,6 @@ public:
 #endif
     explicit NorthlightAutoBump(IDirect3DDevice9* device,std::shared_ptr<NorthlightGpuScene::Scene> scene={}):gpuScene(NorthlightGpuScene::forDevice(device,std::move(scene))),d(device),captureStates(device),normals(*(gpuScene->normalMaps?gpuScene->normalMaps:(gpuScene->normalMaps=std::make_shared<NorthlightAutoNormalCache>(device)))),sharedPOM(device),parallax(device,normals),displacement(device,gpuScene){
         if(!gpuScene->attach(deferredSnapshots))throw std::runtime_error("Cannot join material capture sources");
-        deferredGPU.setLimit(32u<<20);
         deferredSnapshots.setSnapshotCacheLimit(24u<<20);deferredSnapshots.setChargeResidentHits(false);deferredSnapshots.setReplayContentReuse(true);
         displacement.shareCaptureSources(deferredSnapshots);
         deferredSnapshots.setDeclarationProvider(&deferredDeclarations,[](void* c,IDirect3DVertexDeclaration9* v,const D3DVERTEXELEMENT9*& e,UINT& n){return static_cast<NorthlightVertexDeclarations::Cache*>(c)->get(v,e,n);});
@@ -712,7 +713,7 @@ public:
         deferredSnapshots.setSnapshotCacheLimit(on?4u<<20:24u<<20);const double sourceLimitMs=phase();
         if(on)sparePackets.clear();
         if(on&&!deferred.empty()){deferredDiscarded+=unsigned(deferred.size());clearDeferred();drawn=occlusionDrawn=false;}
-        const double packetClearMs=phase();deferredGPU.setLimit(on?pressureReplayLimit:32u<<20);const double replayGpuMs=phase();
+        const double packetClearMs=phase();deferredGPU.setLimit(on?pressureReplayLimit:deferredGPU.defaultLimit());const double replayGpuMs=phase();
         if(on)deferredDeclarations.clear();const double declarationClearMs=phase();
         normals.setMemoryPressure(on);const double normalMs=phase();
         displacement.setMemoryPressure(on,retirement,batch);const double geometryMs=phase();
@@ -730,7 +731,7 @@ public:
     bool geometryPrepared()const{return displacement.prepared();}
     unsigned geometryPrimitives()const{return displacement.preparedPrimitives();}
     bool geometryHeightGPU()const{return displacement.preparedHeightGPU();}
-    void allowNativeM2Fusion(bool allow,IDirect3DSurface9* worldDepth,float nearZ){allowFusedM2=allow;fusedM2WorldDepth=worldDepth;fusedM2Near=nearZ;}
+    void allowNativeM2Fusion(bool allow,IDirect3DSurface9* worldDepth,float nearZ,bool warmup=false){allowFusedM2=allow;fusedM2Warmup=warmup;fusedM2WorldDepth=worldDepth;fusedM2Near=nearZ;}
     template<class Draw> HRESULT submitNativeMaterial(Draw draw,const NorthlightEffectCoverage::NativePixel* coverage){return submitFusedM2(draw,coverage);}
     void beginDraw(){if(drawDeferred&&!nativeSubmitted)beforeDepthChange();drawDeferred=nativeSubmitted=false;displacement.beginDraw();sharedMaps[0]={};sharedMaps[1]={};sharedPOM.beginDraw();pomInRange=true;profileTag=profilePrimitives=0;
         if(fusedM2.normal){fusedM2.normal={};drop(fusedM2.color.p);drop(fusedM2.depth.p);}
@@ -943,12 +944,12 @@ public:
         // Unsupported material pairs cannot capture or apply native POM.
         // Reject them before reading geometry or evaluating a skin envelope.
         NorthlightDrawSnapshot::Ref<IDirect3DPixelShader9> nativeSource;
+        IDirect3DPixelShader9* pixel=nullptr;
         unsigned material=0;
         const float materialRange=captureRange(domain);
         const bool needsCapture=materialRange>0;
         if(needsCapture||geometryMode){
             const auto rejected=[&]{cold.pendingMaterialRejected+=v->second.pending!=nullptr;};
-            IDirect3DPixelShader9* pixel=nullptr;
             const bool borrowed=drawStateSource&&drawStateSource->peekPixelShader(pixel);
             if(!borrowed){
                 if(FAILED(d->GetPixelShader(nativeSource.out()))||!nativeSource.p){rejected();return;}
@@ -957,8 +958,6 @@ public:
             const auto p=pixels.find(pixel);if(p==pixels.end()){rejected();return;}
             material=p->second;
             if((domain==1&&material>2)||(domain==2&&material!=3&&material!=5&&material!=6)||(domain==3&&material!=4)){rejected();return;}
-            // Replay may change the binding. Only admitted draws need to retain it.
-            if(borrowed){pixel->AddRef();nativeSource.p=pixel;}
         }
         if(!ensureVertex(original,v->second))return;
         if(geometry&&(!geometryMode||domain==4||!displacement.skinned(original))){float nearest=0;
@@ -1014,6 +1013,9 @@ public:
             }
         }
         timing.next(P::CaptureSetup);
+        // Admission above reads state and may create resources. The first
+        // replay binding change needs an owned copy of the original shader.
+        if(pixel&&!nativeSource.p){pixel->AddRef();nativeSource.p=pixel;}
         ReplayState saved(d,original,D3DVIEWPORT9{},profile);saved.pixel=nativeSource.p;nativeSource.p=nullptr;auto* native=saved.pixel;NorthlightSharedPOM::Binding sharedBinding(d);
         NativeCapture* model=nullptr;
         saved.stencilEnabled=stencil;

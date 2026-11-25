@@ -34,23 +34,43 @@ static void normalStream(IDirect3DVertexShader9* shader,IDirect3DVertexDeclarati
   HRESULT STDMETHODCALLTYPE DrawIndexedPrimitive(D3DPRIMITIVETYPE t,INT b,UINT m,UINT v,UINT s,UINT c)override{++indexed;return real->DrawIndexedPrimitive(t,b,m,v,s,c);}
   HRESULT STDMETHODCALLTYPE DrawIndexedPrimitiveUP(D3DPRIMITIVETYPE t,UINT m,UINT v,UINT c,const void* indices,D3DFORMAT f,const void* data,UINT stride)override{++up;return real->DrawIndexedPrimitiveUP(t,m,v,c,indices,f,data,stride);}
  } calls(d);
- for(unsigned mode=0;mode<3;++mode){
+ for(unsigned mode=0;mode<4;++mode){
+  const bool mixed=mode==3;
   std::vector<unsigned char> reference;unsigned draws[2]={};size_t bytes[2]={};double submit[2]={},complete[2]={};
-  for(unsigned variant=0;variant<5;++variant){const bool streamed=variant!=0;calls.fail=variant==2?1:variant==3?2:variant==4?3:0;
+  for(unsigned variant=0;variant<(mixed?2u:5u);++variant){const bool streamed=variant!=0;calls.fail=variant==2?1:variant==3?2:variant==4?3:0;
    auto normals=std::make_unique<NorthlightModelNormals>(&calls);normals->setDeferredCapture(true);ModelNormalStreamTest::enable(*normals,streamed);
    NorthlightGpuScene::NativeStore store;NorthlightGpuScene::NativeClient cache(store,NorthlightGpuScene::Consumer::Material);cache.setLimit(0);normals->setGeometryCache(&cache);
-   for(unsigned frame=0;frame<4;++frame){normals->endFrame();store.setFrame(frame+1);calls.indexed=calls.up=calls.creates=calls.queries=0;ok(d->SetVertexShaderConstantF(0,bank[0],256));
+   if(mixed){
+    NorthlightGpuScene::NativeClient shadow(store,NorthlightGpuScene::Consumer::Shadow);shadow.ignoreTimeBudget(true);
+    IDirect3DVertexBuffer9* vb[4]={};IDirect3DIndexBuffer9* ib=nullptr;NorthlightReplayGPU::Placement placement;
+    const auto admit=[](size_t){return true;};
+    store.setFrame(1);assert(!shadow.bind(&calls,meshes[N-1],vb,ib,admit,placement));
+    store.setFrame(2);assert(shadow.bind(&calls,meshes[N-1],vb,ib,admit,placement));
+    vb[0]->Release();ib->Release();
+   }
+   for(unsigned frame=0;frame<4;++frame){normals->endFrame();store.setFrame(frame+3);calls.indexed=calls.up=calls.creates=calls.queries=0;ok(d->SetVertexShaderConstantF(0,bank[0],256));
     const auto start=std::chrono::steady_clock::now();ok(d->BeginScene());
-    for(unsigned i=0;i<N;++i){const auto& mesh=meshes[mode?N:i];
+    for(unsigned i=0;i<N;++i){const auto& mesh=meshes[mixed&&i%2?N-1:mode?N:i];
      // The repeated source remains shared while raster and pose inputs differ.
      ok(d->SetRenderState(D3DRS_CULLMODE,mode==2&&i%2?D3DCULL_CCW:D3DCULL_NONE));
-     if(mode==2){auto row=bank[31];float pose[4]={row[0],row[1],row[2],row[3]+float(i%3)*.02f};ok(d->SetVertexShaderConstantF(31,pose,1));}
+     if(mode>=2){auto row=bank[31];const float shift=mixed?float(i)*.0005f:float(i%3)*.02f;
+      float pose[4]={row[0],row[1],row[2],row[3]+shift};ok(d->SetVertexShaderConstantF(31,pose,1));}
      const NorthlightDrawSnapshot::Draw geometry{D3DPT_TRIANGLELIST,0,0,vertexCount,0,mesh->primitiveCount,true};
      normals->capture(shader,[]{return D3D_OK;},true,&geometry,nullptr,D3DFMT_UNKNOWN,nullptr,0,&mesh,declaration);
     }
     assert(normals->testPendingPackets()==N);assert(normals->finishCaptures());ok(d->EndScene());const auto submitted=std::chrono::steady_clock::now();
     const auto image=capturedPixels(normals->texture(),W,H);const auto completed=std::chrono::steady_clock::now();assert(std::any_of(image.begin(),image.end(),[](unsigned char x){return x!=0;}));
     if(variant==0&&frame==0)reference=image;else assert(image==reference);
+    if(mixed){
+     if(normals->cachedDraws()!=N/2||calls.up!=(streamed?0u:N/2)||calls.indexed!=(streamed?N:N/2))
+      std::printf("MODEL_NORMALS_STREAM_MIXED coverage variant=%u frame=%u resident=%u streamed=%u up=%u indexed=%u cacheBytes=%zu\n",
+          variant,frame,normals->cachedDraws(),ModelNormalStreamTest::draws(*normals),calls.up,calls.indexed,store.bytes(NorthlightGpuScene::Consumer::Shadow));
+     assert(normals->cachedDraws()==N/2&&calls.up==(streamed?0u:N/2)&&calls.indexed==(streamed?N:N/2));
+     assert(ModelNormalStreamTest::batches(*normals)==unsigned(streamed));
+     assert(ModelNormalStreamTest::bytes(*normals)==(streamed?meshes[N]->byteSize():0));
+     assert(ModelNormalStreamTest::saved(*normals)==(streamed?(N/2-1)*meshes[N]->byteSize():0));
+     continue;
+    }
     assert(!cache.bytes()&&!cache.uploaded()&&normals->cachedDraws()==0);
     if(variant==1||variant==4){assert(calls.up==0&&ModelNormalStreamTest::draws(*normals)==N&&ModelNormalStreamTest::failures(*normals)==0);
      assert(calls.indexed==(mode==0?2u:mode==1?1u:N));assert(calls.creates==(frame==0?2u:0u));
@@ -62,7 +82,8 @@ static void normalStream(IDirect3DVertexShader9* shader,IDirect3DVertexDeclarati
    }
    normals.reset();store.clearAll();
   }
-  std::printf("MODEL_NORMALS_STREAM_PASS mode=%u pixels=bitexact packets=%u draws=%u/%u bytes=%zu/%zu submitMeanMs=%.6f/%.6f completeReadbackMeanMs=%.6f/%.6f zeroResidentCache=1 allocationFailures=2 queryFailure=1\n",mode,N,draws[0],draws[1],bytes[0],bytes[1],submit[0],submit[1],complete[0],complete[1]);
+  if(mixed)std::printf("MODEL_NORMALS_STREAM_MIXED_PASS pixels=bitexact resident=%u streamed=%u uploads=1 bytes=%zu saved=%zu\n",N/2,N/2,meshes[N]->byteSize(),(N/2-1)*meshes[N]->byteSize());
+  else std::printf("MODEL_NORMALS_STREAM_PASS mode=%u pixels=bitexact packets=%u draws=%u/%u bytes=%zu/%zu submitMeanMs=%.6f/%.6f completeReadbackMeanMs=%.6f/%.6f zeroResidentCache=1 allocationFailures=2 queryFailure=1\n",mode,N,draws[0],draws[1],bytes[0],bytes[1],submit[0],submit[1],complete[0],complete[1]);
  }
  pixel->Release();depth->Release();color.read->Release();color.s->Release();color.t->Release();
 }

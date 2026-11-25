@@ -2,6 +2,17 @@
     IDirect3DTexture9* tideglassMask=nullptr;
     IDirect3DSurface9* tideglassMaskSurface=nullptr;
     IDirect3DPixelShader9 *tideglassMaskPS=nullptr,*tideglassRainPS=nullptr;
+#ifdef _WIN64
+    bool tideglassSurfaceLogged=false;
+    void reportTideglassSurface(){
+        if(tideglassSurfaceLogged)return;
+        WaterHostSurfaceStatus status{};
+        if(cooperativeWater.SurfaceStatus(status)&&status.outcome==WaterHostSurfaceShaded){
+            tideglassSurfaceLogged=true;
+            logf("TIDEGLASS x64 water surface shaded frame=%u hdr=%u stream=%u",frame,unsigned(hdr.active),unsigned(streamStats!=nullptr));
+        }
+    }
+#endif
 
     bool legacyTideglassTarget(){
         IDirect3DSurface9* target=nullptr;
@@ -61,9 +72,27 @@
         if((hdr.active&&!legacyTideglassTarget())||!projectionValid||!world||menuScene||
            debugMode||worldDebug||memoryGuard.capsHalved())return;
         if(!cooperativeWater.Attempted()){
+#ifdef _WIN64
+            // The renderer's world context comes from this frame's validated draw and camera.
+            // In CommandStream mode this uses the context already built from the producer snapshot.
+            if(!liquid||fogForward<=0.f)return;
+            WaterFrameValues values{};
+            if(!world->tideglassFrame(values))return;
+            values.viewport=viewport;
+            values.viewport.MinZ=worldMinDepth;
+            values.viewport.MaxZ=worldMaxDepth;
+            // Tideglass expects [-1,1] clip Z. D3D9 receives the same projection remapped to [0,1].
+            const float extent=farZ-nearZ;
+            values.glProjection[0]=scaleX;values.glProjection[5]=scaleY;
+            values.glProjection[10]=1.f+2.f*nearZ/extent;
+            values.glProjection[11]=1.f;
+            values.glProjection[14]=-2.f*nearZ*(farZ/extent);
+            const auto waterFrame=northlightWaterSettings.Module().Copy(values);
+#else
             const auto* snapshot=NorthlightStream::activeSnapshot;
             const auto waterFrame=SelectNorthlightWaterFrame(snapshot?&snapshot->waterFrame:nullptr,streamStats!=nullptr,
                                                        [&]{return captureNativeWater(viewport);});
+#endif
             ExtensionDevice::RawScope raw(*ext);
             if(!cooperativeWater.Begin(ext,waterFrame))return;
         }
@@ -76,6 +105,7 @@
             if(resolveDepthInto(depthTex,false))cooperativeWater.BeforeLiquid(depthTex,worldDepth);
         }
     }
+#ifndef _WIN64
     WaterHostLiquidKind cooperativeSurfaceDraw=WaterHostLiquidUnknown;
     const NorthlightAutoDisplacement::Args* cooperativeDrawArgs=nullptr;
     bool cooperativeLiquidBounds(){
@@ -166,4 +196,5 @@
         captured=false;
         return hr;
     }
+#endif
 #endif

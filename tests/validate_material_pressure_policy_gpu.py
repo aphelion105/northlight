@@ -40,8 +40,8 @@ for samples in [0,2]:
 # Counterfactuals retain the same fixture/API and restore each destructive path
 # separately. A populated cache, rather than its configured cap, must survive.
 header=fp.src('auto_bump_renderer.h').read_text()
-controls=[('entry','deferredGPU.setLimit(on?pressureReplayLimit:32u<<20);','deferredGPU.setLimit(on?0:32u<<20);','MATERIAL_DEMAND_ENTRY_RETAIN'),
-          ('trim','if(releaseReplay)deferredGPU.clear();','deferredGPU.clear();','MATERIAL_DEMAND_TRIM_RETAIN')]
+controls=[('entry','deferredGPU.setLimit(on?pressureReplayLimit:deferredGPU.defaultLimit());','deferredGPU.setLimit(on?0:deferredGPU.defaultLimit());','MATERIAL_DEMAND_ENTRY_RETAIN'),
+          ('trim','if(releaseReplay){if(!fusedM2SceneDepth.p)resetFusedM2Msaa();deferredGPU.clear();','deferredGPU.clear();if(releaseReplay){if(!fusedM2SceneDepth.p)resetFusedM2Msaa();','MATERIAL_DEMAND_TRIM_RETAIN')]
 for label,before,after,rejection in controls:
     assert header.count(before)==1
     folder=out/('control-'+label);folder.mkdir();(folder/'auto_bump_renderer.h').write_text(header.replace(before,after))

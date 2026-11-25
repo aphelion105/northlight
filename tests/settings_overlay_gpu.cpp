@@ -18,10 +18,6 @@ struct OverlayDevice:ForwardIDirect3DDevice9{
         return real->CreateStateBlock(type,out);
     }
     explicit OverlayDevice(IDirect3DDevice9* d):ForwardIDirect3DDevice9(d){}
-    HRESULT STDMETHODCALLTYPE GetBackBuffer(UINT chain,UINT index,D3DBACKBUFFER_TYPE type,IDirect3DSurface9** out)override{
-        if(target&&chain==0&&index==0){*out=target;target->AddRef();return S_OK;}
-        return real->GetBackBuffer(chain,index,type,out);
-    }
 };
 int main(int argc,char** argv){
     assert(argc==3||argc==4);const bool sdrOnly=argc==4&&!std::strcmp(argv[3],"--sdr-only");assert(argc==3||sdrOnly);constexpr unsigned W=1280,H=800;
@@ -38,11 +34,18 @@ int main(int argc,char** argv){
     assert(service->requestSnapshot());
     for(unsigned attempt=0;attempt<500&&!service->snapshot();++attempt)Sleep(10);
     assert(service->snapshot());
-    auto overlay=NorthlightOverlay::create(&device,true,"F11",service,[](const char* text){std::puts(text);});assert(overlay&&!overlay->visible());
+    auto overlay=NorthlightOverlay::create(&device,true,nullptr,service,[](const char* text){std::puts(text);});assert(overlay&&!overlay->visible());
     auto toggle=[&]{
-        // Do not make a private-window test depend on the user's held modifiers.
-        for(unsigned i=0;i<200&&((GetKeyState(VK_CONTROL)|GetKeyState(VK_SHIFT)|GetKeyState(VK_MENU))&0x8000);++i)Sleep(10);
-        SendMessageW(window,WM_KEYDOWN,VK_F11,0);SendMessageW(window,WM_KEYUP,VK_F11,0);
+        BYTE previous[256]{},keys[256]{};
+        assert(GetKeyboardState(previous));
+        std::memcpy(keys,previous,sizeof keys);
+        keys[VK_CONTROL]|=0x80;keys[VK_SHIFT]|=0x80;keys[VK_MENU]&=0x7F;
+        assert(SetKeyboardState(keys));
+        SendMessageW(window,WM_KEYDOWN,VK_F11,0);
+        keys[VK_CONTROL]&=0x7F;keys[VK_SHIFT]&=0x7F;
+        assert(SetKeyboardState(keys));
+        SendMessageW(window,WM_KEYUP,VK_F11,0);
+        assert(SetKeyboardState(previous));
     };
     toggle();assert(overlay->visible());
     bool calibrationExpected=false;
@@ -53,7 +56,7 @@ int main(int argc,char** argv){
         ok(real->SetRenderState(D3DRS_CULLMODE,D3DCULL_CW));ok(real->SetRenderState(D3DRS_ALPHABLENDENABLE,FALSE));
         D3DMATRIX transform{};for(unsigned i=0;i<4;++i)transform.m[i][i]=float(i+1);transform.m[3][0]=3.25f;
         for(auto mode:{D3DTS_WORLD,D3DTS_VIEW,D3DTS_PROJECTION})ok(real->SetTransform(mode,&transform));
-        {SavedState saved(&device);assert(saved.ok);overlay->draw(white);}
+        {SavedState saved(&device);assert(saved.ok);overlay->draw(white,device.target);}
         assert(calibrationExpected?device.stateBlockCreates>=1:device.stateBlockCreates==1);DWORD value=0;ok(real->GetRenderState(D3DRS_CULLMODE,&value));assert(value==D3DCULL_CW);ok(real->GetRenderState(D3DRS_ALPHABLENDENABLE,&value));assert(value==FALSE);
         for(auto mode:{D3DTS_WORLD,D3DTS_VIEW,D3DTS_PROJECTION}){D3DMATRIX restored{};ok(real->GetTransform(mode,&restored));assert(!std::memcmp(&transform,&restored,sizeof transform));}
     };

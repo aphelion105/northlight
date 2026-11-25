@@ -26,6 +26,7 @@ struct ModelNormalPacketTestAccess {
     }
     template<class T> static void countDrawState(const T&,long){}
     static unsigned committed(const NorthlightModelNormals& n){return n.nativeCommittedPackets;}
+    static unsigned queued(const NorthlightModelNormals& n){return n.queued;}
     static std::string stats(const NorthlightModelNormals& n){std::string text;n.nativeMrt.report(0,[&](const char* format,auto... args){char line[1024];std::snprintf(line,sizeof line,format,args...);text+=line;});return text;}
     static unsigned stat(const NorthlightModelNormals& n,const char* name){const auto text=stats(n);const std::string key=std::string(name)+"=";const auto at=text.find(key);assert(at!=std::string::npos);return unsigned(std::strtoul(text.c_str()+at+key.size(),nullptr,10));}
 };
@@ -53,6 +54,11 @@ int main(int argc,char** argv){
     const bool timingFixed=timingMode.find("fixed-pixel")!=std::string::npos;
     const bool timingHazard=timingMode.find("capture-hazard")!=std::string::npos;
     const bool captureSource=std::getenv("NORTHLIGHT_TEST_NORMAL_SOURCE")!=nullptr;
+#ifdef NORTHLIGHT_TEST_NORMAL_HYBRID
+    constexpr bool testHybrid=true;
+#else
+    constexpr bool testHybrid=false;
+#endif
     const bool lookupReference=std::getenv("NORTHLIGHT_TEST_NORMAL_SOURCE_LOOKUP")!=nullptr;
     unsigned publishedSources=0;
     WNDCLASSW wc{};wc.lpfnWndProc=DefWindowProcW;wc.lpszClassName=L"NorthlightNativeNormalTransaction";wc.hInstance=GetModuleHandleW(nullptr);assert(RegisterClassW(&wc));auto window=CreateWindowExW(0,wc.lpszClassName,L"",WS_OVERLAPPED,0,0,64,64,nullptr,nullptr,wc.hInstance,nullptr);assert(window);
@@ -134,10 +140,17 @@ int main(int argc,char** argv){
         auto sky=target(W,H,D3DFMT_A16B16G16R16F,8);NorthlightHdr::SkyForeground skyCapture;
         std::vector<unsigned char> referenceColor,referenceNormals,referenceSky;
         bool evictSource=false,downstreamRead=false;double captureUs=0;
-        auto frame=[&](bool mrt,unsigned scenario=0,unsigned fault=0){
+#ifdef NORTHLIGHT_TEST_NORMAL_HYBRID
+        std::chrono::milliseconds hybridWarmup{};
+#endif
+        auto frame=[&](bool mrt,unsigned scenario=0,unsigned fault=0,bool hybrid=false){
             ModelNormalPacketTestAccess::drawState(*n,extension,mrt,0);
             if(captureSource)worldConsumer.clearFrame();
-            n->endFrame();n->enableNativeMrt(mrt);state(color);
+            n->endFrame();n->enableNativeMrt(mrt);
+#ifdef NORTHLIGHT_TEST_NORMAL_HYBRID
+            n->enableHybridMrt(hybrid,hybridWarmup);
+#endif
+            state(color);
             if(scenario==34)assert(n->finishCaptures()); // No audited draw: no new cooldown.
             if(scenario==10){ok(d->SetDepthStencilSurface(alternateDepth));ok(d->Clear(0,nullptr,D3DCLEAR_ZBUFFER,0,1,0));ok(d->SetDepthStencilSurface(depth));}
             if(scenario==7){ok(d->SetDepthStencilSurface(nullptr));ok(d->SetRenderTarget(0,msColor));ok(d->SetDepthStencilSurface(msDepth));}
@@ -148,9 +161,9 @@ int main(int argc,char** argv){
                 n->beginNativeDraw();ok(d->SetVertexShader(nullptr));ok(d->SetFVF(D3DFVF_XYZRHW|D3DFVF_TEX1));ok(d->SetPixelShader(scenario>=24?nullptr:occluderPS));ok(d->SetRenderState(D3DRS_ALPHATESTENABLE,FALSE));
                 if(scenario>=24&&scenario<32)ok(d->SetRenderState(D3DRS_COLORWRITEENABLE,scenario%2?8:0));
                 if(scenario>=28&&scenario<32)ok(d->SetRenderState(D3DRS_ZFUNC,scenario<30?D3DCMP_EQUAL:D3DCMP_NEVER));
-                if(scenario==12||(scenario>=14&&scenario<=22)){ok(d->SetRenderState(D3DRS_ALPHABLENDENABLE,TRUE));
-                    ok(d->SetRenderState(D3DRS_SRCBLEND,scenario==14||scenario==16?D3DBLEND_ONE:D3DBLEND_SRCALPHA));
-                    ok(d->SetRenderState(D3DRS_DESTBLEND,scenario==15||scenario==16?D3DBLEND_ZERO:scenario==17?D3DBLEND_ONE:D3DBLEND_INVSRCALPHA));
+                if(scenario==12||(scenario>=14&&scenario<=22)||scenario==38){ok(d->SetRenderState(D3DRS_ALPHABLENDENABLE,TRUE));
+                    ok(d->SetRenderState(D3DRS_SRCBLEND,scenario==38?D3DBLEND_INVSRCALPHA:scenario==14||scenario==16?D3DBLEND_ONE:D3DBLEND_SRCALPHA));
+                    ok(d->SetRenderState(D3DRS_DESTBLEND,scenario==15||scenario==16?D3DBLEND_ZERO:scenario==17||scenario==38?D3DBLEND_ONE:D3DBLEND_INVSRCALPHA));
                     ok(d->SetRenderState(D3DRS_BLENDOP,scenario==18?D3DBLENDOP_SUBTRACT:D3DBLENDOP_ADD));}
                 if(scenario==19)ok(d->SetRenderState(D3DRS_SRGBWRITEENABLE,TRUE));
                 if(scenario==13||scenario==20)ok(d->SetRenderState(D3DRS_ZWRITEENABLE,FALSE));
@@ -167,13 +180,20 @@ int main(int argc,char** argv){
             if(scenario==23)ok(d->SetRenderState(D3DRS_SRGBWRITEENABLE,TRUE));
             for(unsigned i=0;i<N;++i){
                 auto* receiver=scenario==11&&i==1?alternateSource:source;
-                n->beginNativeDraw();ok(d->SetVertexShader(receiver));ok(d->SetPixelShader(nativePS));ok(d->SetRenderState(D3DRS_ALPHATESTENABLE,alpha));ok(d->SetRenderState(D3DRS_ALPHAFUNC,D3DCMP_GREATER));ok(d->SetRenderState(D3DRS_ALPHAREF,128));pose(i==2?49.f:i?20.f:2.f,i==2?.5f:0);
+                const bool drawAlpha=alpha||(scenario==37&&i==1);
+                n->beginNativeDraw();ok(d->SetVertexShader(receiver));ok(d->SetPixelShader(nativePS));ok(d->SetRenderState(D3DRS_ALPHATESTENABLE,drawAlpha));ok(d->SetRenderState(D3DRS_ALPHAFUNC,D3DCMP_GREATER));ok(d->SetRenderState(D3DRS_ALPHAREF,128));pose(i==2?49.f:i?20.f:2.f,i==2?.5f:0);
                 if(timing)pose(10.f+(i%7)*.1f,(int(i%17)-8)*.025f);
                 if(timing||captureSource){ok(d->SetStreamSource(0,vb,0,Stride));ok(d->SetIndices(ib));}
                 std::shared_ptr<const NorthlightDrawSnapshot::Mesh> published;IDirect3DVertexDeclaration9* publishedDecl=nullptr;
                 if(evictSource)sourcePool.clearSnapshotCache();
                 const auto start=evictSource?std::chrono::steady_clock::now():std::chrono::steady_clock::time_point{};
-                n->capture(receiver,nativeGeometry,!timing&&!captureSource,&geometry,nullptr,D3DFMT_UNKNOWN,nullptr,0,captureSource?nullptr:&mesh,captureSource?nullptr:decl,nullptr,captureSource?&published:nullptr,captureSource?&publishedDecl:nullptr);
+                const auto capture=[&]{n->capture(receiver,nativeGeometry,!timing&&!captureSource,&geometry,nullptr,D3DFMT_UNKNOWN,nullptr,0,captureSource?nullptr:&mesh,captureSource?nullptr:decl,nullptr,captureSource?&published:nullptr,captureSource?&publishedDecl:nullptr);};
+#ifdef NORTHLIGHT_TEST_NORMAL_HYBRID
+                const bool deferred=hybrid&&n->beginHybridMrt(depth)&&!drawAlpha;
+#else
+                const bool deferred=false;
+#endif
+                if(!deferred)capture();
                 if(evictSource)captureUs+=std::chrono::duration<double,std::micro>(std::chrono::steady_clock::now()-start).count();
                 if(downstreamRead){
                     assert(!published&&!publishedDecl);
@@ -192,15 +212,22 @@ int main(int argc,char** argv){
                 if(i==1){if(scenario==8)ok(d->SetRenderTarget(0,alternateColor));if(scenario==9){D3DVIEWPORT9 vp={0,0,W/2,H,0,1};ok(d->SetViewport(&vp));}if(scenario==10)ok(d->SetDepthStencilSurface(alternateDepth));}
                 if(material==1){const float controls[]={1,1,1,0,0,16,4,0};ok(d->SetPixelShaderConstantF(pomControl,controls,2));}
                 if(material==2){const float controls[]={0,0,0,0,.5f,0,0,0};ok(d->SetVertexShaderConstantF(displacementBinding.constant,controls,displacementBinding.count));}
+                bool written=false;
                 auto submit=[&](){
                 if(fault&&i==1){calls.after=fault&1;calls.failAfter=fault&1;switch(fault/2){case 1:calls.failTarget=calls.targetSets+1;break;case 2:calls.failRender=calls.renderSets+1;break;case 3:calls.failVS=calls.vsSets+1;break;case 4:calls.failPS=calls.psSets+1;break;}}
-                const auto hr=n->nativeDraw([&]{++nativeDraws;return nativeGeometry();},true,proof);
+                const auto drawGeometry=[&]{++nativeDraws;return nativeGeometry();};
+#ifdef NORTHLIGHT_TEST_NORMAL_HYBRID
+                const auto hr=deferred?n->hybridDraw(drawGeometry,receiver,proof,written):n->nativeDraw(drawGeometry,true,proof);
+#else
+                const auto hr=n->nativeDraw(drawGeometry,true,proof);
+#endif
                 calls.failTarget=calls.failRender=calls.failVS=calls.failPS=0;return hr;};
                 light.rendererFrame=++frameNumber;second.rendererFrame=third.rendererFrame=frameNumber;
                 const auto hr=local?lighting.draw(light,privateVS?privateVS:source,privatePS?privatePS:nativePS,submit,&second,material==1?&pom:nullptr,material==2?&displacement:nullptr,&third):submit();ok(hr);
                 if(i==1){if(scenario==8)ok(d->SetRenderTarget(0,color.s));if(scenario==9)viewport(color);if(scenario==10)ok(d->SetDepthStencilSurface(depth));}
                 if(privateVS)ok(d->SetVertexShader(source));if(privatePS)ok(d->SetPixelShader(nativePS));
                 for(unsigned slot=1;slot<4;++slot)if(occupied[slot-1]){ok(d->SetRenderTarget(slot,nullptr));occupied[slot-1]->Release();}
+                if(deferred&&!written)capture();
                 IDirect3DVertexShader9* currentVS=nullptr;IDirect3DPixelShader9* currentPS=nullptr;ok(raw->GetVertexShader(&currentVS));ok(raw->GetPixelShader(&currentPS));assert(currentVS==receiver&&currentPS==nativePS);currentVS->Release();currentPS->Release();
                 DWORD mask=0;ok(raw->GetRenderState(D3DRS_COLORWRITEENABLE1,&mask));assert(mask==(timing?15u:7u));
                 if(scenario==4&&i==0){n->nativeDepthChanged();ok(d->Clear(0,nullptr,D3DCLEAR_ZBUFFER,0,1,0));}
@@ -209,14 +236,14 @@ int main(int argc,char** argv){
                 if(scenario==35&&i+1==N){assert(n->pendingTextures()&&n->samplesTexture(checker));n->beforeTextureWrite(checker);assert(!n->pendingTextures());}
                 if(scenario>=26&&scenario<32&&i==0)occluder();
             }
-            if(scenario==3||scenario==6||(scenario>=12&&scenario<=22)||scenario==24||scenario==25||scenario==32)occluder();
+            if(scenario==3||scenario==6||(scenario>=12&&scenario<=22)||scenario==24||scenario==25||scenario==32||scenario==38)occluder();
             assert(nativeDraws==N);assert(n->finishCaptures(true));ok(d->EndScene());assert(n->texture());
             if(timing)return ModelNormalPacketTestAccess::committed(*n);
             if(scenario==7)ok(d->StretchRect(msColor,nullptr,color.s,nullptr,D3DTEXF_NONE));
             auto rgb=pixels(color),normals=canonicalNormals(capturedPixels(n->texture(),W,H));
             const unsigned committed=ModelNormalPacketTestAccess::committed(*n);commits+=committed!=0;++cases;
             if(!mrt){referenceColor=rgb;referenceNormals=normals;}else{if(rgb!=referenceColor)std::printf("RGB_DIFFERENCE fixture=%s material=%u hdr=%u alpha=%u scenario=%u fault=%u localDraws=%llu localFallbacks=%llu %s\n",file,material,hdr,alpha,scenario,fault,(unsigned long long)lighting.draws,(unsigned long long)lighting.fallbacks,ModelNormalPacketTestAccess::stats(*n).c_str());assert(rgb==referenceColor);auto expected=referenceNormals;
-                if(committed&&(scenario==2||scenario==3||scenario==6||scenario==12||scenario==19||scenario==22||(scenario>=14&&scenario<=16))){for(unsigned y=0;y<H;++y)std::memset(expected.data()+size_t(y)*W*8,0,W/2*8);}
+                if(!hybrid&&committed&&(scenario==2||scenario==3||scenario==6||scenario==12||scenario==19||scenario==22||(scenario>=14&&scenario<=16))){for(unsigned y=0;y<H;++y)std::memset(expected.data()+size_t(y)*W*8,0,W/2*8);}
                 assert(normals==expected);}
             if(scenario==22){const auto actual=pixels(sky);if(!mrt)referenceSky=actual;else assert(actual==referenceSky);}
             ModelNormalPacketTestAccess::countDrawState(*n,0);
@@ -237,6 +264,26 @@ int main(int argc,char** argv){
             std::printf("MODEL_NORMAL_NATIVE_CYCLE draws=%u hdr=%u lateHazard=%u frames=16 probesMrt=%u cpuReplayMean=%.6f cpuMrtMean=%.6f\n",N,hdr,timingHazard,probes[1],mean(cpu[0]),mean(cpu[1]));
             q0->Release();q1->Release();hz->Release();
         }else{
+        if(testHybrid&&!captureSource&&filename=="model-vs3-skinned.bin"&&!material&&hdr&&!alpha){
+            for(unsigned scenario:{0u,1u,17u,37u,38u}){
+                n->reset();frame(false,scenario);
+                unsigned committed=0;
+                for(unsigned i=0;i<4;++i)committed=frame(true,scenario,0,true);
+                assert(committed>0&&ModelNormalPacketTestAccess::queued(*n)+committed==N);
+                if(scenario==1||scenario==37)assert(committed<N);
+                if(scenario==0||scenario==17||scenario==38)assert(committed==N);
+            }
+#ifdef NORTHLIGHT_TEST_NORMAL_HYBRID
+            n->reset();frame(false);
+            hybridWarmup=std::chrono::milliseconds(500);
+            assert(!frame(true,0,0,true));
+            assert(!frame(true,0,0,true)&&ModelNormalPacketTestAccess::queued(*n)==N);
+            Sleep(520);
+            assert(frame(true,0,0,true)==N&&ModelNormalPacketTestAccess::queued(*n)==0);
+            hybridWarmup={};
+#endif
+            std::printf("MODEL_NORMAL_HYBRID_PASS exact RGB and normal images with occluders and late fallback\n");
+        }
         auto ready=[&](unsigned scenario=0){unsigned committed=0;for(unsigned i=0;i<8&&!committed;++i)committed=frame(true,scenario);assert(committed>0);};
         // The local-light factory deliberately admits one cold pair/frame:
         // single, then dual, then triple. Compare identical warmed recipes.
@@ -296,6 +343,12 @@ int main(int argc,char** argv){
         frame(false,32);for(unsigned retry=0;retry<8;++retry)assert(!frame(true,32));frame(false);ready();
         for(unsigned unchangedDepth:{28u,29u,30u,31u}){frame(false,unchangedDepth);assert(!frame(true,unchangedDepth));ready(unchangedDepth);assert(frame(true,unchangedDepth)>0);}
         for(unsigned rejected:{17u,18u}){frame(false,rejected);assert(!frame(true,rejected));assert(!frame(true,rejected));}
+        if(!material&&!hdr&&!alpha&&filename=="model-vs3-skinned.bin"){
+            n->reset();frame(false,38);
+            assert(!frame(true,38)&&ModelNormalPacketTestAccess::stat(*n,"retryFrames")==3);
+            assert(!frame(true,38)&&!ModelNormalPacketTestAccess::stat(*n,"probes"));
+            frame(false);ready();
+        }
         if(msColor){frame(false,7);assert(!frame(true,7));assert(!frame(true,7));assert(ModelNormalPacketTestAccess::stats(*n).find("modelDraws=0 ")!=std::string::npos);}
         for(unsigned changed:{8u,9u,10u}){frame(false,changed);const auto changedColor=referenceColor,changedNormals=referenceNormals;frame(false);ready();referenceColor=changedColor;referenceNormals=changedNormals;assert(!frame(true,changed));assert(!frame(true,changed));assert(ModelNormalPacketTestAccess::stats(*n).find("modelDraws=0 ")!=std::string::npos);}
         for(unsigned hazard:{4u,5u}){

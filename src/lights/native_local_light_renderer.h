@@ -6,6 +6,7 @@
 #include "auto_parallax_patch.h"
 #include "local_light_compiled_shaders.h"
 #include "effect_coverage.h"
+#include <chrono>
 #include <memory>
 
 struct NorthlightNativeLocalDraw {
@@ -32,6 +33,7 @@ public:
     }
     void setColdTraceSink(ColdTraceSink sink,void* context=nullptr){coldTraceSink=sink;coldTraceContext=context;}
 private:
+    using Clock=std::chrono::steady_clock;
     struct Key {IDirect3DVertexShader9* vs;IDirect3DPixelShader9* ps;unsigned slot;bool operator==(const Key& b)const{return vs==b.vs&&ps==b.ps&&slot==b.slot;}};
     static Key pairKey(IDirect3DVertexShader9* vs,IDirect3DPixelShader9* ps,unsigned slot,const NorthlightNativeLocalDraw* second,const NorthlightNativeLocalDraw* third,const NorthlightNativePOM* pom,const NorthlightNativeDisplacement* displacement){
         return {vs,ps,slot|(second?(second->slot+1)<<8:0)|(pom?0x10000u:0)|(displacement?0x20000u:0)|(third?(third->slot+1)<<20:0)};
@@ -45,6 +47,7 @@ private:
         IDirect3DVertexShader9* sourceVS=nullptr;IDirect3DPixelShader9* sourcePS=nullptr;
         uint64_t sourceVSHash=0,sourcePSHash=0;
         bool pomShared=false,displacementGpu=false,pomDual=false,sourceVSHashKnown=false,sourcePSHashKnown=false,legacyFilter=false;
+        Clock::time_point readyAfter{};
         unsigned displacementSampler=0;
         unsigned coverageRecipe=0;
         bool (*sharedVertex)(const DWORD*,size_t,std::vector<uint32_t>&)=nullptr;
@@ -56,8 +59,17 @@ private:
     IDirect3DDevice9* d;
     void* samplerContext=nullptr;bool(*samplerReader)(void*,DWORD,unsigned,DWORD*)=nullptr;
     unsigned warmFrame=~0u,coldAttempts=0,coldTraceCount=0;ColdTraceSink coldTraceSink=nullptr;void* coldTraceContext=nullptr;
+    unsigned shaderWarmupMs=0;
+    Entry* usable(Entry* entry){
+        if(!entry||!entry->ps)return nullptr;
+        if(entry->readyAfter!=Clock::time_point{}){
+            if(Clock::now()<entry->readyAfter){++warmupDeferrals;return nullptr;}
+            entry->readyAfter={};
+        }
+        return entry;
+    }
     Entry* acquire(IDirect3DVertexShader9* vs,IDirect3DPixelShader9* ps,unsigned slot,unsigned frame,const NorthlightNativeLocalDraw* second,const NorthlightNativeLocalDraw* third,const NorthlightNativePOM* pom,const NorthlightNativeDisplacement* displacement,const NorthlightEffectCoverage::NativePixel* coverage){
-        const Key key=pairKey(vs,ps,slot,second,third,pom,displacement);auto old=shaders.find(key);if(old!=shaders.end())return old->second->ps?old->second.get():nullptr;
+        const Key key=pairKey(vs,ps,slot,second,third,pom,displacement);auto old=shaders.find(key);if(old!=shaders.end())return usable(old->second.get());
         if(!vs||!ps||shaders.size()>=128)return nullptr;
         if(warmFrame!=frame){warmFrame=frame;coldAttempts=0;}
         const unsigned requestedCount=third?3:second?2:1;
@@ -157,11 +169,19 @@ private:
             // Retry the existing duplicate path with the same POM composition.
             if(!entry->info.sharedInstructions||!buildPixel(false)||FAILED(createPixel())){release(entry->vs);release(entry->ps);return nullptr;}
         }
-        shaderSlots+=entry->info.addedSlots;return entry;
+        shaderSlots+=entry->info.addedSlots;
+        if(shaderWarmupMs){
+            // DXVK schedules compilation at Create*Shader. Submitting the new
+            // shader immediately can make its command thread wait for that job.
+            if(!donor||!pixelDonor)entry->readyAfter=Clock::now()+std::chrono::milliseconds(shaderWarmupMs);
+            else entry->readyAfter=std::max(donor->readyAfter,pixelDonor->readyAfter);
+        }
+        return usable(entry);
     }
 public:
     std::array<uint64_t,3> requestsByCount{},coldAttemptsByCount{},deferredByCount{},coldRejectedByCount{},successfulByCount{},legacyByCount{};
     unsigned coldPairs=0,deferredPairs=0,shaderSlots=0;uint64_t draws=0,multiDraws=0,tripleDraws=0,fallbacks=0;
+    uint64_t warmupDeferrals=0;
     uint64_t samplerBulkHits=0,samplerBulkFallbacks=0;
     uint64_t whiteCubeSkips=0,whiteCubeBypasses=0;
     uint64_t zeroGainSkips=0,zeroGainBypasses=0;
@@ -172,6 +192,7 @@ public:
         return submittedPair&&submittedPair->sourceVS==source&&submittedPair->vs==vertex&&submittedPair->ps==pixel;
     }
     explicit NorthlightNativeLocalLighting(IDirect3DDevice9* device):d(device){}
+    void setShaderWarmup(unsigned ms){shaderWarmupMs=ms;}
     void reset(){shaders.clear();} // A same-frame resource reset keeps the cold-attempt budget.
     template<class Draw> HRESULT draw(const NorthlightNativeLocalDraw& light,IDirect3DVertexShader9* vs,IDirect3DPixelShader9* ps,Draw submit,const NorthlightNativeLocalDraw* second=nullptr,const NorthlightNativePOM* pom=nullptr,const NorthlightNativeDisplacement* displacement=nullptr,const NorthlightNativeLocalDraw* third=nullptr,const NorthlightEffectCoverage::NativePixel* coverage=nullptr){
         if(coverage&&!coverage->matches(ps))coverage=nullptr;
@@ -191,7 +212,7 @@ public:
         Entry* shader=nullptr;try{
             // A ready multi-light pair already contains the lower endpoints.
             // Keep the single-first cold policy only while that pair is absent.
-            if(second){const auto ready=shaders.find(pairKey(vs,ps,light.slot,second,third,pom,displacement));if(ready!=shaders.end()&&ready->second->ps)shader=ready->second.get();}
+            if(second){const auto ready=shaders.find(pairKey(vs,ps,light.slot,second,third,pom,displacement));if(ready!=shaders.end())shader=usable(ready->second.get());}
             if(!shader){shader=acquire(vs,ps,light.slot,light.rendererFrame,nullptr,nullptr,pom,displacement,coverage);
             if(second){auto* dual=acquire(vs,ps,light.slot,light.rendererFrame,second,nullptr,pom,displacement,coverage);if(dual)shader=dual;}
             if(second&&third){auto* triple=acquire(vs,ps,light.slot,light.rendererFrame,second,third,pom,displacement,coverage);if(triple)shader=triple;}

@@ -1312,11 +1312,26 @@ static void materialCaptureState(){
  color->Release();depth->Release();
  std::puts("PASS material capture snapshot: complete proof, owned surfaces, blend factors, MRT and raw invalidation");
 }
+static void deferredCoverageTargets(){
+ Backend b;DeviceMirror m;ExtensionDevice ext(&b,&m);MirrorGuard guard(m.gate);
+ auto* first=new Object<IDirect3DSurface9>();auto* second=new Object<IDirect3DSurface9>();
+ const auto park=[&]{assert(SUCCEEDED(ext.SetRenderTarget(1,first)));assert(SUCCEEDED(ext.SetRenderTarget(2,second)));
+  ext.releaseCoverageTarget(2,second);ext.releaseCoverageTarget(1,first);assert(m.deferredTargetMask==6);};
+ park();assert(b.state.targets[1].p==first&&b.state.targets[2].p==second&&ext.emptyAuxiliaryTargets());
+ IDirect3DSurface9* surface=first;assert(ext.GetRenderTarget(1,&surface)==D3DERR_NOTFOUND&&!surface);
+ const auto sets=b.sets;assert(SUCCEEDED(ext.SetRenderTarget(1,first)));assert(SUCCEEDED(ext.SetRenderTarget(2,second)));
+ assert(b.sets==sets&&m.coverageTargetReuses==2&&!m.deferredTargetMask);
+ park();assert(SUCCEEDED(ext.SetRenderTarget(1,first)));assert(SUCCEEDED(ext.DrawPrimitive(0,0,1)));
+ assert(b.state.targets[1].p==first&&!b.state.targets[2].p&&!m.deferredTargetMask);
+ park();{ExtensionDevice::RawScope raw(ext);assert(!b.state.targets[1].p&&!b.state.targets[2].p);}
+ park();assert(SUCCEEDED(ext.SetRenderTarget(0,first)));assert(!b.state.targets[1].p&&!b.state.targets[2].p);
+ assert(SUCCEEDED(ext.SetRenderTarget(0,nullptr)));first->Release();second->Release();
+}
 int main(int argc,char** argv){
  const auto mode=[&](const char* name){return argc>1&&!std::strcmp(argv[1],name);};
  const unsigned rounds=argc>2?unsigned(std::atoi(argv[2])):10000;
  if(mode("census")){gateCensus();return 0;}
- if(mode("auxiliary")){auxiliaryTargetProofs();materialCaptureState();assert(!liveObjects);return 0;}
+ if(mode("auxiliary")){auxiliaryTargetProofs();materialCaptureState();deferredCoverageTargets();assert(!liveObjects);return 0;}
  if(mode("local-lights")){diagnosticConstantWrites();assert(!liveObjects);return 0;}
  if(mode("nesting")){ownerNesting();return 0;}
  if(mode("waits")){foreignWaits();return 0;}
@@ -1324,5 +1339,5 @@ int main(int argc,char** argv){
  if(mode("exclusive")){ownerNesting(true);foreignWaits(true);ownerStress(rounds,true);std::puts("PASS exclusive owner mode");return 0;}
  if(mode("owner")){ownerIdentity();ownerNesting();foreignWaits();ownerStress(rounds);ownerNesting(true);foreignWaits(true);ownerStress(rounds,true);assert(!liveObjects);return 0;}
  if(mode("threads")){singleGate();gateCensus();rawScopeConcurrency();concurrency();ownerNesting();foreignWaits();ownerStress(rounds);ownerNesting(true);foreignWaits(true);ownerStress(rounds,true);std::puts("PASS threads");return 0;}
- auxiliaryTargetProofs();materialCaptureState();assert(!liveObjects);
+ auxiliaryTargetProofs();materialCaptureState();deferredCoverageTargets();assert(!liveObjects);
  ownerIdentity();assert(!liveObjects);ownerNesting();assert(!liveObjects);foreignWaits();assert(!liveObjects);ownerStress(rounds);assert(!liveObjects);ownerNesting(true);foreignWaits(true);ownerStress(rounds,true);assert(!liveObjects);gateCensus();assert(!liveObjects);knownScan();assert(!liveObjects);singleGate();writeThroughLearning();assert(!liveObjects);writeThroughImplicitState();assert(!liveObjects);writeThroughDifferential();assert(!liveObjects);rawScopeDispatchArguments();assert(!liveObjects);rawScopeBanksAndReentry();assert(!liveObjects);rawScopeRestoreAndControls();assert(!liveObjects);rawScopeConcurrency();assert(!liveObjects);rawScopeShadowWorkload();assert(!liveObjects);implicitConstantBanks();assert(!liveObjects);constantCertificates();assert(!liveObjects);auditCoverageAndSchedule();assert(!liveObjects);captureDrawState();assert(!liveObjects);static_assert(!std::is_copy_constructible<DeviceMirror>::value,"mirror cannot copy mutex/state");bindingsAndScalars();assert(!liveObjects);constantBanks();assert(!liveObjects);diagnosticConstantWrites();assert(!liveObjects);constantCapabilities();assert(!liveObjects);recordingFailures();assert(!liveObjects);savedStateIntegration();assert(!liveObjects);crowdedWorkload();assert(!liveObjects);stateBlocks();assert(!liveObjects);implicitAndDisabled();assert(!liveObjects);auditChecks();assert(!liveObjects);auditEveryField();assert(!liveObjects);concurrency();assert(!liveObjects);std::puts("PASS actual device_mirror.h: authoritative cached queries; COM refs; normalized/failed setters; partial exact-bit banks; ALL/partial/recorded stateblocks including failed Apply; UP and Reset failures; target/FVF implicit changes; two proxies; disabled raw bypass; 30000 randomized banks; 8 threads x5000 iterations, serialized backend calls (80072 with learned write-through, 120008 read-through).");}
