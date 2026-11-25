@@ -8039,9 +8039,9 @@
     },
     "world\\expansion02\\doodads\\generic\\wolvar\\wolvar_cookpot_dragonblight.m2": {
       "position": [
-        -0.055767640471458435,
+        0.32423235952854155,
         0.01945510506629944,
-        0.3098064512014389
+        0.2598064512014389
       ],
       "rgb": [
         1.0,
@@ -8054,9 +8054,9 @@
       "emitters": [
         {
           "position": [
-            -0.055767640471458435,
+            0.32423235952854155,
             0.01945510506629944,
-            0.3098064512014389
+            0.2598064512014389
           ],
           "rgb": [
             1.0,
@@ -8070,7 +8070,7 @@
       ],
       "family": "wotlk_compact_source",
       "asset_sha256": "066b37b1e74d80ef4e9f3f73264b6165398105556aa47dbd500bc91590e9f66b",
-      "position_basis": "static weighted unlit additive island world\\expansion01\\doodads\\zangar\\mushroom\\glowball02.blp",
+      "position_basis": "Point moved toward the edge of the ember bed. It lights the nearby ground while the pot and its supports cast shadows.",
       "injected_sha256": "b72d93c5a19184c82b1b5b0403cc4fd6bb077e9f05d7cff1b46af179828ae020",
       "variants": {
         "b72d93c5a19184c82b1b5b0403cc4fd6bb077e9f05d7cff1b46af179828ae020": {
