@@ -28,8 +28,28 @@ class BufferRangeShadow {
     std::size_t capacity_=0;
     std::uint64_t clock_=0;
     bool discarded_=false;
+    // Every byte written since creation or the last DISCARD lies in one of these; bytes outside are undefined.
+    // Kept apart from the cached bytes: clear() and invalidate() keep it. The client's slot pool needs 2.
+    std::array<std::uint32_t,8> written_{};unsigned writtenN_=0;
     static bool contains(const Span& s,std::uint32_t off,std::uint64_t end){return s.begin<s.end&&off>=s.begin&&end<=s.end;}
     void release(Span& s){capacity_-=s.capacity;if(s.begin<s.end)discarded_=false;s=Span{};}
+    void wrote(std::uint32_t a,std::uint64_t end){
+        std::uint32_t b=std::uint32_t(std::min<std::uint64_t>(end,UINT32_MAX));unsigned n=0;
+        for(unsigned i=0;i<writtenN_;i+=2){   // fold every touching interval into [a,b)
+            const auto x=written_[i],y=written_[i+1];
+            if(x<=b&&a<=y){a=std::min(a,x);b=std::max(b,y);}else{written_[n]=x;written_[n+1]=y;n+=2;}
+        }
+        if(n==written_.size()){   // full: widen the nearest interval instead; the set only grows, so the proof stays sound
+            unsigned best=0;std::uint32_t bestGap=UINT32_MAX;
+            for(unsigned i=0;i<n;i+=2){const auto g=written_[i+1]<a?a-written_[i+1]:b<written_[i]?written_[i]-b:0;if(g<bestGap){bestGap=g;best=i;}}
+            written_[best]=std::min(a,written_[best]);written_[best+1]=std::max(b,written_[best+1]);writtenN_=n;return;
+        }
+        written_[n]=a;written_[n+1]=b;writtenN_=n+2;
+    }
+    bool neverWritten(std::uint32_t off,std::uint64_t end)const{
+        for(unsigned i=0;i<writtenN_;i+=2)if(written_[i]<end&&off<written_[i+1])return false;
+        return true;
+    }
 public:
     std::size_t capacity()const{return capacity_;}
     bool covers(std::uint32_t off,std::uint32_t size)const{
@@ -50,7 +70,8 @@ public:
         if(std::uint64_t(off)+size>UINT32_MAX)return false;
         // DISCARD's unknown bytes remain undefined only while every subsequent
         // write is retained. Dropping any written range revokes this proof.
-        return covers(off,size)||(discarded_&&size<=RangeShadowItemBytes);
+        // Bytes never written are undefined whatever was dropped; read() zero-fills them.
+        return covers(off,size)||(discarded_&&size<=RangeShadowItemBytes)||neverWritten(off,std::uint64_t(off)+size);
     }
     void read(void* dst,std::uint32_t off,std::uint32_t size)const{
         const std::uint64_t end=std::uint64_t(off)+size;
@@ -63,9 +84,11 @@ public:
     }
     void clear(){spans_.reset();capacity_=clock_=0;discarded_=false;}
     void invalidate(){if(spans_)for(auto& s:*spans_)s.begin=s.end=0;discarded_=false;}
-    void discard(){invalidate();discarded_=true;}
+    void discard(){invalidate();discarded_=true;writtenN_=0;}
+    // Called for every write to the buffer, cached or not.
     void remember(std::uint32_t off,std::uint32_t size,const void* src,std::size_t freeBudget){
         if(!size)return;
+        wrote(off,std::uint64_t(off)+size);
         if(size>RangeShadowItemBytes||std::uint64_t(off)+size>UINT32_MAX){clear();return;}
         if(!spans_)try{spans_=std::make_unique<std::array<Span,RangeShadowSpans>>();}catch(...){clear();return;}
         const std::uint32_t end=off+size;
