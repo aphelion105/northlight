@@ -3053,6 +3053,7 @@ public:
         {auto program=actorPrograms.find(shader); /* 0.3.177: the caches are cleared by their owner at its next open */
          if(program!=actorPrograms.end()){prepareCachesStale=true;retireProgram(std::move(program->second));actorPrograms.erase(program);}}
         actorUVPrograms.erase(shader);
+        rigidAudited.erase(shader);
         UINT size=0;if(!shader||FAILED(shader->GetFunction(nullptr,&size))||size<8||size>65536||size%4)return;
         std::vector<uint32_t> words(size/4),output;
         if(FAILED(shader->GetFunction(words.data(),&size)))return;
