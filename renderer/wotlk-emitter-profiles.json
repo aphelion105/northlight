@@ -116,6 +116,22 @@
     ]
   },
   "profiles": {
+    "world\\expansion02\\doodads\\generic\\forsaken\\fk_signpost.m2": {
+      "asset_sha256": "6643eb45117854a4ec6e41ee10e60a9029e716b77ef229adcec9559bab548d7d",
+      "family": "wotlk_energy",
+      "position_basis": "Place a warm point on each side of the amber lantern glass. The lantern body, post and nearby railings cast point shadows.",
+      "position": [-0.68, 0.0, 3.84],
+      "rgb": [1.0, 0.56, 0.15],
+      "intensity": 0.31,
+      "start": 0.55,
+      "end": 6.7,
+      "casts_shadows": true,
+      "merge_emitters": false,
+      "emitters": [
+        {"position": [-0.68, 0.0, 3.84], "rgb": [1.0, 0.56, 0.15], "intensity": 0.31, "start": 0.55, "end": 6.7, "casts_shadows": true},
+        {"position": [0.68, 0.0, 3.84], "rgb": [1.0, 0.56, 0.15], "intensity": 0.31, "start": 0.55, "end": 6.7, "casts_shadows": true}
+      ]
+    },
     "world\\expansion02\\doodads\\generic\\inscription\\inscription_quill_phoenix.m2": {
       "asset_sha256": "c36ad683232f714cdca1b5c0ac976a6c5c9461f840bf9935da8f6764ccbfd599",
       "family": "wotlk_fire",
