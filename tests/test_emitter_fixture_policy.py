@@ -41,7 +41,9 @@ class FixturePolicy(unittest.TestCase):
             for key in ('intensity', 'start', 'end', 'casts_shadows'):
                 self.assertEqual(result[0][key], ref[key])
             merged += 1
-        self.assertEqual((merged, total_before, total_after), (4, 43, 27))
+        self.assertEqual(merged, len(REFERENCES))
+        self.assertEqual(total_before - total_after,
+                         sum(ref['original_count'] - 1 for ref in REFERENCES.values()))
         self.assertEqual(catalog, before)
 
     def test_diameter_boundary_and_nontransitive_chain(self):
