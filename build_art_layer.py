@@ -21,7 +21,7 @@ installed art layer). Steps, each on the previous step's archive, as the HD chai
 8. weather_textures  procedural rain streak (1:16), red rain and snow flake (1:2) BLPs
    (build_weather_textures), replacing the client's; generated, no client bytes. Plus the client's
    weather mist puffs resampled to 1:4 (the renderer's signature to skip them in rain)
-9. model lighting  reduce baked placement tints in Botanica and Sethekk Halls and restore
+9. model lighting  reduce baked placement tints in Botanica, Sethekk Halls and Utgarde Pinnacle and restore
    light reception for the Nexus white bush.
 
 Reviewed world-model emitters are supplied by world-cache/lights. Do not also inject
@@ -82,6 +82,13 @@ SETHEKK_GREEN_RUG_TINTS = {
     584: (255, 199, 94, 255),
     1213: (255, 191, 111, 255),
     1303: (255, 218, 95, 255),
+}
+PINNACLE_WMO = 'world\\wmo\\dungeon\\valgarde\\valgarde_80gw.wmo'
+PINNACLE_WMO_SHA256 = '856ad0b26d60fbb3fc670cfcb720a36f7530f17c977600fde14289386a8a3043'
+PINNACLE_MODD_OFFSET = 22256
+PINNACLE_SMALL_RUG_TINTS = {
+    54: ((130, 193, 234, 255), (39, 58, 70, 255)),
+    55: ((130, 200, 243, 255), (39, 60, 73, 255)),
 }
 NEXUS_WHITE_BUSH = 'world\\expansion02\\doodads\\nexus\\nexus_white_bush_a.m2'
 NEXUS_WHITE_BUSH_SHA256 = '58818c446bbb78ef50d5d267b86a3e8b92a81525c062d323d43aa5cc969e2c48'
@@ -196,6 +203,15 @@ def sethekk_green_rug_tint(assets):
     return patch_reviewed_asset(assets, step, SETHEKK_WMO_SHA256, edits)
 
 
+def pinnacle_small_rug_tint(assets):
+    step = {'step': 'pinnacle_small_rug_tint', 'asset': PINNACLE_WMO,
+            'placements': [{'index': index, 'before_bgra': list(before), 'after_bgra': list(after)}
+                           for index, (before, after) in PINNACLE_SMALL_RUG_TINTS.items()]}
+    edits = [(PINNACLE_MODD_OFFSET + index * 40 + 36, before, after)
+             for index, (before, after) in PINNACLE_SMALL_RUG_TINTS.items()]
+    return patch_reviewed_asset(assets, step, PINNACLE_WMO_SHA256, edits)
+
+
 def nexus_white_bush_material(assets):
     step = {'step': 'nexus_white_bush_material', 'asset': NEXUS_WHITE_BUSH}
     # Clear Unlit while retaining the alpha-test blend mode used by the foliage.
@@ -302,7 +318,7 @@ def build(client, output, world_cache, locale=None, letter='z', archives='all', 
         textures.update(build_weather_textures.mist_textures(assets.read, decode_blp))   # 0.3.199 (rain mist)
         payload.update(textures)
         report['steps'].append({'step': 'weather_textures', 'files': sorted(textures)})
-        for art_edit in (atrium_flower_tint, sethekk_green_rug_tint, nexus_white_bush_material):
+        for art_edit in (atrium_flower_tint, sethekk_green_rug_tint, pinnacle_small_rug_tint, nexus_white_bush_material):
             edit_payload, edit_step = art_edit(assets)
             payload.update(edit_payload)
             report['steps'].append(edit_step)
