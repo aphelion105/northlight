@@ -42,6 +42,18 @@
     ]
   },
   "profiles": {
+    "world\\expansion02\\doodads\\grizzlyhills\\trappers\\trapperlamppost_01.m2": {
+      "asset_sha256": "b3a42dc6933d4e304654147e490c619edfc89602b4d56ce262e9f6b07c1ed4d9",
+      "family": "wotlk_lantern",
+      "position": [-0.014, -0.009, 2.34],
+      "position_basis": "Upper part of the visible glow inside the lantern. This point reaches the trail and nearby fence rails in Grizzly Hills and Drak'Tharon Keep while the post and rails block spill.",
+      "rgb": [1, 0.66, 0.17],
+      "intensity": 0.86,
+      "start": 0.75,
+      "end": 5.4,
+      "max_world_end": 9.2,
+      "casts_shadows": true
+    },
     "world\\expansion02\\doodads\\generic\\forsaken\\fk_chemistrytube_04.m2": {
       "asset_sha256": "1ef7ffc0960d1b34b50a9d5593a197ec9738eccc28bf583e535670e7ac15b9db",
       "family": "wotlk_energy",
