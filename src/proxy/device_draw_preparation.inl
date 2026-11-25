@@ -64,9 +64,10 @@
                 if(terrain&&!nameMask.disabled&&worldDebug==0){
                 unsigned roomLevel=0;
                 const auto& receiver=classifyVs(vs);
-                const bool posedRoomModel=!menuScene&&receiver.family==3&&receiver.skinned;
+                // Native M2 light banks also contain ambient on rigid doodads.
+                const bool modelRoomLighting=!menuScene&&receiver.family==3;
                 const bool authoredReceiver=receiver.authoredLighting&&!(receiver.entry&(kUnlitTag|kPrelitTag))&&
-                    world->authoredReceiverLighting(receiver.family==3,posedRoomModel?&roomLevel:nullptr);
+                    world->authoredReceiverLighting(receiver.family==3,modelRoomLighting?&roomLevel:nullptr);
                 if((nameMask.armed()&&drawUiHashVS)||nameMask.hasMarks()||unlitMarks||prelitMarks||authoredMarks||authoredReceiver||(receiver.entry&(kUnlitTag|kPrelitTag))){
                     const bool sampledTimed=sampledDrawTimers()&&(++nameDecideCalls&7)==1;if(sampledTimed)++nameDecideTimed;
                     CpuScope decision(sampledTimed?&cpuNameDecide:nullptr);nameMaskDecide(drawWaterVS,zw,ab,sb,db,cw,viewport);
