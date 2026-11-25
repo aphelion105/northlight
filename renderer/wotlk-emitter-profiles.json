@@ -17,6 +17,22 @@
     }
   },
   "native_placement_ranges": {
+    "Azeroth": [
+      {
+        "model": "world\\generic\\passivedoodads\\lights\\candle01.m2",
+        "asset_sha256": "14f5c0800af4c804f2085c23ce68177503805e4481c43b261a6d6191e7e3dfda",
+        "placements": [507720968962888, 507720968962889, 507720968962890, 507720968962894, 507720968962909, 507720968962927],
+        "end": 4.5,
+        "basis": "Booty Bay fireworks stockroom. Shorter reach keeps the warm glow around each candle and preserves the rocket colours and crate detail."
+      },
+      {
+        "model": "world\\generic\\passivedoodads\\lights\\candle02.m2",
+        "asset_sha256": "6f7b16aa6141616b7711255352740466bb5ece9f53579c273130ed1601e6b941",
+        "placements": [507720968962891, 507720968962892, 507720968962893, 507720968962919, 507720968962921, 507720968962926],
+        "end": 4.5,
+        "basis": "In the same Booty Bay stockroom. This range reduces overlap between neighbouring candles while keeping the wooden stands lit."
+      }
+    ],
     "UtgardePinnacle": [
       {
         "model": "world\\generic\\passivedoodads\\lights\\candle01.m2",
