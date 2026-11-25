@@ -2403,7 +2403,7 @@
       "position": [
         0.0,
         0.0294630266726017,
-        -0.2854060232639313
+        6.8
       ],
       "rgb": [
         0.6766168640579403,
@@ -2412,9 +2412,10 @@
       ],
       "intensity": 1.15,
       "start": 1.0,
-      "end": 14.0,
+      "end": 17.5,
+      "max_world_end": 14.0,
       "family": "wotlk_fire",
-      "position_basis": "v264 additive flame: world\\kalimdor\\mauradon\\passivedoodads\\satyrhangingbraziers\\fire1white.blp",
+      "position_basis": "Inside the visible flame near the upper edge of the bowl, verified with point shadows in Shadowmoon Valley.",
       "asset_sha256": "c68f8e06baf891f98030be7662b1b2591ac23e1f77ba5a0e7f09045daba8c2d9",
       "variants": {
         "d1094477f4c75b9df538250828d274b42614027ab145b101040b2deddd0338ff": {
