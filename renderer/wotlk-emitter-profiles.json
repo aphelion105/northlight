@@ -116,6 +116,25 @@
     ]
   },
   "profiles": {
+    "world\\expansion02\\doodads\\daggercap\\burningship\\howlingfjord_burningship.m2": {
+      "asset_sha256": "4a3bb5018212b94dad88021690e2893062822b8d8abbe72ca4862643f1c911a4",
+      "family": "wotlk_energy",
+      "position_basis": "Steady spill beside the active lower flames. The offset reaches exposed planks while the thick rails keep the wood behind them in shadow in both Howling Fjord and Utgarde Pinnacle.",
+      "position": [
+        -22.84165574589828,
+        -22.83442432481956,
+        -17.23275722896478
+      ],
+      "rgb": [
+        1,
+        0.4895833333333333,
+        0.14375
+      ],
+      "intensity": 0.48,
+      "start": 0.5752809026088925,
+      "end": 7.080380339801754,
+      "casts_shadows": true
+    },
     "world\\expansion02\\doodads\\dalaran\\dalaran_fountain_02.m2": {
       "asset_sha256": "6b958f2bf5a085719705db3f6a2ddc0bf7ff5f51ae4718ac54c5288751acd318",
       "family": "wotlk_energy",
