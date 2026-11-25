@@ -10,9 +10,10 @@ import emitter_pin_report
 import outdoor_light_profiles
 from world_scene_builder import Assets
 
-# The six profiles whose stock 3.3.5a model (common-2.mpq) differs from the HD pack's model.
+# Profiles with a separate pin for the stock 3.3.5a model from common-2.mpq.
 STOCK_DIFFERENT={'world\\generic\\human\\passive doodads\\lamps\\stormwindstreetlamp01.m2',
     'world\\generic\\human\\passive doodads\\lamps\\tirisfallstreetlamp01.m2',
+    'world\\generic\\human\\passive doodads\\stoves\\potbellystovewall.m2',
     'world\\azeroth\\westfall\\passivedoodads\\lamppost\\westfalllamppost.m2',
     'world\\azeroth\\westfall\\passivedoodads\\lamppost\\westfalllamppost01.m2',
     'world\\azeroth\\westfall\\passivedoodads\\lamppost\\westfalllamppost02.m2',

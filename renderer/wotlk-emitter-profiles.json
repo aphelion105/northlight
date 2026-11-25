@@ -366,6 +366,16 @@
       "intensity": 0.38,
       "start": 0.35,
       "end": 4.2,
+      "variants": {
+        "53896f3968c801b060e93c2f534addf8a9e3869c8c9a805fe095869315a619a7": {
+          "position": [0.42, 0, 0.96],
+          "rgb": [1, 0.47, 0.14],
+          "intensity": 0.24,
+          "start": 0.37,
+          "end": 3.4,
+          "position_basis": "Just ahead of the stock firebox grate. Verified with stock geometry, including a control with point shadows disabled, in Blackrock Depths."
+        }
+      },
       "casts_shadows": true
     },
     "world\\azeroth\\karazahn\\passivedoodads\\burningbooks\\booksonfire.m2": {
