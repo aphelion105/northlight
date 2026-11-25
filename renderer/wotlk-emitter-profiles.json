@@ -116,6 +116,18 @@
     ]
   },
   "profiles": {
+    "world\\expansion02\\doodads\\generic\\oracle\\o_lampwall_01.m2": {
+      "asset_sha256": "859afa5a8ed127819e51bd2a186f6efca8730542ebcdade34d471df4866df6ed",
+      "family": "wotlk_energy",
+      "position": [1.65, -0.11, 0.26],
+      "position_basis": "At the lower opening of the crystal mount. The offset lights the nearby trunk and masonry in Sholazar Basin, with the bracket occluding spill into the fixture.",
+      "rgb": [0.29, 0.85, 1.0],
+      "intensity": 0.86,
+      "start": 0.66,
+      "end": 7.8,
+      "max_world_end": 6.5,
+      "casts_shadows": true
+    },
     "world\\expansion02\\doodads\\generic\\oracle\\o_lamppost_01.m2": {
       "asset_sha256": "6ea28be0ad2577d1ac1941493f8eaa8ace2b6dd00db664e1a682e2ab161ee90c",
       "family": "wotlk_energy",
