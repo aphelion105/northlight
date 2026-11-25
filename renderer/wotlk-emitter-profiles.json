@@ -116,6 +116,25 @@
     ]
   },
   "profiles": {
+    "world\\expansion02\\doodads\\generic\\vrykul\\signs\\vr_signpost_snow01.m2": {
+      "asset_sha256": "e764a8615545cb06b9f0d354cd8793bcea72725aecbefeb13f66c7ce41e682b3",
+      "family": "wotlk_energy",
+      "position_basis": "At the outer lip of the lamp cage. The retained cage shadow bounds warm spill on the post and nearby trim.",
+      "position": [
+        1.17,
+        0.23,
+        9.24
+      ],
+      "rgb": [
+        1.0,
+        0.54,
+        0.16
+      ],
+      "intensity": 0.85,
+      "start": 0.8,
+      "end": 11.5,
+      "casts_shadows": true
+    },
     "world\\expansion02\\doodads\\generic\\oracle\\o_lampwall_01.m2": {
       "asset_sha256": "859afa5a8ed127819e51bd2a186f6efca8730542ebcdade34d471df4866df6ed",
       "family": "wotlk_energy",
