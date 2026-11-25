@@ -1,6 +1,13 @@
 {
   "version": 1,
   "native_anchors": {
+    "world\\generic\\dwarf\\passive doodads\\lampposts\\anvilmarlamppost.m2": {
+      "model_sha256": "7c85a27936f38420e1b542488f1514356bec48e7c695bfc01cc15ddf30eab8f9",
+      "skin_sha256": "56b55dd1e66c49cd94130d7cf927f701b8188486e611954abfa7e42e88167bb2",
+      "source": 0,
+      "position": [0.044, 0.001, 2.36],
+      "basis": "Inside the visible flame just above the stone cup. Raising the native point by 0.41 model yards lets light reach the snow and nearby fence while the stone pedestal still blocks light underneath."
+    },
     "world\\expansion02\\doodads\\generic\\northrend fires\\northrendgeneraltorch01.m2": {
       "model_sha256": "251454966ebdfc378b75740889ca4520402a85525c8b964d807d9f0eab1efaeb",
       "skin_sha256": "d4ccd12473ce7f791fb21597a42364780ab5754ffcba3a6504fcaf974340382e",
