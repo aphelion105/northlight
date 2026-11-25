@@ -201,10 +201,11 @@ checks['WorldComposite: AO in the tent, native fog preserved before surface AO, 
     and 'ao=relight?(total<.02?fallbackAO:ao/total):1;' in composite
     and 'float3 bloom=tex2D(AmbientOcclusion,uv).rgb;' in composite
     and composite.index('float3 fogPart=min((1-legacyT)*LegacyFogColor.rgb,original.rgb);')
-    < composite.index('original.rgb=mad(original.rgb-fogPart,ao,fogPart);')
-    < composite.index('original.rgb=saturate(mad(bloom,1-saturate(original.rgb),original.rgb));')
+    < composite.index('original.rgb=surfaceForLighting+fogPart;')
     < composite.index('float3 color=original.rgb;')
-    < composite.index('if(relight){\n        // Thin receivers'))
+    < composite.index('if(relight){\n        // Thin receivers')
+    < composite.index('color=worldHdrEncode(color);')
+    < composite.index('color=mad(bloom,1-saturate(color),color);'))
 checks['smoothRemoval: centre and both compile-time tap variants multiply Scene by AO alpha; removalScale has no floor'] = (
     world.count('tex2Dlod(Scene,float4(q,0,0)).rgb*tex2Dlod(AmbientOcclusion,float4(q,0,0)).a') == 1
     and world.count('tex2Dlod(Scene,float4(tq,0,0)).rgb*tex2Dlod(AmbientOcclusion,float4(tq,0,0)).a') == 2

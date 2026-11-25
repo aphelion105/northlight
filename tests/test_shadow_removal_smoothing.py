@@ -133,7 +133,7 @@ for needle in ('clamp(RemovalInfo.w/z,3,16)','-1.442695/max(.25,z*.03)','32*Remo
                'result=lerp(ratio,sum/total,amount)*scale/legacyT;',
                # the composite terms mirrored above
                'float legacyT=mad(LegacyFog.w,saturate(pow(max(mad(viewZ*Projection.z,LegacyFog.x,LegacyFog.y),0),LegacyFog.z))-1,1);',
-               'float3 fogPart=min((1-legacyT)*LegacyFogColor.rgb,original.rgb);','float3 albedoT=boundedAlbedo(hdrMode?hdrSurface:transported,materialLight,legacyT);',
+               'float3 fogPart=min((1-legacyT)*LegacyFogColor.rgb,original.rgb);','float3 albedoT=boundedAlbedo(surfaceForLighting,materialLight,legacyT);',
                'color=max(color,mad(-limit,transported,original.rgb));'):
     occurrences = 2 if needle.endswith('-shadowRemovalLimit())*w;') or needle.startswith('sum+=') else 1
     assert hlsl.count(needle)==occurrences,needle

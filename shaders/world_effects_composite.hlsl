@@ -5,8 +5,8 @@
 // sky without a step. Band by world elevation: camera pitch/roll never moves
 // it. Full below the horizon, where only the distance weight protects ground.
 // No samples, passes or raymarch steps.
-float3 worldHdrDecode(float3 color){return lerp(max(color,0)/12.92,pow((max(color,0)+.055)/1.055,2.4),step(.04045,color));}
-float3 worldHdrEncode(float3 color){color=max(color,0);return lerp(color*12.92,1.055*pow(color,1.0/2.4)-.055,step(.0031308,color));}
+float3 worldHdrDecode(float3 color){color=max(color,0);return lerp(color/12.92,pow(mad(color,1.0/1.055,.055/1.055),2.4),step(.04045,color));}
+float3 worldHdrEncode(float3 color){color=max(color,0);return lerp(color*12.92,mad(pow(color,1.0/2.4),1.055,-.055),step(.0031308,color));}
 float3 horizonHaze(float3 color,float2 uv,float viewZ,bool sky,bool hdrMode,float coverageTransmission) {
     float range=sky?1:saturate((viewZ-HorizonShape.y)*HorizonShape.z);
     [branch]if(range<=0||HorizonHaze.w<=0)return color;
@@ -132,7 +132,7 @@ float4 worldCompositeInputs(float2 uv,float2 pixel,bool surfaceLighting,bool hdr
     // Unknown fog is the identity. The same split also bounds relighting below.
     ao=relight?(total<.02?fallbackAO:ao/total):1;
     float3 fogPart=min((1-legacyT)*LegacyFogColor.rgb,original.rgb);
-    float3 hdrSurface=0;
+    float3 surfaceForLighting=0;
     if(hdrMode){
         // Lighting buffers are relative irradiance coefficients. Infer the
         // effective albedo from linear transported RGB, preserving the native
@@ -141,7 +141,7 @@ float4 worldCompositeInputs(float2 uv,float2 pixel,bool surfaceLighting,bool hdr
         float3 surfaceLinear=nativeLinear;
         [branch]if(!baseLighting||CompositeWork.w<.5)
             surfaceLinear=worldHdrDecode(max(original.rgb-fogPart,0));
-        hdrSurface=surfaceLinear*ao;
+        surfaceForLighting=surfaceLinear*ao;
         float3 baseLinear=nativeLinear;
         // Match HdrDecodeWorld's raw clear-depth test. The horizon occupies
         // .94..1 and must retain native geometry even outside the world band.
@@ -151,9 +151,13 @@ float4 worldCompositeInputs(float2 uv,float2 pixel,bool surfaceLighting,bool hdr
         nativeColor=baseLinear;
         original.rgb=mad(max(baseLinear-fogPart,0),ao,fogPart);
     }else{
-        original.rgb=mad(original.rgb-fogPart,ao,fogPart);
-        float3 bloom=tex2D(AmbientOcclusion,uv).rgb;
-        original.rgb=saturate(mad(bloom,1-saturate(original.rgb),original.rgb));
+        // The signed lighting buffer contains relative irradiance in both modes.
+        // Recover the linear surface before applying AO, removal and bounce.
+        nativeColor=worldHdrDecode(original.rgb);
+        float3 surfaceLinear=worldHdrDecode(original.rgb-fogPart);
+        fogPart=nativeColor-surfaceLinear;
+        surfaceForLighting=surfaceLinear*ao;
+        original.rgb=surfaceForLighting+fogPart;
     }
     float3 color=original.rgb;
     if(relight){
@@ -171,7 +175,7 @@ float4 worldCompositeInputs(float2 uv,float2 pixel,bool surfaceLighting,bool hdr
         // base. Including that light in the divisor suppresses lamp contrast.
         float3 ambientBase=min(oldLight,max(AmbientLight.rgb,.15));
         float3 materialLight=prelit&&PrelitDaylightInfo.z>.5?ambientBase:oldLight;
-        float3 albedoT=boundedAlbedo(hdrMode?hdrSurface:transported,materialLight,legacyT);
+        float3 albedoT=boundedAlbedo(surfaceForLighting,materialLight,legacyT);
         // Prelit RGB retains authored illumination at zero GI blend. Resident
         // probes attenuate that layer and add bounce independently of daylight.
         // As for local lamps, native transported RGB supplies a bounded material
@@ -233,12 +237,8 @@ float4 worldCompositeInputs(float2 uv,float2 pixel,bool surfaceLighting,bool hdr
         // Rain streaks were drawn into the scene before the composite: on mask pixels go back toward the unfogged pixel so they are not hazed.
         float rain=0;
         [branch]if(!baseLighting||CompositeWork.z<.5)rain=tex2Dlod(RainMask,float4(uv,0,0)).r;
-        float3 hazed=horizonHaze(color,centerUV,viewZ,d>=.99999&&liquid<=0,hdrMode,coverageTransmission);
+        float3 hazed=horizonHaze(color,centerUV,viewZ,d>=.99999&&liquid<=0,true,coverageTransmission);
         float3 fogged=mad(hazed,fog.a,fog.rgb*coverageTransmission);
-        // Forever's decoded colours are radiance in both output modes. SDR
-        // must composite in linear space too, then encode for its UNORM target.
-        if(!hdrMode){[branch]if(MaterialOcclusionInfo.w>.5)
-            fogged=worldHdrEncode(mad(worldHdrDecode(hazed),fog.a,fog.rgb*coverageTransmission));}
         color=lerp(fogged,unfogged,rain);
     }
     if(PassInfo.z==3)color=fog.rgb;
@@ -248,6 +248,11 @@ float4 worldCompositeInputs(float2 uv,float2 pixel,bool surfaceLighting,bool hdr
     // Dither before the 8-bit target rounds: haze and night air vary only with view elevation and would band into
     // horizontal lines. VPOS is the integer pixel; +.5 texel hits the POINT texel centre.
     if(hdrMode)return float4(max(color,0),original.a);
+    if(PassInfo.z<.5){
+        color=worldHdrEncode(color);
+        float3 bloom=tex2D(AmbientOcclusion,uv).rgb;
+        color=mad(bloom,1-saturate(color),color);
+    }
     return float4(max(color+tex2D(DitherNoise,mad(pixel,1.0/64,.5/64)).rgb,0),original.a);
 }
 
@@ -373,8 +378,7 @@ float4 materialComposite(float2 uv,bool hdrMode,float4 color,float3 effect,bool 
     float visibility=saturate((tex2Dlod(LightingBuffer,float4(materialUV,0,0)).a*WaterInfo.z-(1-GridInfo.z))/max(GridInfo.z,.001));
     float legacyT=reuseInputs?receiver.w:mad(LegacyFog.w,saturate(pow(max(mad(z*Projection.z,LegacyFog.x,LegacyFog.y),0),LegacyFog.z))-1,1);
     float3 source=reuseInputs?sharedSource:tex2D(MaterialSource,uv).rgb;
-    float3 surface=max(source-min((1-legacyT)*LegacyFogColor.rgb,source),0);
-    if(hdrMode)surface=worldHdrDecode(surface);
+    float3 surface=worldHdrDecode(source-min((1-legacyT)*LegacyFogColor.rgb,source));
     surface*=tex2D(AmbientOcclusion,uv).a;
     float3 albedoT=boundedAlbedo(surface,tex2D(BaselineLighting,materialUV).rgb,legacyT);
     float3 cavity=max(AmbientLight.rgb*AmbientLight.w+GridOrigin.rgb,0)*(occlusion.b-1);
@@ -384,7 +388,8 @@ float4 materialComposite(float2 uv,bool hdrMode,float4 color,float3 effect,bool 
         if(solar)materialLight+=surfaceLightResponse(q,z,relative,normal,detail,occlusion)*(visibility*legacyT);
         else materialLight+=MaterialColor[1].rgb*(moonTerrainSpecular(q,z,relative,normal,detail)*visibility*legacyT*occlusion.g);
     }
-    color.rgb=max(color.rgb+materialLight*tex2D(MaterialFog,uv).a*transmission,0);
+    float3 linearColor=(hdrMode?color.rgb:worldHdrDecode(color.rgb))+materialLight*tex2D(MaterialFog,uv).a*transmission;
+    color.rgb=hdrMode?max(linearColor,0):worldHdrEncode(linearColor);
     return color;
 }
 float3 materialEffectWeight(float2 uv,bool hdrMode){
