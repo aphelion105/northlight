@@ -445,6 +445,18 @@
       "end": 4.5,
       "casts_shadows": true
     },
+    "world\\expansion02\\doodads\\azjol-nerub\\saronite\\saronite_node_01.m2": {
+      "asset_sha256": "2d7016e0a684f06f2e7faa1e4972335f1fe13e868a5b36644523c96066b576f8",
+      "family": "wotlk_crystal",
+      "position": [-0.34, 0.05, 0.92],
+      "position_basis": "Point among the unlit crystal tips above the dark rock base. The short cyan spill catches nearby stone while the no-shadow control avoids self-shadowing by the surrounding shards.",
+      "rgb": [0.2, 0.91, 0.73],
+      "intensity": 0.21,
+      "start": 0.45,
+      "end": 4.0,
+      "max_world_end": 6.1,
+      "casts_shadows": false
+    },
     "world\\generic\\darkirondwarf\\passive doodads\\lamps\\darkironhanginglamp02.m2": {
       "asset_sha256": "8de543073128173004d462aeefdde20308e25da21ccaf6e680f8966982b2f13f",
       "family": "wotlk_compact_source",
