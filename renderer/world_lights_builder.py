@@ -194,14 +194,15 @@ def instance_lights(lights,record,path,*,max_world_end=None):
 
 def m2_sources(path,blob,native,emitter_index):
     """Shared source identity for light records and their opaque lamp shells."""
+    from light_attachments import REQUIRES_NATIVE
     import world_emitter_index
     authored=emitter_index.get(path,blob) if not unpack('<I',blob,264)[0] else None
     sources=world_emitter_index.records(authored) if authored is not None else outdoor_light_profiles.fallback(emitter_index.catalog,path,blob,native)
     from world_emitter_coverage import emission_kind
-    # Native M2 lights carry no emitter class. Retain their authored energy and
-    # animation; the shared candle classification only removes shadow intent.
+    # A live-native witness requires both flags in the FGL reader.
+    # Ordinary candles retain their intensity and omit the point shadow.
     if emission_kind(path,'')=='candle':
-        sources=[(*s[:-1],s[-1]&~2) for s in sources]
+        sources=[s if s[-1]&REQUIRES_NATIVE else (*s[:-1],s[-1]&~world_emitter_index.CAST_SHADOW) for s in sources]
     return sources
 
 

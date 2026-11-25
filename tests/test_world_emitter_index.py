@@ -14,6 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import northlight_paths as fp
 fp.use_source_modules()
 import world_emitter_index as index
+from light_attachments import REQUIRES_NATIVE
 from m2_emitter_patch import append_lights, verify_lights
 from test_world_emitter_coverage import fixture
 from world_lights_builder import instance_lights, m2_sources
@@ -115,15 +116,18 @@ class WorldEmitterIndex(unittest.TestCase):
 
     def test_native_candles_keep_energy_without_shadow_intent(self):
         blob=bytearray(self.blob);struct.pack_into('<I',blob,264,1)
-        native=[((0.,0.,2.),(1.,.5,.2),1.,12.,0,2,index.CAST_SHADOW)]
+        steady=((0.,0.,2.),(1.,.5,.2),1.,12.,0,2,index.CAST_SHADOW)
+        animated=((0.,1.,2.),(1.,.5,.2),1.,12.,1,2,index.CAST_SHADOW|REQUIRES_NATIVE)
+        native=[steady,animated]
         value=self.read();value.catalog={}
         for path,candle in (('world\\custom_candle.m2',True),('world\\custom_candelabra.m2',True),
                             ('world\\custom_lantern.m2',False),('world\\anonymous.m2',False)):
             with self.subTest(path=path):
                 actual=m2_sources(path,blob,native,value)
-                self.assertEqual(actual[0][:-1],native[0][:-1])
+                self.assertEqual(actual[0][:-1],steady[:-1])
                 self.assertEqual(bool(actual[0][-1]&index.CAST_SHADOW),not candle)
-        self.assertEqual(native[0][-1],index.CAST_SHADOW)
+                self.assertEqual(actual[1],animated)
+        self.assertEqual(native,[steady,animated])
 
     def test_authored_range_limit_preserves_world_position_and_falloff_ratio(self):
         authored, = index.records({'emitters': [source()]})
