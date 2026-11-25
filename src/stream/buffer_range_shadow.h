@@ -11,6 +11,11 @@ namespace NorthlightStream {
 // their own staging bytes until replay completes.
 constexpr std::size_t RangeShadowBudgetBytes=std::size_t(8)<<20;
 constexpr std::size_t RangeShadowItemBytes=std::size_t(4)<<20;
+// The 3.3.5a client's 45 MB DYNAMIC VB is a pool of 145-vertex slots (8120/4060 bytes), each rewritten
+// with NOOVERWRITE ~130 frames later: ~250 scattered ranges live at once, so 8 never hit.
+constexpr std::size_t RangeShadowSpans=256;
+// A join copies the range on each growth; capped so one long run cannot take the budget.
+constexpr std::size_t RangeShadowJoinBytes=std::size_t(32)<<10;
 class BufferRangeShadow {
     struct Span {
         std::unique_ptr<unsigned char[]> bytes;
@@ -19,7 +24,7 @@ class BufferRangeShadow {
         std::uint64_t used=0;
     };
     // Only oversized, written buffers allocate this cold metadata.
-    std::unique_ptr<std::array<Span,8>> spans_;
+    std::unique_ptr<std::array<Span,RangeShadowSpans>> spans_;
     std::size_t capacity_=0;
     std::uint64_t clock_=0;
     bool discarded_=false;
@@ -62,11 +67,11 @@ public:
     void remember(std::uint32_t off,std::uint32_t size,const void* src,std::size_t freeBudget){
         if(!size)return;
         if(size>RangeShadowItemBytes||std::uint64_t(off)+size>UINT32_MAX){clear();return;}
-        if(!spans_)try{spans_=std::make_unique<std::array<Span,8>>();}catch(...){clear();return;}
+        if(!spans_)try{spans_=std::make_unique<std::array<Span,RangeShadowSpans>>();}catch(...){clear();return;}
         const std::uint32_t end=off+size;
         Span* selected=nullptr;bool join=false;
         for(auto& s:*spans_)if(s.begin<s.end&&off<=s.end&&s.begin<=end&&
-            std::uint64_t(std::max(end,s.end))-std::min(off,s.begin)<=RangeShadowItemBytes){
+            std::uint64_t(std::max(end,s.end))-std::min(off,s.begin)<=RangeShadowJoinBytes){
             if(!selected||s.used>selected->used){selected=&s;join=true;}
         }
         if(!selected)for(auto& s:*spans_)if(s.begin==s.end&&(!selected||s.capacity>selected->capacity))selected=&s;
