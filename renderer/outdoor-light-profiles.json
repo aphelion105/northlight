@@ -1359,7 +1359,7 @@
       "position": [
         0,
         0,
-        1.5
+        4.4
       ],
       "rgb": [
         0.25,
@@ -1369,7 +1369,7 @@
       "intensity": 1.2,
       "start": 1.0,
       "end": 13,
-      "position_basis": "authored flame/bulb offset reviewed against installed mesh bounds",
+      "position_basis": "upper flame above the bowl, checked on Borean Tundra stone at two placements",
       "casts_shadows": true
     },
     "world\\expansion02\\doodads\\generic\\vrykul\\brazier\\vr_brazier_01_blue.m2": {
