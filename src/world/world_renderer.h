@@ -1731,10 +1731,15 @@ public:
     bool directionalShadowWork()const{return northlightShadowsRequested()&&(menuDomain||nativeShadowAvailable);}
     bool nativeShadowReplacementReady()const{
         if(menuDomain||!directionalShadowWork()||!ready()||!fogGeometryReady||!shadowFrameReady||!composited)return false;
-        for(unsigned source=0;source<2;++source)if(NorthlightGI::dot(sourceColors[source],sourceColors[source])>1e-10f)
+        bool activeSource=false;
+        for(unsigned source=0;source<2;++source){
+            if(NorthlightGI::dot(sourceColors[source],sourceColors[source])<=1e-10f)continue;
+            activeSource=true;
             for(unsigned cascade=0;cascade<2;++cascade){const unsigned slot=source*2+cascade;const char action=cascadeActions[slot];
                 if(!directionalMaps.current(slot).texture||(action!='R'&&action!='U'&&!(action=='D'&&shadowTransition[slot].workingValid)))return false;}
-        return true;
+        }
+        // An empty publication cannot replace the client's directional lighting.
+        return activeSource;
     }
     void setNativeShadowOwnership(bool owned,bool available=true){
         if(nativeShadowOwned==owned&&nativeShadowAvailable==available)return;

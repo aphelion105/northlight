@@ -71,14 +71,19 @@ struct PipelineOffTest {
         assert(!w.nativeShadowReplacementReady()); // Neither a warm target nor an empty publication authorizes handoff.
         {
             auto active=w.active;auto* a=w.directionalMaps.current_[0].texture;auto* b=w.directionalMaps.current_[1].texture;
+            const auto sun=w.sourceColors[0],moon=w.sourceColors[1];
             w.active=std::make_shared<WorldRenderer::Snapshot>();w.active->bvh=std::make_shared<NorthlightGI::BVH>();
             w.fogGeometryReady=w.shadowFrameReady=w.composited=true;w.nativeShadowOwned=false;
-            w.directionalMaps.current_[0].texture=w.directionalMaps.current_[1].texture=scene;w.cascadeActions[0]='R';w.cascadeActions[1]='U';assert(w.nativeShadowReplacementReady());
+            w.directionalMaps.current_[0].texture=w.directionalMaps.current_[1].texture=scene;w.cascadeActions[0]='R';w.cascadeActions[1]='U';
+            w.sourceColors[0]=w.sourceColors[1]={};
+            assert(!w.nativeShadowReplacementReady());
+            w.sourceColors[0]={1,1,1};assert(w.nativeShadowReplacementReady());
             w.cascadeActions[0]='D';w.shadowTransition[0].workingValid=false;assert(!w.nativeShadowReplacementReady());
             w.shadowTransition[0].workingValid=true;assert(w.nativeShadowReplacementReady());
             w.directionalMaps.current_[1].texture=nullptr;assert(!w.nativeShadowReplacementReady());w.directionalMaps.current_[1].texture=scene;
             w.quality.shadowProvider=0;assert(!w.nativeShadowReplacementReady());w.quality.shadowProvider=1;
             w.composited=false;assert(!w.nativeShadowReplacementReady());
+            w.sourceColors[0]=sun;w.sourceColors[1]=moon;
             w.directionalMaps.current_[0].texture=a;w.directionalMaps.current_[1].texture=b;w.active=active;w.nativeShadowOwned=true;w.fogGeometryReady=w.shadowFrameReady=false;w.shadowTransition[0].workingValid=false;
         }
         w.releaseGPU(true);configure(w,0);render(w,meter.real,out,depth,scene,ao,nullptr,W,H,false);
