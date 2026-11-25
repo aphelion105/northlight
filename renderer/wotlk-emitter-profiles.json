@@ -4214,20 +4214,20 @@
     },
     "world\\kalimdor\\mauradon\\passivedoodads\\satyrfloorbraziers\\satyrfloorbrazierblue01.m2": {
       "position": [
-        -0.0022187698632478714,
-        -0.29786451160907745,
-        2.5136998891830444
+        0.25,
+        0.0,
+        3.06
       ],
       "rgb": [
         0.14010637793966232,
         0.5996808299819731,
         1.0
       ],
-      "intensity": 1.15,
+      "intensity": 0.78,
       "start": 1.0,
-      "end": 14.0,
+      "end": 9.0,
       "family": "wotlk_fire",
-      "position_basis": "v264 additive flame: world\\kalimdor\\mauradon\\passivedoodads\\satyrhangingbraziers\\fire10020blue.blp; v264 additive flame: world\\kalimdor\\mauradon\\passivedoodads\\satyrhangingbraziers\\fire1white.blp",
+      "position_basis": "At the visible base of the flame above the bowl rim, verified in Mauradon from matched point-shadow captures.",
       "asset_sha256": "6113642c6fe6b29cb6726e34a7d3f4872aff8fbaed27e618a177434248c76691",
       "variants": {
         "822a470380652fb2bc368776f76e91dd8dea4bbe1f5a5761415b92b1433113bd": {
@@ -4252,20 +4252,20 @@
     },
     "world\\kalimdor\\mauradon\\passivedoodads\\satyrfloorbraziers\\satyrfloorbraziergreen01.m2": {
       "position": [
-        -0.0022187710274010897,
-        -0.2392762079834938,
-        2.5136998891830444
+        0.25,
+        0.0,
+        3.06
       ],
       "rgb": [
         0.2573319051257403,
         1.0,
         0.5508539633083537
       ],
-      "intensity": 1.15,
+      "intensity": 0.48,
       "start": 1.0,
-      "end": 14.0,
+      "end": 7.0,
       "family": "wotlk_fire",
-      "position_basis": "v264 additive flame: world\\kalimdor\\mauradon\\passivedoodads\\satyrhangingbraziers\\fire10020blue.blp; v264 additive flame: world\\kalimdor\\mauradon\\passivedoodads\\satyrhangingbraziers\\fire1white.blp",
+      "position_basis": "At the visible base of the flame above the bowl rim, verified in Mauradon from matched point-shadow captures.",
       "asset_sha256": "bda729b246e12c69ef9b36e1aa4a8cdaec0c71913bbb94fee3f86299ae63ca31",
       "variants": {
         "717d464145af7322a2d106c982a32926aa526b9209ffba8eaa6a1bfecb0b587c": {
@@ -4290,20 +4290,20 @@
     },
     "world\\kalimdor\\mauradon\\passivedoodads\\satyrfloorbraziers\\satyrfloorbrazierpurple01.m2": {
       "position": [
-        -0.0022187710274010897,
-        -0.2392762079834938,
-        2.5136998891830444
+        0.25,
+        0.0,
+        3.06
       ],
       "rgb": [
         0.4178032173557162,
         0.2179633791170315,
         1.0
       ],
-      "intensity": 1.15,
+      "intensity": 0.58,
       "start": 1.0,
-      "end": 14.0,
+      "end": 8.0,
       "family": "wotlk_fire",
-      "position_basis": "v264 additive flame: world\\kalimdor\\mauradon\\passivedoodads\\satyrhangingbraziers\\fire10020blue.blp; v264 additive flame: world\\kalimdor\\mauradon\\passivedoodads\\satyrhangingbraziers\\fire1white.blp",
+      "position_basis": "At the visible base of the flame above the bowl rim, verified in Mauradon from matched point-shadow captures.",
       "asset_sha256": "22f4f901237614a0a45d02d14f7b75c1e89e5a7e0f8139ee51389e26e33dba47",
       "variants": {
         "1007b70a26eb6f073c2512cc82112e7cb94e943fe9b19fc817ee59a76b05f407": {
