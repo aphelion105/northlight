@@ -19,6 +19,14 @@ def emitter(x=0., *, rgb=(1., .5, .2), intensity=.8, start=1., end=8., **extra):
 
 
 class FixturePolicy(unittest.TestCase):
+    def test_opaque_panels_keep_both_shadowed_sources(self):
+        path = r'world\expansion02\doodads\generic\irondwarf\id_lantern.m2'
+        profile = profiles.load()[path]
+        pin = profiles.pinned(profile)[profile['asset_sha256']]
+        self.assertTrue(pin['casts_shadows'])
+        self.assertEqual([e['position'] for e in profiles.fixture_emitters(pin)],
+                         [[-.151, 0, .145], [.155, 0, .145]])
+
     def test_actual_catalog_matches_independent_fixture_reference(self):
         catalog = profiles.load()
         before = copy.deepcopy(catalog)

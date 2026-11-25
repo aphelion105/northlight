@@ -5,15 +5,18 @@ Optional "variants" pin other assets of the same model path, e.g. the stock 3.3.
 profile was authored on an HD pack: {sha256: {position, position_basis, [rgb, intensity, start,
 end, family]}}; omitted fields are the profile's own.
 An optional max_world_end limits the primary asset's scaled attenuation range for placed lights.
+Set merge_emitters to false for reviewed lights separated by opaque fixture geometry.
 """
 import hashlib,json,math,re
 from pathlib import Path
 
 EMITTER=('position','rgb','intensity','start','end')
-VARIANT_FIELDS={'asset','family','position','position_basis','rgb','intensity','start','end','emitters','casts_shadows'}
+FIXTURE_OPTIONS=('emitters','casts_shadows','merge_emitters')
+VARIANT_FIELDS={'asset','family','position_basis',*EMITTER,*FIXTURE_OPTIONS}
 
 def check(p):
     if 'casts_shadows' in p and type(p['casts_shadows']) is not bool:raise ValueError('Invalid shadow policy')
+    if 'merge_emitters' in p and type(p['merge_emitters']) is not bool:raise ValueError('Invalid emitter merge policy')
     if 'max_world_end' in p and (type(p['max_world_end']) not in (float,int) or not 0<p['max_world_end']<=2000):
         raise ValueError('Invalid world-space emitter range limit')
     if len(p['position'])!=3 or len(p['rgb'])!=3:raise ValueError('Emitter vector size')
@@ -68,18 +71,18 @@ def native_placement_ranges():
 
 def pinned(p):
     """{asset sha256: emitter fields} of every asset a profile covers, the profile's own first."""
-    fields=(*EMITTER,*(['emitters'] if 'emitters' in p else []),*(['casts_shadows'] if 'casts_shadows' in p else []))
+    fields=(*EMITTER,*(k for k in FIXTURE_OPTIONS if k in p))
     result={p['asset_sha256']:{k:p[k] for k in fields}}
     for sha,v in p.get('variants',{}).items():
         result[sha]={k:v.get(k,p[k]) for k in EMITTER}
-        if 'casts_shadows' in v or 'casts_shadows' in p:result[sha]['casts_shadows']=v.get('casts_shadows',p.get('casts_shadows'))
-        if 'emitters' in v or 'emitters' in p:result[sha]['emitters']=v.get('emitters',p.get('emitters'))
+        for k in FIXTURE_OPTIONS:
+            if k in v or k in p:result[sha][k]=v.get(k,p.get(k))
     return result
 
 def fixture_emitters(p):
-    """One bounded light for a compact authored fixture, never across models."""
+    """Merge nearby lights unless the fixture needs their separate positions."""
     emitters=p.get('emitters',[p])
-    if len(emitters)<2:return emitters
+    if len(emitters)<2 or not p.get('merge_emitters',True):return emitters
     shadow=emitters[0].get('casts_shadows',p.get('casts_shadows',False))
     if any(e.get('casts_shadows',p.get('casts_shadows',False))!=shadow for e in emitters):return emitters
     if any(math.dist(a['position'],b['position'])>3 for i,a in enumerate(emitters) for b in emitters[:i]):return emitters

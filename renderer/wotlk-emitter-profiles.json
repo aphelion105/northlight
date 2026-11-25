@@ -42,6 +42,23 @@
     ]
   },
   "profiles": {
+    "world\\expansion02\\doodads\\generic\\irondwarf\\id_lantern.m2": {
+      "asset_sha256": "6cc2f9201c968204db9f284356a786a90d73f2ec092c6f3975ec44f64b4dd602",
+      "family": "wotlk_energy",
+      "position": [-0.151, 0, 0.145],
+      "position_basis": "Two points sit just beyond the opaque blue panels at the height of the visible glow. At night in the Storm Peaks, they light the table and chair while the underside stays in shadow.",
+      "rgb": [0.13, 0.64, 1],
+      "intensity": 0.44,
+      "start": 0.5,
+      "end": 3.6,
+      "max_world_end": 4.5,
+      "casts_shadows": true,
+      "merge_emitters": false,
+      "emitters": [
+        {"position": [-0.151, 0, 0.145], "rgb": [0.13, 0.64, 1], "intensity": 0.44, "start": 0.5, "end": 3.6},
+        {"position": [0.155, 0, 0.145], "rgb": [0.13, 0.64, 1], "intensity": 0.44, "start": 0.5, "end": 3.6}
+      ]
+    },
     "world\\expansion02\\doodads\\nexus\\nexus_blueenergywell.m2": {
       "asset_sha256": "875649cdb5fc8e0e39ff81385d838fb45f01c7b50f7732291895918d13d46cc5",
       "family": "wotlk_energy",
