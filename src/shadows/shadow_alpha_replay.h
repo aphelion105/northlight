@@ -38,11 +38,6 @@ public:
 
     bool supported(D3DFORMAT format){return targets_.supported(format);}
     size_t bytes()const{return targets_.bytes();}
-    size_t trimTargets(){
-        const size_t released=targets_.bytes();
-        targets_.reset();
-        return released;
-    }
     void reset(){
         targets_.reset();
         retryAt_=failureLogAt_=0;
