@@ -116,6 +116,22 @@
     ]
   },
   "profiles": {
+    "world\\expansion01\\doodads\\generic\\draenei\\glow\\dr_rays_blue.m2": {
+      "asset_sha256": "5e4613938842528a09ab511257bb40dc78be9c76f6688085a88079510c2075c8",
+      "family": "wotlk_energy",
+      "position_basis": "Keep the measured glow centroids and use the cool spill checked on the nearby arch and crystal in the Exodar.",
+      "position": [-7.100554957696716, 0.05242113899468109, 1.8019526392607952],
+      "rgb": [0.3, 0.55, 1.0],
+      "intensity": 1.3,
+      "start": 1.0,
+      "end": 20.0,
+      "casts_shadows": false,
+      "merge_emitters": false,
+      "emitters": [
+        {"position": [-7.100554957696716, 0.05242113899468109, 1.8019526392607952], "rgb": [0.3, 0.55, 1.0], "intensity": 1.3, "start": 1.0, "end": 20.0, "casts_shadows": false},
+        {"position": [7.100552999637416, -0.0524170442882552, 1.8019520224049979], "rgb": [0.3, 0.55, 1.0], "intensity": 1.3, "start": 1.0, "end": 20.0, "casts_shadows": false}
+      ]
+    },
     "world\\expansion01\\doodads\\generic\\draenei\\glow\\dr_rays_orange.m2": {
       "asset_sha256": "561d071c5fd23922178c66b50f1148afd566549fd4e65bebcb7a0a4d6340c7f6",
       "family": "wotlk_energy",
