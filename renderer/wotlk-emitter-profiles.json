@@ -1934,19 +1934,19 @@
     "world\\expansion01\\doodads\\generic\\ancientorc\\lampost\\ao_lamppost01.m2": {
       "position": [
         0.405986487865448,
-        -0.06674955785274506,
-        2.126300096511841
+        0.25325044214725495,
+        2.1763000965118406
       ],
       "rgb": [
         1.0,
         0.2535327807007748,
         0.04314876438526913
       ],
-      "intensity": 1.15,
-      "start": 1.0,
-      "end": 14.0,
+      "intensity": 0.897,
+      "start": 0.62,
+      "end": 8.68,
       "family": "wotlk_fire",
-      "position_basis": "v264 additive flame: item\\objectcomponents\\weapon\\flamelicksmall.blp",
+      "position_basis": "The visible opening of the hanging fire basket. In-game comparison shows warm light on the nearby timber and ground with the opaque housing still casting a shadow.",
       "asset_sha256": "ce61116ea7ac12568828dbbae22f9792894e2659c29ff4bcadf0fe7103b4520a",
       "variants": {
         "62219bb05e15ff22e718811ef47b4527a8bdf97ac2ce3a39db40e7330282fccc": {
@@ -1972,19 +1972,19 @@
     "world\\expansion01\\doodads\\generic\\ancientorc\\lampost\\ao_lamppost02.m2": {
       "position": [
         -0.005758028011769056,
-        -0.03400803357362747,
-        0.28749680519104004
+        0.28599196642637253,
+        0.33749680519104003
       ],
       "rgb": [
         1.0,
         0.2535327807007748,
         0.04314876438526913
       ],
-      "intensity": 1.15,
-      "start": 1.0,
-      "end": 14.0,
+      "intensity": 0.897,
+      "start": 0.62,
+      "end": 8.68,
       "family": "wotlk_fire",
-      "position_basis": "v264 additive flame: item\\objectcomponents\\weapon\\flamelicksmall.blp",
+      "position_basis": "The visible opening of the hanging fire basket. In-game comparison shows warm light on the nearby timber and ground with the opaque housing still casting a shadow.",
       "asset_sha256": "99da6ca8d9f1b7f5ad63a20b219173d324ec36869a92711af540f8c93a4111c2",
       "variants": {
         "82db2f22a5c504f317d5221a04a2acc90879310b3802b16c9ceb2c921d531276": {
