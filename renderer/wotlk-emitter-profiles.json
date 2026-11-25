@@ -116,6 +116,25 @@
     ]
   },
   "profiles": {
+    "world\\expansion02\\doodads\\dalaran\\dalaran_fountain_02.m2": {
+      "asset_sha256": "6b958f2bf5a085719705db3f6a2ddc0bf7ff5f51ae4718ac54c5288751acd318",
+      "family": "wotlk_energy",
+      "position_basis": "Place the point above the basin and close to the water, with the stone surround occluding spill onto the wall.",
+      "position": [
+        0.131649449467659,
+        2.1,
+        0.44
+      ],
+      "rgb": [
+        0.8941177068972121,
+        0.9972601273490914,
+        1.0
+      ],
+      "intensity": 1.1,
+      "start": 0.8,
+      "end": 8.5,
+      "casts_shadows": true
+    },
     "world\\expansion02\\doodads\\dalaran\\dalaran_mageportal_01.m2": {
       "asset_sha256": "eb9eb82ac108678c539e39aa498bd9140da6e6b8281af9ec317c61bf3665650a",
       "family": "wotlk_energy",
