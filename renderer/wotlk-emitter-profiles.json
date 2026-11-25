@@ -1,6 +1,13 @@
 {
   "version": 1,
   "native_anchors": {
+    "world\\expansion02\\doodads\\generic\\northrend fires\\northrendgeneraltorch01.m2": {
+      "model_sha256": "251454966ebdfc378b75740889ca4520402a85525c8b964d807d9f0eab1efaeb",
+      "skin_sha256": "d4ccd12473ce7f791fb21597a42364780ab5754ffcba3a6504fcaf974340382e",
+      "source": 0,
+      "position": [0.003, -0.011, 2.56],
+      "basis": "Upper flame of the installed replacement torch. The native point lies inside the opaque head, which projects an oversized shadow. Raising the point into the visible flame keeps the fixture's warm spill and compact ground shadow."
+    },
     "world\\generic\\human\\passive doodads\\hanginglanterns\\generalhanginglantern01.m2": {
       "model_sha256": "9eb75149139e8ad185eb73deb0841a72e851dab673794734d63d71969c4af1ce",
       "skin_sha256": "d5aa38426fc55118e652e56af1bffd3270d5985e3b558ef477d53d44f2e46d96",
