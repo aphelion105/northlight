@@ -116,6 +116,88 @@
     ]
   },
   "profiles": {
+    "world\\expansion02\\doodads\\ulduar\\ul_war_machine01.m2": {
+      "asset_sha256": "9cb76b79cc7d0bc00c790a2c6e5ea34498bb3c7e2acc4440db905c7b02b29cdd",
+      "family": "wotlk_energy",
+      "position_basis": "Preserve the near light on the ring and adjacent metal. Shorten the main radius on the scaled machine so it no longer lights the rear wall and pillars. Keep the three secondary sources at their measured settings.",
+      "position": [
+        0.9864432484111708,
+        -0.030371836807947306,
+        2.2733875118496134
+      ],
+      "rgb": [
+        0.7846608032989006,
+        0.8852261755120648,
+        1.0
+      ],
+      "intensity": 1.5119254403829971,
+      "start": 1.0,
+      "end": 5.449479445786136,
+      "casts_shadows": false,
+      "merge_emitters": false,
+      "emitters": [
+        {
+          "position": [
+            0.9864432484111708,
+            -0.030371836807947306,
+            2.2733875118496134
+          ],
+          "rgb": [
+            0.7846608032989006,
+            0.8852261755120648,
+            1.0
+          ],
+          "intensity": 1.5119254403829971,
+          "start": 1.0,
+          "end": 5.449479445786136
+        },
+        {
+          "position": [
+            1.1531638739042973,
+            1.065054525382705,
+            1.0665400591479235
+          ],
+          "rgb": [
+            1.0,
+            0.9980070073406937,
+            0.9912490796029574
+          ],
+          "intensity": 0.04385446282574547,
+          "start": 0.5235364291631569,
+          "end": 2.0941457166526276
+        },
+        {
+          "position": [
+            1.1670543250514742,
+            -1.1133572018190743,
+            1.0633500300174077
+          ],
+          "rgb": [
+            1.0,
+            0.9980070073406934,
+            0.9912490796029572
+          ],
+          "intensity": 0.0438545797626577,
+          "start": 0.5235371271615897,
+          "end": 2.094148508646359
+        },
+        {
+          "position": [
+            2.1684406913036165,
+            -0.002665132651630479,
+            6.7294541780145405
+          ],
+          "rgb": [
+            0.5585365294635088,
+            0.8145681889861912,
+            1.0
+          ],
+          "intensity": 0.10426536380990709,
+          "start": 0.8072536923495112,
+          "end": 3.2290147693980447
+        }
+      ]
+    },
     "world\\expansion02\\doodads\\daggercap\\burningship\\howlingfjord_burningship.m2": {
       "asset_sha256": "4a3bb5018212b94dad88021690e2893062822b8d8abbe72ca4862643f1c911a4",
       "family": "wotlk_energy",
