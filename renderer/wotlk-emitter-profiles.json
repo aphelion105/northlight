@@ -47,6 +47,50 @@
         "basis": "In the same Booty Bay stockroom. This range reduces overlap between neighbouring candles while keeping the wooden stands lit."
       }
     ],
+    "Northrend": [
+      {
+        "model": "world\\expansion02\\doodads\\boreantundra\\magnatauritems\\snobold_candle01.m2",
+        "asset_sha256": "d29492f21cbb1c3bac5a121488401ea14f60b3d0c7d209e12b7f1cc532970d06",
+        "placements": [8150984639381558],
+        "end": 6,
+        "basis": "Snobold cave meal alcove in Borean Tundra. The shorter reach preserves warm light near the plate and limits overlapping spill on the surrounding stone."
+      },
+      {
+        "model": "world\\expansion02\\doodads\\boreantundra\\magnatauritems\\snobold_candle02.m2",
+        "asset_sha256": "3cce30006cc56d17881433d9c9c90f290afddc40d88ddd2b9e2f2fc4bf3cf9cc",
+        "placements": [8150984639381559, 8150984639381566],
+        "end": 6,
+        "basis": "Snobold cave meal alcove in Borean Tundra. The shorter reach preserves warm light near the plate and limits overlapping spill on the surrounding stone."
+      },
+      {
+        "model": "world\\expansion02\\doodads\\boreantundra\\magnatauritems\\snobold_candle03.m2",
+        "asset_sha256": "9700e9f4caf3f8d83b4598ad16d2cee9d03e3f847fcd99d70383f4057cc17f1b",
+        "placements": [8150984639381560],
+        "end": 6,
+        "basis": "Snobold cave meal alcove in Borean Tundra. The shorter reach preserves warm light near the plate and limits overlapping spill on the surrounding stone."
+      },
+      {
+        "model": "world\\expansion02\\doodads\\boreantundra\\magnatauritems\\snobold_candle04.m2",
+        "asset_sha256": "41167ba83ab478850537cf89024d6c6ba2484f97e5a9c79a169aa86672290416",
+        "placements": [8150984639381561],
+        "end": 6,
+        "basis": "Snobold cave meal alcove in Borean Tundra. The shorter reach preserves warm light near the plate and limits overlapping spill on the surrounding stone."
+      },
+      {
+        "model": "world\\expansion02\\doodads\\boreantundra\\magnatauritems\\snobold_candle_group01.m2",
+        "asset_sha256": "0af1f141278d59d7eb1992c1aafd49f5283d1e8ead80008690d78f927b3cf682",
+        "placements": [8150984639381562],
+        "end": 6,
+        "basis": "Snobold cave meal alcove in Borean Tundra. The shorter reach preserves warm light near the plate and limits overlapping spill on the surrounding stone."
+      },
+      {
+        "model": "world\\expansion02\\doodads\\boreantundra\\magnatauritems\\snobold_candle_group02.m2",
+        "asset_sha256": "5058e5b6f14beb912afdffaf911ef82bb36854b1c906ee55ff03d97131b877a5",
+        "placements": [8150984639381563],
+        "end": 6,
+        "basis": "Snobold cave meal alcove in Borean Tundra. The shorter reach preserves warm light near the plate and limits overlapping spill on the surrounding stone."
+      }
+    ],
     "UtgardePinnacle": [
       {
         "model": "world\\generic\\passivedoodads\\lights\\candle01.m2",
