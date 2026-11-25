@@ -42,6 +42,18 @@
     ]
   },
   "profiles": {
+    "world\\expansion02\\doodads\\generic\\forsaken\\fk_chemistrytube_04.m2": {
+      "asset_sha256": "1ef7ffc0960d1b34b50a9d5593a197ec9738eccc28bf583e535670e7ac15b9db",
+      "family": "wotlk_energy",
+      "position": [-0.026, 0, 0.41],
+      "position_basis": "Centre of the additive liquid inside the flask. The shadowed point lights the nearby stone in Dalaran and the tabletop in Utgarde Pinnacle while the table blocks spill underneath.",
+      "rgb": [0.17, 1, 0.075],
+      "intensity": 0.68,
+      "start": 0.5,
+      "end": 3.6,
+      "max_world_end": 4.2,
+      "casts_shadows": true
+    },
     "world\\expansion02\\doodads\\generic\\irondwarf\\id_lantern.m2": {
       "asset_sha256": "6cc2f9201c968204db9f284356a786a90d73f2ec092c6f3975ec44f64b4dd602",
       "family": "wotlk_energy",
