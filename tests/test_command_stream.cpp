@@ -11,6 +11,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <functional>
+#include <new>
 #include <set>
 #include <string>
 #include <thread>
@@ -22,6 +23,22 @@
 #include "command_stream.inl"
 #include "stream_device.h"
 using namespace NorthlightStream;
+
+// Refuse a specific allocation on the game thread without disturbing the fake replay device.
+static thread_local std::size_t refuseAllocationBytes=0;
+#if !__has_feature(thread_sanitizer) // The threads-only build uses TSan's allocator interposers.
+void* operator new(std::size_t bytes){
+    if(refuseAllocationBytes&&bytes==refuseAllocationBytes)throw std::bad_alloc();
+    if(void* p=std::malloc(bytes?bytes:1))return p;
+    throw std::bad_alloc();
+}
+void* operator new(std::size_t bytes,const std::nothrow_t&)noexcept{
+    try{return ::operator new(bytes);}catch(...){return nullptr;}
+}
+void operator delete(void* p)noexcept{std::free(p);}
+void operator delete(void* p,std::size_t)noexcept{std::free(p);}
+void operator delete(void* p,const std::nothrow_t&)noexcept{std::free(p);}
+#endif
 
 #define CHECK(c) do{if(!(c)){std::fprintf(stderr,"CHECK failed %s:%d: %s\n",__FILE__,__LINE__,#c);std::abort();}}while(0)
 
@@ -525,6 +542,7 @@ int main(int argc,char** argv){
     if(argc>1&&std::string(argv[1])=="coalesceduploads"){coalescedBufferUploads();std::puts("PASS adjacent buffer uploads and exact fallback");return 0;}
     if(argc>1&&std::string(argv[1])=="rangeshadow"){bufferRangeShadowModel();oversizedBufferRangeShadows();oversizedBufferPumpedWrite();return 0;}
     if(argc>1&&std::string(argv[1])=="memorypressure"){pressureKeepsShadows();syncStormDetector();std::puts("PASS pressure shadows and sync-storm attribution");return 0;}
+    if(argc>1&&std::string(argv[1])=="imageunlock"){shadowedImageUnlockWithoutBlock();return 0;}
     if(argc>1&&std::string(argv[1])=="effecthooks"){effectHookReplay();return 0;}
     if(argc>1&&std::string(argv[1])=="materialtextures"){materialTextureStream();return 0;}
     if(argc>1&&std::string(argv[1])=="particletextures"){particleTextureStream();return 0;}

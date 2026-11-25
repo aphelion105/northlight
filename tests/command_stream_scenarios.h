@@ -585,7 +585,56 @@ static void textureExpressReadback(){
     }
     rig.finish();
 }
+static void shadowedImageUnlockWithoutBlock(){
+    gTrace.clear();StreamDevice::Options options;options.budget=ChunkBytes;
+    Rig rig(true,options);auto& q=rig.core().q;auto& s=q.stats;
+    IDirect3DTexture9* texture=nullptr;
+    CHECK(rig.dev->CreateTexture(16,16,1,0,(D3DFORMAT)22,(D3DPOOL)1,&texture,nullptr)==D3D_OK);
+    D3DLOCKED_RECT lock{};
+    CHECK(texture->LockRect(0,&lock,nullptr,0)==D3D_OK&&lock.Pitch==64);
+    std::memset(lock.pBits,0x17,std::size_t(lock.Pitch)*16);
+    CHECK(texture->UnlockRect(0)==D3D_OK);
+    auto& sub=static_cast<StreamTexture*>(ProxyBase::of(texture))->subs[0];
+    CHECK(sub.shadowOn);
+    const RECT region{12,12,16,16};
+    CHECK(texture->LockRect(0,&lock,&region,0)==D3D_OK&&lock.Pitch==64);
+    for(unsigned row=0;row<4;++row)std::memset(static_cast<unsigned char*>(lock.pBits)+row*lock.Pitch,0xA0+row,16);
+    const auto blocks=get(s.blockRefused),syncs=get(s.syncCalls);
+    refuseAllocationBytes=64; // The old fallback tried to allocate four rows of 16 bytes here.
+    const HRESULT unlocked=texture->UnlockRect(0);
+    refuseAllocationBytes=0;
+    CHECK(unlocked==D3D_OK&&get(s.blockRefused)==blocks+1&&get(s.syncCalls)==syncs+1);
+    const auto* surface=gLastTexture->surf[0];
+    for(unsigned y=0;y<16;++y)for(unsigned x=0;x<64;++x)
+        CHECK(surface->mem[y*surface->pitch+x]==(y>=12&&x>=48?0xA0+y-12:0x17));
+    CHECK(sub.shadowOn&&sub.mode==SubRes::Free);
+
+    CHECK(texture->LockRect(0,&lock,&region,0)==D3D_OK);
+    for(unsigned row=0;row<4;++row)std::memset(static_cast<unsigned char*>(lock.pBits)+row*lock.Pitch,0xB0+row,16);
+    static StreamCore* waitingCore;
+    static IDirect3DTexture9* waitingTexture;
+    waitingCore=&rig.core();waitingTexture=texture;
+    gKnobs.hold.store(true);CHECK(rig.dev->BeginScene()==D3D_OK);
+    pumpHook=[]{
+        D3DLOCKED_RECT nested{};
+        CHECK(waitingTexture->LockRect(0,&nested,nullptr,D3::kLockReadOnly)==D3DERR_INVALIDCALL);
+        CHECK(waitingTexture->UnlockRect(0)==D3DERR_INVALIDCALL);
+        auto& pending=static_cast<StreamTexture*>(ProxyBase::of(waitingTexture))->subs[0];
+        markGpuWritten(*waitingCore,pending);
+        CHECK(!pending.shadowOn&&!pending.shadow.empty());
+        pumpHook=nullptr;
+        gKnobs.hold.store(false);
+    };
+    CHECK(texture->UnlockRect(0)==D3D_OK&&!pumpHook);
+    CHECK(!sub.shadowOn&&sub.shadow.empty()&&sub.contentSeq==~std::uint64_t(0)&&sub.mode==SubRes::Free);
+    for(unsigned y=0;y<16;++y)for(unsigned x=0;x<64;++x)
+        CHECK(surface->mem[y*surface->pitch+x]==(y>=12&&x>=48?0xB0+y-12:0x17));
+
+    texture->Release();rig.finish();checkClean();gTrace.clear();
+    std::puts("PASS block refusal uploads a partial texture without allocation and pins the source through a pumped wait");
+}
 static void textureShadows(){
+    shadowedImageUnlockWithoutBlock();
     gTrace.clear();Rig rig(true);auto& q=rig.core().q;auto& s=q.stats;
     auto fill=[&](unsigned char* base,INT pitch,unsigned rows,unsigned rowBytes,unsigned seed){for(unsigned y=0;y<rows;++y)for(unsigned x=0;x<rowBytes;++x)base[std::size_t(y)*pitch+x]=(unsigned char)(seed+y*7+x);};
     {   // fresh, small: the first write lock is the shadow; later write locks, partial, never read back and never pass through
