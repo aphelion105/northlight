@@ -116,6 +116,18 @@
     ]
   },
   "profiles": {
+    "world\\expansion02\\doodads\\generic\\oracle\\o_lamppost_01.m2": {
+      "asset_sha256": "6ea28be0ad2577d1ac1941493f8eaa8ace2b6dd00db664e1a682e2ab161ee90c",
+      "family": "wotlk_energy",
+      "position": [-0.34, 0.01, 1.93],
+      "position_basis": "Just outside the glowing crystal at the height of its lower face. In Sholazar Basin it lights nearby grass, ground and wood while the pole and shelter occlude spill.",
+      "rgb": [0.30, 0.86, 1],
+      "intensity": 0.78,
+      "start": 0.78,
+      "end": 9,
+      "max_world_end": 7.5,
+      "casts_shadows": true
+    },
     "world\\expansion02\\doodads\\grizzlyhills\\trappers\\trapperlamppost_01.m2": {
       "asset_sha256": "b3a42dc6933d4e304654147e490c619edfc89602b4d56ce262e9f6b07c1ed4d9",
       "family": "wotlk_lantern",
