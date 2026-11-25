@@ -3993,7 +3993,7 @@
       "position": [
         0.03273192048072815,
         0.15236081182956696,
-        0.6645243167877197
+        1.23
       ],
       "rgb": [
         0.037088866335792545,
@@ -4003,8 +4003,9 @@
       "intensity": 1.15,
       "start": 1.0,
       "end": 14.0,
+      "max_world_end": 11.0,
       "family": "wotlk_fire",
-      "position_basis": "v264 additive flame: world\\goober\\flamelicksmallmagicgreen.blp",
+      "position_basis": "Green flame above the bowl. A capped point lights the nearby surfaces in Nagrand and Shadowmoon Valley while the bowl keeps its floor shadow.",
       "asset_sha256": "ae206bf7510eac6e0e1384a7952a69df03f319a038bfa86011cd9c7df4ae5da2",
       "variants": {
         "1b2312e61b1c68477eca040e9ebb7d901215be204ea19b4305f392855366f119": {
