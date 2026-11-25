@@ -60,6 +60,8 @@ try:
         includes=['-I',str(overlay),*includes]
     selected_header=Path(reference_header) if reference_header else sourceRoot/fp.src('world_renderer.h').relative_to(fp.REPO)
     selected_text=selected_header.read_text()
+    open_sky_handoff=not (baseline or reference_header) or 'return activeSource||!openSky;' in selected_text
+    if open_sky_handoff:includes+=['-DNORTHLIGHT_OPEN_SKY_SHADOW_HANDOFF_TEST=1']
     solar_material='sunSurfaceSpecularGain()' in selected_text
     if solar_material:includes+=['-DNORTHLIGHT_SOLAR_MATERIAL_TEST=1']
     probe_atlas_owner='NorthlightWorldProbeAtlas probeAtlas' in selected_text
@@ -133,6 +135,7 @@ try:
         settings=out/('settings-msaa'+str(samples));settings.mkdir()
         run('gpu-msaa'+str(samples),[exe,backend,settings],{'NORTHLIGHT_TEST_MSAA':str(samples)})
         log=(out/f'gpu-msaa{samples}.log').read_text()
+        if open_sky_handoff:assert 'WORLD_OPEN_SKY_SHADOW_HANDOFF_PASS' in log
         if solar_material:assert 'WORLD_SOLAR_MATERIAL_PASS ' in log
         if resource_owner:assert 'WORLD_ALLOCATION_OWNERS_GPU_PASS ' in log
         if material_owner:assert 'WORLD_MATERIAL_UPLOAD_GPU_PASS ' in log

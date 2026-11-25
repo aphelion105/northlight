@@ -1738,8 +1738,9 @@ public:
             for(unsigned cascade=0;cascade<2;++cascade){const unsigned slot=source*2+cascade;const char action=cascadeActions[slot];
                 if(!directionalMaps.current(slot).texture||(action!='R'&&action!='U'&&!(action=='D'&&shadowTransition[slot].workingValid)))return false;}
         }
-        // An empty publication cannot replace the client's directional lighting.
-        return activeSource;
+        // Under open sky, keep the client lighting while both celestial sources are dark.
+        const bool openSky=celestialValid&&celestial.nativePlanets&&celestial.skyboxCover==0.f;
+        return activeSource||!openSky;
     }
     void setNativeShadowOwnership(bool owned,bool available=true){
         if(nativeShadowOwned==owned&&nativeShadowAvailable==available)return;
