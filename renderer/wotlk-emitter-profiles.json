@@ -3495,6 +3495,25 @@
       "injected_sha256": "e88824c4144408ac153e5ecb6eb799cd3b5a1b061a114fb23a3eb4fa69bd2dd7",
       "casts_shadows": true
     },
+    "world\\generic\\orc\\passive doodads\\stonebrazier\\wailingstonebrazier.m2": {
+      "position": [
+        -0.5148659678121675,
+        -0.008849760712816415,
+        2.36
+      ],
+      "rgb": [
+        1.0,
+        0.19711277798022353,
+        0.09813509320139539
+      ],
+      "intensity": 0.24,
+      "start": 1.0,
+      "end": 5.0,
+      "family": "wotlk_fire",
+      "position_basis": "Wailing Caverns game capture: warm spill at the outer edge of the flame, with the stone bowl still casting a floor shadow.",
+      "asset_sha256": "67d6efa2c083841ccc3c7ff350783cbc1f7536babaea49ec77faa3970f83ce48",
+      "casts_shadows": true
+    },
     "world\\generic\\orc\\passive doodads\\voodoostuff\\skullcandle01.m2": {
       "position": [
         -0.04962332919239998,
