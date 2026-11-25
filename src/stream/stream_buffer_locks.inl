@@ -37,6 +37,8 @@ struct BufferState {
     struct Patch {std::uint64_t seq;UINT off;std::vector<unsigned char> bytes;};
     std::vector<Patch> patches;std::size_t patchBytes=0;std::uint64_t patchMinSeq=0,stageSeq=0;
 };
+// A candidate never holds a shadow, so every write to it reaches rememberBufferRange: the range's never-written proof relies on this.
+static_assert(kShadowBudgetMaxBytes/4<=kMaxLargeShadow,"range-shadow candidates must stay unshadowable");
 inline bool rangeShadowCandidate(const ProxyBase& p,const BufferState& s){return s.canShadow&&!s.shadowDead&&p.info.length>kMaxLargeShadow&&(p.info.usage&D3::kUsageDynamic);}
 inline void clearRangeShadow(ProxyBase& p,BufferState& s){
     const auto bytes=s.range.capacity();s.range.clear();
