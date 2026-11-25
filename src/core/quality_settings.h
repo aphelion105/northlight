@@ -31,6 +31,7 @@ struct Settings {
     unsigned giStrength=120,giPrelitMix=100,auroraStrength=100;
     unsigned celestialStyle=0; // 0 = native placement/size; 1 = Forever orbit and size curves.
     unsigned celestialEffects=1,godrays=1; // Sky replacement and directional fog scattering have independent owners.
+    unsigned treeCanopy=1,treeCrown=1;
     int giBrightness=0; // Signed percent of measured indirect radiance; -100 = none, +100 = double.
     // 0.3.141: shadow fate tracker (diagnostic log only; never changes the image).
     // Diagnostics=0: periodic logs, diagnostic counters and pure measurement off
@@ -159,7 +160,7 @@ struct Settings {
     unsigned autoBumpModels=1,autoModelDisplacementStrength=25,autoModelDisplacementDistance=8,autoModelDisplacementDetail=2;
     unsigned autoHeightPolarity=0,autoHeightDetails=75,autoHeightBalance=50;
     unsigned autoNormalFilter=1;
-    char origin[129]={'d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d'};
+    char origin[131]={'d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d'};
 };
 struct Key {
     const char* name;unsigned Settings::*field=nullptr;int Settings::*signedField=nullptr;
@@ -299,6 +300,8 @@ inline const Key Keys[]={
     {"GIPrelitMix",&Settings::giPrelitMix,0,100,{100,100,100}},
     {"CelestialEffects",&Settings::celestialEffects,0,1,{1,1,1}},
     {"Godrays",&Settings::godrays,0,1,{1,1,1}},
+    {"TreeCanopy",&Settings::treeCanopy,0,1,{1,1,1}},
+    {"TreeCrown",&Settings::treeCrown,0,1,{1,1,1}},
     {"ShadowRefreshCpuMs",&Settings::shadowRefreshCpuMs,0,20,{3,3,2}},
 };
 // Sky replacement is a consumer in its own right. Godrays need the fog medium.

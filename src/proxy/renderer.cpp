@@ -4154,8 +4154,10 @@ public:
     NorthlightTreeCanopy::CrownLighting crownLighting;
     unsigned canopyReportFrame=~0u;
     template<class Draw> HRESULT submitCanopy(const Draw& draw){
-        if(!world||!enabled||applied||failed||!terrain||worldDebug||debugMode||hdrUiPhase||
-           !mirrorState.textureKnown[0]||!NorthlightTreeCanopy::contains(mirrorState.textures[0])||
+        if(!world||!enabled||applied||failed||!terrain||worldDebug||debugMode||hdrUiPhase)return draw();
+        const auto& settings=world->surfaceSettings();
+        if((!settings.treeCanopy&&!settings.treeCrown)||!mirrorState.textureKnown[0]||
+           !NorthlightTreeCanopy::contains(mirrorState.textures[0])||
            !drawRenderState(D3DRS_ZWRITEENABLE)||!drawRenderState(D3DRS_ZENABLE))return draw();
         IDirect3DPixelShader9* pixel=nullptr;
         if(!ext->peekPixelShader(pixel)||!pixel)return draw();

@@ -165,6 +165,8 @@ Individual settings (Quality / Balanced / Performance):
   CelestialEffects         1 / 1 / 1    Independent sun, moon, glare and sky replacement; off preserves native sky.
   Godrays                  1 / 1 / 1    Directional scattering in WorldFog; off keeps the fog medium and ambient light.
   CelestialStyle            0 / 0 / 0    Sun & moon placement: 0/Default or 1/Forever; live in Sun & moon.
+  TreeCanopy                1 / 1 / 1    Angle-dependent tree leaf lighting with the Forever sky style. Live in Sun & moon.
+  TreeCrown                 1 / 1 / 1    Broad sunlight and moonlight transmitted through tree crowns with the Forever sky style. Live in Sun & moon.
   Effects              1 / 1 / 1      all scene effects, capture and world/GI workers; 0 uses the F10 bypass while preserving individual settings, HDR output and the menu
   WorldShadows         1 / 1 / 1      all Northlight world/character shadows; F9 remains independent
   WorldFog             1 / 1 / 1      Northlight atmospheric/regional fog, banks and haze; preserves native fog and the independent F7 switch

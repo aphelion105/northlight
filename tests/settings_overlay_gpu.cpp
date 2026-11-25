@@ -62,7 +62,7 @@ int main(int argc,char** argv){
     ImGuiWindow* nav=nullptr;
     for(auto* child:parent->DC.ChildWindows)if(child->ChildId==parent->GetID("nav"))nav=child;
     assert(nav);
-    const char* pages[]={"Materials & parallax","Lighting & AO","Renderer & HDR","Diagnostics","Performance","Performance","Shadow range","Shadow range"};
+    const char* pages[]={"Materials & parallax","Lighting & AO","Renderer & HDR","Diagnostics","Performance","Performance","Shadow range","Shadow range","Sun & moon"};
     for(unsigned page=0;page<sizeof(pages)/sizeof(pages[0]);++page){
       if(page==4){
         // Synthetic presentation data in the private test process only. The
@@ -75,7 +75,7 @@ int main(int argc,char** argv){
         Sleep(1100); // the menu reads cached snapshots at most once per second
       }
       ImGui::ActivateItemByID(nav->GetID(pages[page]));draw(0);draw(0);
-      if(page>=6){
+      if(page==6||page==7){
         ImGuiWindow* content=nullptr;for(auto* child:parent->DC.ChildWindows)if(child!=nav&&child->Active)content=child;assert(content);
         ImGuiWindow* zones=nullptr;for(auto* child:content->DC.ChildWindows)if(child->ChildId==content->GetID("shadow-zones"))zones=child;assert(zones);
         if(page==6)assert(zones->ScrollMax.y>0);
@@ -131,6 +131,29 @@ int main(int argc,char** argv){
         assert(service->status().state==NorthlightSettings::Status::State::Saved&&service->status().restartRequired);
         NorthlightRegionalShadow::Table ranges;std::string error;assert(NorthlightRegionalShadow::load(std::string(argv[2])+"/shadow-range-profiles.ini",ranges,error));
         assert(ranges.fallback==3000&&ranges.at("Azeroth",40)==3000&&ranges.at("Azeroth",12)==2048);
+      }
+      if(page==8){
+        ImGuiWindow* content=nullptr;for(auto* child:parent->DC.ChildWindows)if(child!=nav&&child->Active)content=child;assert(content);
+        auto toggleTree=[&](const char* field,bool canopy,bool crown){
+            const auto id=ImHashStr("##value",0,ImHashStr(field,0,content->GetID("celestial-controls")));
+            ImGui::ActivateItemByID(id);draw(0);
+            for(unsigned wait=0;wait<500;++wait){
+                draw(0);
+                const auto update=service->after("");
+                if(update&&update->preview&&update->config.quality.treeCanopy==canopy&&update->config.quality.treeCrown==crown)return;
+                Sleep(10);
+            }
+            assert(false&&"Tree lighting checkbox did not apply independently");
+        };
+        toggleTree("Q\tQuality\tTreeCanopy",false,true);
+        toggleTree("Q\tQuality\tTreeCrown",false,false);
+        toggleTree("Q\tQuality\tTreeCanopy",true,false);
+        ImGui::ActivateItemByID(parent->GetID("Save"));draw(0);
+        for(unsigned wait=0;wait<500&&service->status().state!=NorthlightSettings::Status::State::Saved;++wait){Sleep(10);draw(0);}
+        assert(service->status().state==NorthlightSettings::Status::State::Saved);
+        const NorthlightSettings::Document saved(NorthlightSettings::readImage(std::filesystem::path(argv[2])/"northlight-quality.ini").raw);
+        assert(NorthlightSettings::explicitValue(saved,"Quality","TreeCrown")=="0");
+        std::puts("TREE_MENU_PASS independent=1 livePreview=1 saved=1");
       }
     }
     ImGui::ActivateItemByID(nav->GetID("Performance"));draw(0);draw(0);

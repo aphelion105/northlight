@@ -2122,11 +2122,12 @@ public:
         light[1][2]*=projection[2];
         const float back=std::clamp(light[1][2],0.f,1.f);
         const float lowSun=body?1.f:std::clamp((.8f-direction.z)*2.2f,0.f,1.f);
-        light[0][2]=gain*lowSun*back*.35f;
-        light[1][3]=gain*.22f;
+        light[0][2]=quality.treeCrown?gain*lowSun*back*.35f:0.f;
+        if(!quality.treeCanopy&&light[0][2]<=.0001f)return false;
+        light[1][3]=quality.treeCanopy?gain*.22f:0.f;
         const auto& color=sourceColors[body];
         light[2][0]=color.x;light[2][1]=color.y;light[2][2]=color.z;
-        light[2][3]=gain*(body?.65f:.54f);
+        light[2][3]=quality.treeCanopy?gain*(body?.65f:.54f):0.f;
         return color.x+color.y+color.z>.0001f;
     }
     bool solidMaterialSpecularWanted()const{

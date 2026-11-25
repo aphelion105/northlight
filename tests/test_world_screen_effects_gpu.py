@@ -129,6 +129,8 @@ try:
     if any(symbol in selected_header.read_text() for symbol in ('distancePS', 'NorthlightWorldLightHistory history')):includes+=['-DNORTHLIGHT_FOG_DISTANCE_TEST=1']
     if 'NorthlightFogVolume fogVolume' in selected_header.read_text():includes+=['-DNORTHLIGHT_FOG_VOLUME_TEST=1']
     inspection_views='bool renderNormalsView(' in selected_text
+    tree_menu = "quality.treeCanopy" in selected_text
+    if tree_menu:includes+=["-DNORTHLIGHT_TREE_MENU_TEST=1"]
     if inspection_views:includes+=['-DNORTHLIGHT_INSPECTION_VIEW_GPU_TEST=1']
     run('compile',[fp.zig(),'c++','-target','x86-windows-gnu','-O2','-UNDEBUG','-std=c++17','-Wno-microsoft-exception-spec','-DIMGUI_USER_CONFIG="northlight_imconfig.h"',*includes,'-I'+str(fp.TESTS),fp.TESTS/'world_screen_effects_gpu.cpp',*(sourceRoot/fp.src(s).relative_to(fp.REPO) for s in sources),'-luser32','-luuid','-o',exe])
     for samples in [0,2]:
@@ -136,6 +138,7 @@ try:
         run('gpu-msaa'+str(samples),[exe,backend,settings],{'NORTHLIGHT_TEST_MSAA':str(samples)})
         log=(out/f'gpu-msaa{samples}.log').read_text()
         if inspection_views:assert 'WORLD_INSPECTION_GPU_PASS ' in log
+        if tree_menu:assert 'CANOPY_TOGGLES_PASS ' in log
         if solar_material:assert 'WORLD_SOLAR_MATERIAL_PASS ' in log
         if resource_owner:assert 'WORLD_ALLOCATION_OWNERS_GPU_PASS ' in log
         if material_owner:assert 'WORLD_MATERIAL_UPLOAD_GPU_PASS ' in log

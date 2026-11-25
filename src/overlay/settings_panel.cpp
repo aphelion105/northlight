@@ -44,6 +44,7 @@ const std::map<std::string,const char*> Labels={
     {"Slime","Slime surface"},{"Lava","Magma and fel magma surfaces"},
     {"CelestialStyle","Sky style"},
     {"CelestialEffects","Enhanced sun, moon & sky"},{"Godrays","Sun & moon godrays"},
+    {"TreeCanopy","Canopy directional lighting"},{"TreeCrown","Crown backlighting"},
     {"NativeLightStay","Keep off-screen lights"},
     {"NativeMoreLights","Expand native light slots"},{"NativeModelLightLimit","Lights per model / building"},{"NativeTerrainLightLimit","Lights per terrain chunk"},
     {"RainRivulets","Merge drops into rivulets"},{"SnowFrost","Frost at screen edges"},{"SnowFrostStrength","Frost strength (%)"},
@@ -87,6 +88,8 @@ const std::map<std::string,const char*> CelestialLabels={
 };
 const std::map<std::string,std::vector<const char*>> Help={
     {"CelestialEffects",{"Replaces the sun, moon, glare and sky background independently of AO, shadows and other effects. Off preserves the native sky and skips Northlight sky capture and composition. HDR output remains separate."}},
+    {"TreeCanopy",{"Angle-dependent highlights and transmission on tree leaves. Requires the Forever sky style."}},
+    {"TreeCrown",{"Broad transmission when the sun or moon is behind a tree crown. Requires the Forever sky style."}},
     {"Godrays",{"Directional sunlight and moonlight scattered through atmospheric fog. Off skips directional fog shading, shadow sampling and extra source passes while retaining fog density, ambient scattering and local lights. Requires Atmospheric fog."}},
     {"CelestialStyle",{"Default uses the game's sky colors and celestial placement. Forever uses imported colors in Eastern Kingdoms and Kalimdor and approximated regional sky colors in Northrend and Outland. Northrend shares the Forever sun and moon curves. Outland keeps its native sun visibility and skybox planets."}},
     {"RainRivulets",{"Falling drops and their wet trails collect nearby beads into longer curved streams, conserving water. Off keeps drops independent."}},
@@ -305,6 +308,7 @@ std::vector<std::string> words(const char* text);
 struct Preset { const char* key; const char* text; };
 const Preset Presets[3]={{"Quality","Maximum effect detail."},{"Balanced","Quality with a moderate effect budget."},{"Performance","Less work spent on effects."}};
 const char* const QuickKeys="Effects GI WorldShadows WorldFog LocalLights ContactAO AutoBump Weather CelestialEffects Godrays ActorShadows FogClouds";
+const char* const CelestialQualityKeys[]={"CelestialEffects","CelestialStyle","TreeCanopy","TreeCrown"};
 // Sidebar pages, in order. quality: the QualitySections id a Quality page draws.
 enum class Page { Overview, Lighting, Materials, Shadows, Atmosphere, Water, Celestial, ShadowRange, Spells, Renderer, Performance, Diagnostics, Count };
 struct PageInfo { Page page; const char* title; const char* quality; };
@@ -633,7 +637,9 @@ struct SettingsPanel::State {
     // ---- Pages ----
     // Quality keys without an assigned group stay accessible in Renderer fine tuning.
     std::vector<const Field*> unsortedQuality()const{
-        std::vector<std::string> known{"Preset","CelestialStyle","CelestialEffects","RainDropSize","SnowFlakeSize"};for(const auto& s:QualitySections)for(auto& k:sectionKeys(s))known.push_back(k);
+        std::vector<std::string> known{"Preset","RainDropSize","SnowFlakeSize"};
+        for(const char* key:CelestialQualityKeys)known.push_back(key);
+        for(const auto& s:QualitySections)for(auto& k:sectionKeys(s))known.push_back(k);
         std::vector<const Field*> out;for(const Field* f:fields(D::Quality))if(std::find(known.begin(),known.end(),f->key)==known.end())out.push_back(f);
         return out;
     }
@@ -646,7 +652,7 @@ struct SettingsPanel::State {
         }
         std::vector<const Field*> out;
         if(p==Page::Overview){if(const Field* f=draft.quality("Preset"))out.push_back(f);for(auto& k:words(QuickKeys))if(const Field* f=draft.quality(k))out.push_back(f);return out;}
-        if(p==Page::Celestial){out=fields(D::Celestial);for(const char* key:{"CelestialEffects","CelestialStyle"})if(const Field* f=draft.quality(key))out.push_back(f);return out;}
+        if(p==Page::Celestial){out=fields(D::Celestial);appendCelestialQuality(out);return out;}
         if(p==Page::ShadowRange)return fields(D::ShadowRange);
         if(p==Page::Renderer)out=fields(D::Renderer);
         if(const Section* s=qualitySection(Pages[unsigned(p)].quality))for(auto& k:sectionKeys(*s))if(const Field* f=draft.quality(k))out.push_back(f);
@@ -986,9 +992,13 @@ struct SettingsPanel::State {
             return regionLabel(a)<regionLabel(b);});
         return out;
     }
+    void appendCelestialQuality(std::vector<const Field*>& target)const{
+        for(const char* key:CelestialQualityKeys)if(const Field* f=draft.quality(key))target.push_back(f);
+    }
     void celestialTab(){
-        if(const Field* enabled=draft.quality("CelestialEffects"))loose("celestial-enabled",{enabled});
-        if(const Field* style=draft.quality("CelestialStyle"))loose("celestial-placement",{style});
+        std::vector<const Field*> controls;
+        appendCelestialQuality(controls);
+        loose("celestial-controls",controls);
         ImGui::TextColored(Color::Muted,"Default: game placement and size. Forever: imported orbit and horizon size curves.");
         ImGui::Spacing();
         const auto regions=sections(D::Celestial);
@@ -1105,13 +1115,13 @@ struct SettingsPanel::State {
         ImGui::SameLine();legend();
     }
     std::string factoryScope()const{
-        if(page==Page::Celestial)return "Restore Default celestial placement and the factory sun and moon values of the selected region ("+regionLabel(region)+").";
+        if(page==Page::Celestial)return "Restore global Sun & moon settings and the factory profile of the selected region ("+regionLabel(region)+").";
         if(page==Page::ShadowRange)return "Restore the factory shadow reach of every region.";
         return std::string("Restore the factory values of every setting on the ")+Pages[unsigned(page)].title+" page.";
     }
     void factoryDefaults(){
         auto targets=page==Page::Celestial?fields(D::Celestial,&region):pageFields(page);
-        if(page==Page::Celestial)for(const char* key:{"CelestialEffects","CelestialStyle"})if(const Field* f=draft.quality(key))targets.push_back(f);
+        if(page==Page::Celestial)appendCelestialQuality(targets);
         for(const Field* f:targets)if(f->available){draft.factory(*f);live.erase(f->id());edited(*f);}
     }
     // The old menu's preset choice: quality overrides back to inherit, optionally Sun & moon and Shadow range to factory.

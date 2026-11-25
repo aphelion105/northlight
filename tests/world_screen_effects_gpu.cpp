@@ -466,6 +466,32 @@ struct WorldScreenEffectsTest {
         w.rawSourceDirections[0]=w.sourceDirections[0];w.rawSourceDirections[1]=w.sourceDirections[1];
         w.sourceColors[0]=w.sourceGlowColors[0]={.6f,.5f,.4f};w.sourceColors[1]=w.sourceGlowColors[1]={0,0,0};w.sourceWeights[0]=1;w.sourceWeights[1]=0;
     }
+#if NORTHLIGHT_TREE_MENU_TEST
+    static void canopyToggles(WorldRenderer& w){
+        fixtureContext(w);
+        w.celestialValid=true;
+        NorthlightSettings::Config next;next.quality=w.quality;next.celestial=w.celestialProfiles;
+        next.quality.celestialEffects=next.quality.celestialStyle=1;
+        for(unsigned body=0;body<2;++body){
+            w.sourceWeights[body]=1;w.sourceWeights[1-body]=0;
+            w.sourceDirections[body]={.8660254f,0,.5f};w.sourceColors[body]={.6f,.5f,.4f};
+            w.framePalette.foliageTransmission[body]=.25f;
+            for(unsigned mask=0;mask<4;++mask){
+                const bool canopy=(mask&1)!=0,crown=(mask&2)!=0;
+                next.quality.treeCanopy=canopy;next.quality.treeCrown=crown;
+                w.applyLiveSettings(next);w.paletteFrameValid=true;
+                for(float facing:{1.f,-1.f}){
+                    w.context.inverseView[10]=facing;
+                    float light[3][4]={};unsigned source=2;
+                    const bool backlight=crown&&facing>0;
+                    assert(w.treeCanopyLight(light,source)==(canopy||backlight));
+                    assert(source==body&&(light[0][2]>0)==backlight);
+                    assert((light[1][3]>0)==canopy&&(light[2][3]>0)==canopy);
+                }
+            }
+        }
+    }
+#endif
     static void waterMaskProfile(WorldRenderer& w,bool weather,bool contact){
         fixtureContext(w);
         w.pipelineActive=true;w.effects={false,false,false};
@@ -2458,6 +2484,10 @@ int main(int argc,char** argv){
     }
     float bump=0,fog=0;for(unsigned i=0;i<W*H*3;++i){bump=std::max(bump,std::abs(images[1][i]-images[0][i]));fog=std::max(fog,std::abs(images[2][i]-images[0][i]));}
     std::printf("WORLD_SCREEN_GPU bumpDelta=%g fogDelta=%g noGeometry=1 noStaleShadows=1 stateRestored=1 msaa=%u\n",bump,fog,msaa);std::fflush(stdout);assert(bump>.002f&&fog>.002f);
+#if NORTHLIGHT_TREE_MENU_TEST
+    {WorldRenderer world(d);WorldScreenEffectsTest::canopyToggles(world);}
+    std::puts("CANOPY_TOGGLES_PASS sun=1 moon=1 front=1 back=1 combinations=4 live=1");
+#endif
     scene->Release();ao->Release();detail->Release();depth->Release();out->Release();if(resolved)resolved->Release();readback->Release();d->Release();api->Release();FreeLibrary(module);DestroyWindow(window);UnregisterClassW(wc.lpszClassName,wc.hInstance);
     std::puts("WORLD_SCREEN_GPU_PASS");
 }
