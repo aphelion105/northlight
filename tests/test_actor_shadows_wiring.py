@@ -87,7 +87,7 @@ checks['stand gates replay upload and submission on captured geometry admission'
     and geometry_block.index('(replayShadows&&!timedReplay())')<geometry_block.index('if(!renderDirectional('))
 checks['disabled component never selects shadow replays']=all(value(defs['replayShadows'],f,a,g,False) is False for f in (False,True) for a in (False,True) for g in (False,True))
 # Consumers (replayShadows) and schedules/commits (replaysComplete, actorShadows).
-consumers=['if(replayShadows)selectShadowReplays();','const bool directionalReplayBounds=directionalShadows&&replayShadows&&(sourceActive[0]||sourceActive[1]);','if(directionalReplayBounds)replayBoundsKick();','(replayShadows&&!timedReplay())',
+consumers=['if(replayShadows)selectShadowReplays();','if(replayShadows&&debug==0&&quality.pointShadows&&quality.localLights&&quality.localLightLimit)replayBoundsKick();','const bool directionalReplayBounds=directionalShadows&&replayShadows&&(sourceActive[0]||sourceActive[1]);','if(directionalReplayBounds)replayBoundsKick();','(replayShadows&&!timedReplay())',
            'if(!renderDirectional(sourceActive,directionalShadows,directionalReplayBounds,replayShadows,actorShadows,\n                              replaysComplete,jobs,',
            'if(directionalShadows&&replayShadows){auto proofs','if(directionalReplayBounds)pointCalculateReplayBounds();']
 schedules=['||!replaysComplete||shadowTransition.failed()||memoryPressure', '!reason&&key.valid&&!pull&&!actorLost&&!transition.state.fading(),shadowDiagnosticCapture!=0,replaysComplete);','if(cascade==0)nearRendered=!environmentReuse&&captureMode==CaptureFresh&&interval>1&&actorShadows;',

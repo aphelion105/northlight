@@ -3971,6 +3971,9 @@ public:
         prepareWorldShadowState();
         if(geometryReady){
         streamBudget.pause();
+        // Point refreshes consume the same bounds; kick here so the job overlaps uploads, directional and atmosphere instead of
+        // being joined right after the point pass kicks it. Idempotent with the directional kick; the BoundsJoin guard joins it.
+        if(replayShadows&&debug==0&&quality.pointShadows&&quality.localLights&&quality.localLightLimit)replayBoundsKick();
         auto timedTerrain=[&]{auto phase=streamingPhases.measure(NorthlightStreaming::PhaseProfile::Terrain);return uploadLiveTerrain();};
         auto timedReplay=[&]{if(uploadWindowStart)uploadWindowTicks=QpcClock::now()-uploadWindowStart;auto phase=streamingPhases.measure(NorthlightStreaming::PhaseProfile::Replay);return uploadReplay();};
         skipReason="terrain";bool terrainUploaded=false;
