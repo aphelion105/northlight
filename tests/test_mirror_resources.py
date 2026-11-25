@@ -143,7 +143,14 @@ static void rawLookup(){
  // Mirror active: a miss is 0, including a value that equals a live RAW address (a stale exposed pointer).
  assert(d.registry.rawOf(rawAddress)==0&&d.registry.rawOf(0x12340)==0&&!d.disabled);
  assert(d.registry.rawOf(0x12340,true)==0x12340&&!d.disabled); // escaped: pass through
+ // RawMemo: one lookup per texture until a texture record is created or destroyed, or the pass-through mode changes.
+ RawMemo memo;unsigned lookups=0;auto get=[&](std::uintptr_t e,bool pass){return memo.get(e,pass,[&]{++lookups;return d.registry.rawOf(e,pass);});};
+ for(unsigned i=0;i<3;++i)assert(get(exposed,false)==rawAddress&&get(0x12340,false)==0);
+ assert(lookups==2);assert(get(0x12340,true)==0x12340&&lookups==3); // mode change: looked up again
+ Resource<IDirect3DTexture9> other(d);other.type=D3DRTYPE_TEXTURE;IDirect3DTexture9* o=&other;d.registry.wrap(&o); // bumps generation
+ assert(get(0x12340,true)==0x12340&&get(exposed,true)==rawAddress&&lookups==5);o->Release();
  p->Release();assert(d.registry.rawOf(exposed)==0&&d.registry.size()==0&&d.refs==1); // released proxy: no longer mapped
+ assert(get(exposed,false)==0&&lookups==6); // the release bumped generation: no stale raw
 }
 static void failures(){
 #ifndef NORTHLIGHT_TEST_TSAN

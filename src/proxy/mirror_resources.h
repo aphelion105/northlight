@@ -20,6 +20,22 @@ static constexpr bool kProxyShapeUnwrap=true;
 // another object. Surface, volume and other records do not bump it (GetRenderTarget/GetSurfaceLevel churn would invalidate the cache every draw). The spell layer
 // keys its per-texture render-target verdicts on it.
 inline std::atomic<std::uint32_t> generation{0};
+// Registry::rawOf results a non-owner thread asks for again and again (the game thread's liquid capture: ~124 textures per
+// frame, each otherwise a foreign gate entry with a process-wide barrier that makes the owner lock). Kept while `generation`
+// and the pass-through mode are unchanged, so only texture identities belong here: surface records do not bump it.
+class RawMemo {
+    std::unordered_map<std::uintptr_t,std::uintptr_t> raw_;std::uint32_t generation_=0;bool valid_=false,passThrough_=false;
+public:
+    template<class Lookup> std::uintptr_t get(std::uintptr_t exposed,bool passThroughMiss,Lookup lookup){
+        // Read before the lookup: an entry stored under this generation is at least as new as it.
+        const std::uint32_t now=generation.load(std::memory_order_acquire);
+        if(!valid_||now!=generation_||passThroughMiss!=passThrough_){raw_.clear();generation_=now;passThrough_=passThroughMiss;valid_=true;}
+        const auto found=raw_.find(exposed);if(found!=raw_.end())return found->second;
+        const std::uintptr_t raw=lookup();
+        try{raw_.emplace(exposed,raw);}catch(...){} // unmemoised: the next call looks up again
+        return raw;
+    }
+};
 inline std::mutex allProxiesMutex;
 inline std::unordered_map<void*,IUnknown*> allProxies;
 class Registry;

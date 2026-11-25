@@ -3104,9 +3104,11 @@ public:
             auto* owner=static_cast<Device*>(context);
             const auto inner=reinterpret_cast<std::uintptr_t>(
                 NorthlightStream::innerOfActive(reinterpret_cast<const void*>(exposed)));
-            return owner->mirrorResources.rawOf(inner,!owner->mirrorState.enabled);
+            const bool passThrough=!owner->mirrorState.enabled;
+            return owner->waterRaw.get(inner,passThrough,[&]{return owner->mirrorResources.rawOf(inner,passThrough);});
         },this);
     }
+    NorthlightMirrorResources::RawMemo waterRaw; // the stream's game thread only (or the owner, without the stream)
 #endif
     void adoptOwnerThread(){mirrorState.gate.ownerTid=MirrorGuard::threadId();}
     void setNativeCaptureDiagnostic(bool enabled){nativeCaptureDiagnostic=enabled;}
