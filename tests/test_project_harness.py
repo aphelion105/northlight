@@ -17,6 +17,7 @@ sys.path.insert(0, str(fp.SCRIPTS))
 import check_layout
 import run_tests as runner
 REAL_GIT_FILES=check_layout.git_files
+REAL_PROBE=runner.probe
 
 
 class ProjectHarness(unittest.TestCase):
@@ -79,6 +80,11 @@ class ProjectHarness(unittest.TestCase):
         self.assertEqual(self.report()['status'],'INCOMPLETE');self.assertFalse(self.report()['all_passed'])
         self.assertTrue(self.stdout.getvalue().splitlines()[-1].startswith('INCOMPLETE:'))
         self.run.assert_not_called()
+
+    def test_host_cxx_requires_posix_even_if_windows_has_clang(self):
+        with mock.patch.object(runner.os,'name','nt'), mock.patch.object(runner.shutil,'which',return_value='clang++') as which:
+            self.assertIn('require a POSIX toolchain',REAL_PROBE('cxx'))
+            which.assert_not_called()
 
     def test_failed_prerequisite_probe_is_recorded(self):
         self.test.write_text('# northlight-test: requires=zig\n')

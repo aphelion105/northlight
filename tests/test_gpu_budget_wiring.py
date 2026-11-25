@@ -56,7 +56,7 @@ reset=rc[rc.index('HRESULT STDMETHODCALLTYPE Reset(D3DPRESENT_PARAMETERS* pp)'):
 checks['renderer: the timer is created, reset before a device Reset and destroyed with the profiler']=(
     'gpuTimer=std::make_unique<NorthlightGpuFrameTimer>(ext);' in constructor
     and in_order(reset,'gpuProfile->reset();','gpuSceneProfile->reset();','materialProfile->reset();','gpuFrameStarted=gpuSceneSplit=gpuEffectsSplit=false;','gpuTimer->reset();','HRESULT hr=ext->Reset(pp);')
-    and in_order(destructor,'gpuProfile.reset();','gpuSceneProfile.reset();','materialProfile.reset();','gpuTimer.reset();','ext->Release();'))
+    and in_order(destructor,'gpuProfile.reset();','gpuSceneProfile.reset();','materialProfile.reset();','gpuTimer.reset();','drop(ownedExtension.p);'))
 fin=rc[rc.index('void finishFrameImpl() {'):]
 gb=rc[rc.index('void gpuBudgetFrame(){'):rc.index('void finishFrameImpl() {')]
 checks['renderer: once per frame in finishFrameImpl, after the profile poll, ungated by Diagnostics']=(

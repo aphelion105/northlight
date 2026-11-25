@@ -62,7 +62,7 @@ struct Backend final:IDirect3DDevice9 {
  void(*onRenderState)(void*)=nullptr;void* callbackContext=nullptr;
  void(*onSetVS)(void*)=nullptr;void(*onGetVS)(void*)=nullptr;void(*onDraw)(void*)=nullptr;
  void(*onSetPS)(void*)=nullptr;void(*onSetViewport)(void*)=nullptr;void(*onSetNPatch)(void*)=nullptr;
- void(*onGetF)(void*)=nullptr;void(*onSetF)(void*)=nullptr;
+ void(*onGetConstant)(void*)=nullptr;void(*onSetF)(void*)=nullptr;
  void(*onBeforeSetTarget)(void*)=nullptr;void(*onSetTarget)(void*)=nullptr;void(*onGetTarget)(void*)=nullptr;
  void(*onBeforeReset)(void*)=nullptr;void(*onReset)(void*)=nullptr;
  bool retainNullTarget=false,preserveEmptyTargetOutput=false;HRESULT emptyTargetResult=D3DERR_NOTFOUND;
@@ -109,13 +109,13 @@ struct Backend final:IDirect3DDevice9 {
  HRESULT GetDepthStencilSurface(IDirect3DSurface9** p)override{GG;if(!p)return D3DERR_INVALIDCALL;HRESULT h=give(state.depth.p,p);return !state.depth.p?D3DERR_NOTFOUND:h;}
 #define CONSTANT(Name,Type,field,N,W) \
  HRESULT Set##Name(UINT first,const Type* data,UINT count)override{HRESULT hr;{SG;if(!data||first>N||count>N-first)return D3DERR_INVALIDCALL;std::memcpy(reinterpret_cast<Type*>(edit().field)+first*W,data,count*W*sizeof(Type));if(recording&&std::is_same<Type,float>::value)for(unsigned i=first;i<first+count;++i)fMask[i]=true;hr=result();}if(!std::strcmp(#Name,"VertexShaderConstantF"))callback(onSetF);return hr;} \
- HRESULT Get##Name(UINT first,Type* data,UINT count)override{{GG;if(!constantGetSupported||!data||first>N||count>N-first)return D3DERR_INVALIDCALL;std::memcpy(data,reinterpret_cast<Type*>(state.field)+first*W,count*W*sizeof(Type));if(std::is_same<Type,float>::value)floatReadRegisters+=count;}if(!std::strcmp(#Name,"VertexShaderConstantF"))callback(onGetF);return D3D_OK;}
+ HRESULT Get##Name(UINT first,Type* data,UINT count)override{{GG;if(!constantGetSupported||!data||first>N||count>N-first)return D3DERR_INVALIDCALL;std::memcpy(data,reinterpret_cast<Type*>(state.field)+first*W,count*W*sizeof(Type));if(std::is_same<Type,float>::value)floatReadRegisters+=count;}callback(onGetConstant);return D3D_OK;}
  CONSTANT(VertexShaderConstantF,float,vf,512,4)
  CONSTANT(VertexShaderConstantI,int,vi,32,4)
  CONSTANT(PixelShaderConstantF,float,pf,256,4)
 #undef CONSTANT
  HRESULT SetVertexShaderConstantB(UINT first,const WINBOOL* data,UINT count)override{SG;if(!data||first>16||count>16-first)return D3DERR_INVALIDCALL;for(unsigned i=0;i<count;++i)edit().vbconst[first+i]=data[i]?1:0;return result();}
- HRESULT GetVertexShaderConstantB(UINT first,WINBOOL* data,UINT count)override{GG;if(!data||first>16||count>16-first)return D3DERR_INVALIDCALL;std::memcpy(data,state.vbconst+first,count*sizeof(BOOL));return D3D_OK;}
+ HRESULT GetVertexShaderConstantB(UINT first,WINBOOL* data,UINT count)override{{GG;if(!data||first>16||count>16-first)return D3DERR_INVALIDCALL;std::memcpy(data,state.vbconst+first,count*sizeof(BOOL));}callback(onGetConstant);return D3D_OK;}
  HRESULT CreateStateBlock(D3DSTATEBLOCKTYPE t,IDirect3DStateBlock9** p)override{Guard g(*this);if(!p)return D3DERR_INVALIDCALL;*p=new Block(this,t);return D3D_OK;}
  HRESULT BeginStateBlock()override{Guard g(*this);if(recording)return D3DERR_INVALIDCALL;recording=true;pending=state;rsMask.fill(false);fMask.fill(false);return D3D_OK;}
  HRESULT EndStateBlock(IDirect3DStateBlock9** p)override{Guard g(*this);if(!recording||!p)return D3DERR_INVALIDCALL;*p=new Block(this,D3DSBT_ALL,true);recording=false;return D3D_OK;}
@@ -604,9 +604,23 @@ static void implicitConstantBanks(){
  assert(SUCCEEDED(game.DrawPrimitive(D3DPT_TRIANGLELIST,0,1))&&ext.constantStamp(after));assert(before.reset!=after.reset&&!m.vsFloatKnown[70]);
  assert(SUCCEEDED(ext.GetVertexShaderConstantF(70,f,1))&&f[0]==b.state.vf[70][0]);assert(SUCCEEDED(game.SetVertexShader(nullptr)));reentry.shader->Release();
  const float a[4]={1,2,3,4};assert(SUCCEEDED(game.SetVertexShaderConstantF(70,a,1)));m.invalidate();
- b.onGetF=[](void* p){auto& r=*static_cast<Reentry*>(p);const float changed[4]={5,6,7,8};assert(SUCCEEDED(r.game->SetVertexShaderConstantF(70,changed,1)));};
+ b.onGetConstant=[](void* p){auto& r=*static_cast<Reentry*>(p);const float changed[4]={5,6,7,8};assert(SUCCEEDED(r.game->SetVertexShaderConstantF(70,changed,1)));};
  assert(SUCCEEDED(ext.GetVertexShaderConstantF(70,f,1))&&f[0]==1&&!m.vsFloatKnown[70]);const auto gets=b.gets;
  assert(SUCCEEDED(ext.GetVertexShaderConstantF(70,f,1))&&f[0]==5&&b.gets==gets+1&&m.vsFloatKnown[70]);
+ const int originalInts[4]={1,2,3,4};
+ assert(SUCCEEDED(game.SetVertexShaderConstantI(3,originalInts,1)));m.invalidate();
+ b.onGetConstant=[](void* p){auto& r=*static_cast<Reentry*>(p);const int changed[4]={5,6,7,8};assert(SUCCEEDED(r.game->SetVertexShaderConstantI(3,changed,1)));};
+ assert(SUCCEEDED(ext.GetVertexShaderConstantI(3,i,1))&&i[0]==1&&!m.vsIntKnown[3]);
+ assert(SUCCEEDED(ext.GetVertexShaderConstantI(3,i,1))&&i[0]==5);
+ const BOOL originalFlag=FALSE;
+ assert(SUCCEEDED(game.SetVertexShaderConstantB(2,&originalFlag,1)));m.invalidate();
+ b.onGetConstant=[](void* p){auto& r=*static_cast<Reentry*>(p);const BOOL changed=TRUE;assert(SUCCEEDED(r.game->SetVertexShaderConstantB(2,&changed,1)));};
+ assert(SUCCEEDED(ext.GetVertexShaderConstantB(2,&flag,1))&&flag==FALSE&&!m.vsBoolKnown[2]);
+ assert(SUCCEEDED(ext.GetVertexShaderConstantB(2,&flag,1))&&flag==TRUE);
+ assert(SUCCEEDED(game.SetPixelShaderConstantF(70,a,1)));m.invalidate();
+ b.onGetConstant=[](void* p){auto& r=*static_cast<Reentry*>(p);const float changed[4]={5,6,7,8};assert(SUCCEEDED(r.game->SetPixelShaderConstantF(70,changed,1)));};
+ assert(SUCCEEDED(ext.GetPixelShaderConstantF(70,f,1))&&f[0]==1&&!m.psFloatKnown[70]);
+ assert(SUCCEEDED(ext.GetPixelShaderConstantF(70,f,1))&&f[0]==5);
  std::puts("PASS implicit constant banks: four draw variants, unknown binding, ProcessVertices with a bound VS, and programmable draw reuse");
 }
 static void constantCertificates(){

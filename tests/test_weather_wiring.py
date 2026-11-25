@@ -124,8 +124,10 @@ checks['rain mask: clearFrame unbinds RT1 before resetting the per-frame flags']
     clear.index('rainMrtUnbind();') < clear.index('terrain = captured = applied = projectionValid = skySeen = menuScene = false;')
     < clear.index('rainMaskCleared=rainMaskDrawn=rainMaskFrame=rainMaskOk=rainDepthOk=false;'))
 pr=r[r.index('IDirect3DTexture9* rainMaskPrepare('):r.index('template<class Draw> HRESULT rainBlendDraw(')]
-checks['rain scrub: renderEffects asks rainMaskPrepare once, early (before the AO), then hands its texture to setRainMask right before world->render; no scrub draw per world draw']=(
-    r.count('rainMaskPrepare(')==2 and 'IDirect3DTexture9* rainMaskTex=world&&debugMode==0?rainMaskPrepare(atmosphereAudit?&*atmosphereAudit:nullptr):nullptr;' in r and r.index('rainMaskPrepare(')<r.index('bindEffects(nullptr);')<r.index('world->setRainMask(rainMaskTex);')<r.index('world->render(outputTarget,')
+effects=r[r.index('void renderEffects()'):r.index('/* The guards of every mask decision')]
+checks['rain scrub: production composite prepares and consumes the mask once, before world render']=(
+    r.count('rainMaskPrepare(')==2 and 'IDirect3DTexture9* rainMaskTex=world&&debugMode==0&&!normalsView&&!ssaoView?rainMaskPrepare(atmosphereAudit?&*atmosphereAudit:nullptr):nullptr;' in effects
+    and effects.index('rainMaskPrepare(')<effects.index('bindEffects(nullptr);')<effects.index('world->setRainMask(rainMaskTex);')<effects.index('const bool rendered=world->render(outputTarget,')
     and r.count('world->setRainMask(rainMaskTex);')==1)
 checks['rain scrub: RT1 unbound, MSAA twin resolved by StretchRect (failure: nullptr and a one-shot log), ONE full-screen quad into the mask texture with depthTex (s0) and rainDepth (s1) POINT, alpha-only write, own SavedState']=(
     'audit=nullptr){\n        rainMrtUnbind();' in pr and 'if(!rainMaskDrawn||!rainDepthOk||' in pr and 'ext->StretchRect(rainMaskMS,nullptr,rainMaskSurface,nullptr,D3DTEXF_NONE)' in pr and 'rainMaskResolveHr=rh;' in pr and 'bindingSkip("RainScrub","resolve-failed")' in pr

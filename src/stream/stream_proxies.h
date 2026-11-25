@@ -87,14 +87,36 @@ constexpr std::size_t kLockSlack=4096;   // bytes past a staged range / a shadow
 // pressure, GetData(FLUSH), Reset, the defaults batch, final release. fn executes with the replay-side core.
 struct Task {void (*fn)(void*,StreamCore&);void* arg;};
 
-// 0.3.204 (task 21): a vector whose resize() leaves new bytes uninitialized (default-init, no memset): the slices of a buffer's ring, whose contents are undefined (DISCARD) anyway. assign(n,0) still zero-fills.
-template<class T> struct DefaultInitAllocator:std::allocator<T> {
-    template<class U> struct rebind{using other=DefaultInitAllocator<U>;};
-    using std::allocator<T>::allocator;
-    template<class U> void construct(U* p) noexcept(std::is_nothrow_default_constructible<U>::value){::new(static_cast<void*>(p)) U;}
-    template<class U,class... A> void construct(U* p,A&&... a){::new(static_cast<void*>(p)) U(std::forward<A>(a)...);}
+// The retirement link shares the allocation with the bytes so a queued
+// reader can keep a discarded slice alive without any further allocation.
+struct SliceMem {
+    struct Header {
+        unsigned char* allocation;
+        Header* next=nullptr;
+        std::uint64_t seq=0;
+        std::size_t bytes=0;
+        bool large=false;
+    };
+    struct Reclaim {
+        void operator()(Header* node)const noexcept{
+            while(node){
+                Header* next=node->next;
+                delete[] node->allocation;
+                node=next;
+            }
+        }
+    };
+    using Storage=std::unique_ptr<Header,Reclaim>;
+    Storage storage;
+    void allocate(std::size_t size,bool zero){
+        if(size>SIZE_MAX-sizeof(Header))throw std::bad_alloc();
+        auto* allocation=new unsigned char[sizeof(Header)+size];
+        storage.reset(::new(static_cast<void*>(allocation)) Header{allocation});
+        if(zero)std::memset(data(),0,size);
+    }
+    unsigned char* data(){return storage->allocation+sizeof(Header);}
+    const unsigned char* data()const{return storage->allocation+sizeof(Header);}
 };
-using SliceMem=std::vector<unsigned char,DefaultInitAllocator<unsigned char>>;
 struct PrivEntry {std::string key;std::vector<unsigned char> bytes;IUnknown* unk=nullptr;};
 #ifdef NORTHLIGHT_REPLAY_STAND
 inline std::atomic<std::uint64_t> standProxySerial{0};
@@ -288,8 +310,7 @@ struct StreamCore {
     unsigned framesAhead=1;          // 0.3.204 (task 21): StreamFramesAhead (clamped), set once by the StreamDevice: the buffers' slice rings hold framesAhead+2 slices at most
     // 0.3.204 (task 21): large-buffer slices that were dropped or swapped away while the replay thread may still read them (a zero-copy unlock refers to the bytes until it retires): the storage waits here
     // (under texMutex) with the seq of the last command that reads it, and is freed by trimRetired once replayedSeq has passed it. Their bytes leave shadowBytes/largeShadowBytes at once and count in the ring budget (retired*Bytes) until freed.
-    struct Retired {SliceMem mem;std::uint64_t seq;std::size_t bytes;bool large;};   // large: counted in retiredLargeBytes (the ring budget of the large allowance), else in retiredRegularBytes
-    std::vector<Retired> retired;
+    SliceMem::Storage retired;
     // 0.3.204 (task 21): Diagnostics split timers. timing is the game thread's own copy of the Diagnostics switch, refreshed at each Present (StreamDevice::presentCommon);
     // timingN counts the generated calls for the 1-in-16 sampling. Both are game-thread only: the replay thread never runs a game-facing method or a Lock/Unlock path.
     bool timing=false;unsigned timingN=0;

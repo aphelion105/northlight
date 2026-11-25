@@ -291,6 +291,7 @@ class Device final : public GuardedMirrorDevice, private NorthlightDeviceEffectT
     IDirect3D9* parent;
     DeviceMirror mirrorState;
     NorthlightMirrorResources::Registry mirrorResources;
+    NorthlightDrawSnapshot::Ref<ExtensionDevice> ownedExtension;
     ExtensionDevice* ext;
     std::unique_ptr<NorthlightGameIndexedPair> gameIndexedPair;
     std::optional<MirrorGuard> indexedPairGate;
@@ -2497,9 +2498,12 @@ private:
         if(!spellOn)return;
         spell.reset();spell.attach(nullptr);spellSync();spellQueryN=0;spellQueryUnknown=false;
         mirrorState.synced=nullptr; /* the mirror's setters stop clearing bits that are about to go away */
+        detachSpellHooks();
+        spellOn=false;
+    }
+    void detachSpellHooks(){
         if(NorthlightTrackedBuffers::spellHook.context==this)NorthlightTrackedBuffers::spellHook={};
         if(NorthlightMirrorWrite::sink.context==this){NorthlightMirrorWrite::queries.store(0,std::memory_order_relaxed);NorthlightMirrorWrite::pending.store(0,std::memory_order_relaxed);NorthlightMirrorWrite::sink={};}
-        spellOn=false;
     }
     // SpellTrace lines only; every call site tests spellTraceFrame first (one bool when the trace is off).
     void spellEvent(const char* what,unsigned a=0,unsigned b=0,unsigned c=0){logf("SPELLTRACE frame=%u event=%s pending=%u a=%u b=%u c=%u",frame,what,spell.pending(),a,b,c);}
@@ -3228,13 +3232,13 @@ public:
         if(!primary){if(status!=D3D_OK)NorthlightWindowHook::invalidate(ext);return;}
         NorthlightWindowHook::presented(ext,window?window:sizeGuardWindow,sizeGuardWidth,sizeGuardHeight,sizeGuardWindowed,status);
     }
-    Device(IDirect3DDevice9* d,IDirect3D9* p,const NorthlightHdr::Presentation& presentation):GuardedMirrorDevice(d,&mirrorState),parent(p),mirrorResources(this,mirrorState.gate,&mirrorEscape,&mirrorState,d),ext(new ExtensionDevice(d,&mirrorState)),hdr(presentation),stateBlocks(ext) {
+    Device(IDirect3DDevice9* d,IDirect3D9* p,const NorthlightHdr::Presentation& presentation):GuardedMirrorDevice(d,&mirrorState),parent(p),mirrorResources(this,mirrorState.gate,&mirrorEscape,&mirrorState,d),ownedExtension{new ExtensionDevice(d,&mirrorState)},ext(ownedExtension.p),hdr(presentation),stateBlocks(ext) {
 #ifndef NORTHLIGHT_REPLAY_STAND
         nativeCaptureDiagnostic=NorthlightNativeCapture::Session::requested();
 #endif
         mirrorState.gate.ownerTid=MirrorGuard::threadId(); /* 0.3.180 (D0): the CreateDevice caller */
         mirrorState.gate.reportContext=this;mirrorState.gate.report=&gateForeignReport;
-        parent->AddRef(); QueryPerformanceFrequency(&cpuFrequency);
+        QueryPerformanceFrequency(&cpuFrequency);
         {const bool loaded=particleCapture.catalog.read(std::filesystem::path(rootPath)/L"northlight-emission.bin");
          logf("EMISSION catalog loaded=%u identities=%u",unsigned(loaded),particleCapture.catalog.size());}
         std::optional<bool> waterAtStartup;
@@ -3292,6 +3296,16 @@ public:
         world->setNativeSamplerStateSource(static_cast<IDirect3DDevice9*>(ext),[](void* context,DWORD stage,unsigned mask,DWORD* out){return static_cast<ExtensionDevice*>(static_cast<IDirect3DDevice9*>(context))->knownSamplerStates(stage,mask,out);});
         world->setConstantEpochSource({&mirrorState.constantEpoch,&mirrorState}); /* 0.3.180 (C1): read in place under the draw's gate */
         char skyRoot[MAX_PATH*3];WideCharToMultiByte(CP_UTF8,0,rootPath,-1,skyRoot,sizeof skyRoot,nullptr,nullptr);celestialDiscs=std::make_unique<NorthlightCelestialDiscRenderer>(ext,std::string(skyRoot)+"world-cache/celestial");celestialDiscs->setTerrainSource([this]{return world->celestialTerrainGeneration();},[this](unsigned body,const float* matrix){return world->drawCelestialTerrain(body,matrix);},[this](unsigned body){world->noteCelestialTerrainReuse(body);});celestialDiscs->setIdentityMap([this](std::uintptr_t exposed){return mirrorResources.rawOf(exposed,!mirrorState.enabled);});celestialDiscs->setHdrSkyCapture([this]()->IDirect3DSurface9*{return hdrSkyDraw()?hdrSkyTarget():nullptr;});shadowBlobs=std::make_unique<NorthlightShadowBlobFilter>(ext,world->blobShadowStrength());shadowBlobs->setTexturePeek([](void* e,DWORD stage,IDirect3DBaseTexture9*& out){return static_cast<ExtensionDevice*>(e)->peekTexture(stage,out);},ext); /* 0.3.196 (task 12): borrowed stage-0 identity */water=std::make_unique<NorthlightWaterRenderer>(ext);water->setDistanceBackend(NorthlightBackend::isPackagedDxvk(selectedBackend)); logf("D3D9 device wrapped. Ctrl+Shift+F4 UI capture; F7 fog; F8 GI; F9 shadows; F10 all effects; F12 world debug (shadows/GI/volume/normals/SSAO, all with Ctrl+Shift); Ctrl+Shift+F11 settings. Components start ON; GI cache stays warm.");
+        struct StartupHooks {
+            Device& device;
+            bool pending=true;
+            ~StartupHooks(){
+                if(pending){
+                    NorthlightWindowHook::detach(device.ext);
+                    device.detachSpellHooks();
+                }
+            }
+        } startupHooks{*this};
         refreshWindowSize();NorthlightWindowHook::attach(ext,sizeGuardWindow,diagnostics()?+[](const char* line){logf("%s",line);}:nullptr);
         {wchar_t config[MAX_PATH],key[64]={};char hotkey[64]={};const bool named=swprintf(config,MAX_PATH,L"%lsnorthlight-renderer.ini",rootPath)>=0; /* read once, here */
          const bool on=!named||GetPrivateProfileIntW(L"Renderer",L"SettingsOverlay",1,config)!=0; /* 0 = no settings input; window stability remains independent */
@@ -3324,6 +3338,8 @@ public:
         catch(...){logf("MEMORY async sampler unavailable; memory guard and periodic diagnostics skipped");}
         if(memoryDiagnostics)memoryDiagnostics->setJob(&memmapJob);
         NorthlightMemMap::deferredRequest.store(false,std::memory_order_relaxed); /* a refusal of an earlier device's world is not this device's */
+        parent->AddRef();
+        startupHooks.pending=false;
         diagnosticId=InterlockedIncrement(&deviceSerial);
         logf("DEVICE lifetime event=create id=%ld live=%ld tick=%lu",diagnosticId,InterlockedIncrement(&liveDevices),(unsigned long)GetTickCount());
         memmap("create");
@@ -3344,7 +3360,7 @@ public:
         mirrorState.beforeDisable=nullptr;mirrorState.disableContext=nullptr;
         surface.reset();autoBump.reset();modelNormals.reset();gameIndexedPair.reset();gameParticlePair.reset();
         dropBlobFaint();shadowBlobs.reset();celestialDiscs.reset();gpuProfile.reset();gpuSceneProfile.reset();materialProfile.reset();gpuTimer.reset();drop(latencyQuery);water.reset();world.reset();gpuScene.reset();releaseResources();
-        skyLayers.reset();hdrFrame.reset();hdrColor.reset();hdrSkyForeground.reset();releaseHdrTargets();stateBlocks.clear();nativeMoreLights.reset();ext->Release();ext=nullptr;
+        skyLayers.reset();hdrFrame.reset();hdrColor.reset();hdrSkyForeground.reset();releaseHdrTargets();stateBlocks.clear();nativeMoreLights.reset();drop(ownedExtension.p);ext=nullptr;
         const ULONG backendReferences=real->Release();parent->Release();
         logf("DEVICE lifetime event=destroy-end id=%ld live=%ld backendReleaseCount=%lu tick=%lu",diagnosticId,InterlockedDecrement(&liveDevices),(unsigned long)backendReferences,(unsigned long)GetTickCount());
         memmap("destroy-end");
@@ -4493,7 +4509,21 @@ public:
             }
             ~StreamSetup(){rollback();}
         } streamSetup(stream&&SUCCEEDED(hr)&&out&&*out);
-        if(SUCCEEDED(hr)&&out&&*out){auto* device=new Device(*out,this,presentation);*out=device;hr=device->warmPointPipelinesAtDeviceInit();if(SUCCEEDED(hr))hr=device->initHdrTargets();if(FAILED(hr)){device->Release();*out=nullptr;return hr;}}
+        if(SUCCEEDED(hr)&&out&&*out){
+            try{
+                auto* device=new Device(*out,this,presentation);
+                *out=device;
+                hr=device->warmPointPipelinesAtDeviceInit();
+                if(SUCCEEDED(hr))hr=device->initHdrTargets();
+            }catch(const std::bad_alloc&){
+                logf("CreateDevice: Northlight allocation failed");
+                hr=E_OUTOFMEMORY;
+            }catch(const std::exception& e){
+                logf("CreateDevice: Northlight initialization failed: %s",e.what());
+                hr=E_FAIL;
+            }
+            if(FAILED(hr)){drop(*out);return hr;}
+        }
         if(SUCCEEDED(hr)&&out&&*out&&stream){
             IDirect3DDevice9* device=*out;*out=startStream(device,pp,framesAhead,frameSkip,occlusionLocal
 #ifndef NORTHLIGHT_REPLAY_STAND

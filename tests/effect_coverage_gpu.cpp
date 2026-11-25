@@ -160,6 +160,9 @@ int main(int argc,char** argv){
             auto compositePixels=[&](unsigned variant,bool protected_){std::vector<float> p(N*N*4);for(unsigned y=0;y<N;++y)for(unsigned x=0;x<N*4;++x){std::uint16_t h;std::memcpy(&h,static_cast<char*>(lock.pBits)+(variant*N+y)*lock.Pitch+((protected_?N*4:0)+x)*2,2);p[y*N*4+x]=half(h);}return p;};
             for(unsigned variant=0;variant<11;++variant){
                 const bool hdr=variant==2||variant==3||variant==5||variant==6||variant==8||variant==10;
+                const bool world=variant<4||variant==6||variant>=9;
+                // SDR world and material composites encode after doing their coverage math in linear light.
+                const bool encodedLinear=!hdr&&(world||variant==4);
                 const auto unmasked=compositePixels(variant,false),masked=compositePixels(variant,true);
                 if(control==5)blanketReceiver[variant]=masked;
                 if(control>=6){assert(masked==unmasked);assert(blanketReceiver[variant].size()==masked.size());
@@ -167,12 +170,13 @@ int main(int argc,char** argv){
                 for(unsigned i=0;i<N*N;++i)for(unsigned k=0;k<3;++k){float original=actual[i*4+2-k]/255.f;
                     float cover=coverage[i*4+2]/255.f;
                     if(additive){float remaining=std::max(original-coverage[i*4+2-k]/255.f,0.f);cover=std::clamp(((hdr?linear(original):original)-(hdr?linear(remaining):remaining))/std::max(hdr?linear(original):original,.000001f),0.f,1.f);}
-                    if(hdr)original=linear(original);
-                    const bool world=variant<4||variant==6||variant>=9;
+                    if(hdr||encodedLinear)original=linear(original);
+                    const float open=encodedLinear?linear(unmasked[i*4+k]):unmasked[i*4+k];
+                    const float protectedColor=encodedLinear?linear(masked[i*4+k]):masked[i*4+k];
                     const float fogRgb[3]={control>=5?.4f:.05f,control>=5?.35f:.02f,control>=5?.3f:0.f};
-                    const float expected=unmasked[i*4+k]*(1-cover)+original*cover+(additive&&world?fogRgb[k]*cover:0);
-                    const float error=std::fabs(masked[i*4+k]-expected);worst=std::max(worst,error);if(!(error<.003f)){std::fprintf(stderr,"variant=%s sm=%u ms=%u a=%g cover=%g actual=%g expected=%g\n",entries[variant],sm+2,ms,alpha,cover,masked[i*4+k],expected);std::abort();}
-                    if(cover==1&&std::fabs(unmasked[i*4+k]-original)>.05f)++negativeControls;
+                    const float expected=open*(1-cover)+original*cover+(additive&&world?fogRgb[k]*cover:0);
+                    const float error=std::fabs(protectedColor-expected);worst=std::max(worst,error);if(!(error<.003f)){std::fprintf(stderr,"variant=%s sm=%u ms=%u a=%g cover=%g actual=%g expected=%g\n",entries[variant],sm+2,ms,alpha,cover,protectedColor,expected);std::abort();}
+                    if(cover==1&&std::fabs(open-original)>.05f)++negativeControls;
                 }
                 ++compositeCases;
             }

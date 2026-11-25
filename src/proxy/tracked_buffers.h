@@ -389,12 +389,13 @@ public:
         particleWrite={};
         if(copies&&FAILED(hr))NorthlightReplayCopies::invalidate(record.copy);
         std::lock_guard<std::mutex> guard(mutex);
-        if(SUCCEEDED(hr)&&record.locks.load(std::memory_order_relaxed)){
+        const unsigned locks=record.locks.load(std::memory_order_relaxed);
+        if(SUCCEEDED(hr)&&locks){
             uint64_t expected=pendingWriteRevision;
             if(same&&record.revision.compare_exchange_strong(expected,previousWriteRevision,std::memory_order_relaxed)){
                 noChangeWrites.fetch_add(1,std::memory_order_relaxed);noChangeBytes.fetch_add(bytes,std::memory_order_relaxed);
             }
-            if(record.locks.load(std::memory_order_relaxed)==1&&rangeWrite){
+            if(locks==1&&rangeWrite){
                 const auto current=record.revision.load(std::memory_order_relaxed);
                 const bool whole=rangeWhole||rangeBytes==record.metadata.size;
                 if(current!=rangePrevious){
@@ -407,9 +408,9 @@ public:
                     if(record.ranges)record.ranges->publish(rangePrevious,current,rangeBegin,rangeBytes,whole);
                 }
             }
-            record.locks.fetch_sub(1,std::memory_order_release);
         }
         else{record.revision.store(0,std::memory_order_relaxed);if(copies)NorthlightReplayCopies::invalidate(record.copy);} // tracking is unsafe until a subsequent successful write
+        if(locks)record.locks.fetch_sub(1,std::memory_order_release);
         previousWriteRevision=pendingWriteRevision=0;return hr;
     }
 };

@@ -33,6 +33,7 @@ struct BufferState {
     // stageSeq: a staged lock waits for this earlier reader before applying its patch (0 = an ordinary staged lock).
     struct PendingRef {std::uint64_t seq;UINT off,end;};
     std::vector<PendingRef> pend;UINT pendMin=0,pendMax=0;
+    std::uint64_t pendingSliceSeq=0;   // If a range cannot be recorded, protect the whole slice through this sequence.
     struct Patch {std::uint64_t seq;UINT off;std::vector<unsigned char> bytes;};
     std::vector<Patch> patches;std::size_t patchBytes=0;std::uint64_t patchMinSeq=0,stageSeq=0;
 };
@@ -50,7 +51,7 @@ inline void rememberBufferRange(ProxyBase& p,BufferState& s,const void* data){
     if(after!=before)st.rangeShadowBytes.fetch_add(std::int64_t(after)-std::int64_t(before),std::memory_order_relaxed);
     if(s.range.covers(s.off,s.size))own(st.rangeShadowStores);else own(st.rangeShadowRefused);
 }
-inline void clearPending(BufferState& s){s.pend.clear();s.pendMin=s.pendMax=0;}
+inline void clearPending(BufferState& s){s.pend.clear();s.pendMin=s.pendMax=0;s.pendingSliceSeq=0;}
 // 0.3.205 (#34): the slice's contents no longer matter (a DISCARD, a rename, a dropped or fresh shadow): the patches go unapplied (their bytes are in the queue already, in the staged unlocks).
 inline void dropPatches(Queue& q,BufferState& s){if(s.patches.empty())return;q.stats.zcPatchBytes.fetch_sub(std::int64_t(s.patchBytes),std::memory_order_relaxed);s.patches.clear();s.patchBytes=0;s.patchMinSeq=0;}
 // 0.3.205 (#34): game thread. Writes the patches the replay thread has passed into the slice (no unreplayed ref reads their bytes any more: the ones recorded before a patch have seqs <= its seq, none is recorded over it later).
@@ -76,22 +77,25 @@ inline void readSliceRange(const BufferState& s,unsigned char* dst,UINT off,UINT
 // 0.3.205 (#34): drops the entries the replay has passed (and recomputes the hull of the rest).
 inline void prunePending(Queue& q,BufferState& s){
     const std::uint64_t rep=q.replayedSeq();const std::size_t n=s.pend.size();std::size_t h=0;
+    if(s.pendingSliceSeq<=rep)s.pendingSliceSeq=0;
     while(h<n&&s.pend[h].seq<=rep)++h;
     if(!h)return;
-    if(h==n){clearPending(s);return;}
+    if(h==n){s.pend.clear();s.pendMin=s.pendMax=0;return;}
     s.pend.erase(s.pend.begin(),s.pend.begin()+std::ptrdiff_t(h));s.pendMin=s.pend[0].off;s.pendMax=s.pend[0].end;
     for(const auto& r:s.pend){if(r.off<s.pendMin)s.pendMin=r.off;if(r.end>s.pendMax)s.pendMax=r.end;}
 }
 inline void pushPending(Queue& q,BufferState& s,std::uint64_t seq,UINT off,UINT end){
     prunePending(q,s);
-    if(s.pend.empty()){s.pendMin=off;s.pendMax=end;}else{if(off<s.pendMin)s.pendMin=off;if(end>s.pendMax)s.pendMax=end;}
-    s.pend.push_back({seq,off,end});
+    const bool first=s.pend.empty();
+    try{s.pend.push_back({seq,off,end});}
+    catch(const std::bad_alloc&){s.pendingSliceSeq=seq;return;}
+    if(first){s.pendMin=off;s.pendMax=end;}else{if(off<s.pendMin)s.pendMin=off;if(end>s.pendMax)s.pendMax=end;}
 }
 // 0.3.205 (#34): the seq the replay thread must pass before the game may write [off,end) of the current slice: the highest among the unreplayed refs and the unapplied patches that overlap it (after applying the passed
 // ones), 0 = none. No seq is above sliceSeq (the newest ref; a patch's seq is a ref's), so the scans stop once they reach it.
 inline std::uint64_t overlapSeq(Queue& q,BufferState& s,UINT off,UINT end){
     prunePending(q,s);applyPatches(q,s);
-    std::uint64_t best=0;
+    std::uint64_t best=s.pendingSliceSeq;
     if(!s.pend.empty()&&end>s.pendMin&&off<s.pendMax)for(auto r=s.pend.rbegin();r!=s.pend.rend()&&best<s.sliceSeq;++r)if(r->off<end&&off<r->end&&r->seq>best)best=r->seq;
     for(auto p=s.patches.rbegin();p!=s.patches.rend()&&best<s.sliceSeq;++p)if(p->off<end&&off<p->off+UINT(p->bytes.size())&&p->seq>best)best=p->seq;
     return best;
@@ -111,28 +115,38 @@ inline void registerShadow(ProxyBase& p,BufferState& s,bool large=false){
 // 0.3.204 (task 21): frees the retired slices the replay thread has passed (any thread; the game thread at every Present and before a large allocation).
 inline void trimRetired(StreamCore& c){
     if(c.q.stats.retiredBytes.load(std::memory_order_relaxed)<=0)return;
-    std::vector<SliceMem> dead;std::size_t freedLarge=0,freedRegular=0;
+    SliceMem::Storage expired;std::size_t freedLarge=0,freedRegular=0;
     {
-        std::lock_guard<std::mutex> l(c.texMutex);const std::uint64_t rep=c.q.replayedSeq();std::size_t j=0;
-        for(std::size_t i=0;i<c.retired.size();++i){
-            if(c.retired[i].seq<=rep){(c.retired[i].large?freedLarge:freedRegular)+=c.retired[i].bytes;dead.push_back(std::move(c.retired[i].mem));}
-            else{if(j!=i)c.retired[j]=std::move(c.retired[i]);++j;}
+        std::lock_guard<std::mutex> l(c.texMutex);const std::uint64_t rep=c.q.replayedSeq();
+        auto* head=c.retired.release();
+        auto** link=&head;
+        while(auto* slice=*link){
+            if(slice->seq>rep){link=&slice->next;continue;}
+            (slice->large?freedLarge:freedRegular)+=slice->bytes;
+            *link=slice->next;
+            slice->next=expired.release();
+            expired.reset(slice);
         }
-        c.retired.resize(j);
+        c.retired.reset(head);
     }
     if(freedLarge){c.q.stats.retiredLargeBytes.fetch_sub(std::int64_t(freedLarge),std::memory_order_relaxed);}
     if(freedRegular){c.q.stats.retiredRegularBytes.fetch_sub(std::int64_t(freedRegular),std::memory_order_relaxed);}
     if(freedLarge+freedRegular)c.q.stats.retiredBytes.fetch_sub(std::int64_t(freedLarge+freedRegular),std::memory_order_relaxed);
-}   // `dead` is freed here, outside the lock
+}   // Expired bytes are freed outside texMutex.
 // texMutex held. A slice goes: freed now when no recorded command reads it any more, else moved (the storage, not the BufferState) to the retire list with its last reader's seq.
 // Accounting: the current slice (a shadow) leaves shadowBytes/largeShadowBytes at once, a ring slice leaves the ring counters; what is still read counts in retired*Bytes (the ring budget, memory() totals) until trimRetired frees it.
 inline void retireSliceLocked(ProxyBase& p,SliceMem& v,std::uint64_t seq,bool isRing,bool large){
-    if(v.empty())return;
+    if(!v.storage)return;
     StreamCore& c=*p.core;const std::size_t len=p.info.length;auto& st=c.q.stats;
     if(isRing){st.ringBytes.fetch_sub(std::int64_t(len),std::memory_order_relaxed);st.ringSlices.fetch_sub(1,std::memory_order_relaxed);(large?st.ringLargeBytes:st.ringRegularBytes).fetch_sub(std::int64_t(len),std::memory_order_relaxed);}
     else{if(large)c.q.addLargeBytes(-std::int64_t(len));else c.q.addShadowBytes(-std::int64_t(len));}
-    if(seq>c.q.replayedSeq()){c.retired.push_back(StreamCore::Retired{std::move(v),seq,len,large});st.retiredBytes.fetch_add(std::int64_t(len),std::memory_order_relaxed);(large?st.retiredLargeBytes:st.retiredRegularBytes).fetch_add(std::int64_t(len),std::memory_order_relaxed);}
-    SliceMem().swap(v);   // (empty after a move; frees otherwise)
+    if(seq>c.q.replayedSeq()){
+        v.storage->seq=seq;v.storage->bytes=len;v.storage->large=large;
+        v.storage->next=c.retired.release();
+        c.retired=std::move(v.storage);
+        st.retiredBytes.fetch_add(std::int64_t(len),std::memory_order_relaxed);
+        (large?st.retiredLargeBytes:st.retiredRegularBytes).fetch_add(std::int64_t(len),std::memory_order_relaxed);
+    }else v.storage.reset();
 }
 inline void dropShadowLocked(ProxyBase& p,BufferState& s){
     if(!s.shadowOn)return;
@@ -193,7 +207,7 @@ inline bool takeShadow(ProxyBase& p,BufferState& s,bool relock=false){   // a ze
     const std::size_t len=p.info.length;
     const bool large=len&&largeCandidate(p);
     if(!len||!(large?makeRoomForLarge(*p.core,len,relock,&s):makeRoomForBufferShadow(*p.core,len,relock,&s)))return false;
-    try{s.shadow.assign(len+kLockSlack,0);}catch(...){return false;}
+    try{s.shadow.allocate(len+kLockSlack,true);}catch(...){return false;}
     registerShadow(p,s,large);return true;
 }
 inline void initShadow(ProxyBase& p,BufferState& s,bool game=true){   // game=false: an implicit proxy made on the replay thread never shadows
@@ -216,7 +230,7 @@ inline int readBackShadow(ProxyBase& self,BufferState& s){
     StreamCore& core=*self.core;Queue& q=core.q;const UINT len=self.info.length;const bool dyn=dynamicBuffer(self);
     const bool large=largeCandidate(self);
     if(!(large?makeRoomForLarge(core,len,true,&s):(len<=q.shadowItemLimit()&&makeRoomForBufferShadow(core,len,true,&s)))){add(q.stats.relockRefused);add(q.stats.relockRefusedBytes,len);return 0;}
-    try{s.shadow.assign(std::size_t(len)+kLockSlack,0);}catch(...){return 0;}
+    try{s.shadow.allocate(std::size_t(len)+kLockSlack,true);}catch(...){return 0;}
     bool ok=false;
     const bool ran=runTask(core,[&](StreamCore& c){
         if(!self.inner||self.dead.load())return;
@@ -225,8 +239,8 @@ inline int readBackShadow(ProxyBase& self,BufferState& s){
         if(FAILED(hr)||!got)return;
         std::memcpy(s.shadow.data(),got,len);ok=true;
         if(vb)static_cast<IDirect3DVertexBuffer9*>(self.inner)->Unlock();else static_cast<IDirect3DIndexBuffer9*>(self.inner)->Unlock();},Cmd::SyncLock);
-    if(!ran){SliceMem().swap(s.shadow);return -1;}
-    if(!ok){SliceMem().swap(s.shadow);s.shadowDead=true;return 0;}   // the real buffer cannot be read: pass-through as before
+    if(!ran){s.shadow.storage.reset();return -1;}
+    if(!ok){s.shadow.storage.reset();s.shadowDead=true;return 0;}   // the real buffer cannot be read: pass-through as before
     add(dyn?q.stats.dynShadowReadbacks:q.stats.stShadowReadbacks);
     registerShadow(self,s,large);return 1;
 }
@@ -316,7 +330,7 @@ inline bool prepareSliceWrite(ProxyBase& self,BufferState& s,DWORD eff,bool& zc,
                 regular+large+len<=RingRegularBudgetBytes+LargeShadowBudgetBytes;
             if(!room)noRoom=true;
             else{
-                try{BufferState::Slice sl;sl.mem.resize(len+kLockSlack);sl.frame=c.frameNo;s.ring.push_back(std::move(sl));pick=s.ring.size()-1;}catch(...){pick=s.ring.size();allocFailed=true;}   // (resize: uninitialized, the contents of a DISCARD are undefined)
+                try{BufferState::Slice sl;sl.mem.allocate(len+kLockSlack,false);sl.frame=c.frameNo;s.ring.push_back(std::move(sl));pick=s.ring.size()-1;}catch(...){pick=s.ring.size();allocFailed=true;}   // DISCARD leaves the new bytes undefined.
                 if(pick<s.ring.size()){q.stats.ringBytes.fetch_add(std::int64_t(len),std::memory_order_relaxed);(s.large?q.stats.ringLargeBytes:q.stats.ringRegularBytes).fetch_add(std::int64_t(len),std::memory_order_relaxed);q.stats.ringSlices.fetch_add(1,std::memory_order_relaxed);own(q.stats.renameAllocs);raiseMax(q.stats.maxRing,s.ring.size());}
             }
         }
@@ -338,7 +352,7 @@ inline bool prepareSliceWrite(ProxyBase& self,BufferState& s,DWORD eff,bool& zc,
             if(!waitSliceSeq(c,s.ring[pick].seq,SliceWait::Rename))return false;
             if(!s.shadowOn)return true;   // a nested path (ProcessVertices) dropped the shadow and its ring during the wait: nothing left to swap; the caller takes the unshadowed path
         }
-        auto& sl=s.ring[pick];s.shadow.swap(sl.mem);sl.seq=s.sliceSeq;sl.frame=c.frameNo;s.sliceSeq=0;clearPending(s);dropPatches(q,s);own(q.stats.renames);return true;
+        auto& sl=s.ring[pick];s.shadow.storage.swap(sl.mem.storage);sl.seq=s.sliceSeq;sl.frame=c.frameNo;s.sliceSeq=0;clearPending(s);dropPatches(q,s);own(q.stats.renames);return true;
     }
     if(!waitSliceSeq(c,s.sliceSeq,SliceWait::Write))return false;
     applyPatches(q,s);clearPending(s);return true;

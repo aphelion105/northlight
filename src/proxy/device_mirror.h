@@ -430,8 +430,12 @@ public:
         Guard lock(m->gate);bool valid=out&&count&&start<DeviceMirror::Ints&&count<=DeviceMirror::Ints-start;
         const bool known=valid&&m->active()&&allKnown(m->vsIntKnown+start,count);
         if(known){++m->answered;std::memcpy(out,m->vsInt[start],size_t(count)*4*sizeof(int));return D3D_OK;}
-        ++m->forwarded;HRESULT hr=real->GetVertexShaderConstantI(start,out,count);
-        if(valid&&SUCCEEDED(hr)&&m->active()){std::memcpy(m->vsInt[start],out,size_t(count)*4*sizeof(int));for(UINT i=0;i<count;++i)m->vsIntKnown[start+i]=true;}return hr;
+        ++m->forwarded;const auto serial=m->mutations;HRESULT hr=real->GetVertexShaderConstantI(start,out,count);
+        if(valid&&SUCCEEDED(hr)&&m->active()&&m->mutations==serial){
+            std::memcpy(m->vsInt[start],out,size_t(count)*4*sizeof(int));
+            std::memset(m->vsIntKnown+start,1,count);
+        }else if(valid&&m->mutations!=serial)std::memset(m->vsIntKnown+start,0,count);
+        return hr;
     }
     HRESULT STDMETHODCALLTYPE SetVertexShaderConstantB(UINT start,const WINBOOL* data,UINT count) override{
         Guard lock(m->gate);HRESULT hr=real->SetVertexShaderConstantB(start,data,count);
@@ -442,8 +446,12 @@ public:
         Guard lock(m->gate);bool valid=out&&count&&start<DeviceMirror::Bools&&count<=DeviceMirror::Bools-start;
         const bool known=valid&&m->active()&&allKnown(m->vsBoolKnown+start,count);
         if(known){++m->answered;std::memcpy(out,m->vsBool+start,size_t(count)*1*sizeof(WINBOOL));return D3D_OK;}
-        ++m->forwarded;HRESULT hr=real->GetVertexShaderConstantB(start,out,count);
-        if(valid&&SUCCEEDED(hr)&&m->active()){std::memcpy(m->vsBool+start,out,size_t(count)*1*sizeof(WINBOOL));for(UINT i=0;i<count;++i)m->vsBoolKnown[start+i]=true;}return hr;
+        ++m->forwarded;const auto serial=m->mutations;HRESULT hr=real->GetVertexShaderConstantB(start,out,count);
+        if(valid&&SUCCEEDED(hr)&&m->active()&&m->mutations==serial){
+            std::memcpy(m->vsBool+start,out,size_t(count)*1*sizeof(WINBOOL));
+            std::memset(m->vsBoolKnown+start,1,count);
+        }else if(valid&&m->mutations!=serial)std::memset(m->vsBoolKnown+start,0,count);
+        return hr;
     }
     HRESULT STDMETHODCALLTYPE SetPixelShaderConstantF(UINT start,const float* data,UINT count) override{
         Guard lock(m->gate);if(m->synced)m->synced->psFloat(start,count);HRESULT hr=real->SetPixelShaderConstantF(start,data,count);
@@ -453,8 +461,12 @@ public:
         Guard lock(m->gate);bool valid=out&&count&&start<DeviceMirror::PsFloat&&count<=DeviceMirror::PsFloat-start;
         const bool known=valid&&m->active()&&allKnown(m->psFloatKnown+start,count);
         if(known){++m->answered;std::memcpy(out,m->psFloat[start],size_t(count)*4*sizeof(float));return D3D_OK;}
-        ++m->forwarded;HRESULT hr=real->GetPixelShaderConstantF(start,out,count);
-        if(valid&&SUCCEEDED(hr)&&m->active()){std::memcpy(m->psFloat[start],out,size_t(count)*4*sizeof(float));for(UINT i=0;i<count;++i)m->psFloatKnown[start+i]=true;}return hr;
+        ++m->forwarded;const auto serial=m->mutations;HRESULT hr=real->GetPixelShaderConstantF(start,out,count);
+        if(valid&&SUCCEEDED(hr)&&m->active()&&m->mutations==serial){
+            std::memcpy(m->psFloat[start],out,size_t(count)*4*sizeof(float));
+            std::memset(m->psFloatKnown+start,1,count);
+        }else if(valid&&m->mutations!=serial)std::memset(m->psFloatKnown+start,0,count);
+        return hr;
     }
     bool constantStamp(NorthlightConstantEpoch::Stamp& out){
         // Only the typed first read requests the existing-gate certificate.

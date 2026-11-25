@@ -14,7 +14,7 @@ for mt in re.finditer(r'HRESULT STDMETHODCALLTYPE (Set\w+)\(',dev):
 HOOKED={'SetRenderState':'renderState(','SetSamplerState':'sampler(','SetTexture':'texture(','SetViewport':'viewport()','SetRenderTarget':'viewport()',
         'SetVertexShaderConstantF':'vsFloat(','SetPixelShaderConstantF':'psFloat('}
 UNTRACKED={'SetVertexShader','SetPixelShader','SetVertexDeclaration','SetFVF','SetIndices','SetStreamSource','SetStreamSourceFreq','SetDepthStencilSurface',
-           'SetVertexShaderConstantI','SetVertexShaderConstantB','SetSoftwareVertexProcessing'} # no bit: shaders, declaration, ints/bools are examined on every record; streams, indices, depth are not part of the delta
+           'SetVertexShaderConstantI','SetVertexShaderConstantB','SetSoftwareVertexProcessing','SetNPatchMode'} # no bit for stream, index, depth or N-patch state
 checks={
  'every tracked setter clears its slot':all(k in bodies and 'm->synced->'+v in bodies[k] and 'm->synced)' in bodies[k] for k,v in HOOKED.items()),
  'SetRenderTarget clears the viewport only for target 0':'if(n==0&&m->synced)m->synced->viewport()' in bodies.get('SetRenderTarget',''),
@@ -38,7 +38,7 @@ def rawOk(line):
     return i>=0 and 0<=j and j>i and line.find('return MirrorDevice::')>line.find('}return')>0 and line.count('real->')==1
 checks2={
  'every raw Set of a tracked slot is inside the rawActive() branch and falls through to the mirror setter':all(k in rawLines and rawOk(rawLines[k]) for k in trackedRaw),
- 'RawScope brackets its work with invalidate() (entry and exit)':re.search(r'explicit RawScope\(ExtensionDevice& owner\)[^{]*\{\s*owner\.m->invalidate\(\);\+\+owner\.m->rawDepth',m) is not None and re.search(r'~RawScope\(\)\{[^}]*device->m->invalidate\(\);--device->m->rawDepth',m) is not None,
+ 'RawScope brackets its work with invalidate() (entry and exit)':re.search(r'explicit RawScope\(ExtensionDevice& owner\)[^{]*\{[^}]*owner\.m->invalidate\(\);\+\+owner\.m->rawDepth',m) is not None and re.search(r'~RawScope\(\)\{[^}]*device->m->invalidate\(\);--device->m->rawDepth',m) is not None,
  'the raw methods are only generated from the MirrorDevice overrides (a new tracked setter gets its raw branch automatically)':'selected = set(re.findall(' in (fp.SCRIPTS/'generate_extension_raw_methods.py').read_text(),
 }
 stream=fp.src('command_stream.inl').read_text()

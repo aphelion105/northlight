@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# northlight-test: requires=windows-gpu,zig
+# northlight-test: requires=windows-gpu,zig,d3dcompiler
 """Native alpha layers retain coverage through early drains and world composition."""
 
 from source_units import source_text
