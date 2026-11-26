@@ -449,7 +449,12 @@ static void copiesTests(){
  // The observed large working set stays exact through partial writes, without further driver reads.
  {VB a=makeVB(owner,16633856),b=makeVB(owner,18874368),c=makeVB(owner,4672512);
   replayWrite(a,0,4096,D3DLOCK_DISCARD,71);replayWrite(b,0,4096,D3DLOCK_DISCARD,72);replayWrite(c,0,4096,D3DLOCK_DISCARD,73);
-  assert(readSame(a,0,64)&&readSame(b,0,64)&&readSame(c,0,64));C::advanceFrame();assert(readSame(a,0,64)&&readSame(b,0,64)&&readSame(c,0,64));
+  assert(readSame(a,0,64)&&readSame(b,0,64)&&readSame(c,0,64));C::advanceFrame();
+  const auto grants=m.copyLargeGrants.load();b.raw->readLocks=c.raw->readLocks=0;
+  assert(readSame(a,0,64)&&readSame(b,0,64)&&readSame(c,0,64));
+  assert(m.copyLargeGrants.load()==grants+1&&b.raw->readLocks==1&&c.raw->readLocks==1);
+  C::advanceFrame();assert(readSame(b,0,64)&&readSame(c,0,64));assert(m.copyLargeGrants.load()==grants+2);
+  C::advanceFrame();assert(readSame(c,0,64));assert(m.copyLargeGrants.load()==grants+3);
   assert(m.copyLargeBytes.load()==UINT(16633856+18874368+4672512));a.raw->readLocks=b.raw->readLocks=c.raw->readLocks=0;
   for(int i=0;i<5;++i){C::advanceFrame();replayWrite(a,100,300,D3DLOCK_NOOVERWRITE,73+i);replayWrite(b,4096,512,D3DLOCK_NOOVERWRITE,79+i);assert(readSame(a,0,8192)&&readSame(b,0,8192)&&readSame(c,0,8192));}
   assert(a.raw->readLocks==0&&b.raw->readLocks==0&&c.raw->readLocks==0);freeVB(a);freeVB(b);freeVB(c);assert(m.copyLargeBytes.load()==0);
@@ -457,7 +462,8 @@ static void copiesTests(){
   const auto refusals=C::takeRefusals();assert(refusals.tooLarge==2&&refusals.largestBuffer==C::kLargeCopyBytes+1);}
  // One fill may reclaim several cold holders; active readers and the total byte cap remain protected.
  {std::vector<VB> cold;for(int i=0;i<4;++i){cold.push_back(makeVB(owner,8u<<20));assert(readSame(cold.back(),0,64));}
-  C::advanceFrame();for(auto& b:cold)assert(readSame(b,0,64));assert(m.copyLargeBytes.load()==(32u<<20));
+  for(std::size_t i=0;i<cold.size();++i){C::advanceFrame();assert(readSame(cold[i],0,64));}
+  assert(m.copyLargeBytes.load()==(32u<<20));
   VB next=makeVB(owner,24u<<20);assert(readSame(next,0,64));for(unsigned i=0;i<C::kLargeRefillFrames+1;++i)C::advanceFrame();
   assert(readSame(next,0,64));C::advanceFrame(); // The long gap restarts the two-recent-frame admission proof.
   const auto drops=m.copyLargeDrops.load();assert(readSame(next,0,64));assert(m.copyLargeDrops.load()==drops+2&&m.copyLargeBytes.load()==C::kLargeCapBytes);
@@ -471,28 +477,15 @@ static void copiesTests(){
   assert(served()==s0+5&&fallback()==f0&&b.raw->readLocks==0);
   // an index buffer, raw as well
   freeVB(b);}
- // A large copy can retire while the game writes. Regular entries, pins and useful comparisons stay.
- {constexpr UINT bytes=8u<<20;const auto ordinary=m.copyResidentBytes.load(),large=m.copyLargeBytes.load();
-  VB idle=makeVB(owner,bytes),pinned=makeVB(owner,bytes),matched=makeVB(owner,bytes);
-  VB small=makeVB(owner,4096);assert(readSame(small,0,64));
-  for(unsigned i=0;i<2;++i){
-   assert(readSame(idle,0,64)&&readSame(pinned,0,64)&&readSame(matched,0,64));C::advanceFrame();}
-  assert(m.copyLargeBytes.load()==large+3*bytes);
-  C::Slot* pinnedSlot=nullptr;const auto* held=C::read(pinned.raw,0,64,pinnedSlot);assert(held&&pinnedSlot);
-  C::Slot* matchedSlot=nullptr;assert(C::read(matched.raw,0,64,matchedSlot)&&matchedSlot);C::unpin(*matchedSlot);
-  for(unsigned f=0;f<C::kUnusedCopyFrames+C::kUnusedCopySweepFrames;++f){
-   replayWrite(idle,0,64,D3DLOCK_NOOVERWRITE,f);
-   assert(C::unchangedWrite(*matchedSlot,0,64,matched.raw->mem.data()));
+ // A turn after a long stretch of snapshot hits can reuse a large buffer on its first read.
+ {constexpr UINT bytes=8u<<20;VB idle=makeVB(owner,bytes);
+  assert(readSame(idle,0,64));C::advanceFrame();assert(readSame(idle,0,64));
+  assert(m.copyLargeBytes.load()==bytes);idle.raw->readLocks=0;
+  for(unsigned f=0;f<600;++f){
+   if(f%37==0)replayWrite(idle,0,64,D3DLOCK_NOOVERWRITE,f);
    C::advanceFrame();}
-  assert(m.copyLargeBytes.load()==large+2*bytes&&!std::memcmp(held,pinned.raw->mem.data(),64));
-  assert(m.copyResidentBytes.load()==ordinary+4096);
-  C::unpin(*pinnedSlot);
-  for(unsigned f=0;f<C::kUnusedCopySweepFrames;++f)C::advanceFrame();
-  assert(m.copyLargeBytes.load()==large+bytes);
-  idle.raw->readLocks=0;assert(readSame(idle,0,64)&&idle.raw->readLocks==1);
-  C::advanceFrame();assert(readSame(idle,0,64)&&idle.raw->readLocks==2&&m.copyLargeBytes.load()==large+2*bytes);
-  freeVB(idle);freeVB(pinned);freeVB(matched);freeVB(small);
-  assert(m.copyLargeBytes.load()==large&&m.copyResidentBytes.load()==ordinary);}
+  assert(readSame(idle,0,64)&&idle.raw->readLocks==0&&m.copyLargeBytes.load()==bytes);
+  freeVB(idle);assert(m.copyLargeBytes.load()==0);}
  // R2: a working set above the cap does not refill every frame: fills per frame are bounded, the rest takes the small-range locks
  {C::setPressure(true);const UINT big=1u<<20;std::vector<VB> v;for(int i=0;i<12;++i){v.push_back(makeVB(owner,big));replayWrite(v.back(),0,4096,0,30+i);} // 12 MiB > the 8 MiB pressure cap; each is <= cap/4
   const auto fills0=m.copyFills.load(),fb0=fallback();unsigned frames=100,maxPerFrame=0;
