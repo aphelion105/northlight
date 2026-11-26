@@ -44,6 +44,7 @@ CLIENT_KEY = bytes.fromhex('c2b3723cc6aed9b5343c53ee2f4367ce')
 SCENES = ('solo', 'crowd', 'm2-stress', 'rain', 'shoreline', 'interior', 'terrain', RATCHET_PAN)
 RAIN_STATE = 5  # Heavy rain in the 3.3.5 SMSG_WEATHER state table.
 CROWD_SIZES = range(50, 129)
+SMALL_BENCHMARK_CROWD = 8
 DEFAULT_CROWD_SIZE = 128
 M2_STRESS_SIZE = 512
 CROWD_BATCH_SIZE = 32
@@ -66,8 +67,8 @@ LOCAL_APPEARANCE = (1, 0, 49, 1, 49)
 
 
 def crowd_roster(count=DEFAULT_CROWD_SIZE, *, stress=False):
-    if count not in ((M2_STRESS_SIZE,) if stress else CROWD_SIZES):
-        raise ValueError(f'The M2 stress scene needs {M2_STRESS_SIZE} players' if stress else 'The crowd needs 50–128 players')
+    if (count != M2_STRESS_SIZE if stress else count != SMALL_BENCHMARK_CROWD and count not in CROWD_SIZES):
+        raise ValueError(f'The M2 stress scene needs {M2_STRESS_SIZE} players' if stress else 'The crowd needs 8 or 50–128 players')
     forward_x, forward_y = math.cos(SPAWN[3]), math.sin(SPAWN[3])
     roster = {}
     columns = 32 if stress else 12
@@ -240,6 +241,17 @@ def ratchet_camera_marker(body):
     return None
 
 
+def gameplay_message(body):
+    if body[:4] != struct.pack('<I', 1) or not body.endswith(b'\0') or len(body) > 264:
+        return None
+    prefix = b'NorthlightBench:'
+    if body[8:].startswith(prefix):
+        message = body[8 + len(prefix):-1].decode('ascii', errors='replace')
+        if message.isascii() and message.isprintable():
+            return message
+    return None
+
+
 def character_list(spawn=SPAWN, *, map_id=MAP, zone=ZONE):
     appearance = bytes([1, 1, 0, 0, 0, 0, 0, 0, 80])  # Human male warrior.
     position = struct.pack('<II3f', zone, map_id, *spawn[:3])
@@ -341,7 +353,7 @@ def turn_packet(spawn, move_time, *, flying=False):
 
 
 def world(sock, session, scene, crowd_size=DEFAULT_CROWD_SIZE, return_to_menu=None, camera_turn=None, *,
-          flying=False, camera_route=None, camera_updates=None):
+          flying=False, camera_route=None, camera_updates=None, gameplay_benchmark=False):
     roster = scene_roster(scene, crowd_size)
     spawn = spawn_for(scene)
     map_id, zone, _ = map_for(scene)
@@ -391,16 +403,28 @@ def world(sock, session, scene, crowd_size=DEFAULT_CROWD_SIZE, return_to_menu=No
         weather_triggered = set()
         pending_camera = None
         route_sequence = 1
+        benchmark_requested = benchmark_armed = False
+
+        def arm_benchmark():
+            nonlocal benchmark_armed
+            if benchmark_requested and not benchmark_armed and len(named) == len(roster):
+                text = b'NorthlightBenchReady\0'
+                send(0x096, struct.pack('<BIQIQI', 0, 0, 0, 0, 0, len(text)) + text + b'\0')
+                benchmark_armed = True
+                print(f'BENCH_ARM actors={len(named)}', flush=True)
+
         def send_camera_updates(sequence):
             if camera_updates:
                 for opcode, payload in camera_updates.get(sequence, ()):
                     send(opcode, payload)
 
         def end_world():
+            nonlocal benchmark_requested, benchmark_armed
             send(0x04C, bytes(4) + b'\x01')
             send(0x04D, b'')
             named.clear()
             weather_triggered.clear()
+            benchmark_requested = benchmark_armed = False
             print('PLAYER_LOGOUT', flush=True)
         while True:
             if in_world and (return_to_menu is not None or camera_turn is not None or camera_route is not None):
@@ -456,8 +480,16 @@ def world(sock, session, scene, crowd_size=DEFAULT_CROWD_SIZE, return_to_menu=No
                 in_world = True
             elif opcode == 0x1DC and len(body) == 8:
                 send(0x1DD, body[:4])
-            elif opcode == 0x095 and in_world and scene == RATCHET_PAN:
-                if phase := ratchet_camera_marker(body):
+            elif opcode == 0x095 and in_world:
+                if gameplay_benchmark and (message := gameplay_message(body)):
+                    if message == 'arm':
+                        benchmark_requested = True
+                        arm_benchmark()
+                    elif benchmark_armed and message in ('start', 'right', 'done'):
+                        print(f'BENCH phase={message} tick_ns={time.monotonic_ns()}', flush=True)
+                    elif benchmark_armed and (message.startswith(('header:', 'data:')) or message == 'complete'):
+                        print(f'BENCH_PAYLOAD {message}', flush=True)
+                elif scene == RATCHET_PAN and (phase := ratchet_camera_marker(body)):
                     tick = ctypes.windll.kernel32.GetTickCount() & 0xffffffff
                     print(f'RATCHET_CAMERA phase={phase} tick={tick}', flush=True)
             elif (opcode == 0x0C7 and pending_camera is not None and len(body) == 10 and
@@ -479,6 +511,7 @@ def world(sock, session, scene, crowd_size=DEFAULT_CROWD_SIZE, return_to_menu=No
                     if guid != 1 and guid not in named:
                         named.add(guid)
                         print(f'CROWD_NAME guid={guid}', flush=True)
+                        arm_benchmark()
             elif opcode == 0x04B and in_world:
                 end_world()
                 in_world = False
@@ -509,8 +542,12 @@ def main():
     parser.add_argument('--return-to-menu', type=Path, help='Private runner marker for a server-initiated logout')
     parser.add_argument('--camera-turn', type=Path, help='Private runner marker for a same-position heading change')
     parser.add_argument('--flying', action='store_true', help='Spawn the local player in flight with gravity disabled')
-    parser.add_argument('--crowd-size', type=int, choices=CROWD_SIZES, default=DEFAULT_CROWD_SIZE, metavar='50..128')
+    parser.add_argument('--crowd-size', type=int, choices=(SMALL_BENCHMARK_CROWD, *CROWD_SIZES),
+                        default=DEFAULT_CROWD_SIZE, metavar='8,50..128')
+    parser.add_argument('--gameplay-benchmark', action='store_true', help='Authorize the in-world timing add-on')
     args = parser.parse_args()
+    if args.crowd_size == SMALL_BENCHMARK_CROWD and not args.gameplay_benchmark:
+        parser.error('The 8-player crowd requires --gameplay-benchmark')
     session = {}
     with listen(args.auth_port) as auth, listen(0) as game:
         port = game.getsockname()[1]
@@ -518,7 +555,7 @@ def main():
         thread.start()
         print(f'READY auth={auth.getsockname()[1]} world={port}', flush=True)
         serve(game, lambda sock: world(sock, session, args.scene, args.crowd_size, args.return_to_menu,
-                                       args.camera_turn, flying=args.flying))
+                                       args.camera_turn, flying=args.flying, gameplay_benchmark=args.gameplay_benchmark))
 
 
 if __name__ == '__main__':

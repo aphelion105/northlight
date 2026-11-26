@@ -38,6 +38,7 @@ LOOPBACK = '127.0.0.1'
 REALMLIST = 'Data/enGB/realmlist.wtf'
 PAN_ADDON = 'NorthlightRatchetPan'
 PAN_ADDON_FILES = tuple(f'Interface/AddOns/{PAN_ADDON}/{PAN_ADDON}.{suffix}' for suffix in ('toc', 'lua'))
+RATCHET_TILES = {f'{x}_{y}' for x in range(38, 41) for y in range(32, 35)}
 PACKAGE_RUNTIME_FILES = frozenset((
     'northlight-renderer.ini', 'northlight-quality.ini', 'celestial-profiles.ini',
     'shadow-range-profiles.ini', 'forever-atmosphere.bin',
@@ -116,7 +117,7 @@ def renderer_profile(text):
     return ''.join(f'[{name}]\n' + '\n'.join(lines) + '\n' for name, lines in sections.items())
 
 
-def copies(source, world=SCENE, game='Wow.exe', tiles=None):
+def copies(source, world=SCENE, game='Wow.exe', tiles=None, *, data=None):
     if game == 'WowClient64.exe':
         yield Path('WardenWorker32.exe')
         yield Path('Wow.exe')
@@ -126,8 +127,11 @@ def copies(source, world=SCENE, game='Wow.exe', tiles=None):
                  'fogdata.bin', 'shadow-range-profiles.ini', 'celestial-profiles.ini', 'water-core.dll'):
         if (source / name).is_file():
             yield Path(name)
-    yield from (p.relative_to(source) for p in (source / 'Data').rglob('*')
+    data = data or source / 'Data'
+    yield from (Path('Data') / p.relative_to(data) for p in data.rglob('*')
                 if p.is_file() and p.suffix.lower() == '.mpq')
+    if world is None:
+        return
     cache = source / 'world-cache'
     # Include only meshes referenced by the staged tile records. The runtime
     # can select new neighboring tiles along the same test route.
@@ -258,7 +262,7 @@ def stage(args):
     if not (source / 'Data/enGB/base-enGB.MPQ').is_file() or not (source / 'world-cache' / world).is_dir():
         raise ValueError(f'The fixture requires enGB MPQs and the installed {world} cache')
     clock_image = fixed_clock_image((source / 'Wow.exe').read_bytes()) if args.frame_parity else None
-    tiles = {f'{x}_{y}' for x in range(38, 41) for y in range(32, 35)} if ratchet else None
+    tiles = RATCHET_TILES if ratchet else None
     files = list(copies(source, world, game, tiles))
     if ratchet and Path('world-cache/Kalimdor/39_33.fg3') not in files:
         raise ValueError('Missing the Ratchet static geometry tile')
@@ -874,11 +878,12 @@ def observed_terrain_capture(lines):
     return {'ready': ready, 'renderer_line': recent or None}
 
 
-def advance_login(hwnd, events, actions, start, now, enter_world=True, *, x64=False):
-    if 'login' not in actions and now - start >= (7 if x64 else 3):
+def advance_login(hwnd, events, actions, start, now, enter_world=True, *, x64=False, slow_login=False):
+    slow_login = x64 or slow_login
+    if 'login' not in actions and now - start >= (7 if slow_login else 3):
         login_input(hwnd)
         actions['login'] = now
-    if (x64 and 'login' in actions and 'login_retry' not in actions and 'REALM_LIST_SENT' not in events and
+    if (slow_login and 'login' in actions and 'login_retry' not in actions and 'REALM_LIST_SENT' not in events and
             now - actions['login'] >= 6):
         press_key(hwnd, 0x0d)
         actions['login_retry'] = now

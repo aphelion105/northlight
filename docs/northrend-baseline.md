@@ -1,5 +1,8 @@
 # Northrend baseline and D3D9 replay
 
+For the cross-backend FPS runs in Dalaran and Ratchet, use the
+[gameplay benchmarks](gameplay-benchmarks.md).
+
 The Windows fixture runs the actual x86 WoW 3.3.5a client against a single Python process on `127.0.0.1`. The server performs login, lists one Human character and places it at `(5846.67, 604.13, 657.0)` on map 571 with fixed orientation and a 12:00 login time. The client uses its own MPQs. The fixture covers the empty square and a crowd of equipped player models. It needs only the local client assets and simulates the rendering workload. The login fixture implements the required packet layouts from [TrinityCore 3.3.5](https://github.com/TrinityCore/TrinityCore/tree/3.3.5/src/server/game/Server) and the [WoW SRP/ARC4 protocol reference](https://docs.rs/wow_srp/0.7.0/wow_srp/wrath_header/index.html).
 
 ## Stage and measure
