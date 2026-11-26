@@ -74,7 +74,7 @@ class Profiles(unittest.TestCase):
         data['profiles'][name]['variants']={'a'*64:good};path.write_text(json.dumps(data))
         self.assertEqual(p.load(path)[name]['variants'],{'a'*64:good})
     def test_catalog_profiles_unchanged_by_variants(self):
-        # Check the approved Borean offset separately, then compare the other
+        # Check the reviewed offsets separately, then compare the other
         # primary profile settings with the reviewed 0.3.110..0.3.162 catalog.
         data=json.loads(fp.tracked('outdoor-light-profiles.json').read_text())
         variants={name:x.pop('variants') for name,x in data['profiles'].items() if 'variants' in x}
@@ -83,6 +83,10 @@ class Profiles(unittest.TestCase):
         self.assertEqual(blue_bonfire['position'],[0,0,4.4])
         blue_bonfire['position']=[0,0,1.5]
         blue_bonfire['position_basis']='authored flame/bulb offset reviewed against installed mesh bounds'
+        green_brazier=data['profiles']['world\\lordaeron\\scholomance\\passivedoodads\\brazier\\scholomancebrazier01green.m2']
+        self.assertEqual(green_brazier['position'],[0.129,-0.004,2.227])
+        green_brazier['position']=[0.129,-0.004,1.847]
+        green_brazier['position_basis']=r'installed luminous skin-batch bounds center: world\generic\human\passive doodads\candelabras\glowwhite32.blp'
         self.assertEqual(hashlib.sha256((json.dumps(data,indent=2)+'\n').encode()).hexdigest(),
                          '592dfdc945bd7ed81de005570bb18ef69916920f0b04dce0d4d44b4ba88c6f7a')
         self.assertEqual(len(variants),6)

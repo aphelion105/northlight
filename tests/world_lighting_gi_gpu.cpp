@@ -89,7 +89,7 @@ int main(int argc,char** argv){
   solid(2,{0,0,0,0});solid(3,{0,0,0,0});
   const std::array<float,3> daylight={.99f,.61f,.305f};
   float previousGain=0;
-  for(float strength:{.25f,1.f,2.f}){
+  for(float strength:{.25f,2.f,4.f}){
    solid(14,{daylight[0]*strength,daylight[1]*strength,daylight[2]*strength,0});
    ok(d->SetPixelShaderConstantF(0,c[0],128));ok(d->SetPixelShader(prelitSdr));
    ok(d->BeginScene());quad();ok(d->EndScene());const auto values=image(light);
@@ -97,7 +97,8 @@ int main(int argc,char** argv){
    for(unsigned k=0;k<3;++k){
     const float actual=half(values[((H/2)*W+W/2)*4+k]);
     assert(actual>c[18][k]&&actual<1.f);
-    const float channelScale=(actual-c[18][k])/(daylight[k]*strength);
+    const float albedo=sceneLinear[k]/c[18][k];
+    const float channelScale=(srgbToLinear(actual)-sceneLinear[k])/(albedo*daylight[k]*strength);
     if(!k)scale=channelScale;
     else assert(std::fabs(channelScale-scale)<.004f);
    }
