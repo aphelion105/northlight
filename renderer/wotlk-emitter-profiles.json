@@ -1,5 +1,16 @@
 {
   "version": 1,
+  "wmo_point_omissions": {
+    "Azeroth": [
+      {
+        "model": "world\\wmo\\dungeon\\md_mountaincave\\md_icecave03.wmo",
+        "asset_sha256": "4cfe238823b89e7d9ab440f94db44460ef9de09490a633f856f8b641c02ba694",
+        "placement": 350747,
+        "sources": [0, 1],
+        "basis": "At this Dun Morogh entrance the two MOLT points are suspended about 28 to 30 yards above cave geometry directly underneath. The 8.33-yard points leave the ice and stalactites unchanged. The second creates a detached green patch above the entrance that persists with WorldFog disabled."
+      }
+    ]
+  },
   "native_anchors": {
     "world\\generic\\orc\\passive doodads\\firepits\\largefirepit01.m2": {
       "model_sha256": "106968b38aebdd3946d7aac5dc91f029d637d2542c0f3f5ff5afe86090af7d22",

@@ -69,6 +69,24 @@ def native_placement_ranges():
                 ranges[key]=(sha,end)
     return ranges
 
+def wmo_point_omissions():
+    extension=Path(__file__).with_name('wotlk-emitter-profiles.json')
+    if not extension.exists():return {}
+    omissions={}
+    for map_name,entries in json.loads(extension.read_text()).get('wmo_point_omissions',{}).items():
+        for entry in entries:
+            model,sha,uid=entry['model'],entry['asset_sha256'],entry['placement']
+            sources=entry['sources']
+            key=(map_name,model,uid,sha)
+            if (not model.startswith('world\\') or not model.endswith('.wmo')
+                    or model!=model.lower().replace('/','\\') or not re.fullmatch('[0-9a-f]{64}',sha)
+                    or type(uid) is not int or not 0<uid<2**64 or key in omissions
+                    or not sources or any(type(i) is not int or not 0<=i<2**31 for i in sources)
+                    or len(set(sources))!=len(sources)):
+                raise ValueError('Invalid WMO point omission: '+model)
+            omissions[key]=frozenset(sources)
+    return omissions
+
 def pinned(p):
     """{asset sha256: emitter fields} of every asset a profile covers, the profile's own first."""
     fields=(*EMITTER,*(k for k in FIXTURE_OPTIONS if k in p))

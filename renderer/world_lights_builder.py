@@ -232,6 +232,7 @@ def build(cache,output,maps,assets=None,manifest='manifest.json'):
     from world_fixture_emission import native_fixture_offsets
     catalog=outdoor_light_profiles.load()
     native_ranges=outdoor_light_profiles.native_placement_ranges()
+    wmo_omissions=outdoor_light_profiles.wmo_point_omissions()
     started=time.time();assets=assets or Assets();stats=collections.Counter();extracted={};provenance={};errors=[];reports=[]
     placement_cache={};placement_provenance={};unsupported_assets={};attachment_templates={};native_templates={};world_end_limits={}
     emitter_index=world_emitter_index.Index(assets)
@@ -313,7 +314,13 @@ def build(cache,output,maps,assets=None,manifest='manifest.json'):
                     except (ValueError,FileNotFoundError,IndexError,KeyError,struct.error) as exc:
                         extracted[path]=[];errors.append({'asset':path,'error':str(exc)})
                 try:
-                    placed=instance_lights(extracted[path],r,path,max_world_end=world_end_limits.get(path))
+                    sources=extracted[path]
+                    omitted=wmo_omissions.get((mapname,path,uid,provenance.get(path,{}).get('asset_sha256')))
+                    if omitted:
+                        kept=[light for light in sources if light[5]!=1 or light[4] not in omitted]
+                        stats['reviewed_wmo_points_omitted']+=len(sources)-len(kept)
+                        sources=kept
+                    placed=instance_lights(sources,r,path,max_world_end=world_end_limits.get(path))
                     native_range=native_ranges.get((mapname,path,uid))
                     if native_range and provenance.get(path,{}).get('asset_sha256')==native_range[0]:
                         end=native_range[1]
@@ -321,9 +328,9 @@ def build(cache,output,maps,assets=None,manifest='manifest.json'):
                                 for light in placed]
                     records.extend(placed)
                     attachments.extend(light_attachments.placed(attachment_templates.get(path,[]),r,
-                        [(source[4],light) for source,light in zip(extracted[path],placed)]))
+                        [(source[4],light) for source,light in zip(sources,placed)]))
                     attachments.extend(light_attachments.placed_native(native_templates.get(path,[]),r,
-                        [(source[4],light) for source,light in zip(extracted[path],placed)]))
+                        [(source[4],light) for source,light in zip(sources,placed)]))
                     for light in placed:
                         owners[light[8]]=(kind,uid)
                         if light[9]==3:profile_counts[path]+=1
