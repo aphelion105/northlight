@@ -96,7 +96,11 @@ inline bool readFile(const std::string& path,std::vector<Light>& output) {
     if(!f)return false;
     for(size_t i=0;i<candidate.size();++i)
         if(!valid(candidate[i])||(candidate[i].flags&NativeSceneEmitter)||(i&&candidate[i-1].sourceId>=candidate[i].sourceId))return false;
-    if(header[0]==1)for(auto& l:candidate)if(l.kind==2&&!(l.flags&Flash))l=nativeModelTransport(l);
+    if(header[0]==1)for(auto& l:candidate){
+        // Legacy WMO records used the source kind to request point shadows.
+        if(l.kind==1)l.flags|=CastShadow;
+        if(l.kind==2&&!(l.flags&Flash))l=nativeModelTransport(l);
+    }
     output.swap(candidate);return true;
 }
 class Cache {
