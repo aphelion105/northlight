@@ -34,8 +34,12 @@ The default `--desktop private` runs on an inactive Windows desktop. Use
 `--desktop interactive` for a background window on the current desktop if the
 driver cannot initialize on an inactive desktop. Use `--desktop foreground`
 for a focused run when the client brings its window forward during the
-Ratchet sweeps. Keep the same focus and desktop mode across repeats. The runner
-rejects any run that switches focus during the sample.
+Ratchet sweeps. If Windows leaves the game in the background, click the game
+window during warm-up and leave it focused. For 3840×2160, the maximized game
+window must have a 3840×2160 client area. If the report shows a smaller area,
+select a supported resolution that fits your display. Keep the same focus and
+desktop mode across repeats. The runner rejects any run that switches focus or
+size during the sample and reports the observed values.
 
 | Case | Runtime arguments and expected backend |
 | --- | --- |
@@ -77,6 +81,11 @@ samples, client size, and backend evidence before marking the run `PASS`.
 - `client-runtime.log` records the verified client executable bitness, observed D3D9, D3D9Ex or Vulkan path, DXVK version, D3D9On12 status, output mode, and Northlight effects. The same data appears under `runtime` in the JSON reports.
 - `frame-times.csv` contains the raw game-frame intervals in milliseconds. `avg_fps` is the frame count divided by elapsed seconds. `low_0_1_fps` is 1000 divided by the mean frame time of the slowest `ceil(frames / 1000)` frames. `worst_ms` records the longest measured interval.
 - `server.log`, the launch profile, and available renderer and driver logs are retained for failed runs too.
+
+The DXVK console result reports `northlight` and `dxvk` even when timing fails.
+`northlight=effects-enabled` confirms that Northlight wrapped the D3D9 device
+with effects enabled. The benchmark disables the Northlight settings overlay,
+so the settings panel shortcut is unavailable in the staged client.
 
 The D3D9 report uses the renderer's quality log, applied settings, and effect
 toggles. It reports which effects are enabled for the scene. The Vulkan report

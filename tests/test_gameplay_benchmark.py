@@ -68,8 +68,16 @@ class GameplayBenchmarkTests(unittest.TestCase):
             bench.check_window(report, observations, size, foreground=foreground)
             self.assertEqual(report['foreground_samples'], 20 if foreground else 0)
             observations[-1] = (not foreground, size)
-            with self.assertRaisesRegex(ValueError, 'stable'):
+            with self.assertRaisesRegex(ValueError, f'foreground in {19 if foreground else 1}/20 samples'):
                 bench.check_window(report, observations, size, foreground=foreground)
+
+    def test_window_report_identifies_size_changes_and_disappearance(self):
+        size = (3840, 2160)
+        observations = [(False, size)] * 18 + [(False, (1920, 1080)), (False, None)]
+        report = {'focus_mode': 'background'}
+        with self.assertRaisesRegex(ValueError, 'missing in 1/20 samples.*expected client size 3840x2160, '
+                                    'observed 1920x1080, 3840x2160'):
+            bench.check_window(report, observations, size, foreground=False)
 
     def test_gameplay_messages_do_not_change_ratchet_pan_markers(self):
         say = struct.pack('<II', 1, 0)

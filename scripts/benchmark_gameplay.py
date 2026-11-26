@@ -234,11 +234,22 @@ def park_window(user, hwnd):
 def check_window(report, observations, size, *, foreground):
     report['focus_samples'] = len(observations)
     report['foreground_samples'] = sum(focused for focused, _ in observations)
-    report['observed_sizes'] = sorted({extent for _, extent in observations})
+    report['observed_sizes'] = sorted({extent for _, extent in observations if extent is not None})
+    missing = sum(extent is None for _, extent in observations)
     expected_focus = len(observations) if foreground else 0
-    if (len(observations) < 20 or report['foreground_samples'] != expected_focus or
-            report['observed_sizes'] != [size]):
-        raise ValueError(f'The timing window needs stable {report["focus_mode"]} focus and the requested client size')
+    problems = []
+    if len(observations) < 20:
+        problems.append(f'only {len(observations)} window samples, expected at least 20')
+    if missing:
+        problems.append(f'game window missing in {missing}/{len(observations)} samples')
+    if report['foreground_samples'] != expected_focus:
+        problems.append(f'expected stable {report["focus_mode"]} focus, '
+                        f'foreground in {report["foreground_samples"]}/{len(observations)} samples')
+    if report['observed_sizes'] != [size] and report['observed_sizes']:
+        observed = ', '.join(f'{width}x{height}' for width, height in report['observed_sizes'])
+        problems.append(f'expected client size {size[0]}x{size[1]}, observed {observed}')
+    if problems:
+        raise ValueError('Timing window rejected (' + ' | '.join(problems) + ')')
 
 
 def measure(args, scene, output, client, report):
@@ -311,25 +322,37 @@ def measure(args, scene, output, client, report):
         actions, focus, events = {}, [], []
         report['login_actions'] = actions
         expected_size = tuple(map(int, args.resolution.split('x')))
+        foreground = args.desktop == 'foreground'
         placed = None
+        next_placement = start
+        spawned = armed = False
         while process.poll() is None and time.monotonic() - start < args.timeout:
             if desktop:
                 desktop.confirm_inactive()
             hwnd = next(iter(live.process_windows(process.pid, window_class)), None)
             events = live.log_lines(server_log)
+            now = time.monotonic()
+            spawned = spawned or any(line.startswith('PLAYER_SPAWN ') for line in events)
+            armed = armed or any(line.startswith('BENCH_ARM ') for line in events)
             if hwnd:
                 report['runtime']['window_class'] = window_class
-                if not desktop and hwnd != placed and any(line.startswith('PLAYER_SPAWN ') for line in events):
-                    if args.desktop == 'foreground':
+                # Windows can deny activation during the login-to-world transition.
+                # Retry in the warm-up only, before the fixture arms the timing window.
+                if (not desktop and spawned and not armed and now >= next_placement and
+                        (hwnd != placed or (user.GetForegroundWindow() == hwnd) != foreground)):
+                    if foreground:
                         live.focus_private_window(hwnd)
                     else:
                         park_window(user, hwnd)
                     placed = hwnd
+                    next_placement = now + 1
                 focus.append((time.monotonic_ns(), user.GetForegroundWindow() == hwnd,
                               live.window_extent(hwnd, client=True)))
-                live.advance_login(hwnd, events, actions, start, time.monotonic(), slow_login=True)
-                if 'BENCH_PAYLOAD complete' in events:
-                    break
+                live.advance_login(hwnd, events, actions, start, now, slow_login=True)
+            elif spawned:
+                focus.append((time.monotonic_ns(), False, None))
+            if 'BENCH_PAYLOAD complete' in events:
+                break
             time.sleep(.1)
         else:
             last_event = events[-1] if events else 'none'
@@ -338,7 +361,7 @@ def measure(args, scene, output, client, report):
         timing, frames = read_timing(events, scene)
         ticks = timing['phase_tick_ns']
         observed = [(focused, size) for tick, focused, size in focus if ticks['start'] <= tick <= ticks['done']]
-        check_window(report, observed, expected_size, foreground=args.desktop == 'foreground')
+        check_window(report, observed, expected_size, foreground=foreground)
         report.update(timing)
         with (output / 'frame-times.csv').open('x', encoding='ascii', newline='') as file:
             rows = csv.writer(file)
@@ -388,8 +411,11 @@ def attempt(args, scene):
             report['error'] = str(error)
     write_runtime(output, report)
     live.write_json(output / 'result.json', report)
+    details = [report['error']] if 'error' in report else []
+    if args.case.endswith('-dxvk'):
+        details.extend(f'{key}={report["runtime"][key]}' for key in ('northlight', 'dxvk'))
     print(f'{report["status"]}: {output / "result.json"}' +
-          (f' ({report["error"]})' if 'error' in report else ''), flush=True)
+          (' (' + ', '.join(details) + ')' if details else ''), flush=True)
     return report
 
 
