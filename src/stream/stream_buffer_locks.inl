@@ -188,10 +188,10 @@ inline bool makeRoomForBufferShadow(StreamCore& c,std::size_t bytes,bool relock,
 // large shadow and mayEvict, that one is dropped if unlocked and idle for kLargeIdleFrames, LRU). Game thread.
 inline bool largeCandidate(const ProxyBase& p){const std::size_t len=p.info.length;return dynamicBuffer(p)&&len>p.core->q.shadowItemLimit()&&len<=kMaxLargeShadow;}
 inline bool makeRoomForLarge(StreamCore& c,std::size_t bytes,bool mayEvict,const BufferState* keep){
-    trimRetired(c);   // 0.3.204 (task 21): retired slices the replay thread has passed count against the allowance until freed
+    trimRetired(c);
     if(c.q.largeAdmit(bytes))return true;
     if(!mayEvict||bytes>kMaxLargeShadow)return false;
-    {   // 0.3.204: up to two holders: evict only if the idle unlocked ones (LRU prefix) free enough, else refuse and drop nothing
+    {   // Evict only if idle unlocked shadows free enough room.
         std::lock_guard<std::mutex> l(c.texMutex);std::size_t freeable=0;
         for(const BufferState* s=c.bufLarge.head;s&&c.frameNo>=s->lastUse+kLargeIdleFrames;s=s->lru.next)if(s!=keep&&s->mode==BufferState::Free&&!slicesBusy(c,*s))freeable+=s->proxy->info.length;
         if(c.q.largeBytes()-std::min(freeable,c.q.largeBytes())+bytes>LargeShadowBudgetBytes)return false;
@@ -199,7 +199,7 @@ inline bool makeRoomForLarge(StreamCore& c,std::size_t bytes,bool mayEvict,const
     while(!c.q.largeAdmit(bytes)){
         std::lock_guard<std::mutex> l(c.texMutex);
         BufferState* victim=nullptr;
-        for(BufferState* s=c.bufLarge.head;s&&c.frameNo>=s->lastUse+kLargeIdleFrames;s=s->lru.next)if(s!=keep&&s->mode==BufferState::Free&&!slicesBusy(c,*s)){victim=s;break;}   // (at most a few entries)
+        for(BufferState* s=c.bufLarge.head;s&&c.frameNo>=s->lastUse+kLargeIdleFrames;s=s->lru.next)if(s!=keep&&s->mode==BufferState::Free&&!slicesBusy(c,*s)){victim=s;break;}
         if(!victim)return false;
         ProxyBase& vp=*victim->proxy;noteShadowEvicted(c,vp);dropShadowLocked(vp,*victim);
     }
@@ -328,8 +328,8 @@ inline bool prepareSliceWrite(ProxyBase& self,BufferState& s,DWORD eff,bool& zc,
             // Keep at least 20 MiB available to large rings and count retired slices too.
             constexpr std::size_t regularBorrowBytes=16u<<20;
             const auto regularLimit=RingRegularBudgetBytes+(pressure?0:regularBorrowBytes);
-            const bool room=(s.large?large+len<=LargeShadowBudgetBytes:regular+len<=regularLimit)&&
-                regular+large+len<=RingRegularBudgetBytes+LargeShadowBudgetBytes;
+            const bool room=(s.large?large+len<=RingLargeBudgetBytes:regular+len<=regularLimit)&&
+                regular+large+len<=RingRegularBudgetBytes+RingLargeBudgetBytes;
             if(!room)noRoom=true;
             else{
                 try{BufferState::Slice sl;sl.mem.allocate(len+kLockSlack,false);sl.frame=c.frameNo;s.ring.push_back(std::move(sl));pick=s.ring.size()-1;}catch(...){pick=s.ring.size();allocFailed=true;}   // DISCARD leaves the new bytes undefined.

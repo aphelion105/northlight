@@ -21,9 +21,26 @@ int main(int argc,char** argv){
     const char* reason=nullptr;NorthlightStream::StreamDevice::Options options;
     auto* d=NorthlightStream::StreamDevice::make(raw,api,&pp,options,&reason);assert(d);
     IDirect3DVertexBuffer9* vb=nullptr;IDirect3DIndexBuffer9* ib=nullptr;
-    constexpr UINT length=40u<<20,spacing=5u<<20;
+#ifdef _WIN64
+    constexpr UINT length=53u<<20,spacing=5u<<20,vertexLockBytes=8192;
+    using namespace NorthlightStream;
+    static_assert(kMaxLargeShadow==std::size_t(64)<<20);
+    static_assert(LargeShadowBudgetBytes==std::size_t(5126)<<20);
+    auto& queue=d->streamCore().q;
+    // Exercise admission above 4 GiB with accounting data only.
+    constexpr std::int64_t used=LargeShadowBudgetBytes-length;
+    queue.addLargeBytes(used);
+    assert(queue.largeAdmit(length)&&!queue.largeAdmit(length+1));
+    queue.addLargeBytes(-used);
+    assert(!queue.largeAdmit(kMaxLargeShadow+1));
+#else
+    constexpr UINT length=40u<<20,spacing=5u<<20,vertexLockBytes=3*sizeof(Vertex);
+#endif
     ok(d->CreateVertexBuffer(length,D3DUSAGE_DYNAMIC,0,D3DPOOL_DEFAULT,&vb,nullptr));
     ok(d->CreateIndexBuffer(length,D3DUSAGE_DYNAMIC,D3DFMT_INDEX16,D3DPOOL_DEFAULT,&ib,nullptr));
+#ifdef _WIN64
+    assert(queue.largeBytes()==2*std::size_t(length)&&queue.stats.largeShadowGrants.load()==2);
+#endif
     for(unsigned region=0;region<8;++region){
         const float x=float(region%4)*32,y=float(region/4)*32;
         Vertex vertices[]={{x,y,.5f,1,0xff334455},{x+30,y,.5f,1,0xff334455},{x,y+30,.5f,1,0xff334455}};
@@ -33,13 +50,18 @@ int main(int argc,char** argv){
     auto& stats=d->streamCore().q.stats;const auto before=stats.syncCalls.load();
     for(unsigned round=0;round<64;++round)for(unsigned region=0;region<8;++region){
         // Mutate only colors/indices; positions and all other bytes must survive.
-        void* p=nullptr;ok(vb->Lock(region*spacing,3*sizeof(Vertex),&p,D3DLOCK_NOOVERWRITE));
+        void* p=nullptr;ok(vb->Lock(region*spacing,vertexLockBytes,&p,D3DLOCK_NOOVERWRITE));
         auto* v=static_cast<Vertex*>(p);assert(v[0].x==float(region%4)*32&&v[2].y==float(region/4)*32+30);
         for(unsigned i=0;i<3;++i)v[i].color=0xff000000|((round+1)<<16)|((region+1)<<8)|0x80;
         ok(vb->Unlock());ok(ib->Lock(region*spacing,3*sizeof(WORD),&p,D3DLOCK_NOOVERWRITE));
         auto* indices=static_cast<WORD*>(p);assert(indices[2]==2);indices[0]=round%2;indices[1]=1-round%2;ok(ib->Unlock());
     }
     const auto syncs=stats.syncCalls.load()-before;
+#ifdef _WIN64
+    assert(queue.largeBytes()==2*std::size_t(length)&&stats.rangeShadowBytes.load()==0);
+    std::printf("LARGE_SHADOW_GPU_PASS length=%u budget=%zu syncs=%llu\n",
+                length,LargeShadowBudgetBytes,(unsigned long long)syncs);
+#endif
 #if NORTHLIGHT_EXPECT_SPARSE
     assert(syncs==0);
 #else
