@@ -161,6 +161,7 @@ struct StreamQuery final:IDirect3DQuery9,ProxyBase {
             EventPauseProfile eventPauses;bool eventLongPhase=false,shortGpuTrip=false;EventPendingKind backendPending=EventPendingKind::None;
             std::uint64_t eventCpuCycles=0,eventCpuSamples=0;
             std::uint64_t fenceCalls=0,fenceNs=0,fenceTimeouts=0;
+            std::uint64_t firstEventPoll=0,lastNotEncoded=0,firstGpuPending=0,lastGpuPending=0;
             const auto epoch=eventEpoch;
             auto body=[&](bool cached){if(measure||event)replayStart=nowNs();if(event)eventLongPhase=eventWaitExpired;if(inner){
                 if(cached&&eventDoneGen.load(std::memory_order_acquire)==issued){
@@ -172,13 +173,22 @@ struct StreamQuery final:IDirect3DQuery9,ProxyBase {
                         ((!data&&!size)||(data&&size==sizeof(BOOL)));
                     EventFlushCadence cadence;
                     auto poll=[&]{
-                        const auto nativeFlags=event?cadence.flags(nowNs()):flags;
+                        const auto pollAt=event?nowNs():0;
+                        const auto nativeFlags=event?cadence.flags(pollAt):flags;
                         if(!auditedPayload)return static_cast<IDirect3DQuery9*>(inner)->GetData(data,size,nativeFlags);
                         // Reuse the real poll. Zero upper bytes also handle
                         // DXVK's cached path, which writes a C++ bool, not BOOL.
                         BOOL payload=EventPayloadMarker;
                         const auto result=static_cast<IDirect3DQuery9*>(inner)->GetData(&payload,sizeof payload,nativeFlags);
                         backendPending=eventPendingKind(result,payload);
+                        if(measure){
+                            if(!firstEventPoll)firstEventPoll=pollAt;
+                            if(backendPending==EventPendingKind::Untouched)lastNotEncoded=pollAt;
+                            if(backendPending==EventPendingKind::FalsePayload){
+                                if(!firstGpuPending)firstGpuPending=pollAt;
+                                lastGpuPending=pollAt;
+                            }
+                        }
                         if(result==S_OK){eventPayload=payload;eventPayloadKnown=true;if(data)std::memcpy(data,&payload,sizeof payload);}
                         return result;
                     };
@@ -239,6 +249,17 @@ struct StreamQuery final:IDirect3DQuery9,ProxyBase {
                 frame.eventCpuCycles+=eventCpuCycles;frame.eventCpuSamples+=eventCpuSamples;frame.eventShortGpuTrips+=shortGpuTrip;
             }
             if(!ran)return D3DERR_INVALIDCALL;
+            // A DXVK pending payload identifies observed progress, including
+            // queue submission and scheduling after the command is recorded.
+            if(firstEventPoll&&replayEnd>=firstEventPoll&&replayEnd-firstEventPoll>=8000000&&core->queryThreadLog){
+                const auto sinceFirst=[&](std::uint64_t at){return at?double(at-firstEventPoll)/1e6:-1.;};
+                char line[512];
+                std::snprintf(line,sizeof line,
+                    "CSTREAM EVENT_STAGE frame=%llu generation=%u epoch=%u startNs=%llu endNs=%llu lastNotEncodedMs=%.3f firstGpuPendingMs=%.3f lastGpuPendingMs=%.3f result=0x%08x",
+                    (unsigned long long)core->frameNo,issued,epoch,(unsigned long long)firstEventPoll,(unsigned long long)replayEnd,
+                    sinceFirst(lastNotEncoded),sinceFirst(firstGpuPending),sinceFirst(lastGpuPending),unsigned(hr));
+                core->queryThreadLog(line);
+            }
             if(measure&&event)observeBackendThreads(issued,epoch,hr,backendPending);
             return hr;
         }
