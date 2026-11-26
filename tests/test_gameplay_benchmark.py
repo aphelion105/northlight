@@ -127,6 +127,34 @@ class GameplayBenchmarkTests(unittest.TestCase):
         self.assertIsNone(fixture.gameplay_message(pan))
         self.assertEqual(fixture.ratchet_camera_marker(pan), 'left')
 
+    def test_render_profile_overrides_the_staged_quality_file(self):
+        with (TemporaryDirectory(dir=bench.live.fp.output_dir()) as temporary,
+              patch.object(bench.live, 'stage_pe'), patch.object(bench.live, 'link_asset')):
+            root = Path(temporary)
+            data = root / 'Data'
+            (data / 'enGB').mkdir(parents=True)
+            (data / 'enGB/locale-enGB.MPQ').touch()
+            cache = root / 'world-cache/Northrend'
+            cache.mkdir(parents=True)
+            (cache / '0_0.fg3').write_bytes(b'FGS3' + bytes(8))
+            for name in ('Wow.exe', 'd3d9.dll', 'northlight-assets.bin'):
+                (root / name).touch()
+            template = root / 'northlight-quality.ini'
+            original = '[Quality]\nDiagnostics=0\nRenderProfile=1\nDiagReplayProbe=1\n'
+            template.write_text(original, encoding='ascii')
+            args = Namespace(case='x86-dxvk', client=root, data=data, runtime=root, backend=root / 'd3d9.dll')
+            for requested in (True, False):
+                with self.subTest(render_profile=requested):
+                    args.render_profile = requested
+                    client = root / str(requested)
+                    bench.stage(args, 'crowd8', client, {'runtime': {}})
+                    settings = dict(line.split('=') for line in
+                                    (client / template.name).read_text(encoding='ascii').splitlines()[1:])
+                    self.assertEqual(settings['RenderProfile'], str(int(requested)))
+                    self.assertEqual(settings['Diagnostics'], str(int(requested)))
+                    self.assertEqual(settings['DiagReplayProbe'], str(int(not requested)))
+            self.assertEqual(template.read_text(encoding='ascii'), original)
+
     def test_native_sdr_reports_passthrough_and_hdr_requires_gpu_transfer(self):
         with TemporaryDirectory() as temporary:
             output = Path(temporary)
@@ -142,6 +170,13 @@ class GameplayBenchmarkTests(unittest.TestCase):
                 bench.backend_evidence(args, output)
             log.write_text(factory + 'D3D9 device wrapped.\nHDR experimental requested=1 active=1 mode=scRGB\n'
                            'HDR native DXGI Present frame=2 color=scRGB transfer=D3D9On12 GPU\n', encoding='ascii')
+            self.assertTrue(bench.backend_evidence(args, output)['renderer_active'])
+
+            args.render_profile = True
+            with self.assertRaisesRegex(ValueError, 'RenderProfile'):
+                bench.backend_evidence(args, output)
+            with log.open('a', encoding='ascii') as stream:
+                stream.write('PROFILE effective diagnostics=1 renderProfile=1 replayProbe=0 period=127 cpuGpuAdditive=0\n')
             self.assertTrue(bench.backend_evidence(args, output)['renderer_active'])
 
     def test_stock_runtime_log_records_bits_and_backend(self):

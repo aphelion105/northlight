@@ -143,7 +143,7 @@ def stage(args, scene, client, report):
             inputs[relative.as_posix()] = live.digest(target)
 
     if not stock:
-        config = '[Renderer]\nHDRPipelineVersion=2\nSettingsOverlay=0\nDiagnostics=0\n'
+        config = '[Renderer]\nHDRPipelineVersion=2\nSettingsOverlay=0\n'
         config += f'ExperimentalHDR={int(args.case.endswith("-hdr"))}\n'
         if proxy:
             config += 'Backend=dxvk\nBackendPath=backend_d3d9.dll\n'
@@ -156,8 +156,10 @@ def stage(args, scene, client, report):
         quality = client / 'northlight-quality.ini'
         template = quality if quality.is_file() else live.fp.RENDERER / 'windows-package' / quality.name
         profile = template.read_text(encoding='utf-8-sig')
-        settings = {'CommandStream': int(proxy), 'StreamFrameSkip': 0, 'RenderProfile': 0}
-        for key, value in settings.items():
+        settings = {'CommandStream': int(proxy), 'StreamFrameSkip': 0, 'RenderProfile': int(args.render_profile)}
+        if args.render_profile:
+            settings.update(Diagnostics=1, DiagReplayProbe=0)
+        for key in settings:
             profile = re.sub(rf'(?im)^[;#]?[ \t]*{key}[ \t]*=[^\r\n]*(?:\r?\n|$)', '', profile)
         profile, count = re.subn(r'(?im)^\[Quality\][ \t]*$',
                                  '[Quality]\n' + '\n'.join(f'{key}={value}' for key, value in settings.items()), profile)
@@ -179,6 +181,10 @@ def backend_evidence(args, output):
     lines = live.log_lines(output / live.LOG)
     active = any(line.startswith('D3D9 device wrapped.') for line in lines)
     hdr = any(line.startswith('HDR experimental requested=1 active=1 ') for line in lines)
+    if getattr(args, 'render_profile', False):
+        profile = next((line for line in reversed(lines) if line.startswith('PROFILE effective ')), '')
+        if not (active and profile.startswith('PROFILE effective diagnostics=1 renderProfile=1 replayProbe=0 ')):
+            raise ValueError('Expected active Northlight RenderProfile with diagnostics enabled')
     if args.case.endswith('-dxvk'):
         backend = [line for line in lines if line.startswith('BACKEND selected=') and ' rules=dxvk ' in line
                    and line.endswith(' fallback=0')]
@@ -405,7 +411,7 @@ def attempt(args, scene):
     output.mkdir(parents=True)
     client = output / 'client'
     report = {'status': 'FAIL', 'case': args.case, 'scene': scene, 'resolution': args.resolution,
-              'msaa': 1, 'locale': args.locale, 'desktop': args.desktop,
+              'msaa': 1, 'locale': args.locale, 'desktop': args.desktop, 'render_profile_requested': args.render_profile,
               'focus_mode': 'foreground' if args.desktop == 'foreground' else 'background',
               'runtime': {'case': args.case, 'client_executable': CASES[args.case][0], 'client_bits': None}}
     try:
@@ -455,7 +461,11 @@ def main():
                         help='Inactive desktop, interactive background, or interactive foreground timing')
     parser.add_argument('--timeout', type=int, default=180, help='Maximum client time per scene in seconds')
     parser.add_argument('--keep-client', action='store_true', help='Retain private clients for investigation')
+    parser.add_argument('--render-profile', action='store_true',
+                        help='Enable Northlight per-pass timing for every scene on a Northlight D3D9 case')
     args = parser.parse_args()
+    if args.render_profile and (args.case.startswith('stock-') or CASES[args.case][1] == '-vulkan'):
+        parser.error('--render-profile requires a Northlight D3D9 case')
     if os.name != 'nt':
         parser.error('Live gameplay timing requires a Windows GPU and desktop session')
     if not args.client or not live.fp.is_client(args.client):

@@ -72,6 +72,14 @@ to narrow a run. Use `--dxvk-adapter` to select and verify a DXVK device and
 repeat a fresh output directory. Without Windows Developer Mode the runner
 hard-links the client archives, so the output must be on the client's drive. Run one benchmark at a time on the GPU.
 
+Add `--render-profile` to a Northlight D3D9 run (`x86-dxvk`, `x64-dxvk`,
+`native-d3d9ex`, or `native-d3d9ex-hdr`) to collect per-pass timings for every
+selected scene. The runner enables `Diagnostics` and `RenderProfile` in the
+private quality file and disables the extra `DiagReplayProbe` replay. A profiled
+run requires confirmation in `northlight-renderer.log`. Keep the flag consistent
+across FPS comparisons because profiling adds measurement overhead. RenderProfile
+is off by default and is unavailable in stock and Vulkan cases.
+
 ## Read the results
 
 The add-on waits 20 seconds after entering the world. The fixture arms it
