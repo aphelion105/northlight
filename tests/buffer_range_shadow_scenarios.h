@@ -55,11 +55,18 @@ static void oversizedBufferRangeShadows(){
         CHECK(vb->Unlock()==D3D_OK);
     }
     CHECK(get(counters.syncCalls)==initial);
-    // An unknown disjoint range still performs the exact synchronous lock.
-    CHECK(vb->Lock(8192,64,&data,0)==D3D_OK);std::memset(data,0x57,64);CHECK(vb->Unlock()==D3D_OK);
-    CHECK(get(counters.syncCalls)==initial+2);
+    // A never-written disjoint range is undefined: it stages zeros instead of the synchronous lock.
+    CHECK(vb->Lock(8192,64,&data,0)==D3D_OK&&static_cast<unsigned char*>(data)[0]==0);std::memset(data,0x57,64);CHECK(vb->Unlock()==D3D_OK);
+    CHECK(get(counters.syncCalls)==initial);
     CHECK(vb->Lock(8192,64,&data,0)==D3D_OK&&static_cast<unsigned char*>(data)[63]==0x57);CHECK(vb->Unlock()==D3D_OK);
+    CHECK(get(counters.syncCalls)==initial);
+    // A written range the cache no longer holds still performs the exact synchronous lock: a lock above
+    // RangeShadowItemBytes drops every cached range, but its bytes stay recorded as written.
+    CHECK(vb->Lock(8192,5u<<20,&data,0)==D3D_OK&&static_cast<unsigned char*>(data)[63]==0x57);
+    std::memset(static_cast<unsigned char*>(data)+64,0x58,(5u<<20)-64);CHECK(vb->Unlock()==D3D_OK);
     CHECK(get(counters.syncCalls)==initial+2);
+    CHECK(vb->Lock(65536,64,&data,0)==D3D_OK&&static_cast<unsigned char*>(data)[0]==0x58);CHECK(vb->Unlock()==D3D_OK);
+    CHECK(get(counters.syncCalls)==initial+4);
     rig.sync();const auto rotationStart=get(counters.syncCalls);
     for(unsigned frame=0;frame<16;++frame){
         for(unsigned chunk=0;chunk<32;++chunk){

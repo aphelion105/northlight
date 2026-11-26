@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# northlight-test: requires=windows-gpu,zig
+# northlight-test: requires=windows-gpu,zig,d3dcompiler
 """Native alpha layers retain coverage through early drains and world composition."""
 
 from source_units import source_text
@@ -47,12 +47,15 @@ for sm in (2, 3):
     compiler.compile(source, 'Native', f'ps_{sm}_0', out/f'native{sm}.bin')
     compiler.compile(source, 'NativeMRT', f'ps_{sm}_0', out/f'native-mrt{sm}.bin')
 exe = out/'effect-coverage.exe'
-subprocess.run([str(fp.zig()), 'c++', '-target', 'x86-windows-gnu', '-std=c++17', '-O2', '-UNDEBUG',
+x64 = os.environ.get('NORTHLIGHT_TEST_X64') == '1'
+subprocess.run([str(fp.zig()), 'c++', '-target', 'x86_64-windows-gnu' if x64 else 'x86-windows-gnu', '-std=c++17', '-O2', '-UNDEBUG',
                 '-Wno-return-type', *fp.include_flags(), str(fp.TESTS/'effect_coverage_gpu.cpp'),
                 '-luser32', '-o', str(exe)], env=fp.zig_env(), check=True)
-backend = os.environ.get('NORTHLIGHT_TEST_D3D9', str(Path(os.environ['WINDIR'])/'SysWOW64/d3d9.dll'))
+backend = os.environ.get('NORTHLIGHT_TEST_D3D9', str(Path(os.environ['WINDIR'])/('System32' if x64 else 'SysWOW64')/'d3d9.dll'))
 run = subprocess.run([str(exe), str(fp.COMPILED), backend, str(out), os.environ.get('NORTHLIGHT_TEST_MRT_MSAA', '0')], cwd=out, text=True, capture_output=True, timeout=120)
 (out/'gpu.log').write_text(run.stdout+run.stderr)
 print(run.stdout+run.stderr, end='')
 run.check_returncode()
 assert 'EFFECT_COVERAGE_PASS' in run.stdout
+if os.environ.get('NORTHLIGHT_TEST_MRT_MSAA') == '1':
+    assert 'EFFECT_COVERAGE_ATTACHMENT_PASS' in run.stdout

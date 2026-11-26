@@ -11,6 +11,8 @@ class NorthlightWorldPointLighting {
     friend struct PipelineOffTest;
     IDirect3DPixelShader9* hard_=nullptr;
     IDirect3DPixelShader9* soft_=nullptr;
+    IDirect3DPixelShader9* glint_[2]={};
+    bool glintTried_[2]={};
     bool softTried_=false;
 
     static void drop(IDirect3DPixelShader9*& shader){if(shader){shader->Release();shader=nullptr;}}
@@ -42,7 +44,8 @@ public:
         return soft_!=nullptr;
     }
     void reset(bool preserveShaders){
-        if(!preserveShaders){drop(hard_);drop(soft_);}
+        if(!preserveShaders){drop(hard_);drop(soft_);for(auto*& shader:glint_)drop(shader);}
+        for(unsigned i=0;i<2;++i)glintTried_[i]=glint_[i]!=nullptr;
         softTried_=soft_!=nullptr;
     }
 
@@ -52,6 +55,16 @@ public:
               const Check& check,const Unavailable& unavailable,const Record& record){
         const bool soft=enableSoft&&ensureSoft(d,unavailable)&&SUCCEEDED(d->SetPixelShader(soft_));
         if(!soft&&!check(d->SetPixelShader(hard_),"local lighting PS"))return false;
+        if(in.cubeOffset[3]>0){
+            if(!glintTried_[soft]){
+                glintTried_[soft]=true;
+                D3DCAPS9 caps{};
+                if(!soft||(SUCCEEDED(d->GetDeviceCaps(&caps))&&caps.MaxPixelShader30InstructionSlots>=kLocalLightingGlintPcssShaderSlots)){
+                    if(FAILED(d->CreatePixelShader(soft?kLocalLightingGlintPcssShader:kLocalLightingGlintShader,&glint_[soft])))drop(glint_[soft]);
+                }
+            }
+            if(glint_[soft]&&!check(d->SetPixelShader(glint_[soft]),"local reflection PS"))return false;
+        }
         if(!check(d->SetPixelShaderConstantF(0,&in.constants[0][0],12),"local constants")||
            !check(d->SetPixelShaderConstantF(13,in.cubeOffset,1),"local cube origin")||
            !check(d->SetTexture(1,in.cube),"local cube"))return false;

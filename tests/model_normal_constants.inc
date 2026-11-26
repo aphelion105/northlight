@@ -25,6 +25,9 @@ static void normalConstants(const std::string& dir,IDirect3DVertexDeclaration9* 
         for(bool reuse:{false,true}){
             CaptureCalls calls(d);DeviceMirror mirror,foreignMirror;ExtensionDevice extension(&calls,&mirror),foreign(&calls,&foreignMirror);std::unique_ptr<MirrorGuard> held;if(scenario!=12)held=std::make_unique<MirrorGuard>(mirror.gate);
             NorthlightModelNormals normals(&extension);normals.setDeferredCapture(true);normals.testRange(false);normals.testConstantReuse(reuse);normals.setTrustedPoseSource(extension.trustedConstantSource());
+#ifdef NORTHLIGHT_TEST_LARGE_NORMAL_BATCH
+            if(reuse&&scenario==14)normals.setDrawStateSource(extension);
+#endif
             for(unsigned slot=1;slot<4;++slot)ok(extension.SetRenderTarget(slot,nullptr));ok(extension.SetDepthStencilSurface(nullptr));ok(extension.SetRenderTarget(0,output.s));ok(extension.SetDepthStencilSurface(depth));
             D3DVIEWPORT9 viewport{0,0,128,128,0,1};ok(extension.SetViewport(&viewport));ok(extension.SetVertexDeclaration(declaration));ok(extension.SetVertexShader(single));
             ok(extension.SetVertexShaderConstantF(0,original,256));
@@ -73,7 +76,20 @@ static void normalConstants(const std::string& dir,IDirect3DVertexDeclaration9* 
                 peakPackets=std::max(peakPackets,normals.testPendingPackets());
                 if(scenario!=15)assert(normals.testPendingPackets()==(scenario==14?draw%64:draw)+1);
                 float expected[1024];ok(d->GetVertexShaderConstantF(0,expected,256));ModelNormalPacketTestAccess::exactBank(normals,expected);
-                if(scenario==14&&draw%64==63)assert(normals.finishCaptures());
+                if(scenario==14&&draw%64==63){
+                    assert(normals.finishCaptures());
+#ifdef NORTHLIGHT_TEST_LARGE_NORMAL_BATCH
+                    if(reuse){
+                        assert(mirror.rawScopes>0&&mirror.rawCalls>0&&!mirror.rawDepth);
+                        float restored[1024];ok(extension.GetVertexShaderConstantF(0,restored,256));
+                        assert(!std::memcmp(expected,restored,sizeof restored));
+                        NorthlightDrawSnapshot::Ref<IDirect3DSurface9> restoredTarget,restoredDepth;
+                        ok(extension.GetRenderTarget(0,restoredTarget.out()));
+                        ok(extension.GetDepthStencilSurface(restoredDepth.out()));
+                        assert(restoredTarget.p==output.s&&restoredDepth.p==depth);
+                    }
+#endif
+                }
                 // In the large case the control finishes at the old boundary.
                 if(scenario==15&&!reuse&&draw+1==oldPacketLimit)assert(normals.finishCaptures());
             }

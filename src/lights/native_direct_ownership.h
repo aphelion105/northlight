@@ -43,6 +43,13 @@ template<class Source> inline float ownershipGain(const NorthlightLocalLights::L
     for(unsigned k=0;k<3;++k)if(!close(selected.diffuse[k],full.diffuse[k]*gain,.0001f))return 0;
     return std::clamp(gain,0.f,1.f);
 }
+// Prove the selected light against the snapshot that supplied it. Match the
+// draw's slot against the current point, which follows the animated emitter.
+inline float sceneOwnershipGain(const NorthlightLocalLights::Light& selected,const NorthlightNativeLights::Point& current,
+                                const NorthlightNativeLights::Point& published,const float* resolved){
+    if(published.id!=current.id)return 0;
+    return ownershipGain(selected,published,resolved);
+}
 // Draw-derived sources already feed the renderer's selected local-light pass.
 // They can hand off RGB without a scene identity; this grants no shadow intent.
 inline float observedOwnershipGain(const NorthlightLocalLights::Light& selected,const NorthlightEquipmentLights::Tracker::Entry& entry,std::uint32_t now,const NorthlightNativeLights::Snapshot& scene){

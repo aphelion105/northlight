@@ -9,10 +9,6 @@ import northlight_paths as fp
 import shader_compiler as shared
 from shader_compiler import validate_assembly
 
-# The installed Windows build uses this official SDK 17134.12 binary.
-# Limit the adapter to this exact file; retain the upstream toolchain's default pin.
-SDK_SHA256 = '4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3'
-
 def hdr_compiler(compatible=False):
     return shared.Compiler(allow_compatible_binary=compatible)
 

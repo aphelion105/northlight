@@ -232,7 +232,13 @@ class Queue {
     void recycle(Chunk* c){
         c->next.store(nullptr,std::memory_order_relaxed);c->published.store(0,std::memory_order_relaxed);c->end.store(0,std::memory_order_relaxed);
         bool kept=false;
-        {std::lock_guard<std::mutex> l(pool_);if(freeChunks_.size()<kPoolMaxChunks){freeChunks_.push_back(c);kept=true;}}
+        {
+            std::lock_guard<std::mutex> l(pool_);
+            if(freeChunks_.size()<kPoolMaxChunks){
+                try{freeChunks_.push_back(c);kept=true;}
+                catch(const std::bad_alloc&){}
+            }
+        }
         if(!kept){delete c;stats.chunksHeap.fetch_sub(1,std::memory_order_relaxed);}   // a spike's extra chunks do not stay
         stats.chunksLive.fetch_sub(1,std::memory_order_relaxed);
     }
@@ -460,7 +466,14 @@ public:
         const std::size_t cap=b->capacity;
         stats.blocksLive.fetch_sub(1,std::memory_order_relaxed);stats.blockBytes.fetch_sub(cap,std::memory_order_relaxed);
         bool pooled=false;
-        {std::lock_guard<std::mutex> l(pool_);if(pooledBlockBytes_+cap<=kMaxPooledBlockBytes){freeBlocks_[b->cls].push_back(b);pooledBlockBytes_+=cap;pooled=true;stats.blockPoolBytes.fetch_add(cap,std::memory_order_relaxed);}}
+        {
+            std::lock_guard<std::mutex> l(pool_);
+            if(pooledBlockBytes_+cap<=kMaxPooledBlockBytes){
+                try{freeBlocks_[b->cls].push_back(b);pooled=true;}
+                catch(const std::bad_alloc&){}
+                if(pooled){pooledBlockBytes_+=cap;stats.blockPoolBytes.fetch_add(cap,std::memory_order_relaxed);}
+            }
+        }
         if(!pooled)::operator delete(b);
         std::atomic_thread_fence(std::memory_order_seq_cst);   // 0.3.196 (task 12): the Block is returned before bpWaiting_ is read (the producer may be on the producer side of this handshake). One fence per Block command (payloads above MaxInlinePayload), not only per flagged command
         if(bpWaiting_.load())progress_.set();
@@ -492,20 +505,40 @@ public:
     bool pressure()const{return pressure_.load();}
     std::size_t budget()const{return pressure_.load()?budget_/2:budget_;}
     void trim(){
-        std::vector<Chunk*> c;std::vector<Block*> b;
-        {std::lock_guard<std::mutex> l(pool_);c.swap(freeChunks_);for(auto& v:freeBlocks_){b.insert(b.end(),v.begin(),v.end());v.clear();}pooledBlockBytes_=0;stats.blockPoolBytes.store(0,std::memory_order_relaxed);}
-        for(Chunk* x:c){delete x;stats.chunksHeap.fetch_sub(1,std::memory_order_relaxed);}
-        for(Block* x:b)::operator delete(x);
+        std::vector<Chunk*> chunks;std::vector<Block*> blocks[kBlockClasses];
+        {
+            std::lock_guard<std::mutex> l(pool_);
+            chunks.swap(freeChunks_);
+            for(unsigned k=0;k<kBlockClasses;++k)blocks[k].swap(freeBlocks_[k]);
+            pooledBlockBytes_=0;stats.blockPoolBytes.store(0,std::memory_order_relaxed);
+        }
+        for(Chunk* x:chunks){delete x;stats.chunksHeap.fetch_sub(1,std::memory_order_relaxed);}
+        for(const auto& pool:blocks)for(Block* x:pool)::operator delete(x);
     }
     // Idle pool memory: chunks and Block bytes sitting unused. Only the pools are touched (under their lock): live chunks and blocks never.
     void poolState(std::size_t& chunks,std::size_t& blockBytes){std::lock_guard<std::mutex> l(pool_);chunks=freeChunks_.size();blockBytes=pooledBlockBytes_;}
     // Frees up to `chunks` pooled chunks and about `blockBytes` of pooled Blocks (largest classes first).
     void trimPool(std::size_t chunks,std::size_t blockBytes){
         std::vector<Chunk*> c;std::vector<Block*> b;
-        {std::lock_guard<std::mutex> l(pool_);
-         while(chunks&&!freeChunks_.empty()){c.push_back(freeChunks_.back());freeChunks_.pop_back();--chunks;}
-         for(unsigned k=kBlockClasses;k-->0&&blockBytes;){auto& v=freeBlocks_[k];
-             while(blockBytes&&!v.empty()){Block* x=v.back();v.pop_back();const std::size_t cap=x->capacity;pooledBlockBytes_-=cap;stats.blockPoolBytes.fetch_sub(cap,std::memory_order_relaxed);blockBytes=blockBytes>cap?blockBytes-cap:0;b.push_back(x);}}}
+        {
+            std::lock_guard<std::mutex> l(pool_);
+            while(chunks&&!freeChunks_.empty()){
+                Chunk* x=freeChunks_.back();freeChunks_.pop_back();--chunks;
+                try{c.push_back(x);}
+                catch(const std::bad_alloc&){delete x;stats.chunksHeap.fetch_sub(1,std::memory_order_relaxed);}
+            }
+            for(unsigned k=kBlockClasses;k-->0&&blockBytes;){
+                auto& pool=freeBlocks_[k];
+                while(blockBytes&&!pool.empty()){
+                    Block* x=pool.back();pool.pop_back();
+                    const std::size_t cap=x->capacity;
+                    pooledBlockBytes_-=cap;stats.blockPoolBytes.fetch_sub(cap,std::memory_order_relaxed);
+                    blockBytes=blockBytes>cap?blockBytes-cap:0;
+                    try{b.push_back(x);}
+                    catch(const std::bad_alloc&){::operator delete(x);}
+                }
+            }
+        }
         for(Chunk* x:c){delete x;stats.chunksHeap.fetch_sub(1,std::memory_order_relaxed);}
         for(Block* x:b)::operator delete(x);
     }

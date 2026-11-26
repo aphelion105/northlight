@@ -10,14 +10,20 @@ import sys; from pathlib import Path; sys.path.insert(0, str(Path(__file__).reso
 import northlight_paths as fp
 import re
 
-TOKENS = re.compile(r'NorthlightZoneTuning|\bdev(?:Built|BuiltSnapshot|Builds)\b|\btuning\b|\b(?:requestedFogTuning|fogTuning)\b|zone_tuning\.h|\bdev(?:Poll|Reload|WriteState|Snapshot|Overrides|Mutex|TerrainReach|Error|Revision|Path|FogScale)\b|\bcelestialShipped\b|\breachZone\b')
+TOKENS = re.compile(r'NorthlightZoneTuning|\bdev(?:Built|BuiltSnapshot|Builds)\b|\btuning\b|\b(?:requestedFogTuning|fogTuning)\b|\bdev(?:Poll|Reload|WriteState|Snapshot|Overrides|Mutex|TerrainReach|Error|Revision|Path|FogScale)\b|\bcelestialShipped\b|\breachZone\b')
+COMMENTS_OR_LITERALS = re.compile(r'//[^\n]*|/\*.*?\*/|"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\\n])*\'', re.S)
 
 def outside_dev(text):
     """Lines (number, text) not inside an active `#if NORTHLIGHT_DEV_TUNING` branch, comments removed."""
     stack, found = [], []
-    text = re.sub(r'/\*.*?\*/', lambda m: '\n' * m.group(0).count('\n'), text, flags=re.S)
+    def without_text(match):
+        value=match.group()
+        if value=='"zone_tuning.h"' and re.search(r'^\s*#\s*include\s*$',text[text.rfind('\n',0,match.start())+1:match.start()]):
+            return 'NorthlightZoneTuning'
+        return ' '+'\n'*value.count('\n')
+    text = COMMENTS_OR_LITERALS.sub(without_text,text)
     for number, line in enumerate(text.splitlines(), 1):
-        code = re.sub(r'//.*', '', line).strip()
+        code = line.strip()
         if code.startswith('#'):
             directive = code[1:].strip()
             if directive.startswith(('if', 'ifdef', 'ifndef')):
@@ -26,7 +32,8 @@ def outside_dev(text):
                 stack[-1] = not stack[-1]
             elif directive.startswith('endif'):
                 stack.pop()
-            continue
+            if not directive.startswith('include'):
+                continue
         if TOKENS.search(code) and not any(s for s in stack if s):
             found.append((number, code))
     return found

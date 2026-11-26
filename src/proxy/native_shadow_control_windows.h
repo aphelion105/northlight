@@ -7,6 +7,9 @@
 #include <atomic>
 
 namespace NorthlightNativeShadowControl {
+#if defined(_WIN64) && !defined(NORTHLIGHT_REPLAY_STAND)
+inline constexpr std::uintptr_t X64Quality=0x1926bcc,X64Dirty=0xe22474,X64CVar=0x1b73450;
+#endif
 template<class Read> bool verifyCode(Read read){
     struct Proof {std::uintptr_t address;unsigned size;const char* sha;};
     const Proof proof[]={
@@ -34,10 +37,42 @@ inline bool verified(){
         supported=verifyCode([&](auto address,auto output,auto size){return context->readObservedCode(address,output,size);});
     }
     return supported;
+#elif defined(_WIN64)
+    // The extShadowQuality callback writes the runtime level and dirty bit.
+    // The producer consumes the dirty bit and skips its maps at runtime level 0.
+    static const bool supported=[]{
+        constexpr NorthlightX64World::CodeProof proof[]={
+            {0x6bc148,72,UINT64_C(0x7ba88348f7a86cf1)}, {0x2675c7,21,UINT64_C(0x8b87c2c14c525390)},
+            {0x267638,39,UINT64_C(0x75413e981bf90592)}, {0x26769b,24,UINT64_C(0x91a001b43a5c8ebf)},
+        };
+        return NorthlightX64World::verifyCode(NorthlightX64World::imageBase(),proof);
+    }();
+    return supported;
 #else
     static const bool supported=reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr))==0x400000&&
         verifyCode(NorthlightWorldContext::readSelfLive);
     return supported;
+#endif
+}
+#if defined(_WIN64) && !defined(NORTHLIGHT_REPLAY_STAND)
+template<class Read> State sampleX64(Read read){
+    const auto base=NorthlightX64World::imageBase();
+    State result;
+    uintptr_t cvar=0;
+    constexpr uintptr_t NumericValue=0x54;
+    if(!verified()||!read(base+X64CVar,&cvar,sizeof cvar)||cvar<0x10000||cvar>UINTPTR_MAX-NumericValue-4||(cvar&7)||
+       !read(cvar+NumericValue,&result.configured,sizeof result.configured)||result.configured>5||
+       !read(base+X64Quality,&result.runtime,sizeof result.runtime)||result.runtime>5||
+       !read(base+X64Dirty,&result.pending,sizeof result.pending)||result.pending>1)return {};
+    result.readable=true;return result;
+}
+#endif
+template<class Snapshot> State sampleRendererFrame(Snapshot* snapshot,bool streamed){
+#if defined(_WIN64) && !defined(NORTHLIGHT_REPLAY_STAND)
+    if(streamed&&!snapshot)return {};
+    return sampleX64(static_cast<bool(*)(uintptr_t,void*,size_t)>(NorthlightX64World::readFrame));
+#else
+    return sampleFrame(snapshot,streamed,NorthlightWorldContext::readSelf);
 #endif
 }
 inline std::atomic<std::uintptr_t> owner{0};
@@ -61,8 +96,18 @@ inline void producerPresent(){
 #ifndef NORTHLIGHT_REPLAY_STAND
     const bool replace=owner.load(std::memory_order_acquire)&&wanted.load(std::memory_order_acquire)&&DWORD(GetTickCount()-requestedAt.load(std::memory_order_relaxed))<1000;
     if((!replace&&!controller.leased())||!verified())return;
+#ifdef _WIN64
+    const State state=sampleX64(static_cast<bool(*)(uintptr_t,void*,size_t)>(NorthlightX64World::read));
+    const auto base=NorthlightX64World::imageBase();
+    controller.update(state,replace,[&](std::uintptr_t slot,unsigned value){
+        const auto address=base+(slot==Quality?X64Quality:X64Dirty);
+        SIZE_T written=0;
+        return WriteProcessMemory(GetCurrentProcess(),reinterpret_cast<void*>(address),&value,sizeof value,&written)&&written==sizeof value;
+    });
+#else
     const State state=sample(NorthlightBlpMipGuard::read);
     controller.update(state,replace,[](std::uintptr_t address,unsigned value){SIZE_T written=0;return WriteProcessMemory(GetCurrentProcess(),reinterpret_cast<void*>(address),&value,4,&written)&&written==4;});
+#endif
 #endif
 }
 } // namespace NorthlightNativeShadowControl

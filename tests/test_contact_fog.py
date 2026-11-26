@@ -20,9 +20,13 @@ for _ in range(10000):
     assert original*ao+0==original*ao
     assert fog_part<=result<=original+1e-12
 
-world=world_source_text(fp.tracked('world_effects.hlsl')).split('float4 worldComposite(')[1].split('// Separate geometry pass')[0]
+world=world_source_text(fp.tracked('world_effects.hlsl')).split('float4 worldCompositeInputs(',1)[1].split('float4 worldComposite(',1)[0]
 legacy=fp.tracked('effects.hlsl').read_text().split('float4 Composite(')[1]
-assert world.index('float3 fogPart=min(')<world.index('original.rgb=mad(original.rgb-fogPart,ao,fogPart);')<world.index('float3 color=original.rgb;')
+start=world.index('float3 fogPart=min(')
+end=world.index('float3 color=original.rgb;')
+fog_split=world[start:end]
+assert 'original.rgb=mad(max(baseLinear-fogPart,0),ao,fogPart);' in fog_split
+assert fog_split.index('float3 surfaceLinear=worldHdrDecode(original.rgb-fogPart);') < fog_split.index('fogPart=nativeColor-surfaceLinear;') < fog_split.rindex('surfaceForLighting=surfaceLinear*ao;') < fog_split.index('original.rgb=surfaceForLighting+fogPart;')
 assert 'float3 lit = mad(original.rgb-fogPart,ambient.a,fogPart);' in legacy
 assert ' * legacyT;' in legacy
 rc=source_text(fp.src('renderer.cpp'))

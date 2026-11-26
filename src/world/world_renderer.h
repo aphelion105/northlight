@@ -8,6 +8,9 @@
 #include "material_profile.h"
 #include "settings_schema.h"
 #include "surface_frame.h"
+#if defined(NORTHLIGHT_WATER) && defined(_WIN64)
+#include "frame_values.h"
+#endif
 #include "weather_shelter.h"
 #include "stream_hooks.h"
 #include "weather_memory.h"
@@ -303,6 +306,7 @@ public:
     }
     // 0.3.175 (S3): the renderer's effects buckets (RenderProfile sample frames; marks are no-ops otherwise).
     void setEffectsBuckets(NorthlightEffectsBuckets::Frame* frame){effectsBuckets=frame;}
+    void setNativeLightShaderWarmup(unsigned ms){nativeLightShaderWarmupMs=ms;}
     bool drawCelestialTerrain(unsigned body,const float* matrix){
         if(!celestialTerrainGeneration())return false;
         const int64_t started=NorthlightRenderThreadProbe::profiling()?QpcClock::now():0;
@@ -599,6 +603,7 @@ private:
     std::unordered_map<IDirect3DVertexShader9*,bool> nativePointOwners;
     std::unordered_map<IDirect3DPixelShader9*,bool> nativePointPixelOwners;
     std::unique_ptr<NorthlightNativeLocalLighting> nativeDirectRenderer;
+    unsigned nativeLightShaderWarmupMs=0;
     void* nativeSamplerContext=nullptr;bool(*nativeSamplerReader)(void*,DWORD,unsigned,DWORD*)=nullptr;
     NorthlightNativeLights::Snapshot nativeDirectScene;unsigned nativeDirectFrame=~0u;
     NorthlightNativePointSubmit nativePointSubmit;
@@ -1815,7 +1820,7 @@ public:
         if(profileSampled()){unsigned typed=0,eligible=0;for(const auto& p:replays){typed+=p->boundsWork.paletteSpan!=0;eligible+=pointPaletteSpan(*p)!=0;}
             logf("POINT palette rendererFrame=%u draws=%u packets=%u registers=%u rebasedPackets=%u savedRegisters=%u instanceBytes=%u typedSources=%u eligibleSources=%u disabled=%u retryFrames=%llu",rendererFrame,pointWork.paletteDraws,pointWork.palettePackets,pointWork.paletteRegisters,pointWork.paletteRebased,pointWork.paletteSavedRegisters,shadowPalette.buffer()?NorthlightShadowPalettePass::InstanceBytes:0,typed,eligible,unsigned(shadowPalette.unsupported()),(unsigned long long)shadowPalette.retryIn(frames));}
         if(profileSampled())logf("POINT workload rendererFrame=%u selected=%u staticDraws=%u terrainDraws=%u liveDraws=%u replayDraws=%u replayMerged=%u unionDraws=%u casterTriangles=%llu clippedGapTriangles=%llu staticRebuiltFaces=%u staticRestores=%u boundsTotal=%zu boundsValid=%u boundsUnbounded=%zu unboundedRigidFacePackets=%u unboundedSkinnedFacePackets=%u whiteLightingSkipped=%u boundsRuns=%u crossGroupMerged=%u duplicateInstances=%u pairedStaticFaces=%u crowdOperations=%u boundsOperations=%zu boundsOperationLimit=%zu",rendererFrame,pointWork.selected,pointWork.statics,pointWork.terrain,pointWork.live,pointWork.replay,pointWork.replayMerged,pointWork.unions,(unsigned long long)pointWork.triangles,(unsigned long long)pointWork.bridged,pointWork.rebuilt,pointWork.restored,replays.size(),pointBoundsValid,replays.size()-std::min(replays.size(),size_t(pointBoundsValid)),pointWork.unboundedRigid,pointWork.unboundedSkinned,pointWork.whiteLightingSkipped,replayBoundsRuns,pointWork.crossGroupMerged,pointWork.duplicateInstances,pointWork.pairedFaces,unsigned(replayCrowdBoundsOperations()),pointBoundOperations,replayBoundsCache.operationLimit());
-        if(profileSampled())logf("NATIVE_DIRECT workload rendererFrame=%u nativeSlots=%u attempts=%u otherMatchedKept=%u unavailableCube=%u submittedTotal=%llu dualSubmittedTotal=%llu tripleSubmittedTotal=%llu fallbackTotal=%llu coldPairs=%u deferredPairs=%u rendererDirect=unchanged",rendererFrame,nativeDirectSlots,nativeDirectMatched,nativeDirectMultiple,nativeDirectMissingCube,(unsigned long long)(nativeDirectRenderer?nativeDirectRenderer->draws:0),(unsigned long long)(nativeDirectRenderer?nativeDirectRenderer->multiDraws:0),(unsigned long long)(nativeDirectRenderer?nativeDirectRenderer->tripleDraws:0),(unsigned long long)(nativeDirectRenderer?nativeDirectRenderer->fallbacks:0),nativeDirectRenderer?nativeDirectRenderer->coldPairs:0,nativeDirectRenderer?nativeDirectRenderer->deferredPairs:0);
+        if(profileSampled())logf("NATIVE_DIRECT workload rendererFrame=%u nativeSlots=%u attempts=%u otherMatchedKept=%u unavailableCube=%u submittedTotal=%llu dualSubmittedTotal=%llu tripleSubmittedTotal=%llu fallbackTotal=%llu coldPairs=%u deferredPairs=%u rendererDirect=unchanged warmupDeferrals=%llu",rendererFrame,nativeDirectSlots,nativeDirectMatched,nativeDirectMultiple,nativeDirectMissingCube,(unsigned long long)(nativeDirectRenderer?nativeDirectRenderer->draws:0),(unsigned long long)(nativeDirectRenderer?nativeDirectRenderer->multiDraws:0),(unsigned long long)(nativeDirectRenderer?nativeDirectRenderer->tripleDraws:0),(unsigned long long)(nativeDirectRenderer?nativeDirectRenderer->fallbacks:0),nativeDirectRenderer?nativeDirectRenderer->coldPairs:0,nativeDirectRenderer?nativeDirectRenderer->deferredPairs:0,(unsigned long long)(nativeDirectRenderer?nativeDirectRenderer->warmupDeferrals:0));
         if(profileSampled())logf("NATIVE_DIRECT coverage rendererFrame=%u nativeCounts=%u,%u,%u,%u,%u matchedCounts=%u,%u,%u,%u,%u unclassifiedPreparedBypass=%u unclassifiedPrivateBypass=%u bankMemoHits=%u bankMemoMisses=%u scope=decoded-native-pairs counts=draws-by-slot-count",
             rendererFrame,nativeDirectSlotCounts[0],nativeDirectSlotCounts[1],nativeDirectSlotCounts[2],nativeDirectSlotCounts[3],nativeDirectSlotCounts[4],nativeDirectMatchCounts[0],nativeDirectMatchCounts[1],nativeDirectMatchCounts[2],nativeDirectMatchCounts[3],nativeDirectMatchCounts[4],nativeDirectPreparedBypass,nativeDirectPrivateBypass,nativeDirectBankHits,nativeDirectBankMisses);
         if(profileSampled())logf("NATIVE_DIRECT misses rendererFrame=%u decodeIgnored=%u noBinding=%u ambiguous=%u cubeNotReady=%u invalidGain=%u changedCube=%u changedSource=%u",rendererFrame,nativeDirectMissReasons[0],nativeDirectMissReasons[1],nativeDirectMissReasons[2],nativeDirectMissReasons[3],nativeDirectMissReasons[4],nativeDirectMissReasons[5],nativeDirectMissReasons[6]);
@@ -2072,7 +2077,7 @@ public:
         capture.finish(composited&&lastRenderDebug==0);
     }
     bool parityGeometryReady()const{return fogGeometryReady&&(!directionalShadowWork()||shadowFrameReady);}
-    void captureProducts(const std::string& directory,unsigned capture,unsigned rendererFrame,UINT w,UINT h,bool current,bool fogOnly=false){
+    void captureProducts(const std::string& directory,unsigned capture,unsigned rendererFrame,UINT w,UINT h,bool current,bool fogOnly=false,bool rawModelNormals=false){
         const bool ready=current&&composited&&lastRenderDebug==0;
         auto image=[&](const char* name,IDirect3DSurface9* surface,bool valid,UINT x,UINT y,D3DFORMAT format){NorthlightWorldDiagnostics::product(d,surface,directory,name,capture,valid,std::max(1u,x),std::max(1u,y),format,rendererFrame);};
         if(!fogOnly){
@@ -2084,8 +2089,9 @@ public:
 #ifdef NORTHLIGHT_REPLAY_STAND
             if(std::getenv("NORTHLIGHT_RETRACE_LEGACY_ACTOR_INSET"))
                 image("shadow-actor",actorMaps.depth(source).surface,shadowCurrent&&actorValid[source],NorthlightActorShadowMap::Size,NorthlightActorShadowMap::Size,D3DFMT_R32F);
-            NorthlightWorldDiagnostics::textureProduct(d,modelNormals,directory,"model-normals",capture,ready&&modelNormals,w,h,D3DFMT_A16B16G16R16F,rendererFrame);
+            rawModelNormals=true;
 #endif
+            if(rawModelNormals)NorthlightWorldDiagnostics::textureProduct(d,modelNormals,directory,"model-normals",capture,ready&&modelNormals,w,h,D3DFMT_A16B16G16R16F,rendererFrame);
             image("baseline",screenLighting.baseline().surface,ready,w/2,h/2,D3DFMT_A16B16G16R16F);
             image("current-local-light",screenLighting.raw().surface,ready&&diagnosticLocalLighting,w/2,h/2,D3DFMT_A16B16G16R16F);
             image("temporal-light",history.produced().light.surface,ready,w/2,h/2,D3DFMT_A16B16G16R16F);
@@ -2109,15 +2115,45 @@ public:
         return true;
     }
     void pollMaterialProfile(){materialPixelAudit.poll();}
-    void setMaterialDetail(IDirect3DTexture9* texture,float gain,float distance,IDirect3DTexture9* occlusion=nullptr,float occlusionDistance=8,bool captureResident=false){materialDetail=texture;materialBumpGain=gain;materialBumpDistance=distance;materialOcclusion=occlusion;materialOcclusionDistance=occlusionDistance;materialCaptureResident=captureResident||texture!=nullptr;}
+    bool materialFoliageCaptured=false;
+    void setMaterialDetail(IDirect3DTexture9* texture,float gain,float distance,IDirect3DTexture9* occlusion=nullptr,float occlusionDistance=8,bool captureResident=false,bool foliageCaptured=false){
+        materialDetail=texture;materialBumpGain=gain;materialBumpDistance=distance;
+        materialOcclusion=occlusion;materialOcclusionDistance=occlusionDistance;
+        materialCaptureResident=captureResident||texture!=nullptr;materialFoliageCaptured=texture&&foliageCaptured;
+    }
+    bool treeCanopyLight(float (&light)[3][4],unsigned& body)const{
+        if(!hasContext()||menuDomain||!paletteFrameValid||!celestialValid||!NorthlightQuality::foreverCelestial(quality)||
+           std::abs(projection[0])<.001f||std::abs(projection[1])<.001f)return false;
+        body=sourceWeights[1]>sourceWeights[0]?1:0;
+        const auto& direction=sourceDirections[body];
+        const float gain=framePalette.foliageTransmission[body]*sourceWeights[body];
+        if(gain<=.0001f)return false;
+        light[0][0]=1.f/projection[0];light[0][1]=1.f/projection[1];
+        for(unsigned row=0;row<3;++row)
+            light[1][row]=NorthlightGI::dot(direction,vec(context.inverseView+row*4));
+        light[1][2]*=projection[2];
+        const float back=std::clamp(light[1][2],0.f,1.f);
+        const float lowSun=body?1.f:std::clamp((.8f-direction.z)*2.2f,0.f,1.f);
+        light[0][2]=quality.treeCrown?gain*lowSun*back*.35f:0.f;
+        if(!quality.treeCanopy&&light[0][2]<=.0001f)return false;
+        light[1][3]=quality.treeCanopy?gain*.22f:0.f;
+        const auto& color=sourceColors[body];
+        light[2][0]=color.x;light[2][1]=color.y;light[2][2]=color.z;
+        light[2][3]=quality.treeCanopy?gain*(body?.65f:.54f):0.f;
+        return color.x+color.y+color.z>.0001f;
+    }
+    bool solidMaterialSpecularWanted()const{
+        return paletteFrameValid&&NorthlightQuality::foreverCelestial(quality)&&
+            (framePalette.sunSurfaceSpecular>0||framePalette.sunWetStoneSpecular>0||framePalette.localSurfaceSpecular>0);
+    }
     void setHdrBaseCompositeEnabled(bool enabled){composite.permitBase(enabled);}
     void setTemporalZeroWeightEnabled(bool enabled){history.permitZeroWeight(enabled);}
     void setModelNormals(IDirect3DTexture9* texture){modelNormals=texture;}
     static constexpr float MoonTerrainSpecularDistance=128.f;
-    float sunSurfaceSpecularGain()const{
+    float sunSurfaceSpecularGain(float wetness=0)const{
         if(!hasContext()||!celestialValid||!paletteFrameValid||!NorthlightQuality::foreverCelestial(quality)||
            NorthlightGI::dot(sourceColors[0],sourceColors[0])<=1e-10f)return 0;
-        return framePalette.sunSurfaceSpecular*std::clamp((sourceWeights[0]-.6f)*2.5f,0.f,1.f);
+        return std::max(framePalette.sunSurfaceSpecular,framePalette.sunWetStoneSpecular*wetness)*std::clamp((sourceWeights[0]-.6f)*2.5f,0.f,1.f);
     }
     float moonTerrainSpecularGain()const{
         return hasContext()&&celestialValid&&paletteFrameValid&&NorthlightQuality::foreverCelestial(quality)&&
@@ -2142,6 +2178,37 @@ public:
         const unsigned body=NorthlightGI::dot(sourceColors[1],sourceColors[1])>NorthlightGI::dot(sourceColors[0],sourceColors[0])?1:0;
         if(NorthlightGI::dot(rawSourceDirections[body],rawSourceDirections[body])>.5f){std::memcpy(frame.c[9],&sourceColors[body].x,12);}return true;
     }
+#if defined(NORTHLIGHT_WATER) && defined(_WIN64)
+    bool tideglassFrame(WaterFrameValues& input)const{
+        if(!hasContext()||menuDomain)return false;
+        std::copy_n(context.view,16,input.cameraRelativeView);
+        std::fill_n(input.cameraRelativeView+12,3,0.f);
+        std::copy_n(context.camera,3,input.cameraPosition);
+        const unsigned body=sourceWeights[1]>sourceWeights[0]?1:0;
+        const auto direction=rawSourceDirections[body];
+        input.toLight[0]=direction.x;input.toLight[1]=direction.y;input.toLight[2]=direction.z;
+        const auto pack=[](const float* rgb){
+            const auto byte=[](float value){return unsigned(std::clamp(value,0.f,1.f)*255.f+.5f);};
+            return D3DCOLOR_XRGB(byte(rgb[0]),byte(rgb[1]),byte(rgb[2]));
+        };
+        input.lightIsMoon=body==1;
+        input.daylight=sourceWeights[0];
+        input.directColor=pack(context.direct);
+        input.sunColor=input.directColor;
+        input.ambientColor=pack(context.ambient);
+        const auto& fog=legacyFogConstants();
+        input.fogColor=pack(fog.color);
+        if(fog.parameters[3]>.5f&&fog.parameters[0]<0.f){
+            input.fogStart=(1.f-fog.parameters[1])/fog.parameters[0];
+            input.fogEnd=-fog.parameters[1]/fog.parameters[0];
+        }
+        const auto& weather=weatherState;
+        input.weatherType=unsigned(weather.kind);
+        input.weatherIntensity=weather.intensity;
+        input.rain=weather.kind==NorthlightWeather::Kind::Rain?weather.intensity:0.f;
+        return true;
+    }
+#endif
     float weatherLensHeat()const{
         if(!hasContext()||!active||!active->bvh||active->map!=lastRequest.map)return 0;
         float player[3]={};const float* self=nullptr;
@@ -2403,8 +2470,18 @@ public:
             const uint32_t ownerNow=GetTickCount();
             if(screenLighting.raw().texture&&worldNormals.texture()&&composite.standardShader()&&localLighting.directShader()&&localLightMap==active->map)for(unsigned i=0;i<atmosphere.lights.count;++i){
                 const auto& selected=atmosphere.lights.sources[i];const auto* native=nativeDirectSource(selected,nativeDirectScene);
-                NorthlightNativeLights::Point observed;const auto resolved=native?nativeDirectEmitter(selected,*native):std::array<float,3>{};
-                float gain=native?NorthlightNativeDirect::ownershipGain(selected,*native,resolved.data()):0;bool drawWitness=false;
+                NorthlightNativeLights::Point observed;float gain=0;bool drawWitness=false;
+                if(native&&nativeSceneFrame.valid&&nativeSceneFrame.scene==nativeDirectScene.scene&&nativeSceneFrame.time!=nativeDirectScene.time){
+                    const auto* published=nativeDirectSource(selected,nativeSceneFrame);
+                    if(published){
+                        const auto previousEmitter=nativeDirectEmitter(selected,*published);
+                        gain=NorthlightNativeDirect::sceneOwnershipGain(selected,*native,*published,previousEmitter.data());
+                    }
+                }
+                if(native&&!(gain>0)){
+                    const auto resolved=nativeDirectEmitter(selected,*native);
+                    gain=NorthlightNativeDirect::ownershipGain(selected,*native,resolved.data());
+                }
                 if(!native)for(unsigned j=0;j<equipmentLights.count;++j){const auto& entry=equipmentLights.entries[j];
                     gain=NorthlightNativeDirect::observedOwnershipGain(selected,entry,ownerNow,nativeDirectScene);if(!(gain>0))continue;
                     std::copy_n(entry.source.position,3,observed.position);std::copy_n(entry.source.color,3,observed.color);std::copy_n(entry.source.attenuation,3,observed.attenuation);
@@ -2499,7 +2576,7 @@ public:
             }catch(...){/* Explicit capture failure must not change the submitted draw. */}
         }
         if(terrainReceiver||!matched||privateMismatch||(prepared&&!pom&&!displacement)){const HRESULT result=ownedSubmit();if(nativeDiagnosticCapture)nativeDiagnosticCapture->nativeAfter(nativeCaptureToken,0,result,privateMismatch?"material-private-pair-mismatch":nativePointSubmit.work().draws!=nativeOwnedBefore?"renderer-owned-native-source":candidateMask?"selected-native-source-unmodified":terrainReceiver?"terrain-source-unmodified":!matched?"no-matched-ready-source":"prepared-displacement-bypass");return result;}
-        if(!nativeDirectRenderer)try{nativeDirectRenderer=std::make_unique<NorthlightNativeLocalLighting>(d);nativeDirectRenderer->setSamplerStateSource(nativeSamplerContext,nativeSamplerReader);}catch(const std::bad_alloc&){return ownedSubmit();}
+        if(!nativeDirectRenderer)try{nativeDirectRenderer=std::make_unique<NorthlightNativeLocalLighting>(d);nativeDirectRenderer->setSamplerStateSource(nativeSamplerContext,nativeSamplerReader);nativeDirectRenderer->setShaderWarmup(nativeLightShaderWarmupMs);}catch(const std::bad_alloc&){return ownedSubmit();}
         nativeDirectRenderer->setColdTraceSink(NorthlightDiagnostics::enabled()&&NorthlightQuality::renderProfile(quality)?nativeColdTrace:nullptr);
         unsigned captureColdBefore=0,captureDeferredBefore=0;uint64_t captureFallbackBefore=0;
         if(nativeCaptureToken){captureColdBefore=nativeDirectRenderer->coldPairs;captureDeferredBefore=nativeDirectRenderer->deferredPairs;captureFallbackBefore=nativeDirectRenderer->fallbacks;}
@@ -2678,11 +2755,16 @@ public:
         return hasContext();
     }
     bool readWorldLighting(const char* map,const float* camera,NorthlightWmoContext::Lighting& light){
+#if defined(_WIN64) && !defined(NORTHLIGHT_REPLAY_STAND)
+        (void)map;
+        return NorthlightWmoContext::readX64GlobalLighting(camera,light);
+#else
         static const bool supported=NorthlightWmoContext::supportedClient();
         if(!supported)return false;
         if(!worldEnvironment.read(NorthlightWorldContext::readSelf,map,camera,light,GetTickCount()))
             return NorthlightWmoContext::readGlobalLighting(camera,light);
         NorthlightWmoContext::proveGlobalLighting(light);return true;
+#endif
     }
     bool wmoContext(IDirect3DVertexShader9* shader){
         if(failed)return false;
@@ -2863,7 +2945,13 @@ public:
         // world clock. An orbit-derived replacement removes that painted light
         // from the wrong side of the character and backdrop. Shadow and GI
         // geometry still use the full pipeline, with the measured menu light.
-        if(menu){resolvedSources.sources[0]={vec(context.lightDirection),vec(context.direct),1};
+        bool nativeDirectional=menu!=nullptr;
+#if defined(_WIN64) && !defined(NORTHLIGHT_REPLAY_STAND)
+        // The audited AMD64 sky block supplies the game's actual directional
+        // light. Its separate sun/moon billboard records are not part of that layout.
+        nativeDirectional|=!celestialValid&&global!=nullptr;
+#endif
+        if(nativeDirectional){resolvedSources.sources[0]={vec(context.lightDirection),vec(context.direct),1};
             resolvedSources.sources[1]={V(0,0,1),V(),0};resolvedSources.authoredFill=0;}
         authoredFill=resolvedSources.authoredFill;
         for(unsigned source=0;source<2;++source){rawSourceDirections[source]=resolvedSources.sources[source].direction;sourceDirections[source]=continuousCelestialShadows?resolvedSources.sources[source].direction:NorthlightWorldMath::quantizeDirection(resolvedSources.sources[source].direction,float(quality.shadowDirectionSteps));sourceColors[source]=resolvedSources.sources[source].color;sourceGlowColors[source]=sourceColors[source];sourceWeights[source]=resolvedSources.sources[source].weight;}
@@ -3031,6 +3119,7 @@ public:
         {auto program=actorPrograms.find(shader); /* 0.3.177: the caches are cleared by their owner at its next open */
          if(program!=actorPrograms.end()){prepareCachesStale=true;retireProgram(std::move(program->second));actorPrograms.erase(program);}}
         actorUVPrograms.erase(shader);
+        rigidAudited.erase(shader);
         UINT size=0;if(!shader||FAILED(shader->GetFunction(nullptr,&size))||size<8||size>65536||size%4)return;
         std::vector<uint32_t> words(size/4),output;
         if(FAILED(shader->GetFunction(words.data(),&size)))return;
@@ -3724,6 +3813,20 @@ public:
 #include "world_local_lighting.inl"
 #include "world_atmospheric_fog.inl"
 #include "world_frame_constants.inl"
+
+    // Called with the scene/depth samplers and fullscreen state set by the device.
+    bool renderNormalsView(IDirect3DSurface9* target,UINT w,UINT h,D3DFORMAT fmt,float nearZ,float farZ,
+                           float minZ,float maxZ,IDirect3DTexture9* scene,IDirect3DTexture9* depth){
+        NorthlightFrameRequirements::Plan needs;
+        needs.lighting=true;
+        if(!screenReady()||!resources(w,h,fmt,needs))return false;
+        ScreenFrameConstants frameConstants;
+        auto& c=frameConstants.rows;
+        setScreenCamera(c,w,h,nearZ,farZ,minZ,maxZ);
+        if(FAILED(d->SetTexture(0,scene))||FAILED(d->SetTexture(1,depth))||
+           FAILED(d->SetPixelShaderConstantF(0,c[0],7))||FAILED(d->SetPixelShaderConstantF(33,c[33],1)))return false;
+        return worldNormals.drawView(d,target,w,h,kWorldNormalsViewShader,modelNormals);
+    }
     // 0.3.174: true once this frame's WorldComposite quad has drawn (the proxy's FOLD fallback reads it).
     bool composited=false;
     // foldScene/foldAO (0.3.174 FOLD): the proxy's pre-AO scene copy replaces the world colour
@@ -3732,6 +3835,14 @@ public:
     // enclosingState transfers restoration to the caller until its enclosing
     // effects scope ends. Later passes must bind their own inputs/state.
     bool render(IDirect3DSurface9* targetSurface,IDirect3DTexture9* depth,UINT w,UINT h,D3DFORMAT fmt,float nearZ,float farZ,float minZ,float maxZ,int debug,NorthlightGpuProfile* profile,IDirect3DTexture9* waterMask,IDirect3DTexture9* foldScene=nullptr,IDirect3DTexture9* foldAO=nullptr,unsigned rendererFrame=0,IDirect3DTexture9* hdrBase=nullptr,bool hdrBaseEncoded=false,bool hdrCombineAllowed=true,bool hdrSkyBase=false,bool foldAOAlphaNeutral=false,const SavedState* enclosingState=nullptr,const std::string* lightHistoryAudit=nullptr){
+        if(debug==NorthlightEffectSwitches::NormalsView||debug==NorthlightEffectSwitches::SsaoView){
+            lastRenderDebug=debug;shadowsComposited=false;fogGeometryReady=false;gpuDiagnosticFrame=false;
+            history.invalidate();fogScreen.invalidateHistory();
+            // The device has already composited the SSAO view.
+            composited=debug==NorthlightEffectSwitches::SsaoView||
+                (pipelineActive&&renderNormalsView(targetSurface,w,h,fmt,nearZ,farZ,minZ,maxZ,foldScene,depth));
+            return composited;
+        }
         shadowReplayAlpha.beginFrame(GetTickCount());
         const bool wantsDirectionalShadows=directionalShadowWork();
         bool directionalDeferred=wantsDirectionalShadows&&shadowReplayAlpha.retryAt();
@@ -3860,11 +3971,23 @@ public:
         const unsigned shadowDiagnosticCapture=debug==1&&gpuDiagnosticArmed&&gpuDiagnosticCaptures<4?gpuDiagnosticCaptures+1:0;
         const unsigned diagnosticCapture=normalDiagnosticCapture?gpuDiagnosticCaptures+1:shadowDiagnosticCapture;
         const float moonTerrainSpecular=materialWanted&&materialBumpGain>0?moonTerrainSpecularGain():0.f;
-        float sunSurfaceSpecular=materialWanted&&materialBumpGain>0?sunSurfaceSpecularGain():0.f;
-        if(sunSurfaceSpecular>0&&!composite.prepareSolar(d,hdrMode,
-            [&](const char* message){deferLogf("%s",message);}))sunSurfaceSpecular=0;
+        const bool materialSpecular=materialWanted&&materialBumpGain>0;
+        float stoneWetness=0;
+        if(materialSpecular&&paletteFrameValid&&framePalette.sunWetStoneSpecular>0&&sourceWeights[0]>.6f){
+            const float rain=weatherEffects().rain;
+            if(rain>0&&supplementalWeatherOutdoors())stoneWetness=rain;
+        }
+        float sunSurfaceSpecular=materialSpecular?sunSurfaceSpecularGain(stoneWetness):0.f;
+        const unsigned foliageSource=sourceWeights[1]>sourceWeights[0]?1:0;
+        const float foliageGain=materialWanted&&materialFoliageCaptured&&moonTerrainSpecular==0&&paletteFrameValid&&
+            celestialValid&&NorthlightQuality::foreverCelestial(quality)
+            ?framePalette.foliageTransmission[foliageSource]*sourceWeights[foliageSource]*
+                (foliageSource?-1.f:std::clamp((.72f-sourceDirections[0].z)*2.2f,0.f,1.f)):0.f;
+        const bool solarMaterial=(sunSurfaceSpecular>0||foliageGain!=0)&&composite.prepareSolar(d,hdrMode,
+            [&](const char* message){deferLogf("%s",message);});
+        if(!solarMaterial)sunSurfaceSpecular=0;
         const auto material=composite.selectMaterial(materialWanted,hdrMode,hdrCombineAllowed&&moonTerrainSpecular==0,
-            diagnosticCapture!=0,sunSurfaceSpecular>0);
+            diagnosticCapture!=0,solarMaterial);
         const bool fullMaterial=material.full,combinedMaterial=material.combined;
         const auto wantedFormat=hdrMode?D3DFMT_A16B16G16R16F:fmt;
         if(!composite.prepareScratch(d,w,h,wantedFormat,!foldScene||(fullMaterial&&!combinedMaterial),materialCaptureResident,
@@ -4184,7 +4307,8 @@ public:
             foldScene,hdrBase,screenFallbacks.dither(),screenFallbacks.zero(),history.produced().light.texture,
             fogResult.image.texture?fogResult.image.texture:screenFallbacks.ao(),screenLighting.raw().texture,effectCoverage,materialOcclusion,
             materialDetail,worldNormals.texture(),screenLighting.prelit().texture,textures[3],textures[7],profile,materialProfile,
-            localCapture,NorthlightWorldLocalLighting::LocalDirectInputs,regionalFog.texture()
+            localCapture,NorthlightWorldLocalLighting::LocalDirectInputs,regionalFog.texture(),
+            {stoneWetness,framePalette.sunTerrainIce,framePalette.sunTerrainSnow,foliageGain}
         };
         const auto composition=composite.draw(d,compositeInputs,rainMask,
              [&](HRESULT hr,const char* name){return check(hr,name);},[&]{

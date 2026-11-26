@@ -4,14 +4,14 @@
   "actor_source_sha256": "c32d23350f561010ec4b21f8be5a37515374a0c96e5f3343b0cd749aa2882de6",
   "water_distance_sha256": "6b41da3272f69d9b79964b6f5bbf3a8546b5e8d09ecf7a99d7b2d8f34fc77405",
   "target": "ps_3_0",
-  "compiler": "Microsoft d3dcompiler_47 10.0.17134.12 IEEE strict",
-  "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
+  "compiler": "Microsoft d3dcompiler_47 10.0.26100.9457 IEEE strict",
+  "compiler_sha256": "1da540a0ddbc54de4142570c8ec4a4566ef610fce72c181efb55a9332c480790",
   "game_launched": false,
   "shaders": {
     "AO": {
       "bytes": 5336,
       "sha256": "6520abbc98e44341c2bdadb0abd23a948c529a5397670580c2ebcf335928e25a",
-      "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
+      "compiler_sha256": "1da540a0ddbc54de4142570c8ec4a4566ef610fce72c181efb55a9332c480790",
       "static_instruction_slots": 314,
       "temporary_registers": 13,
       "samplers": [
@@ -44,7 +44,7 @@
     "AOContactBloom": {
       "bytes": 5176,
       "sha256": "73fdf746f61e22425bea22da1995fe60c83496ee015e201a351186a5e3580357",
-      "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
+      "compiler_sha256": "1da540a0ddbc54de4142570c8ec4a4566ef610fce72c181efb55a9332c480790",
       "static_instruction_slots": 289,
       "temporary_registers": 9,
       "samplers": [
@@ -78,7 +78,7 @@
     "ContactBloom": {
       "bytes": 804,
       "sha256": "60d848b716243336eb587339f87e8d59d822b9df5ac85bd737254650582337bd",
-      "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
+      "compiler_sha256": "1da540a0ddbc54de4142570c8ec4a4566ef610fce72c181efb55a9332c480790",
       "static_instruction_slots": 29,
       "temporary_registers": 4,
       "samplers": [
@@ -97,7 +97,7 @@
     "HDAOContactBloom": {
       "bytes": 4264,
       "sha256": "9d32266381ac9274b1fd0010a0bd1cebc13f7ed1864cd35ef554513029b7af3d",
-      "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
+      "compiler_sha256": "1da540a0ddbc54de4142570c8ec4a4566ef610fce72c181efb55a9332c480790",
       "static_instruction_slots": 265,
       "temporary_registers": 12,
       "samplers": [
@@ -132,7 +132,7 @@
     "HBAOPlusContactBloom": {
       "bytes": 5184,
       "sha256": "8faeea570bf753da39b2f56a72f3424068585ce1acb1e0cfd0d9e0e498c1cffe",
-      "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
+      "compiler_sha256": "1da540a0ddbc54de4142570c8ec4a4566ef610fce72c181efb55a9332c480790",
       "static_instruction_slots": 319,
       "temporary_registers": 10,
       "samplers": [
@@ -167,7 +167,7 @@
     "GTAOContactBloom": {
       "bytes": 7772,
       "sha256": "5fd5f2073887535767ac23439556b17225be37f4c165fcc37b4c929748d9db88",
-      "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
+      "compiler_sha256": "1da540a0ddbc54de4142570c8ec4a4566ef610fce72c181efb55a9332c480790",
       "static_instruction_slots": 492,
       "temporary_registers": 17,
       "samplers": [
@@ -202,7 +202,7 @@
     "HDAOContactBloomMedium": {
       "bytes": 4444,
       "sha256": "a11bf7bdd05ae3caddf990699285d765cbb36d6f6aec33f1ea6f2da4218ec5bd",
-      "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
+      "compiler_sha256": "1da540a0ddbc54de4142570c8ec4a4566ef610fce72c181efb55a9332c480790",
       "static_instruction_slots": 274,
       "temporary_registers": 12,
       "samplers": [
@@ -237,7 +237,7 @@
     "HBAOPlusContactBloomMedium": {
       "bytes": 5184,
       "sha256": "7dd4a52fb767eea55d44df8159f2094139384acda5ad194d3e79fd24db8c52f3",
-      "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
+      "compiler_sha256": "1da540a0ddbc54de4142570c8ec4a4566ef610fce72c181efb55a9332c480790",
       "static_instruction_slots": 319,
       "temporary_registers": 10,
       "samplers": [
@@ -272,7 +272,7 @@
     "GTAOContactBloomMedium": {
       "bytes": 7796,
       "sha256": "dce40536137bcf112428db474d22c6f81b6dc8ef512b6afb959bf353024e1a30",
-      "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
+      "compiler_sha256": "1da540a0ddbc54de4142570c8ec4a4566ef610fce72c181efb55a9332c480790",
       "static_instruction_slots": 492,
       "temporary_registers": 17,
       "samplers": [
@@ -307,7 +307,7 @@
     "HDAOContactBloomLow": {
       "bytes": 4444,
       "sha256": "a11bf7bdd05ae3caddf990699285d765cbb36d6f6aec33f1ea6f2da4218ec5bd",
-      "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
+      "compiler_sha256": "1da540a0ddbc54de4142570c8ec4a4566ef610fce72c181efb55a9332c480790",
       "static_instruction_slots": 274,
       "temporary_registers": 12,
       "samplers": [
@@ -342,7 +342,7 @@
     "HBAOPlusContactBloomLow": {
       "bytes": 5136,
       "sha256": "42198722d27f80177b19051405e7071a552a6476fe0c966c6d5501a465664a4a",
-      "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
+      "compiler_sha256": "1da540a0ddbc54de4142570c8ec4a4566ef610fce72c181efb55a9332c480790",
       "static_instruction_slots": 319,
       "temporary_registers": 10,
       "samplers": [
@@ -377,7 +377,7 @@
     "GTAOContactBloomLow": {
       "bytes": 7812,
       "sha256": "6ce2ce9f7ef91fdb851c8a220c76fa171624a17adb6d98c6a25cc0f55b63272a",
-      "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
+      "compiler_sha256": "1da540a0ddbc54de4142570c8ec4a4566ef610fce72c181efb55a9332c480790",
       "static_instruction_slots": 493,
       "temporary_registers": 17,
       "samplers": [
@@ -412,7 +412,7 @@
     "AOBlur": {
       "bytes": 6000,
       "sha256": "c0cae5b18871b0954ec21064bb9da38e622b02e52504d521396d79fdbbd5ee7a",
-      "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
+      "compiler_sha256": "1da540a0ddbc54de4142570c8ec4a4566ef610fce72c181efb55a9332c480790",
       "static_instruction_slots": 377,
       "temporary_registers": 17,
       "samplers": [
@@ -447,7 +447,7 @@
     "AOBlurNoWater": {
       "bytes": 5268,
       "sha256": "6b4190bd6d642d3089899f7ad8e9825e49564a6754706dedf312995ef9ad1000",
-      "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
+      "compiler_sha256": "1da540a0ddbc54de4142570c8ec4a4566ef610fce72c181efb55a9332c480790",
       "static_instruction_slots": 330,
       "temporary_registers": 16,
       "samplers": [
@@ -481,7 +481,7 @@
     "Composite": {
       "bytes": 5804,
       "sha256": "8276812752c58da9d6c4e6b456d0e32e561044d04186cdb1ff29d22fb1355103",
-      "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
+      "compiler_sha256": "1da540a0ddbc54de4142570c8ec4a4566ef610fce72c181efb55a9332c480790",
       "static_instruction_slots": 359,
       "temporary_registers": 14,
       "samplers": [
@@ -518,7 +518,7 @@
     "AOActorPrepare": {
       "bytes": 4380,
       "sha256": "c9c9c7934a110d00a12e562afbd6c7c355946fea3b96b156b92ac7dea3723be2",
-      "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
+      "compiler_sha256": "1da540a0ddbc54de4142570c8ec4a4566ef610fce72c181efb55a9332c480790",
       "static_instruction_slots": 278,
       "temporary_registers": 12,
       "samplers": [
@@ -550,7 +550,7 @@
     "HBAOActorContactBloom": {
       "bytes": 6200,
       "sha256": "c4914cdc92c133dbab437c4ec7faa4c0197d42433ba1c61df162375f8939cec1",
-      "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
+      "compiler_sha256": "1da540a0ddbc54de4142570c8ec4a4566ef610fce72c181efb55a9332c480790",
       "static_instruction_slots": 403,
       "temporary_registers": 19,
       "samplers": [
@@ -588,7 +588,7 @@
     "GTAOActorContactBloom": {
       "bytes": 7532,
       "sha256": "ed414273ef6b1773e1e9e37d5e75e7afd19bf029a842b55c2e4e3f930ee660e6",
-      "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
+      "compiler_sha256": "1da540a0ddbc54de4142570c8ec4a4566ef610fce72c181efb55a9332c480790",
       "static_instruction_slots": 495,
       "temporary_registers": 24,
       "samplers": [
@@ -626,7 +626,7 @@
     "HBAOActorOnly": {
       "bytes": 5668,
       "sha256": "7af49c966b980cc261e5db307e31f7517a8f28525ed254c0b0e6606c93cb54a7",
-      "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
+      "compiler_sha256": "1da540a0ddbc54de4142570c8ec4a4566ef610fce72c181efb55a9332c480790",
       "static_instruction_slots": 377,
       "temporary_registers": 19,
       "samplers": [
@@ -662,7 +662,7 @@
     "GTAOActorOnly": {
       "bytes": 6988,
       "sha256": "5c03a459fb5e3de22967f31d0cad81bcd42888279d6550ef7522d0eb50ddac63",
-      "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
+      "compiler_sha256": "1da540a0ddbc54de4142570c8ec4a4566ef610fce72c181efb55a9332c480790",
       "static_instruction_slots": 470,
       "temporary_registers": 25,
       "samplers": [
@@ -698,7 +698,7 @@
     "RainMaskMRT": {
       "bytes": 264,
       "sha256": "d087b9569ef00903e1caa72b1cedea9c5fecc65eec13ad6ca6b502f645ec8200",
-      "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
+      "compiler_sha256": "1da540a0ddbc54de4142570c8ec4a4566ef610fce72c181efb55a9332c480790",
       "target": "ps_2_0",
       "static_instruction_slots": 5,
       "temporary_registers": 1,
@@ -715,7 +715,7 @@
     "RainScrub": {
       "bytes": 348,
       "sha256": "04e9c68d306dc5afa4125ddcfa370a1e00c535f3587fe096f1b54a377068edee",
-      "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
+      "compiler_sha256": "1da540a0ddbc54de4142570c8ec4a4566ef610fce72c181efb55a9332c480790",
       "target": "ps_2_0",
       "static_instruction_slots": 9,
       "temporary_registers": 2,
@@ -735,7 +735,7 @@
     "TideglassCoverage": {
       "bytes": 256,
       "sha256": "e006c6b4bdd1f91613c53cdb0e12e34753ad96e149e47ccff29596a31673a488",
-      "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
+      "compiler_sha256": "1da540a0ddbc54de4142570c8ec4a4566ef610fce72c181efb55a9332c480790",
       "target": "ps_2_0",
       "static_instruction_slots": 5,
       "temporary_registers": 1,
@@ -752,7 +752,7 @@
     "TideglassRetainRain": {
       "bytes": 272,
       "sha256": "aa0e04c39b55129a3cd13d82c7a7a575e1fbf579439142e1857df2929e30bdf2",
-      "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
+      "compiler_sha256": "1da540a0ddbc54de4142570c8ec4a4566ef610fce72c181efb55a9332c480790",
       "target": "ps_2_0",
       "static_instruction_slots": 4,
       "temporary_registers": 2,
@@ -769,7 +769,7 @@
     "AOOnly": {
       "bytes": 4620,
       "sha256": "149678e270e00d5e15e96a19f8cb256afa0aafd8a369da2e9bf03f7a4c46f28c",
-      "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
+      "compiler_sha256": "1da540a0ddbc54de4142570c8ec4a4566ef610fce72c181efb55a9332c480790",
       "static_instruction_slots": 263,
       "temporary_registers": 9,
       "samplers": [
@@ -801,7 +801,7 @@
     "HDAOOnly": {
       "bytes": 3748,
       "sha256": "d2a002aaaa2ea38ef1077781176aae41cc2a5d9e1fc31bac3ca55cbc66bc360a",
-      "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
+      "compiler_sha256": "1da540a0ddbc54de4142570c8ec4a4566ef610fce72c181efb55a9332c480790",
       "static_instruction_slots": 240,
       "temporary_registers": 12,
       "samplers": [
@@ -834,7 +834,7 @@
     "HDAOOnlyMedium": {
       "bytes": 3920,
       "sha256": "4bb57f8f435ab35e176a0b05bc2e7a2af52d9e8cd3e5d42fb935984c58cfa65d",
-      "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
+      "compiler_sha256": "1da540a0ddbc54de4142570c8ec4a4566ef610fce72c181efb55a9332c480790",
       "static_instruction_slots": 250,
       "temporary_registers": 13,
       "samplers": [
@@ -867,7 +867,7 @@
     "HDAOOnlyLow": {
       "bytes": 3920,
       "sha256": "4bb57f8f435ab35e176a0b05bc2e7a2af52d9e8cd3e5d42fb935984c58cfa65d",
-      "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
+      "compiler_sha256": "1da540a0ddbc54de4142570c8ec4a4566ef610fce72c181efb55a9332c480790",
       "static_instruction_slots": 250,
       "temporary_registers": 13,
       "samplers": [
@@ -900,7 +900,7 @@
     "HBAOPlusOnly": {
       "bytes": 4644,
       "sha256": "338d6da7979875c7178e735330ac2bc5104b1cf460b22146f846726b687d9253",
-      "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
+      "compiler_sha256": "1da540a0ddbc54de4142570c8ec4a4566ef610fce72c181efb55a9332c480790",
       "static_instruction_slots": 294,
       "temporary_registers": 11,
       "samplers": [
@@ -933,7 +933,7 @@
     "HBAOPlusOnlyMedium": {
       "bytes": 4644,
       "sha256": "d33c9f0e08c88a8b846a409e6263ffe1535109ec2e5b4dfe0d7db87089a4bf84",
-      "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
+      "compiler_sha256": "1da540a0ddbc54de4142570c8ec4a4566ef610fce72c181efb55a9332c480790",
       "static_instruction_slots": 294,
       "temporary_registers": 11,
       "samplers": [
@@ -966,7 +966,7 @@
     "HBAOPlusOnlyLow": {
       "bytes": 4620,
       "sha256": "16f695ba06ed0ea9f402959096c3018eb2bf92eade00ae1c8b990d36a3f89b01",
-      "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
+      "compiler_sha256": "1da540a0ddbc54de4142570c8ec4a4566ef610fce72c181efb55a9332c480790",
       "static_instruction_slots": 294,
       "temporary_registers": 11,
       "samplers": [
@@ -999,7 +999,7 @@
     "GTAOOnly": {
       "bytes": 7256,
       "sha256": "2ed06e3107d8dc29bc2af8078ec106b7a5e77ccfd3b8a993595777961782522a",
-      "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
+      "compiler_sha256": "1da540a0ddbc54de4142570c8ec4a4566ef610fce72c181efb55a9332c480790",
       "static_instruction_slots": 467,
       "temporary_registers": 18,
       "samplers": [
@@ -1032,7 +1032,7 @@
     "GTAOOnlyMedium": {
       "bytes": 7280,
       "sha256": "910e3277cd5dac694b0901566434fd843cbdeeec493f02dad3cfd3fe4d2a3e28",
-      "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
+      "compiler_sha256": "1da540a0ddbc54de4142570c8ec4a4566ef610fce72c181efb55a9332c480790",
       "static_instruction_slots": 467,
       "temporary_registers": 18,
       "samplers": [
@@ -1065,7 +1065,7 @@
     "GTAOOnlyLow": {
       "bytes": 7280,
       "sha256": "e678a93f0e67cbbdbdb371d8611c6a59e563d83551439c5dc72d61e1333c193e",
-      "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
+      "compiler_sha256": "1da540a0ddbc54de4142570c8ec4a4566ef610fce72c181efb55a9332c480790",
       "static_instruction_slots": 467,
       "temporary_registers": 18,
       "samplers": [
@@ -1098,7 +1098,7 @@
     "ASSAOOnly": {
       "bytes": 7992,
       "sha256": "a52278d69987d5c083e47ec2e81bef369500fadeb4b59e9e41cc2cdf53957d40",
-      "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
+      "compiler_sha256": "1da540a0ddbc54de4142570c8ec4a4566ef610fce72c181efb55a9332c480790",
       "static_instruction_slots": 466,
       "temporary_registers": 14,
       "samplers": [
@@ -1132,7 +1132,7 @@
     "ASSAOOnlyMedium": {
       "bytes": 7704,
       "sha256": "2d581a93a4970c652432eeb8496e1d11d35048cf33830b457a52a23d3473560f",
-      "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
+      "compiler_sha256": "1da540a0ddbc54de4142570c8ec4a4566ef610fce72c181efb55a9332c480790",
       "static_instruction_slots": 462,
       "temporary_registers": 14,
       "samplers": [
@@ -1166,7 +1166,7 @@
     "ASSAOOnlyLow": {
       "bytes": 5940,
       "sha256": "1e36530cf6f6dc8d62a35506513b963324843c252918ef3f44e7ce2fa56f13fe",
-      "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
+      "compiler_sha256": "1da540a0ddbc54de4142570c8ec4a4566ef610fce72c181efb55a9332c480790",
       "static_instruction_slots": 361,
       "temporary_registers": 13,
       "samplers": [
@@ -1199,7 +1199,7 @@
     "ASSAOContactBloom": {
       "bytes": 8548,
       "sha256": "137dd40ec53c757b4e1a7da0a86a35ed06f4edcd2f6e25e5be76191d4fc94e24",
-      "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
+      "compiler_sha256": "1da540a0ddbc54de4142570c8ec4a4566ef610fce72c181efb55a9332c480790",
       "static_instruction_slots": 492,
       "temporary_registers": 13,
       "samplers": [
@@ -1235,7 +1235,7 @@
     "ASSAOContactBloomMedium": {
       "bytes": 8432,
       "sha256": "4dcbfe2489244b0bf8ff461a06ccc9139d3a77de0b02e1fa76bd053d16c9ef1e",
-      "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
+      "compiler_sha256": "1da540a0ddbc54de4142570c8ec4a4566ef610fce72c181efb55a9332c480790",
       "static_instruction_slots": 499,
       "temporary_registers": 13,
       "samplers": [
@@ -1271,7 +1271,7 @@
     "ASSAOContactBloomLow": {
       "bytes": 6496,
       "sha256": "20542f0a296cc543da26d6cf0a2b8df9e2ffdc66a82e68cac9fd52ff018c05a4",
-      "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
+      "compiler_sha256": "1da540a0ddbc54de4142570c8ec4a4566ef610fce72c181efb55a9332c480790",
       "static_instruction_slots": 387,
       "temporary_registers": 12,
       "samplers": [
@@ -1306,7 +1306,7 @@
     "WaterCorrectDistance": {
       "bytes": 428,
       "sha256": "d3b31d9ccd744002ca6e9daedb28e0b9b476478f95b2622d69fb023e8c7935c2",
-      "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
+      "compiler_sha256": "1da540a0ddbc54de4142570c8ec4a4566ef610fce72c181efb55a9332c480790",
       "target": "ps_2_0",
       "static_instruction_slots": 15,
       "temporary_registers": 2,
@@ -1329,7 +1329,7 @@
     "WaterMergeDistanceMS": {
       "bytes": 508,
       "sha256": "fb2fe9730cc0e43cd344d9b2bf835995617272bf0700906f03f2329a83fae804",
-      "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
+      "compiler_sha256": "1da540a0ddbc54de4142570c8ec4a4566ef610fce72c181efb55a9332c480790",
       "target": "ps_2_0",
       "static_instruction_slots": 16,
       "temporary_registers": 2,
@@ -1352,7 +1352,7 @@
     "WaterMergeDistance": {
       "bytes": 264,
       "sha256": "20067b7a8c637995eec9791b436a61d166bea17e711832b492340bf34d00c41d",
-      "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
+      "compiler_sha256": "1da540a0ddbc54de4142570c8ec4a4566ef610fce72c181efb55a9332c480790",
       "target": "ps_2_0",
       "static_instruction_slots": 6,
       "temporary_registers": 2,

@@ -48,13 +48,15 @@ int main(int argc,char** argv){
   c[33][0]=c[33][2]=W;c[33][1]=c[33][3]=H;c[81][0]=1;c[115][0]=c[115][3]=1;
   c[18][0]=.4f;c[18][1]=.3f;c[18][2]=.2f;
   auto solid=[&](unsigned slot,std::array<float,4> v){bind(slot,1,1,[&](unsigned,unsigned){return v;});};
+  const auto srgbToLinear=[](float v){return v<=.04045f?v/12.92f:std::pow((v+.055f)/1.055f,2.4f);};
+  const std::array<float,4> sceneLinear={srgbToLinear(.4f),srgbToLinear(.3f),srgbToLinear(.2f),.7f};
   solid(0,{.4f,.3f,.2f,.7f});solid(7,{0,0,0,0});solid(8,{0,0,0,0});solid(9,{0,0,0,1});
   solid(10,{0,0,0,1});solid(11,{0,0,0,0});solid(12,{.4f,.3f,.2f,1});solid(13,{0,0,0,0});
   unsigned consumerCases=0;
   for(bool hdr:{false,true})for(const char* receiver:{"WorldPrelitComposite","WorldComposite","WorldUnlitComposite"}){
    const bool prelitReceiver=std::strstr(receiver,"Prelit"),unlitReceiver=std::strstr(receiver,"Unlit");
    auto ps=shader(d,proto+"/"+receiver+(hdr?"Hdr":"")+".bin");
-   solid(2,hdr?std::array<float,4>{.132868f,.073239f,.033105f,1}:std::array<float,4>{0,0,0,0});
+   solid(2,hdr?sceneLinear:std::array<float,4>{0,0,0,0});
    for(bool positive:{false,true}){
     std::vector<uint16_t> results[2][3];
     for(unsigned lamp=0;lamp<2;++lamp)for(unsigned mix=0;mix<3;++mix){
@@ -69,7 +71,8 @@ int main(int argc,char** argv){
      for(unsigned lamp=0;lamp<2;++lamp){const auto& r=results[lamp];const float a=half(r[0][i]),b=half(r[1][i]),e=half(r[2][i]);
       assert(std::isfinite(a)&&std::isfinite(b)&&std::isfinite(e));
       if(protectedPixel)assert(r[0][i]==r[1][i]&&r[1][i]==r[2][i]);
-      else if(!lamp||hdr){assert(std::fabs(b-(a+e)*.5f)<.001f);assert(positive?e>a:e<a);}
+      else if(!lamp||hdr){const auto linear=[&](float v){return hdr?v:srgbToLinear(v);};
+       assert(std::fabs(linear(b)-(linear(a)+linear(e))*.5f)<.001f);assert(positive?e>a:e<a);}
      }
      // Fresh direct lamp radiance is added after GI; changing this blend
      // cannot dim that contribution in the HDR radiance target.
@@ -112,14 +115,15 @@ int main(int argc,char** argv){
    solid(8,{-.4f*removal,-.3f*removal,-.2f*removal,0});
    for(bool hdr:{false,true})for(bool lamp:{false,true}){
     auto ps=shader(d,proto+std::string("/WorldComposite")+(hdr?"Hdr":"")+".bin");
-    solid(2,hdr?std::array<float,4>{.132868f,.073239f,.033105f,1}:std::array<float,4>{0,0,0,0});solid(3,{lamp?.02f:0.f,lamp?.01f:0.f,lamp?.005f:0.f,0});
+    solid(2,hdr?sceneLinear:std::array<float,4>{0,0,0,0});solid(3,{lamp?.02f:0.f,lamp?.01f:0.f,lamp?.005f:0.f,0});
     ok(d->SetPixelShaderConstantF(0,c[0],128));ok(d->SetPixelShader(ps));ok(d->BeginScene());quad();ok(d->EndScene());
     auto values=image(light);
     for(unsigned k=0;k<3;++k){
-     const float native=hdr?(k==0?.132868f:k==1?.073239f:.033105f):(k==0?.4f:k==1?.3f:.2f);
-     const float actual=half(values[(W*H/2)*4+k]);
-     if(!lamp){if(std::fabs(actual-native*(1-removal))>=.001f)std::fprintf(stderr,"DARK_ROOM strength=%g shadow=%g hdr=%u channel=%u actual=%g expected=%g\n",strength,shadowStrength,unsigned(hdr),k,actual,native*(1-removal));assert(std::fabs(actual-native*(1-removal))<.001f);}
-     else assert(actual>native*(1-removal)+.0001f);
+     const float encoded=half(values[(W*H/2)*4+k]);
+     const float actual=hdr?encoded:srgbToLinear(encoded);
+     const float expected=sceneLinear[k]*(1-removal);
+     if(!lamp){if(std::fabs(actual-expected)>=.001f)std::fprintf(stderr,"DARK_ROOM strength=%g shadow=%g hdr=%u channel=%u actual=%g expected=%g\n",strength,shadowStrength,unsigned(hdr),k,actual,expected);assert(std::fabs(actual-expected)<.001f);}
+     else assert(actual>expected+.0001f);
     }
     ps->Release();++darkRoomCases;
    }
@@ -141,15 +145,16 @@ int main(int argc,char** argv){
   solid(8,{-.8f,-.6f,-.4f,0});solid(12,{.8f,.6f,.4f,0});solid(3,{0,0,0,0});
   for(bool hdr:{false,true}){
    auto ps=shader(d,proto+std::string("/WorldComposite")+(hdr?"Hdr":"")+".bin");
-   solid(2,hdr?std::array<float,4>{.132868f,.073239f,.033105f,1}:std::array<float,4>{0,0,0,0});
+   solid(2,hdr?sceneLinear:std::array<float,4>{0,0,0,0});
    ok(d->SetPixelShaderConstantF(0,c[0],128));ok(d->SetPixelShader(ps));ok(d->BeginScene());quad();ok(d->EndScene());
    auto values=image(light);
    for(unsigned k=0;k<3;++k){
-    const float native=hdr?(k==0?.132868f:k==1?.073239f:.033105f):c[18][k];
-    assert(std::fabs(half(values[(W*H/2)*4+k])-native*.5f*.55f)<.001f);
+    const float encoded=half(values[(W*H/2)*4+k]);
+    assert(std::fabs((hdr?encoded:srgbToLinear(encoded))-sceneLinear[k]*.5f*.55f)<.001f);
    }
    ps->Release();++darkRoomCases;
   }
+  std::puts("SDR_HDR_SURFACE_PARITY_PASS signedGI=1 mixedDirectional=1 prelit=1");
   // Keep variation in GI on a planar receiver, even in full shadow and with
   // eligible history. The standalone temporal pass reads s9 as its input.
   auto raw=[&](unsigned x,unsigned){return std::array<float,4>{x%2?-.4f:-.2f,-.3f,-.2f,0};};

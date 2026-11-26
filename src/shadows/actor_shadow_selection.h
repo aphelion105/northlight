@@ -169,7 +169,12 @@ struct Actor {
     bool everAttached=false,toFree=false,toAttach=false,rekeyed=false,outside=false,self=false,companion=false,rebound=false,selfBody=false,nearSelf=false,candidate=false,follows=false,unfiltered=false;unsigned streak=0,radiusSince=~0u;std::size_t head=SIZE_MAX;float radiusAt[3]={};RadiusEntry* radiusEntry=nullptr; /* ActorShadowRadius; head: the character (see radiusStage) */
 };
 struct Point {std::uint64_t cell=0;float x=0,y=0,z=0;std::size_t actor=0;};
-struct Scratch {std::vector<Actor> actors;std::vector<std::size_t> order,candidates;std::vector<Point> points;std::vector<std::pair<std::size_t,std::size_t>> links;};
+struct Scratch {
+    std::vector<Actor> actors;
+    std::vector<std::size_t> order,candidates,linkedBy;
+    std::vector<Point> points;
+    std::vector<std::pair<std::size_t,std::size_t>> links;
+};
 struct Result {
     std::size_t kept=0,dropped=0,keptBytes=0,droppedBytes=0,unknown=0;
     std::size_t actors=0,actorsKept=0,rigidActors=0,rigidDraws=0,rigidBytes=0,toggles=0,matched=0,retained=0,admitted=0,waiting=0,reserved=0;
@@ -299,8 +304,16 @@ public:
             if(r.used){r.used=false;r.age=0;}else if(r.age<tuning.rigidMaxAge)++r.age;else continue;
             if(write!=i)rigid_[write]=r;++write;}
         rigid_.resize(write);
+        // Near-stationary entries usually need only a few shifts. Bound the
+        // repair cost when a crowd changes order, preserving equal-key order.
+        std::size_t shiftsLeft=rigid_.size();
         for(std::size_t i=1;i<rigid_.size();++i)if(detail::before(rigid_[i],rigid_[i-1])){
-            Rigid r=rigid_[i];std::size_t j=i;for(;j&&detail::before(r,rigid_[j-1]);--j)rigid_[j]=rigid_[j-1];rigid_[j]=r;}
+            Rigid r=rigid_[i];
+            std::size_t j=i;
+            for(;shiftsLeft&&j&&detail::before(r,rigid_[j-1]);--j,--shiftsLeft)rigid_[j]=rigid_[j-1];
+            rigid_[j]=r;
+            if(!shiftsLeft){std::stable_sort(rigid_.begin(),rigid_.end(),detail::before<Rigid>);break;}
+        }
         std::sort(nextRigid_.begin(),nextRigid_.end(),detail::before<Rigid>);
         if(!nextRigid_.empty()){mergeRigid_.clear();mergeRigid_.reserve(rigid_.size()+nextRigid_.size());
             std::merge(rigid_.begin(),rigid_.end(),nextRigid_.begin(),nextRigid_.end(),std::back_inserter(mergeRigid_),detail::before<Rigid>);rigid_.swap(mergeRigid_);}
@@ -528,14 +541,19 @@ inline Result choose(std::vector<Draw>& draws,Scratch& scratch,std::size_t budge
             if(!points.empty()){const auto& p=points.back();if(p.actor==n&&p.x==d.at[0]&&p.y==d.at[1]&&p.z==d.at[2])continue;}
             points.push_back({cellOf(d.at[0],d.at[1],0,0),d.at[0],d.at[1],d.at[2],n});}}
     std::sort(points.begin(),points.end(),[](const Point& a,const Point& b){return a.cell<b.cell||(a.cell==b.cell&&(a.x<b.x||(a.x==b.x&&a.actor<b.actor)));});
-    for(auto& a:actors){if(!a.rigid)continue;float best=reach*reach;std::size_t inReach=SIZE_MAX,same=SIZE_MAX;
+    auto& linkedBy=scratch.linkedBy;
+    if(anySearch)linkedBy.assign(actors.size(),SIZE_MAX);
+    for(std::size_t n=0;n<actors.size();++n){auto& a=actors[n];if(!a.rigid)continue;float best=reach*reach;std::size_t inReach=SIZE_MAX,same=SIZE_MAX;
         auto* e=a.entry;const std::size_t linked=links.size();
         // Nearest body over all draws of the rigid actor; ties go to the earlier
         // actor. An attachment stays with last frame's body while it is in reach.
         // "same" is last frame's body: the first rigid draw that sees it wins, and
         // within that draw the point with the smallest (x, actor).
+        const float* previousSample=nullptr;
         if(a.search)for(std::size_t i=a.first;i<a.first+a.count;++i){const auto& d=draws[i];
             if(!(d.known&&std::isfinite(d.distanceSquared)&&d.distanceSquared>=0))continue;
+            if(previousSample&&previousSample[0]==d.at[0]&&previousSample[1]==d.at[1]&&previousSample[2]==d.at[2])continue;
+            previousSample=d.at;
             const Point* sameAt=nullptr;
             // The three cells of a column are adjacent in the sorted points (one search)
             // unless the row index wraps; the visiting order is the cell-by-cell order.
@@ -544,7 +562,12 @@ inline Result choose(std::vector<Draw>& draws,Scratch& scratch,std::size_t budge
                 auto it=std::lower_bound(points.begin(),points.end(),cell,[](const Point& p,std::uint64_t c){return p.cell<c;});
                 for(;it!=points.end()&&(column?it->cell<=last:it->cell==cell);++it){const float x=it->x-d.at[0],y=it->y-d.at[1],z=it->z-d.at[2],q=x*x+y*y+z*z;
                     if(q>reach*reach)continue;
-                    if(q<=AttachRadius*AttachRadius&&(links.size()==linked||links.back().second!=it->actor))links.push_back({std::size_t(&a-actors.data()),it->actor});
+                    // Both link consumers depend only on the first encounter
+                    // with a body, even when several samples reach it.
+                    if(q<=AttachRadius*AttachRadius&&linkedBy[it->actor]!=n){
+                        linkedBy[it->actor]=n;
+                        links.emplace_back(n,it->actor);
+                    }
                     if(e&&e->attachment&&same==SIZE_MAX&&actors[it->actor].key==e->bodyKey&&actors[it->actor].located&&
                        (!sameAt||it->x<sameAt->x||(it->x==sameAt->x&&it->actor<sameAt->actor))){float b=0,c=0; /* c: moved with the camera (radius only) */
                         for(unsigned k=0;k<3;++k){const float t=actors[it->actor].at[k]-e->bodyAt[k];b+=t*t;c+=(t-move[k])*(t-move[k]);}

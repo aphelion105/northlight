@@ -9,6 +9,10 @@ CONTROL = {'BeginStateBlock', 'EndStateBlock', 'CreateStateBlock', 'Reset', 'Set
 # pass-through overrides only (per-type call counts on sampled frames). The mock
 # test API has no such methods, so they are left out of that build.
 COUNTED = ['Clear', 'StretchRect', 'ColorFill', 'SetScissorRect', 'SetTextureStageState']
+AUXILIARY_BOUNDARIES = {'Clear', 'ColorFill', 'StretchRect', 'UpdateSurface', 'UpdateTexture',
+                        'GetRenderTargetData', 'GetFrontBufferData', 'BeginScene', 'EndScene',
+                        'Present', 'ValidateDevice'}
+AUXILIARY_BARRIER = 'if(!m->finishDeferredTargets())return E_FAIL;'
 
 def generated():
     mirror = northlight_paths.src('device_mirror.h').read_text().split('class MirrorDevice :')[1].split('// Extension calls')[0]
@@ -42,7 +46,7 @@ def generated():
     lines.append('#ifndef NORTHLIGHT_DEVICE_MIRROR_TEST_API')
     for name in COUNTED:
         signature, call = counted[name].split('{ return real->', 1)
-        lines.append(signature + '{ ' + barrier(name) + 'if(m->rawCounting&&rawActive())m->countRaw(' + str(len(names)) + ');return real->' + call.removesuffix(' }') + ' }')
+        lines.append(signature + '{ ' + barrier(name) + (AUXILIARY_BARRIER if name in AUXILIARY_BOUNDARIES else '') + 'if(m->rawCounting&&rawActive())m->countRaw(' + str(len(names)) + ');return real->' + call.removesuffix(' }') + ' }')
         names.append(name)
     for line in forwarders.splitlines():
         method = re.search(r'HRESULT STDMETHODCALLTYPE (\w+)\(', line)
@@ -51,7 +55,7 @@ def generated():
         name = method.group(1)
         signature, call = line.split('{ return real->', 1)
         target = 'MirrorDevice::' if name in CONTROL else 'real->'
-        lines.append(signature + '{ indexedBarrier();return '+ target + call)
+        lines.append(signature + '{ indexedBarrier();' + (AUXILIARY_BARRIER if name in AUXILIARY_BOUNDARIES else '') + 'return '+ target + call)
     lines.append('#endif')
     lines.append('    static constexpr unsigned RawMethods=' + str(len(names)) + ';')
     lines.append('    static_assert(RawMethods<=DeviceMirror::RawMethodCapacity,"raw method counters");')

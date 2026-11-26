@@ -9,6 +9,7 @@ import sys
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 import northlight_paths as fp
 fp.use_source_modules()
+import client_archives
 from world_scene_builder import Assets
 from extract_signatures import variants,fnv1a64
 from extract_wmo_context import lit_wmo
@@ -18,6 +19,8 @@ try:
     names=sorted(n for n in assets.providers if n.startswith('shaders\\vertex\\vs_3_0\\') and
                  (n.rsplit('\\',1)[-1].startswith('mapobj') or n.rsplit('\\',1)[-1] in ('cdiffuse_t1.bls','diffuse_t1.bls','shadowmap.bls')) and n.endswith('.bls'))
     assert names
+    modified_ground=any(name.endswith('\\mapobjspecular_t1.bls') and
+                        client_archives.is_custom_patch(assets.paths[assets.providers[name]]) for name in names)
     shaders={}
     for name in names:
         for _,_,code in variants(assets.read(name)):shaders.setdefault(code,name)
@@ -60,7 +63,8 @@ for (code,name),(rigid,old,tags,lights,rgb,fog,replay) in zip(shaders.items(),ro
         assert tags&24==24
         if old&24!=24:new.append(dict(path=name,hash=f'{fnv1a64(code):016x}',lights=lights,rgb=bool(rgb),fog=bool(fog)))
     if fnv1a64(code)==0x66fdafb957c26432:assert (rigid,tags,lights,rgb,fog,replay)==(1,24,4,1,1,1)
-assert any(r['path'].endswith('mapobjspecular_t1.bls') and r['lights']==4 and r['rgb'] for r in new), 'active modified ground program must be exercised'
+if modified_ground:
+    assert any(r['path'].endswith('mapobjspecular_t1.bls') and r['lights']==4 and r['rgb'] for r in new), 'active modified ground program must be exercised'
 # Lighting edits retain world coordinates; projection/model-view edits do not.
 negatives=[];positives=[]
 for code,row in zip(shaders,rows):
@@ -73,6 +77,7 @@ for code,row in zip(shaders,rows):
     positives.append(struct.pack('<%dI'%len(changed),*changed))
 assert not any(r[0] for r in check(negatives))
 assert all(r[0] for r in check(positives))
-report=dict(programs=len(rows),coordinate_proven=sum(r[0] for r in rows),newly_admitted=new,negative_cases=len(negatives),material_edits=len(positives))
+report=dict(programs=len(rows),coordinate_proven=sum(r[0] for r in rows),newly_admitted=new,negative_cases=len(negatives),
+            material_edits=len(positives),modified_ground=modified_ground)
 (out/'contract-client.json').write_text(json.dumps(report,indent=2)+'\n')
 print(json.dumps({k:len(v) if k=='newly_admitted' else v for k,v in report.items()}))

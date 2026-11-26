@@ -1,6 +1,6 @@
 // Included inside NorthlightModelNormals. Submit one ordered batch of deferred normal draws.
     bool finishCaptures(bool final=false,const DepthSeed* seed=nullptr,IDirect3DSurface9* materialDepth=nullptr){
-        if(final){
+        if(!hybridDepth&&final){
             bool probed=true,written=true;for(const auto& p:pending){probed=probed&&p->nativeProbed;written=written&&p->nativeWritten;}
             if(!bad&&nativeMrt.finish(probed,written,unsigned(pending.size()))){
 #ifdef NORTHLIGHT_REPLAY_STAND
@@ -8,8 +8,9 @@
 #endif
                 duplicateProbe={};nativeCommittedPackets+=unsigned(pending.size());draws+=unsigned(pending.size());clearPending();return true;
             }
-        }else nativeMrt.cancel("capture-hazard");
+        }else if(!hybridDepth)nativeMrt.cancel("capture-hazard");
         if(pending.empty()){if(final)duplicateProbe={};return !bad;}
+        NorthlightCapturePhases::Scope<ReplayPhaseCount> phase(profileCapture?&replayPhases:nullptr,ReplayGeometry);
         bool ok=!bad;
         auto* drawDepth=ok?replayDepth(final?materialDepth:nullptr):nullptr;
         ok=drawDepth!=nullptr;
@@ -22,7 +23,7 @@
                 for(auto& p:pending)if(!p->resident&&p->sharedMesh&&p->sharedMesh->sourceIdentity)
                     p->resident=geometryCache->bind(d,p->sharedMesh,p->gpuVertex,p->gpuIndex,[](size_t){return true;},p->placement,true);
         }
-        float seedMatrix[4]={};const bool seeded=final&&ok&&seedProjection(seed,seedMatrix)&&
+        float seedMatrix[4]={};const bool seeded=!hybridDepth&&final&&ok&&seedProjection(seed,seedMatrix)&&
             (depthSeedPS||(SUCCEEDED(d->CreatePixelShader(kModelNormalDepthSeedShader,&depthSeedPS))&&depthSeedPS));
         if(ok){
             duplicateEligiblePackets+=pending.size();
@@ -31,7 +32,12 @@
                 duplicateProbe.observe(findRedundant());
             }
         }
+        phase.next(ReplaySubmit);
         {
+            // The state block restores all game bindings. Submit this private
+            // pass through the raw device, without mirroring each replay draw.
+            std::optional<ExtensionDevice::RawScope> raw;
+            if(drawStateSource)raw.emplace(*drawStateSource);
             SavedState saved(d,&batchStates);
             ok=saved.ok&&ok;
             if(ok){
@@ -42,7 +48,7 @@
                 for(unsigned i=0;i<16;++i)ok=SUCCEEDED(d->SetTexture(i,nullptr))&&ok;
                 ok=SUCCEEDED(d->SetStreamSourceFreq(0,1))&&ok;
                 ok=SUCCEEDED(d->SetRenderState(D3DRS_CLIPPLANEENABLE,0))&&ok;
-                const DWORD values[]={TRUE,TRUE,D3DCMP_LESSEQUAL,FALSE,FALSE,FALSE,FALSE,FALSE,FALSE,15,0,0};
+                const DWORD values[]={TRUE,DWORD(!hybridDepth),DWORD(hybridDepth?D3DCMP_EQUAL:D3DCMP_LESSEQUAL),FALSE,FALSE,FALSE,FALSE,FALSE,FALSE,15,0,0};
                 for(unsigned i=0;i<State::Count;++i)ok=SUCCEEDED(d->SetRenderState(State::keys[i],values[i]))&&ok;
                 if(ok&&seeded&&!seedDepth(*seed,seedMatrix)){
                     // A partial optional seed must not affect ordinary replay.
@@ -134,5 +140,6 @@
                 ok=saved.restore()&&ok;
             }
         }
+        phase.next(ReplayRetire);
         clearPending();bad|=!ok;return ok;
     }

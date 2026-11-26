@@ -72,7 +72,7 @@ template<class Read> inline void captureReaders(Read read){
 #ifdef _WIN32
 // Game thread: fills `s` (cleared first) with the game's current memory. Returns false when unusable (overflow);
 // the trigger ordinal is the stream's draw counter at the triggering draw.
-inline bool capture(GameSnapshot& s,Trigger trigger,std::uint64_t drawOrdinal){
+template<class Extra> inline bool capture(GameSnapshot& s,Trigger trigger,std::uint64_t drawOrdinal,Extra captureExtra){
 #ifdef NORTHLIGHT_REPLAY_STAND
     StandInputs::CaptureScope admission(unsigned(trigger),drawOrdinal);if(!admission.entered())return false;
 #endif
@@ -80,7 +80,15 @@ inline bool capture(GameSnapshot& s,Trigger trigger,std::uint64_t drawOrdinal){
     {
         ScopedRecording recording(s);
         mapped=NorthlightWorldContext::readMapAndCamera(map,camera); // the independent map/camera read the sky and WMO paths pair with readCurrent
+#if defined(_WIN64) && !defined(NORTHLIGHT_REPLAY_STAND)
+        float view[16];
+        unsigned char sky[NorthlightX64World::SkySize];
+        NorthlightX64World::readView(view);
+        NorthlightX64World::readSky(sky);
+#else
         captureReaders(NorthlightWorldContext::readSelf);
+#endif
+        captureExtra(s);
         s.triggerKind=std::uint32_t(trigger);s.triggerDraw=drawOrdinal;
     }
 #ifndef NORTHLIGHT_REPLAY_STAND
@@ -97,6 +105,9 @@ inline bool capture(GameSnapshot& s,Trigger trigger,std::uint64_t drawOrdinal){
 #else
     return s.usable();
 #endif
+}
+inline bool capture(GameSnapshot& s,Trigger trigger,std::uint64_t drawOrdinal){
+    return capture(s,trigger,drawOrdinal,[](GameSnapshot&){});
 }
 #endif
 // Consumer side: draws elapsed between the snapshot's trigger and the draw now replaying, for the CSTREAM line.

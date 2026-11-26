@@ -3,6 +3,7 @@
 // Runtime display switches. Shared world/GI caches stay warm so an A/B toggle
 // does not start another geometry/probe warm-up. Nothing is written to disk.
 namespace NorthlightEffectSwitches {
+constexpr int NormalsView=4,SsaoView=5;
 struct Settings {
     bool gi=true,shadows=true,fog=true;
     bool operator==(const Settings& b)const{return gi==b.gi&&shadows==b.shadows&&fog==b.fog;}

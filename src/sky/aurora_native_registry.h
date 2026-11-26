@@ -5,6 +5,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <system_error>
 #include <thread>
 
 namespace NorthlightAuroraNative {
@@ -85,7 +86,7 @@ public:
             next.push_back({selection_,++revision_,epoch_,group.drawGroup,unsigned(f),std::move(group.packets)});
         }
         frameGroups_.clear();if(next.empty())return;
-        if(!worker_.joinable())worker_=std::thread([this]{run();});
+        if(!worker_.joinable())try{worker_=std::thread([this]{run();});}catch(const std::system_error&){return;}
         {std::lock_guard<std::mutex> lock(mutex_);jobs_=std::move(next);}condition_.notify_one();
     }
     bool owns(unsigned assetBatch,std::uint64_t drawGroup)const{

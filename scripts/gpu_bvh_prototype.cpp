@@ -6,6 +6,7 @@
 #include "world_gi.h"
 #include "gi_solve_pool.h"
 #include "scene_source_cache.h"
+#include "probe_local_visibility.h"
 #include <algorithm>
 #include <array>
 #include <chrono>
@@ -41,30 +42,33 @@ struct Material {Vec3 albedo;float cutoff;uint32_t width,height,offset,addressU,
 struct ProbeIn {Vec3 p;uint32_t seed;};
 struct ProbeOut {float sh[4][4];DistanceMoment moments[6];uint32_t samples,back,valid,error;};
 struct Params {uint32_t n=0,padded=256,leaves=1,count=0,stage=0,jump=0,sceneRoot=0,rayCount=32,leafSize=4,anyHit=0,maxBounces=3,unused=0;
- float sun[4]={},sunRGB[4]={},sky[4]={},up[4]={};};
-static_assert(sizeof(Params)==112&&sizeof(Material)==48&&sizeof(Hit)==64&&sizeof(ProbeOut)==128,"Shader ABI");
+ float sun[4]={},sunRGB[4]={},sky[4]={},up[4]={};uint32_t cachedTriangles=0,reciprocalBoxes=0,option2=0,option3=0;};
+static_assert(sizeof(Params)==128&&sizeof(Material)==48&&sizeof(Hit)==64&&sizeof(ProbeOut)==128,"Shader ABI");
 struct Metric {double wall=0,cpu=0,submit=0,gpu=0;uint64_t cycles=0;};
 static void metric(const char* phase,const Metric& m,int round,int leaf,unsigned count){std::printf("{\"phase\":\"%s\",\"round\":%d,\"leaf\":%d,\"count\":%u,\"wall_ms\":%.6f,\"cpu_ms\":%.6f,\"submit_ms\":%.6f,\"gpu_ms\":%.6f,\"cpu_cycles\":%llu}\n",phase,round,leaf,count,m.wall,m.cpu,m.submit,m.gpu,(unsigned long long)m.cycles);std::fflush(stdout);}
 class GPU {
 public:
+ inline static unsigned deviceCreations=0;
  Com<ID3D11Device> d;Com<ID3D11DeviceContext> c;Com<ID3D11Buffer> constants;
  std::vector<Com<ID3D11ComputeShader>> shaders;
  Com<ID3D11Query> disjoint,start,stop;Params p;uint64_t deviceBytes=0,stagingBytes=0;
- enum {Bounds,Reduce,Morton,SortLocal,SortGlobal,MergeLocal,Leaves,Inner,Trace,Solve,Parallel,Topology,Clear,RadixBounds,Opacity};
+ enum {Bounds,Reduce,Morton,SortLocal,SortGlobal,MergeLocal,Leaves,Inner,Trace,Solve,Parallel,Topology,Clear,RadixBounds,Opacity,CacheTriangles,ProbeRays,ReduceProbes,ProbeRays32,ProbeRays128,ProbeRays256};
  GPU(const std::string& dir){
+  require(deviceCreations==0,"Only one D3D11 device may be created in this session");
   auto factory=makeCom<IDXGIFactory1>([](IDXGIFactory1** v){return CreateDXGIFactory1(__uuidof(IDXGIFactory1),(void**)v);});
   IDXGIAdapter1* raw=nullptr;check(factory->EnumAdapters1(0,&raw));Com<IDXGIAdapter1> adapter(raw);DXGI_ADAPTER_DESC1 desc{};check(adapter->GetDesc1(&desc));
   require(!(desc.Flags&DXGI_ADAPTER_FLAG_SOFTWARE),"Hardware adapter required");char name[256];WideCharToMultiByte(CP_UTF8,0,desc.Description,-1,name,sizeof name,nullptr,nullptr);
   std::printf("{\"adapter\":\"%s\",\"vendor\":%u,\"device\":%u,\"luid_low\":%lu,\"luid_high\":%ld,\"dxgi_dedicated_bytes_x86\":%llu}\n",name,desc.VendorId,desc.DeviceId,desc.AdapterLuid.LowPart,desc.AdapterLuid.HighPart,(unsigned long long)desc.DedicatedVideoMemory);
   ID3D11Device* device=nullptr;ID3D11DeviceContext* context=nullptr;D3D_FEATURE_LEVEL got,level=D3D_FEATURE_LEVEL_11_0;
-  check(D3D11CreateDevice(adapter.get(),D3D_DRIVER_TYPE_UNKNOWN,nullptr,D3D11_CREATE_DEVICE_SINGLETHREADED,&level,1,D3D11_SDK_VERSION,&device,&got,&context));d.reset(device);c.reset(context);require(got>=level,"CS5 required");
-  const char* entries[]={"SceneBounds","ReduceBounds","Morton","SortLocal","SortGlobal","MergeLocal","LeafBounds","InnerBounds","TraceRays","SolveProbes","SolveParallel","RadixTopology","ClearVisits","RadixBounds","MaterialOpacity"};
+  check(D3D11CreateDevice(adapter.get(),D3D_DRIVER_TYPE_UNKNOWN,nullptr,D3D11_CREATE_DEVICE_SINGLETHREADED,&level,1,D3D11_SDK_VERSION,&device,&got,&context));++deviceCreations;d.reset(device);c.reset(context);require(got>=level,"CS5 required");
+  const char* entries[]={"SceneBounds","ReduceBounds","Morton","SortLocal","SortGlobal","MergeLocal","LeafBounds","InnerBounds","TraceRays","SolveProbes","SolveParallel","RadixTopology","ClearVisits","RadixBounds","MaterialOpacity","CacheTriangles","TraceProbeRays","ReduceProbes","TraceProbeRays32","TraceProbeRays128","TraceProbeRays256"};
   for(auto name:entries){std::ifstream f(dir+"/"+name+".bin",std::ios::binary);require(bool(f),"Missing shader");std::vector<char>b((std::istreambuf_iterator<char>(f)),{});shaders.push_back(makeCom<ID3D11ComputeShader>([&](ID3D11ComputeShader** s){return d->CreateComputeShader(b.data(),b.size(),nullptr,s);}));}
   D3D11_BUFFER_DESC bd{};bd.ByteWidth=sizeof p;bd.Usage=D3D11_USAGE_DEFAULT;bd.BindFlags=D3D11_BIND_CONSTANT_BUFFER;
   constants=makeCom<ID3D11Buffer>([&](ID3D11Buffer** b){return d->CreateBuffer(&bd,nullptr,b);});auto cb=constants.get();c->CSSetConstantBuffers(0,1,&cb);
   auto query=[&](D3D11_QUERY type){D3D11_QUERY_DESC q{type,0};return makeCom<ID3D11Query>([&](ID3D11Query** v){return d->CreateQuery(&q,v);});};
   disjoint=query(D3D11_QUERY_TIMESTAMP_DISJOINT);start=query(D3D11_QUERY_TIMESTAMP);stop=query(D3D11_QUERY_TIMESTAMP);
  }
+ GPU(const GPU&)=delete;GPU& operator=(const GPU&)=delete;
  Buffer buffer(UINT count,UINT stride,bool writable=false){Buffer b;b.bytes=std::max(1u,count)*stride;b.stride=stride;D3D11_BUFFER_DESC desc{};
   desc.ByteWidth=b.bytes;desc.Usage=D3D11_USAGE_DEFAULT;desc.BindFlags=D3D11_BIND_SHADER_RESOURCE|(writable?D3D11_BIND_UNORDERED_ACCESS:0);desc.MiscFlags=D3D11_RESOURCE_MISC_BUFFER_STRUCTURED;desc.StructureByteStride=stride;
   b.buffer=makeCom<ID3D11Buffer>([&](ID3D11Buffer** v){return d->CreateBuffer(&desc,nullptr,v);});
@@ -74,7 +78,7 @@ public:
    b.uav=makeCom<ID3D11UnorderedAccessView>([&](ID3D11UnorderedAccessView** v){return d->CreateUnorderedAccessView(b.buffer.get(),&uv,v);});}deviceBytes+=b.bytes;return b;
  }
  void upload(Buffer& b,const void* ptr,unsigned bytes=0){D3D11_BOX box{0,0,0,bytes?bytes:b.bytes,1,1};require(box.right<=b.bytes,"Upload exceeds buffer");c->UpdateSubresource(b.buffer.get(),0,&box,ptr,0,0);}
- void dispatch(unsigned shader,unsigned threads,unsigned group=256){c->UpdateSubresource(constants.get(),0,nullptr,&p,0,0);c->CSSetShader(shaders[shader].get(),nullptr,0);if(threads)c->Dispatch((threads+group-1)/group,1,1);}
+ void dispatch(unsigned shader,unsigned threads,unsigned group=256,unsigned rows=1){c->UpdateSubresource(constants.get(),0,nullptr,&p,0,0);c->CSSetShader(shaders[shader].get(),nullptr,0);if(threads)c->Dispatch((threads+group-1)/group,rows,1);}
  void wait(ID3D11Query* q,void* data,UINT size){auto t=Clock::now();HRESULT hr;while((hr=c->GetData(q,data,size,D3D11_ASYNC_GETDATA_DONOTFLUSH))==S_FALSE){require(elapsed(t)<30000,"GPU query timeout");Sleep(1);}check(hr);}
  template<class F>Metric timed(F commands){Metric m;auto t=Clock::now();double cpu=processMs();uint64_t cycles=processCycles();c->Begin(disjoint.get());c->End(start.get());commands();c->End(stop.get());c->End(disjoint.get());c->Flush();m.submit=elapsed(t);
   D3D11_QUERY_DATA_TIMESTAMP_DISJOINT dj{};wait(disjoint.get(),&dj,sizeof dj);UINT64 a,b;wait(start.get(),&a,sizeof a);wait(stop.get(),&b,sizeof b);require(!dj.Disjoint&&dj.Frequency,"Disjoint GPU timestamp");
@@ -102,7 +106,7 @@ static void sceneIdentity(const Packed& s){BCRYPT_ALG_HANDLE algorithm=nullptr;B
 }
 class Tree {
 public:
- GPU& g;Buffer v,t,m,tex,srgb,keys,nodes,reduction,rays,hits,probes,outputs,links;
+ GPU& g;Buffer v,t,m,tex,srgb,keys,nodes,reduction,rays,hits,probes,outputs,links,acceleration,probeRays;
  unsigned padded=256,maxLeaves=1,reductionCount=0;
  Tree(GPU& gpu,const Packed& s):g(gpu){
   auto n=unsigned(s.triangles.size());while(padded<n)padded*=2;maxLeaves=std::max(1u,padded/2);
@@ -110,7 +114,9 @@ public:
   reductionCount=std::max(1u,reductionCount);
   v=g.buffer(s.vertices.size(),sizeof(WorldVertex));t=g.buffer(n,16);m=g.buffer(s.materials.size(),48,true);tex=g.buffer(s.texels.size(),4);srgb=g.buffer(256,4);
   keys=g.buffer(padded,8,true);nodes=g.buffer(maxLeaves*2,24,true);reduction=g.buffer(reductionCount,24,true);links=g.buffer(maxLeaves*2,16,true);
+  acceleration=g.buffer(n,48,true);
   rays=g.buffer(32768,32);hits=g.buffer(32768,64,true);probes=g.buffer(512,16);outputs=g.buffer(512,128,true);
+  probeRays=g.buffer(512*32,32,true);
   ID3D11ShaderResourceView* sv[]={v.srv.get(),t.srv.get(),m.srv.get(),tex.srv.get(),srgb.srv.get(),rays.srv.get(),probes.srv.get()};g.c->CSSetShaderResources(0,7,sv);
   ID3D11UnorderedAccessView* uv[]={keys.uav.get(),nodes.uav.get(),reduction.uav.get(),hits.uav.get(),outputs.uav.get(),links.uav.get()};g.c->CSSetUnorderedAccessViews(0,6,uv,nullptr);
   g.p.n=n;g.p.padded=padded;
@@ -119,6 +125,7 @@ public:
   if(!s.vertices.empty())g.upload(v,s.vertices.data());if(!s.triangles.empty())g.upload(t,s.triangles.data());g.upload(m,s.materials.data());g.upload(tex,s.texels.data());g.upload(srgb,s.srgb.data());
   ID3D11ShaderResourceView* nullSrv=nullptr;g.c->CSSetShaderResources(2,1,&nullSrv);auto uav=m.uav.get();g.c->CSSetUnorderedAccessViews(6,1,&uav,nullptr);g.dispatch(GPU::Opacity,s.materials.size()*256);
   ID3D11UnorderedAccessView* nullUav=nullptr;g.c->CSSetUnorderedAccessViews(6,1,&nullUav,nullptr);auto srv=m.srv.get();g.c->CSSetShaderResources(2,1,&srv);
+  auto rayUav=probeRays.uav.get();g.c->CSSetUnorderedAccessViews(6,1,&rayUav,nullptr);
  }
  void build(unsigned leaf,bool radix=true){g.p.unused=radix;g.p.leafSize=leaf;g.p.leaves=radix?std::max(1u,(g.p.n+leaf-1)/leaf):std::max(1u,padded/leaf);g.dispatch(GPU::Bounds,g.p.n);
   unsigned offset=0,count=(g.p.n+255)/256,dest=count;
@@ -127,7 +134,10 @@ public:
   for(unsigned k=512;k<=padded;k*=2){g.p.stage=k;for(unsigned j=k/2;j>=256;j/=2){g.p.jump=j;g.dispatch(GPU::SortGlobal,padded);}g.dispatch(GPU::MergeLocal,padded);}
   if(radix)g.dispatch(GPU::Topology,g.p.leaves-1);refit();
  }
- void refit(){if(g.p.unused){g.dispatch(GPU::Clear,g.p.leaves-1);g.dispatch(GPU::RadixBounds,g.p.leaves);}else{g.dispatch(GPU::Leaves,g.p.leaves);for(unsigned n=g.p.leaves/2;n;n/=2){g.p.stage=n;g.dispatch(GPU::Inner,n);}}}
+ void refit(){
+  ID3D11ShaderResourceView* nullSrv=nullptr;g.c->CSSetShaderResources(7,1,&nullSrv);auto uav=acceleration.uav.get();g.c->CSSetUnorderedAccessViews(7,1,&uav,nullptr);g.dispatch(GPU::CacheTriangles,g.p.n);
+  ID3D11UnorderedAccessView* nullUav=nullptr;g.c->CSSetUnorderedAccessViews(7,1,&nullUav,nullptr);auto srv=acceleration.srv.get();g.c->CSSetShaderResources(7,1,&srv);
+  if(g.p.unused){g.dispatch(GPU::Clear,g.p.leaves-1);g.dispatch(GPU::RadixBounds,g.p.leaves);}else{g.dispatch(GPU::Leaves,g.p.leaves);for(unsigned n=g.p.leaves/2;n;n/=2){g.p.stage=n;g.dispatch(GPU::Inner,n);}}}
 };
 static WorldScene synthetic(unsigned kind){WorldScene s;WorldMaterial plain;plain.alphaCutoff=0;s.materials.push_back(plain);
  WorldMaterial cut;cut.width=3;cut.height=2;cut.rgba={255,64,32,0,64,255,64,255,32,64,255,0,255,255,255,255,128,32,64,0,64,128,32,255};s.materials.push_back(cut);
@@ -213,12 +223,58 @@ static void exportSurface(Tree& tree,const BVH& cpu,const std::string& dir,unsig
  for(unsigned side=0;side<2;++side){std::string stem=dir+"/surface-"+std::to_string(kind)+(side?"-gpu":"-cpu");std::ofstream f(stem+".ppm",std::ios::binary);f<<"P6\n"<<width<<' '<<height<<"\n255\n";f.write((const char*)colors[side].data(),colors[side].size());require(bool(f),"Cannot write surface preview");std::ofstream raw(stem+".f32",std::ios::binary);raw.write((const char*)linear[side].data(),linear[side].size()*4);require(bool(raw),"Cannot write surface floats");}
  std::ofstream meta(dir+"/surface-"+std::to_string(kind)+".json");meta<<"{\"width\":"<<width<<",\"height\":"<<height<<",\"triangle_ids_differ\":"<<idDifference<<",\"coverage_differs\":"<<coverageDifference<<",\"scope\":\"Orthographic actual geometry/material preview with identical host Lambert shading, not full GI gameplay rendering\"}\n";
 }
+static PreparedLighting sunSky(GPU& gpu){Lighting l;l.maxBounces=3;auto prepared=prepareLighting(l);auto v=prepared.values().sunDirection;
+ gpu.p.sun[0]=v.x;gpu.p.sun[1]=v.y;gpu.p.sun[2]=v.z;gpu.p.sun[3]=l.rayBias;gpu.p.up[2]=1;gpu.p.up[3]=l.maxDistance;
+ gpu.p.sunRGB[0]=l.sunIrradiance.x;gpu.p.sunRGB[1]=l.sunIrradiance.y;gpu.p.sunRGB[2]=l.sunIrradiance.z;gpu.p.sky[0]=l.skyRadiance.x;gpu.p.sky[1]=l.skyRadiance.y;gpu.p.sky[2]=l.skyRadiance.z;return prepared;}
+static void giVariants(Tree& tree,const WorldScene& source,unsigned rounds,const std::string& dir,bool grid=false){
+ auto& g=tree.g;BVH cpu;std::string error;WorldScene copy=source;require(cpu.build(std::move(copy),error),error.c_str());
+ metric("variant_tree_build",g.timed([&]{tree.build(2);}),-1,2,g.p.n);auto prepared=sunSky(g);g.p.count=512;g.p.rayCount=32;
+ std::vector<ProbeIn> probes(512);std::vector<Probe> solved(512);SolvePool pool(3,[]{});
+ for(unsigned i=0;i<512;++i){Vec3 p=source.vertices.empty()?Vec3{}:source.vertices[(size_t(i)*7919)%source.vertices.size()].position;
+  if(grid){unsigned cell=(i*7919)%(14*14*14);p=Vec3(1328.78f,-3192.43f,167.61f)+Vec3(8.f*(int(cell%14)-7),8.f*(int(cell/14%14)-7),8.f*(int(cell/(14*14))-7));}
+  probes[i]={p+(grid?Vec3{}:Vec3(.3f,.3f,2.1f)),i+1};}
+ g.upload(tree.probes,probes.data(),probes.size()*sizeof(ProbeIn));
+ const char* names[]={"gpu_gi_baseline","gpu_gi_triangle_cache","gpu_gi_reciprocal_boxes","gpu_gi_cache_and_reciprocal","gpu_gi_preflight","gpu_gi_cache_preflight","gpu_gi_reciprocal_preflight","gpu_gi_all","gpu_gi_split_probe_major","gpu_gi_split_ray_major","gpu_gi_split_ray_major32","gpu_gi_split_ray_major128","gpu_gi_split_ray_major256"};
+ auto configure=[&](unsigned option){unsigned bits=std::min(option,7u);g.p.cachedTriangles=bits&1;g.p.reciprocalBoxes=(bits>>1)&1;g.p.option2=(bits>>2)&1;g.p.option3=0;};
+ auto dispatch=[&](unsigned option){
+  if(option>=8){unsigned kernel=GPU::ProbeRays,size=64;if(option==10){kernel=GPU::ProbeRays32;size=32;}if(option==11){kernel=GPU::ProbeRays128;size=128;}if(option==12){kernel=GPU::ProbeRays256;size=256;}
+   g.p.option3=option>=9;g.dispatch(kernel,option>=9?512:512*32,size,option>=9?32:1);g.dispatch(GPU::ReduceProbes,512,64);g.p.option3=0;return;}
+  g.dispatch(GPU::Parallel,512*32,32);};
+ std::vector<ProbeOut> reference;
+ auto key=[](size_t i){return ProbeGridKey{int(i%16),int(i/16%16),int(i/256)};};
+ ProbeRelightCache cache;cache.configure(prepared,32);pool.run(512,[&](size_t i){cache.solve(cpu,key(i),probes[i].p,prepared,32,probes[i].seed);});
+ std::vector<Probe> cached(512),responses(512);
+ auto writeProbe=[](std::ostream& f,const Probe& p){
+  f.write((const char*)&p.position,sizeof p.position);f.write((const char*)&p.maxDistance,4);f.write((const char*)p.sh,sizeof p.sh);f.write((const char*)p.moments,sizeof p.moments);
+  uint32_t tail[]={p.samples,p.backFaceSamples,uint32_t(p.valid)};f.write((const char*)tail,sizeof tail);};
+ std::ofstream cpuValues(dir+(grid?"/cpu-grid.bin":"/cpu-surface.bin"),std::ios::binary);
+ for(unsigned option=0;option<13;++option){configure(option);
+  for(unsigned warm=0;warm<3;++warm)g.timed([&]{dispatch(option);});auto result=g.read<ProbeOut>(tree.outputs,512);
+  if(!option)reference=result;else require(!std::memcmp(reference.data(),result.data(),result.size()*sizeof(ProbeOut)),"GI variant changed probe bytes");
+ }
+ for(unsigned round=0;round<rounds;++round){
+  for(unsigned step=0;step<13;++step){unsigned option=(round&1)?12-step:step;configure(option);
+   metric(names[option],g.timed([&]{dispatch(option);}),round,2,512);}
+  auto start=Clock::now();double before=processMs();uint64_t cycles=processCycles();pool.run(512,[&](size_t i){solved[i]=solveProbePrepared(cpu,probes[i].p,prepared,32,probes[i].seed);});Metric m;m.wall=elapsed(start);m.cpu=processMs()-before;m.cycles=processCycles()-cycles;metric("cpu_gi_4threads",m,round,2,512);
+  start=Clock::now();before=processMs();cycles=processCycles();pool.run(512,[&](size_t i){auto value=LocalProbeVisibility::build(cpu,probes[i].p);require(bool(value),"Visibility allocation");});m.wall=elapsed(start);m.cpu=processMs()-before;m.cycles=processCycles()-cycles;metric("cpu_local_visibility",m,round,2,512);
+  start=Clock::now();before=processMs();cycles=processCycles();pool.run(512,[&](size_t i){ProbeResponse response;responses[i]=solveProbeResponse(cpu,probes[i].p,prepared,32,probes[i].seed,response);});m.wall=elapsed(start);m.cpu=processMs()-before;m.cycles=processCycles()-cycles;metric("cpu_gi_response",m,round,2,512);
+  Lighting changed=prepared.values();changed.sunDirection.x+=.0001f*(round+1);auto light=prepareLighting(changed);cache.configure(light,32);
+  start=Clock::now();before=processMs();cycles=processCycles();pool.run(512,[&](size_t i){cached[i]=cache.solve(cpu,key(i),probes[i].p,light,32,probes[i].seed);});m.wall=elapsed(start);m.cpu=processMs()-before;m.cycles=processCycles()-cycles;metric("cpu_gi_changing_sun",m,round,2,512);
+  for(const auto& p:solved)writeProbe(cpuValues,p);for(const auto& p:responses)writeProbe(cpuValues,p);for(const auto& p:cached)writeProbe(cpuValues,p);
+ }
+ unsigned valid=0;for(const auto& p:reference)valid+=p.valid;
+ std::printf("{\"gi_variants_bit_identical\":true,\"valid_probes\":%u,\"triangle_cache_bytes\":%u,\"device_creations\":%u,\"production_eligible\":false}\n",valid,tree.acceleration.bytes,GPU::deviceCreations);
+ auto stats=cache.stats();std::printf("{\"relight_hits\":%llu,\"relight_misses\":%llu,\"cache_bytes\":%zu}\n",(unsigned long long)stats.hits,(unsigned long long)stats.misses,stats.bytes);
+ require(bool(cpuValues),"Cannot save CPU comparison");
+ validateProbes(solved,reference);
+}
 int main(int argc,char** argv){try{
- require(argc>=5,"Usage: gpu-bvh shader-dir scene-kind rounds client-root [--measure-rejected|--negative-bounds]");measureRejected=argc==6&&std::string(argv[5])=="--measure-rejected";negativeBounds=argc==6&&std::string(argv[5])=="--negative-bounds";auto setupStart=Clock::now();auto setupCycles=processCycles();GPU gpu(argv[1]);Metric setup;setup.wall=elapsed(setupStart);setup.cycles=processCycles()-setupCycles;metric("gpu_device_setup",setup,-1,0,0);unsigned kind=std::strtoul(argv[2],nullptr,10),rounds=std::strtoul(argv[3],nullptr,10);require(rounds>0&&rounds<=20,"Bad rounds");
+ require(argc>=5,"Usage: gpu-bvh shader-dir scene-kind rounds client-root [--measure-rejected|--negative-bounds|--gi-variants|--gi-variants-grid]");measureRejected=argc==6&&std::string(argv[5])=="--measure-rejected";negativeBounds=argc==6&&std::string(argv[5])=="--negative-bounds";auto setupStart=Clock::now();auto setupCycles=processCycles();GPU gpu(argv[1]);Metric setup;setup.wall=elapsed(setupStart);setup.cycles=processCycles()-setupCycles;metric("gpu_device_setup",setup,-1,0,0);unsigned kind=std::strtoul(argv[2],nullptr,10),rounds=std::strtoul(argv[3],nullptr,10);require(rounds>0&&rounds<=20,"Bad rounds");
  auto source=kind==6?real(argv[4]):synthetic(kind);auto begin=Clock::now();double before=processMs();uint64_t cyclesBefore=processCycles();Packed packed(source);Metric packing;packing.wall=elapsed(begin);packing.cpu=processMs()-before;packing.cycles=processCycles()-cyclesBefore;metric("pack",packing,-1,0,source.triangles.size());sceneIdentity(packed);
  std::printf("{\"scene\":%u,\"triangles\":%zu,\"vertices\":%zu,\"material_bytes\":%zu}\n",kind,source.triangles.size(),source.vertices.size(),packed.texels.size()*4);
  begin=Clock::now();Tree tree(gpu,packed);Metric allocation;allocation.wall=elapsed(begin);metric("gpu_allocate",allocation,-1,0,0);
  metric("upload",gpu.timed([&]{tree.upload(packed);}),-1,0,0);
+ if(argc==6&&(std::string(argv[5])=="--gi-variants"||std::string(argv[5])=="--gi-variants-grid")){measureRejected=true;giVariants(tree,source,rounds,argv[1],std::string(argv[5])=="--gi-variants-grid");std::puts(parityFailures?"GI_VARIANTS_REJECTED":"GI_VARIANTS_PASS");return parityFailures?2:0;}
  BVH cpu;std::string error;for(unsigned round=0;round<rounds;++round){WorldScene scene=source;begin=Clock::now();before=processMs();cyclesBefore=processCycles();require(cpu.build(std::move(scene),error),error.c_str());Metric m;m.wall=elapsed(begin);m.cpu=processMs()-before;m.cycles=processCycles()-cyclesBefore;metric("cpu_sah_build",m,round,0,source.triangles.size());
   for(unsigned leaf:{2u,4u,8u})for(bool radix:{false,true}){metric(radix?"gpu_lbvh_build":"gpu_morton_build",gpu.timed([&]{tree.build(leaf,radix);}),round,leaf,source.triangles.size());
    if(negativeBounds){std::vector<Box> bad(tree.maxLeaves*2);gpu.upload(tree.nodes,bad.data());}
@@ -254,7 +310,7 @@ int main(int argc,char** argv){try{
  if(kind==3){WorldScene moved=source;for(auto& v:moved.vertices)v.position=v.position+Vec3(.125f,-.25f,.75f);Packed changed(moved);
   gpu.upload(tree.v,changed.vertices.data());gpu.timed([&]{tree.refit();});validateTree(tree,moved);BVH updated;
   require(updated.build(std::move(moved),error),error.c_str());auto changedRays=makeRays(updated.scene(),8192);gpu.upload(tree.rays,changedRays.data(),changedRays.size()*sizeof(Ray));gpu.p.count=changedRays.size();
-  for(unsigned any:{0u,1u}){gpu.p.anyHit=any;gpu.timed([&]{gpu.dispatch(GPU::Trace,changedRays.size(),64);});validateRays(changedRays,gpu.read<Hit>(tree.hits,changedRays.size()),updated,any);}
+  for(unsigned cached:{0u,1u})for(unsigned any:{0u,1u}){gpu.p.cachedTriangles=cached;gpu.p.reciprocalBoxes=cached;gpu.p.anyHit=any;gpu.timed([&]{gpu.dispatch(GPU::Trace,changedRays.size(),64);});validateRays(changedRays,gpu.read<Hit>(tree.hits,changedRays.size()),updated,any);}
   std::puts("{\"moved_geometry_refit\":true}");}
  if(kind==6||kind==7)exportSurface(tree,cpu,argv[1],kind);
  if(kind==6)productionCache(argv[4]);

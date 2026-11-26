@@ -28,11 +28,14 @@ with tempfile.TemporaryDirectory(prefix='northlight-zone-tuning-') as tmp:
     assert j['overridesEnabled'] is True and j['overridesLoaded'] == 10 and j['terrainReach'] == 2048 and j['groundFogActive'] is True and j['night'] == 0.25
     assert j['camera'] == [-1234.5, 7, 0]  # a non-finite number is written as 0, never as NaN
     expected = [f'{b}_{k}' for b in ('sun', 'moon') for k in CELESTIAL] + ['terrain_radius', 'ground_fog_day_scale', 'ground_fog_night_scale', 'ground_fog_day_add', 'ground_fog_night_add']
-    expected.append('moon_terrain_specular')
+    material_keys = ('moon_terrain_specular', 'sun_surface_specular', 'sun_wet_stone_specular',
+                     'sun_terrain_ice', 'sun_terrain_snow', 'sun_foliage_transmission',
+                     'moon_foliage_transmission', 'local_surface_specular')
+    expected.extend(material_keys)
     for part in ('base', 'effective'):
         assert sorted(j[part]) == sorted(expected), part
         assert len(j[part]['sun_disc']) == 3 and len(j[part]['moon_light']) == 3
-        assert j[part]['moon_terrain_specular'] == 0
+        assert all(j[part][key] == 0 for key in material_keys)
     assert j['base']['terrain_radius'] == 1500 and j['effective']['terrain_radius'] == 4096
     assert j['base']['sun_glow'] == [1, 1, 1] and j['base']['sun_glow_strength'] == 1 and j['base']['moon_glow_mix'] == 0
     assert all(abs(a - b) < 1e-5 for a, b in zip(j['effective']['sun_glow'], [0.2, 0.4, 0.8]))

@@ -6,11 +6,13 @@ import argparse,hashlib,importlib.util,json,os,subprocess,sys
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 import northlight_paths as fp
 parser=argparse.ArgumentParser(__doc__);parser.add_argument('--sdr-only',action='store_true',help='Validate the native SDR path without asserting unsupported native scRGB output')
+parser.add_argument('--x64',action='store_true',help='Build an AMD64 host and use system D3D9 by default')
 args=parser.parse_args()
 repo=fp.REPO
 out=fp.output_dir()/'overlay-gpu';out.mkdir(parents=True,exist_ok=False);(out/'settings').mkdir()
 spec=importlib.util.spec_from_file_location('overlay_guard',repo/'tests/validate_native_scene_trace.py');guard=importlib.util.module_from_spec(spec);spec.loader.exec_module(guard)
-backend=Path(os.environ['NORTHLIGHT_TEST_D3D9']) if os.environ.get('NORTHLIGHT_TEST_D3D9') else fp.client_root()/'renderer-backends/dxvk/dxvk_d3d9.dll'
+backend=Path(os.environ['NORTHLIGHT_TEST_D3D9']) if os.environ.get('NORTHLIGHT_TEST_D3D9') else (
+    Path(os.environ['SystemRoot'])/'System32/d3d9.dll' if args.x64 else fp.client_root()/'renderer-backends/dxvk/dxvk_d3d9.dll')
 env={k:v for k,v in os.environ.items() if not k.startswith(('NORTHLIGHT_','DXVK_','TRACE_','RETRACE_','APITRACE_'))}
 for key,name in [('TEMP','temp'),('TMP','temp'),('ZIG_LOCAL_CACHE_DIR','zig-local'),('ZIG_GLOBAL_CACHE_DIR','zig-global'),('DXVK_SHADER_CACHE_PATH','shader-cache'),('DXVK_STATE_CACHE_PATH','state-cache'),('__GL_SHADER_DISK_CACHE_PATH','driver-cache')]:
     (out/name).mkdir(exist_ok=True);env[key]=str(out/name)
@@ -25,7 +27,8 @@ def run(label,command):
     (out/(label+'.log')).write_text(p.stdout+p.stderr);report['commands'].append({'label':label,'exit_code':p.returncode});print(label,p.returncode,(p.stdout+p.stderr)[-6000:],flush=True);assert p.returncode==0,label
 try:
     exe=out/'overlay-gpu.exe'
-    run('compile',[fp.zig(),'c++','-target','x86-windows-gnu','-O2','-UNDEBUG','-std=c++17','-Wno-microsoft-exception-spec','-DIMGUI_USER_CONFIG="northlight_imconfig.h"',*fp.test_include_flags(),'-I'+str(fp.TESTS),fp.TESTS/'settings_overlay_gpu.cpp',*(fp.src(s) for s in sources),'-luser32','-luuid','-o',exe])
+    target='x86_64-windows-gnu' if args.x64 else 'x86-windows-gnu'
+    run('compile',[fp.zig(),'c++','-target',target,'-O2','-UNDEBUG','-std=c++17','-Wno-microsoft-exception-spec','-DIMGUI_USER_CONFIG="northlight_imconfig.h"',*fp.test_include_flags(),'-I'+str(fp.TESTS),fp.TESTS/'settings_overlay_gpu.cpp',*(fp.src(s) for s in sources),'-luser32','-luuid','-o',exe])
     run('gpu',[exe,backend,out/'settings',*(['--sdr-only'] if args.sdr_only else [])]);report['pass']=True
 finally:
     guard.processes();report['inputs_unchanged']=all(sha(Path(p))==v for p,v in inputs.items());report['pass']&=report['inputs_unchanged'];(out/'validation.json').write_text(json.dumps(report,indent=2)+'\n')

@@ -2,6 +2,21 @@
 
 Run commands from the repository root. Start with [the architecture map](architecture.md) when changing runtime ownership or pass dependencies.
 
+## In-game inspection
+
+**Ctrl+Shift+F12** cycles through shadows, GI, fog volume, normals, SSAO, and
+the regular scene. Each view requires Northlight effects to be enabled.
+
+- **Normals** encodes world-space XYZ in RGB, including captured M2 normals.
+  The sky is black.
+- **SSAO** displays the filtered occlusion factor in grayscale. White means
+  unoccluded. The view runs SSAO even when Contact AO is off or another method
+  is selected.
+
+**Ctrl+Shift+F4** captures up to four textured UI draws with distinct stage-zero
+textures. Reports, geometry, and shader inputs go to a session under the
+client's diagnostic directory.
+
 ## Layout
 
 | Path | Contents |
@@ -101,9 +116,14 @@ For the rejected-probe, relight-cache and visibility-plane changes, see
 - clang++ and c++ (Xcode command line tools) for the native tests.
 - Optional:
   - a WoW 3.3.5a client (game data, world cache);
-  - Wine and Microsoft's redistributable `d3dcompiler_47.dll` 10.0.17134.12 (x64), for the shader
-    compilers only (`scripts/shaders/compile_*_shaders.py`): put the DLL in
-    `tools/d3dcompiler_47-10.0.17134.12-x64/` (it is not in git; `shader_compiler.py` pins its SHA-256);
+  - Microsoft's x64 `d3dcompiler_47.dll` 10.0.26100.9457, for the offline shader compilers
+    (`scripts/shaders/compile_*_shaders.py`). Use `Redist\D3D\x64\d3dcompiler_47.dll` from the
+    [Windows 11 SDK 10.0.26100.9457](https://learn.microsoft.com/en-us/windows/apps/windows-sdk/downloads)
+    and copy it to `d3dcompiler_47-10.0.26100.9457-x64/` under `NORTHLIGHT_TOOLS` (default `tools/`).
+    Alternatively, extract `fil3585cb2ea5db13cc0838f8d06b5c9679` from the
+    [Microsoft SDK cabinet](https://download.microsoft.com/download/46742ab5-6592-4968-a793-129e7f3bc55a/KIT_BUNDLE_WINDOWSSDK_MEDIACREATION/Installers/61d57a7a82309cd161a854a6f4619e52.cab)
+    and rename it to `d3dcompiler_47.dll`. The tools verify its SHA-256. macOS shader builds also require Wine.
+    `--compatible-compiler` can use the previously accepted SDK 10.0.17134.12 DLL when the new DLL is absent.
   - StormLib, for reading MPQs;
   - the external archive and `backups/`, for differential tests against old versions.
 
@@ -180,6 +200,56 @@ and the `shaders/*-shader-build.json` manifest. Every shader uses the one toolch
 `scripts/shaders/shader_compiler.py` (IEEE strict, O3; Wine's builtin compiler is refused).
 `build_environment.py` keeps the Wine prefix outside the client folder.
 
+## Experimental Windows x64 D3D9 proxy
+
+```powershell
+python scripts/build_renderer.py --x64
+python tests/test_renderer_assets_dll.py --x64
+```
+
+Copy `d3d9.dll` and `northlight-assets.bin` from `out/x64-proxy/` (under
+`NORTHLIGHT_OUT` if configured) beside `WowClient64.exe` in a separate client
+directory. Start the client with its D3D9 launcher, for example `WowClient64.exe -d3d`.
+Check the loaded path in the client log and the `NORTHLIGHT X64 D3D9` and
+`CreateDevice HRESULT` lines in `northlight-renderer.log`.
+
+The x64 build defaults to system D3D9. For DXVK, explicitly select `Backend=dxvk`
+and provide an AMD64 `dxvk_d3d9.dll` at the configured backend path. Use
+`--dxvk <path-to-amd64-d3d9.dll>` with the x64 device test to check this backend.
+For native HDR use `Backend=native`, `ExperimentalHDR=1`, and 1× MSAA. On a
+Windows HDR display, `python tests/test_renderer_assets_dll.py --x64 --hdr`
+checks native scRGB presentation across Reset. `python tests/test_settings_overlay_gpu.py --x64`
+checks settings-panel pixels on a private FP16 surface with system D3D9.
+If the active driver lacks the capabilities required by the effects, the x64
+proxy leaves the device with the backend. Explicit calls to the D3D9Ex and 9On12
+exports pass through to the backend. Native Vulkan uses its own renderer.
+The x64 DXVK build uses `CommandStream` from `northlight-quality.ini`. Set
+`CommandStream=0` to use direct submission for comparison. Native D3D9On12 uses
+direct submission. The Tideglass combo below supports the verified AMD64 client.
+With x64 DXVK, `CommandStream` and 1× MSAA, `NORTHLIGHT_X64_M2_NORMAL_MRT=1`
+opts into writing normals for eligible opaque skinned models in the game draw.
+`RenderProfile` logs the MRT writes and the remaining CPU replay packets.
+In the same configuration with HDR active, `NORTHLIGHT_X64_HDR_M2_FUSION=1`
+opts into writing M2 material detail alongside game color on the legacy scene
+target. The material target and source textures stay on the GPU.
+The HDR material option runs with the normal replay path. Either option uses
+replay for draws that fall outside its admission rules.
+GI and detailed shadows can read the map, camera, view stack, and outdoor
+light in the AMD64 client built from `8a1b491e7f66`. The proxy checks the loaded
+image and its scene-reader signatures before using this layout. In game,
+`WORLD context validated` confirms admission. With diagnostics enabled,
+`GI activated` reports which probe result the renderer picked up.
+The shadow provider takes over once its cascades are ready and restores the
+client's configured exterior shadow quality when Northlight shadows are disabled.
+Windows has standard installers for x86 and x64. Each installs a D3D9 proxy
+and DXVK backends that match the target game's architecture.
+
+For an isolated 32-bit comparison, `python scripts/build_renderer.py --x86-on12`
+writes a standalone proxy and assets to `out/x86-on12-proxy/`. Use
+`Backend=native`, `ExperimentalHDR=1`, windowed presentation and 1× MSAA.
+This variant uses direct submission with native HDR. Its device smoke test is
+`python tests/test_renderer_assets_dll.py --x86-on12 --hdr --gpu-transfer`.
+
 ## Tideglass
 
 The optional Tideglass 0.1.0 core uses the cooperative D3D9 API. The export
@@ -199,6 +269,26 @@ preserves both water INIs and generates the reflection archive list from the
 client's archive chain. With the art layer enabled, the combo package uses
 daylight lighting underwater. Water settings are under **Water** in the
 in-game overlay. Changing **Use Tideglass** requires a restart.
+
+For the standalone AMD64 client, put the x86_64 LLVM-MinGW tools on PATH and
+run `python scripts/build_combo.py --x64 --storm-source <clean-pinned-StormLib-checkout>`.
+Copy `d3d9.dll`, `northlight-assets.bin` and `water-core.dll` from `out/x64-proxy/`
+beside `WowClient64.exe`. Set `Enable=1` in the `[WaterIntegration]` section of
+`water-host.ini` and select the client's D3D9 backend. On the supported AMD64
+client the adapter also supplies submerged-camera state, moving ship samples,
+and the native textures used to identify indoor slime and magma.
+
+Build and verify the Windows x64 release ZIP from the combo output:
+
+```powershell
+python renderer/build_packages.py --platform windows-x64 --version 0.3.218-tideglass-0.1.0 --water-core <out>/x64-proxy/water-core.dll
+python tests/verify_packages.py <out>/packages/Northlight-0.3.218-tideglass-0.1.0-Windows-x64.zip
+```
+
+Extract the x64 ZIP outside the game folder and run `Install.cmd`. Select the
+folder containing `WowClient64.exe` and the 3.3.5a data archives. The installer
+includes both pinned AMD64 DXVK backends, generates the world cache from the
+local archives, and backs up replaced files for `Uninstall.cmd`.
 
 Tideglass runs with SDR and HDR output, including multisampled targets.
 The HDR path uses the legacy scene before Northlight decodes it into linear
@@ -222,6 +312,21 @@ tags (`requires=`, `slow`, `timing`, `manual`, `known-fail=`), the skip rules, `
 and the rules for writing a test are in [tests/README.md](../tests/README.md). With no client,
 toolchain or archive you can still build the DLL (given zig) and run most tests, which are pure
 Python or native C++.
+
+### Offline GI transport benchmark
+
+On Windows with a hardware D3D11 adapter, compare the CPU GI solver and
+experimental GPU transport variants on the same cached Northrend geometry.
+
+```powershell
+python scripts/benchmark_gi.py --output <new-output-folder>
+```
+
+The harness runs the frozen CPU reference and the current solver in ABBA order
+for surface and grid probe layouts. It checks exact CPU output and equality
+across GPU variants, then records timings and CPU/GPU parity per layout.
+A parity rejection is retained in the report. These component results do not
+establish compatibility with the production renderer or in-game FPS.
 
 ## Machine configuration
 

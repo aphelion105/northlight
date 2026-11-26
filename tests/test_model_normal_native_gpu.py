@@ -24,6 +24,8 @@ parser=argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--fixture',type=Path,required=True,help='Prepared stock human-0.mesh receiver fixture')
 parser.add_argument('--backend',type=Path,action='append',required=True)
 parser.add_argument('--output',type=Path,required=True)
+parser.add_argument('--x64',action='store_true',help='Build the AMD64 device host')
+parser.add_argument('--hybrid',action='store_true',help='Also exercise direct MRT writes mixed with depth-tested fallback')
 parser.add_argument('--timing-draws',type=int,action='append',default=[],help='Additionally measure complete 4K capture/submission paths (resident geometry)')
 parser.add_argument('--timing-copies',type=int,default=1,help='Repeat stock geometry within each timing draw (1..32)')
 parser.add_argument('--timing-local',action='store_true',help='Measure the actual three-local-light factory with MRT')
@@ -37,6 +39,10 @@ timing_state.add_argument('--timing-srgb',action='store_true',help='Keep native 
 timing_state.add_argument('--timing-fixed-pixel',action='store_true',help='Finish each frame with an unsupported fixed-function scene-depth writer')
 timing_state.add_argument('--timing-capture-hazard',action='store_true',help='Finish the immutable queue early after the native MRT audit')
 args=parser.parse_args()
+if args.hybrid and (not args.x64 or args.reference_native or args.reference_packet_layout):
+    parser.error('--hybrid requires --x64 with the current normal renderer')
+if args.x64 and args.reference_native:
+    parser.error('--reference-native uses the x86 native normal renderer')
 out=args.output.resolve();out.mkdir(parents=True,exist_ok=False)
 fixture=out/'fixture';fixture.mkdir()
 shutil.copyfile(args.fixture/'human-0.mesh',fixture/'human-0.mesh')
@@ -63,7 +69,7 @@ def run(tag,command):
     r.check_returncode();return text
 
 exe=out/'native-models.exe'
-includes=[]
+includes=['-DNORTHLIGHT_TEST_NORMAL_HYBRID'] if args.hybrid else []
 packet_reference_scope=None
 if args.reference_native:
     overlay=out/'native-reference';overlay.mkdir();(overlay/'model_normal_renderer.h').write_bytes(fp.src('model_normal_renderer.h').read_bytes())
@@ -88,12 +94,13 @@ if args.reference_packet_layout:
         (overlay/'model_normal_replay.inl').write_bytes(subprocess.check_output(
             ['git','show',args.reference_packet_layout+':src/proxy/model_normal_replay.inl']))
     includes=['-I'+str(overlay)]
-run('compile',[fp.zig(),'c++','-target','x86-windows-gnu','-std=c++17','-O2','-UNDEBUG','-Wno-microsoft-exception-spec','-Wno-return-type',*includes,*fp.test_include_flags(),ROOT/'tests/model_normal_native_gpu.cpp',fp.src('world_gi.cpp'),'-luser32','-o',exe])
+run('compile',[fp.zig(),'c++','-target','x86_64-windows-gnu' if args.x64 else 'x86-windows-gnu','-std=c++17','-O2','-UNDEBUG','-Wno-microsoft-exception-spec','-Wno-return-type',*includes,*fp.test_include_flags(),ROOT/'tests/model_normal_native_gpu.cpp',fp.src('world_gi.cpp'),'-luser32','-o',exe])
 data=bytearray(exe.read_bytes());at=struct.unpack_from('<I',data,0x3c)[0]+22;struct.pack_into('<H',data,at,struct.unpack_from('<H',data,at)[0]|0x20);exe.write_bytes(data)
 backends=[]
 for i,path in enumerate(args.backend):
     windows_gpu_guard.processes();path=path.resolve();text=run('gpu-'+str(i),[exe,path,str(fixture)+'/'])
     assert 'MODEL_NORMAL_NATIVE_GPU_PASS' in text
+    if args.hybrid:assert 'MODEL_NORMAL_HYBRID_PASS' in text
     if not args.reference_packet_layout:
         matches=re.search(r'MODEL_NORMAL_DRAW_STATE targets=(\d+) pixelShaders=(\d+)',text)
         assert matches and all(int(v)>0 for v in matches.groups()), 'Normal capture did not exercise known draw state'

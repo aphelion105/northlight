@@ -18,10 +18,6 @@ struct OverlayDevice:ForwardIDirect3DDevice9{
         return real->CreateStateBlock(type,out);
     }
     explicit OverlayDevice(IDirect3DDevice9* d):ForwardIDirect3DDevice9(d){}
-    HRESULT STDMETHODCALLTYPE GetBackBuffer(UINT chain,UINT index,D3DBACKBUFFER_TYPE type,IDirect3DSurface9** out)override{
-        if(target&&chain==0&&index==0){*out=target;target->AddRef();return S_OK;}
-        return real->GetBackBuffer(chain,index,type,out);
-    }
 };
 int main(int argc,char** argv){
     assert(argc==3||argc==4);const bool sdrOnly=argc==4&&!std::strcmp(argv[3],"--sdr-only");assert(argc==3||sdrOnly);constexpr unsigned W=1280,H=800;
@@ -38,11 +34,18 @@ int main(int argc,char** argv){
     assert(service->requestSnapshot());
     for(unsigned attempt=0;attempt<500&&!service->snapshot();++attempt)Sleep(10);
     assert(service->snapshot());
-    auto overlay=NorthlightOverlay::create(&device,true,"F11",service,[](const char* text){std::puts(text);});assert(overlay&&!overlay->visible());
+    auto overlay=NorthlightOverlay::create(&device,true,nullptr,service,[](const char* text){std::puts(text);});assert(overlay&&!overlay->visible());
     auto toggle=[&]{
-        // Do not make a private-window test depend on the user's held modifiers.
-        for(unsigned i=0;i<200&&((GetKeyState(VK_CONTROL)|GetKeyState(VK_SHIFT)|GetKeyState(VK_MENU))&0x8000);++i)Sleep(10);
-        SendMessageW(window,WM_KEYDOWN,VK_F11,0);SendMessageW(window,WM_KEYUP,VK_F11,0);
+        BYTE previous[256]{},keys[256]{};
+        assert(GetKeyboardState(previous));
+        std::memcpy(keys,previous,sizeof keys);
+        keys[VK_CONTROL]|=0x80;keys[VK_SHIFT]|=0x80;keys[VK_MENU]&=0x7F;
+        assert(SetKeyboardState(keys));
+        SendMessageW(window,WM_KEYDOWN,VK_F11,0);
+        keys[VK_CONTROL]&=0x7F;keys[VK_SHIFT]&=0x7F;
+        assert(SetKeyboardState(keys));
+        SendMessageW(window,WM_KEYUP,VK_F11,0);
+        assert(SetKeyboardState(previous));
     };
     toggle();assert(overlay->visible());
     bool calibrationExpected=false;
@@ -53,7 +56,7 @@ int main(int argc,char** argv){
         ok(real->SetRenderState(D3DRS_CULLMODE,D3DCULL_CW));ok(real->SetRenderState(D3DRS_ALPHABLENDENABLE,FALSE));
         D3DMATRIX transform{};for(unsigned i=0;i<4;++i)transform.m[i][i]=float(i+1);transform.m[3][0]=3.25f;
         for(auto mode:{D3DTS_WORLD,D3DTS_VIEW,D3DTS_PROJECTION})ok(real->SetTransform(mode,&transform));
-        {SavedState saved(&device);assert(saved.ok);overlay->draw(white);}
+        {SavedState saved(&device);assert(saved.ok);overlay->draw(white,device.target);}
         assert(calibrationExpected?device.stateBlockCreates>=1:device.stateBlockCreates==1);DWORD value=0;ok(real->GetRenderState(D3DRS_CULLMODE,&value));assert(value==D3DCULL_CW);ok(real->GetRenderState(D3DRS_ALPHABLENDENABLE,&value));assert(value==FALSE);
         for(auto mode:{D3DTS_WORLD,D3DTS_VIEW,D3DTS_PROJECTION}){D3DMATRIX restored{};ok(real->GetTransform(mode,&restored));assert(!std::memcmp(&transform,&restored,sizeof transform));}
     };
@@ -62,7 +65,7 @@ int main(int argc,char** argv){
     ImGuiWindow* nav=nullptr;
     for(auto* child:parent->DC.ChildWindows)if(child->ChildId==parent->GetID("nav"))nav=child;
     assert(nav);
-    const char* pages[]={"Materials & parallax","Lighting & AO","Renderer & HDR","Diagnostics","Performance","Performance","Shadow range","Shadow range"};
+    const char* pages[]={"Materials & parallax","Lighting & AO","Renderer & HDR","Diagnostics","Performance","Performance","Shadow range","Shadow range","Sun & moon"};
     for(unsigned page=0;page<sizeof(pages)/sizeof(pages[0]);++page){
       if(page==4){
         // Synthetic presentation data in the private test process only. The
@@ -75,7 +78,7 @@ int main(int argc,char** argv){
         Sleep(1100); // the menu reads cached snapshots at most once per second
       }
       ImGui::ActivateItemByID(nav->GetID(pages[page]));draw(0);draw(0);
-      if(page>=6){
+      if(page==6||page==7){
         ImGuiWindow* content=nullptr;for(auto* child:parent->DC.ChildWindows)if(child!=nav&&child->Active)content=child;assert(content);
         ImGuiWindow* zones=nullptr;for(auto* child:content->DC.ChildWindows)if(child->ChildId==content->GetID("shadow-zones"))zones=child;assert(zones);
         if(page==6)assert(zones->ScrollMax.y>0);
@@ -131,6 +134,29 @@ int main(int argc,char** argv){
         assert(service->status().state==NorthlightSettings::Status::State::Saved&&service->status().restartRequired);
         NorthlightRegionalShadow::Table ranges;std::string error;assert(NorthlightRegionalShadow::load(std::string(argv[2])+"/shadow-range-profiles.ini",ranges,error));
         assert(ranges.fallback==3000&&ranges.at("Azeroth",40)==3000&&ranges.at("Azeroth",12)==2048);
+      }
+      if(page==8){
+        ImGuiWindow* content=nullptr;for(auto* child:parent->DC.ChildWindows)if(child!=nav&&child->Active)content=child;assert(content);
+        auto toggleTree=[&](const char* field,bool canopy,bool crown){
+            const auto id=ImHashStr("##value",0,ImHashStr(field,0,content->GetID("celestial-controls")));
+            ImGui::ActivateItemByID(id);draw(0);
+            for(unsigned wait=0;wait<500;++wait){
+                draw(0);
+                const auto update=service->after("");
+                if(update&&update->preview&&update->config.quality.treeCanopy==canopy&&update->config.quality.treeCrown==crown)return;
+                Sleep(10);
+            }
+            assert(false&&"Tree lighting checkbox did not apply independently");
+        };
+        toggleTree("Q\tQuality\tTreeCanopy",false,true);
+        toggleTree("Q\tQuality\tTreeCrown",false,false);
+        toggleTree("Q\tQuality\tTreeCanopy",true,false);
+        ImGui::ActivateItemByID(parent->GetID("Save"));draw(0);
+        for(unsigned wait=0;wait<500&&service->status().state!=NorthlightSettings::Status::State::Saved;++wait){Sleep(10);draw(0);}
+        assert(service->status().state==NorthlightSettings::Status::State::Saved);
+        const NorthlightSettings::Document saved(NorthlightSettings::readImage(std::filesystem::path(argv[2])/"northlight-quality.ini").raw);
+        assert(NorthlightSettings::explicitValue(saved,"Quality","TreeCrown")=="0");
+        std::puts("TREE_MENU_PASS independent=1 livePreview=1 saved=1");
       }
     }
     ImGui::ActivateItemByID(nav->GetID("Performance"));draw(0);draw(0);

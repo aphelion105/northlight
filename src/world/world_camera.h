@@ -140,6 +140,16 @@ inline int failingSignature(){
     return -1;
 }
 inline bool read(char (&map)[64],float projectionSign,Camera& out,Diagnostics* diagnostic=nullptr){
+#if defined(_WIN64) && !defined(NORTHLIGHT_REPLAY_STAND)
+    if(!NorthlightX64World::imageBase())return fail(diagnostic,Reject::Client);
+    NorthlightX64World::Scene scene;float rotation[16],position[3];char name[64]{};
+    if(!NorthlightX64World::readScene(scene)||
+       !NorthlightWorldContext::publishMapAndCamera(scene.map,scene.pose,name,position))return fail(diagnostic,Reject::Read);
+    if(scene.transformed)return fail(diagnostic,Reject::AttachedCamera);
+    if(!NorthlightX64World::readView(rotation))return fail(diagnostic,Reject::Stack);
+    if(!decode(scene.pose,rotation,projectionSign,out,diagnostic))return false;
+    std::memcpy(map,name,64);return true;
+#else
     using NorthlightWorldContext::readSelf;
     static const bool supported=NorthlightWorldContext::supportedClient()&&(verifySignatures(readSelf)||kPermissiveCameraSignatures);
     if(!supported)return fail(diagnostic,Reject::Client);
@@ -148,6 +158,7 @@ inline bool read(char (&map)[64],float projectionSign,Camera& out,Diagnostics* d
     if(!readCurrent(readSelf,projectionSign,candidate,diagnostic))return false;
     for(unsigned i=0;i<3;++i)if(std::fabs(candidate.camera[i]-independentPosition[i])>.01f)return fail(diagnostic,Reject::Changed);
     std::memcpy(map,name,64);out=candidate;return true;
+#endif
 }
 inline bool readSkyPhase(char (&map)[64],float projectionSign,Camera& out,Diagnostics* diagnostic=nullptr){
     using NorthlightWorldContext::readSelf;

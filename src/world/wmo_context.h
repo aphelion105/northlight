@@ -42,13 +42,14 @@ inline void rgb(std::uint32_t color,float* output){output[0]=float((color>>16)&2
 // Prelit WMO variants do NOT read c10..12 and cannot supply those values.
 // The light source is the outdoor world environment; WMO vertex baking and
 // indoor group overrides remain distinct material/local lighting contributions.
-inline bool decodeGlobalLighting(const unsigned char* bytes,size_t size,const float* expectedCamera,Lighting& out) {
-    if(!bytes||size<SkyBytes||!expectedCamera)return false;
+inline bool decodeSkyLighting(const unsigned char* bytes,size_t size,const float* expectedCamera,
+                              size_t directionAt,size_t directAt,size_t ambientAt,Lighting& out) {
+    if(!bytes||size<ambientAt+4||!expectedCamera)return false;
     Lighting value;value.dayFraction=scalar(bytes,4);
     if(!std::isfinite(value.dayFraction)||value.dayFraction<0||value.dayFraction>=1)return false;
     float cameraError=0,lengthSquared=0;
     for(unsigned i=0;i<3;++i){
-        float camera=scalar(bytes,0x18+i*4),direction=scalar(bytes,0x19c+i*4);
+        float camera=scalar(bytes,0x18+i*4),direction=scalar(bytes,directionAt+i*4);
         if(!std::isfinite(camera)||!std::isfinite(expectedCamera[i])||!std::isfinite(direction)||
            std::fabs(camera)>100000||std::fabs(expectedCamera[i])>100000)return false;
         float delta=camera-expectedCamera[i];cameraError+=delta*delta;
@@ -57,8 +58,14 @@ inline bool decodeGlobalLighting(const unsigned char* bytes,size_t size,const fl
     if(cameraError>SkyCameraTolerance*SkyCameraTolerance||lengthSquared<.25f||lengthSquared>2.25f)return false;
     const float inverseLength=1/std::sqrt(lengthSquared);
     for(auto& component:value.lightDirection)component*=inverseLength;
-    value.packedDirect=packed(bytes,0x1a8);value.packedAmbient=packed(bytes,0x1ac);value.flash=bytes[0x50];
+    value.packedDirect=packed(bytes,directAt);value.packedAmbient=packed(bytes,ambientAt);
     rgb(value.packedDirect,value.direct);rgb(value.packedAmbient,value.ambient);
+    out=value;return true;
+}
+inline bool decodeGlobalLighting(const unsigned char* bytes,size_t size,const float* expectedCamera,Lighting& out) {
+    Lighting value;
+    if(size<SkyBytes||!decodeSkyLighting(bytes,size,expectedCamera,0x19c,0x1a8,0x1ac,value))return false;
+    value.flash=bytes[0x50];
     std::memcpy(value.slots,bytes+LightSlotBytes,sizeof value.slots);
     value.slotsConsistent=value.slots[1]==packed(bytes,0x17c);
     out=value;return true;
@@ -265,5 +272,12 @@ inline bool readGlobalLighting(const float* expectedCamera,Lighting& out) {
          decodeCoherentGlobalLighting(first,second,SkyBytes,expectedCamera,out)))return false;
     proveGlobalLighting(out);return true;
 }
+#if defined(_WIN64) && !defined(NORTHLIGHT_REPLAY_STAND)
+inline bool readX64GlobalLighting(const float* expectedCamera,Lighting& out){
+    using namespace NorthlightX64World;
+    unsigned char sky[SkySize];
+    return readSky(sky)&&decodeSkyLighting(sky,sizeof sky,expectedCamera,SkyDirection,SkyDirect,SkyAmbient,out);
+}
+#endif
 #endif
 } // namespace NorthlightWmoContext

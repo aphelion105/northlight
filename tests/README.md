@@ -63,7 +63,8 @@ A test declares what it needs on one line within its first 30 lines:
 
 | Tag | Meaning |
 |---|---|
-| `requires=cxx` | host `clang++`/`c++` |
+| `requires=cxx` | POSIX host `clang++`/`c++` (use WSL on Windows) |
+| `requires=d3dcompiler` | Microsoft D3DCompiler DLL in the shader tool directory |
 | `requires=client` | a WoW client (see `NORTHLIGHT_CLIENT`) |
 | `requires=zig`, `wine`, `stormlib` | toolchain pieces (see the Machine configuration section of the top README.md) |
 | `requires=stormlib-src` | the pinned StormLib source tree in `tools/StormLib-master` (`scripts/build_stormlib.py`) |

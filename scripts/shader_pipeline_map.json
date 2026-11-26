@@ -171,7 +171,7 @@
   "passes": {
     "draw-handoff": {
       "owner": "NorthlightDrawCapture::capture",
-      "code": {"src/proxy/draw_capture_route.h": ["void capture(IDirect3DVertexShader9*", "NorthlightAutoDisplacement::CaptureSource source;", "if(!userMemory||materialCapture){", "captureModelNormals(source);"], "src/proxy/renderer.cpp": ["NorthlightDrawCapture::capture<userMemory>"], "src/water/auto_displacement_renderer.h": ["struct CaptureSource {", "void publishConstants("], "src/world/draw_snapshot.h": ["bool readShared("], "src/proxy/model_normal_renderer.h": ["++materialBankReads;materialBankRegisters+=count", "MODEL_NORMALS handoff frame="]},
+      "code": {"src/proxy/draw_capture_route.h": ["void capture(IDirect3DVertexShader9*", "NorthlightAutoDisplacement::CaptureSource localSource;", "if(!userMemory||materialCapture){", "captureModelNormals(source);"], "src/proxy/renderer.cpp": ["NorthlightDrawCapture::capture<userMemory>"], "src/water/auto_displacement_renderer.h": ["struct CaptureSource {", "void publishConstants("], "src/world/draw_snapshot.h": ["bool readShared("], "src/proxy/model_normal_renderer.h": ["++materialBankReads;materialBankRegisters+=count", "MODEL_NORMALS handoff frame="]},
       "writes": {"shared-draw": "Only published when the current draw supplies proof"},
       "fallback": "A shared snapshot miss leaves the normal consumer's existing read path available. Draw ordering and the UP guard stay with the original adapters.",
       "tests": ["test_capture_handoff.py", "test_model_normal_consumers.py", "test_draw_orchestration.py"]
@@ -206,7 +206,7 @@
     },
     "model-normals": {
       "owner": "NorthlightModelNormals / NorthlightNativeModelNormals",
-      "code": {"src/proxy/renderer.cpp": ["void captureModelNormals("], "src/proxy/device_frame_effects.inl": ["world->setModelNormals(modelNormals?modelNormals->texture()"], "src/proxy/model_normal_native.h": ["return fallback(\"target-msaa\")"], "src/water/native_material_capture_patch.h": ["receiver?(alpha?kModelNormalCaptureShader:kModelNormalOpaqueShader)"]},
+      "code": {"src/proxy/renderer.cpp": ["void captureModelNormals("], "src/proxy/device_frame_effects.inl": ["world->setModelNormals(modelNormals?modelNormals->texture()"], "src/proxy/model_normal_native.h": ["return fallback(TargetMsaa)"], "src/water/native_material_capture_patch.h": ["receiver?(alpha?kModelNormalCaptureShader:kModelNormalOpaqueShader)"]},
       "source": "auto_bump_capture.hlsl",
       "entries": {"ModelNormalCapture": "Native PS patch template for alpha-tested normals", "ModelNormalOpaque": "Native PS patch template for opaque normals"},
       "reads": ["shared-draw", "native-normal-seed"],

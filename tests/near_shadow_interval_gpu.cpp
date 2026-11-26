@@ -95,20 +95,32 @@ struct WorldScreenEffectsTest {
  }
  static void alphaResourceRetry(IDirect3DDevice9* d,IDirect3DTexture9* depth,IDirect3DSurface9* target){
   WorldRenderer reference(d),retained(d);setup(reference,1,1);setup(retained,1,1);
-  auto capture=[&](WorldRenderer& w,float x){pose(w,x);auto& p=*w.replays[0];
+  auto capture=[&](WorldRenderer& w,float x){w.valid=true;w.traceContext=2;pose(w,x);auto& p=*w.replays[0];
    if(!p.texture){IDirect3DTexture9* white=nullptr;must(d->CreateTexture(1,1,1,0,D3DFMT_A8R8G8B8,D3DPOOL_MANAGED,&white,nullptr));D3DLOCKED_RECT lock{};must(white->LockRect(0,&lock,nullptr,0));*static_cast<DWORD*>(lock.pBits)=0xffffffff;must(white->UnlockRect(0));p.texture=white;}
    p.cutoff=128.f/255;p.alphaMode=NorthlightShadowAlpha::FixedTest|NorthlightShadowAlpha::GreaterEqual|(128u<<8)|(unsigned(D3DFMT_X8R8G8B8)<<18);
   };
   auto draw=[&](WorldRenderer& w,int debug=1){must(d->BeginScene());const bool result=w.render(target,depth,64,64,D3DFMT_A8R8G8B8,1,1000,0,1,debug,nullptr,nullptr);must(d->EndScene());return result;};
-  capture(reference,0);capture(retained,0);assert(draw(reference)&&draw(retained));
+  auto compareShadows=[&]{
+   for(unsigned source=0;source<2;++source){
+    for(unsigned cascade=0;cascade<2;++cascade){const unsigned slot=source*2+cascade;
+     assert(image(d,reference.directionalMaps.current(slot).surface)==image(d,retained.directionalMaps.current(slot).surface));
+    }
+    assert(retained.actorValid[source]&&image(d,reference.actorMaps.depth(source).surface)==image(d,retained.actorMaps.depth(source).surface));
+   }
+  };
+  reference.nativeShadowOwned=retained.nativeShadowOwned=true;
+  capture(reference,0);capture(retained,0);assert(draw(reference,0)&&draw(retained,0));
   const auto scratch=retained.shadowReplayAlpha.bytes();assert(scratch>0&&!retained.failed);
-  retained.setMemoryPressure(true,true);retained.memoryPressureUntil=GetTickCount()+1000;
-  capture(retained,2);assert(draw(retained)&&retained.composited&&retained.shadowFrameReady&&!retained.shadowReplayAlpha.retryAt());
+  // The production guard trims at the frame boundary before applying its caps.
+  reference.endFrame();retained.endFrame();retained.trimMemory(true);
+  retained.setMemoryPressure(true,true);retained.memoryPressureUntil=GetTickCount()+60000;
+  capture(reference,2);capture(retained,2);assert(draw(reference,0)&&draw(retained,0));
+  assert(retained.composited&&retained.shadowsComposited&&retained.shadowFrameReady&&!retained.shadowReplayAlpha.retryAt());
   assert(retained.shadowReplayAlpha.bytes()==scratch);
+  compareShadows();
   // A cold scratch allocation is denied. Keep the normal scene composite
   // and the complete static cache, while withholding the unfinished maps.
-  retained.nativeShadowOwned=true;
-  assert(retained.shadowReplayAlpha.trimTargets()==scratch);retained.memoryPressureUntil=GetTickCount()+1000;
+  retained.shadowReplayAlpha.reset();retained.memoryPressureUntil=GetTickCount()+60000;
   capture(retained,4);assert(draw(retained,0)&&!retained.failed&&retained.composited&&!retained.shadowsComposited&&!retained.shadowFrameReady);
   const auto retry=retained.shadowReplayAlpha.retryAt();assert(retry&&retained.shadowReplayAlpha.fallback()&&retained.shadowReplayAlpha.bytes()==0);
   assert(retained.shadowCacheKey[0].valid);
@@ -122,13 +134,9 @@ struct WorldScreenEffectsTest {
   // Resume with the newly captured pose, not the packet from the refused job.
   retained.setMemoryPressure(false,false);reference.invalidateShadowCache();capture(reference,14);
   assert(draw(reference)&&draw(retained)&&!retained.failed&&!retained.shadowReplayAlpha.fallback()&&retained.shadowFrameReady);
-  for(unsigned source=0;source<2;++source){
-   assert(image(d,reference.directionalMaps.current(source*2).surface)==image(d,retained.directionalMaps.current(source*2).surface));
-   assert(image(d,reference.directionalMaps.current(source*2+1).surface)==image(d,retained.directionalMaps.current(source*2+1).surface));
-   assert(retained.actorValid[source]&&image(d,reference.actorMaps.depth(source).surface)==image(d,retained.actorMaps.depth(source).surface));
-  }
+  compareShadows();
   assert(!retained.shadowReplayAlpha.supported(D3DFMT_A8));
-  std::puts("ALPHA_RESOURCE_RETRY_PASS warmRetained=1 deniedJob=1 cooldown=1 currentPoseRecovery=1 noPartialMaps=1 worldRetained=1 unsupportedFormat=1");
+  std::puts("ALPHA_RESOURCE_RETRY_PASS retainedAcrossTrim=1 currentPoseAfterTrim=1 deniedJob=1 cooldown=1 currentPoseRecovery=1 noPartialMaps=1 worldRetained=1 unsupportedFormat=1");
  }
  static void actorSettings(IDirect3DDevice9* d,IDirect3DTexture9* depth,IDirect3DSurface9* target){
   WorldRenderer reference(d),retained(d);setup(reference,1,1);setup(retained,1,1);

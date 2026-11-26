@@ -50,6 +50,7 @@ import build_renderer_assets  # noqa: E402
 
 PINS = json.loads((fp.RENDERER / 'package-pins.json').read_text(encoding='utf-8'))
 PLATFORMS = {'mac': 'macOS', 'windows': 'Windows', 'linux': 'Linux'}
+WINDOWS_X64 = 'windows-x64'
 PROXY_PLATFORMS = ('windows', 'linux')   # the game-folder d3d9.dll proxy with the bundled DXVK backends
 # Repository files the package needs, in their repository layout (northlight_paths finds them there).
 APP_FILES = [
@@ -172,9 +173,9 @@ def pe_machine(data):
     return struct.unpack_from('<H', data, pe + 4)[0] if data[pe:pe + 4] == b'PE\0\0' else None
 
 
-def check_dll(data):
-    if pe_machine(data) != 0x14c:
-        raise SystemExit('the renderer DLL is not a 32-bit PE')
+def check_dll(data, machine=0x14c):
+    if pe_machine(data) != machine:
+        raise SystemExit(f'the renderer DLL must be a PE for machine {machine:#x}')
     if not MARKER.search(data) or b'PROXY module=%ls root=%ls' not in data:
         raise SystemExit('the renderer DLL is not a proxy-capable Northlight renderer build')
     if DEV_MARKER in data:
@@ -186,9 +187,9 @@ def check_dll(data):
     return MARKER.search(data).group(1).decode()
 
 
-def check_water_core(core, host):
-    if pe_machine(core) != 0x14c or b'WaterHostGetAPI' not in core or b'WaterHostGetAPI' not in host:
-        raise SystemExit('The combined package requires a cooperative host and 32-bit Tideglass core')
+def check_water_core(core, host, machine=0x14c):
+    if pe_machine(core) != machine or b'WaterHostGetAPI' not in core or b'WaterHostGetAPI' not in host:
+        raise SystemExit(f'The combined package requires a cooperative host and a Tideglass core for machine {machine:#x}')
     if CLOCK_MARKER in core:
         raise SystemExit('the Tideglass core is a development build with the picture clock; build it with scripts/build_combo.py')
     imports = {n for names in build_stormlib.pe_info(core)['imports'].values() for n in names}
@@ -204,6 +205,23 @@ def check_water_core(core, host):
 def combo_version(northlight, tideglass):
     """A combined package's label: both parts' own versions, so it names exactly what it holds."""
     return f'{northlight}-tideglass-{tideglass}'
+
+
+def is_combo_version(label, northlight, tideglass):
+    suffix = re.escape(combo_version('', tideglass))
+    return re.fullmatch(re.escape(northlight) + r'(?:\.\d+)?' + suffix, label) is not None
+
+
+def water_metadata(version, dll_version, dll, core, machine=0x14c):
+    from tideglass_source import verify
+
+    revision = verify()['revision']
+    water_version = check_water_core(core, dll, machine)
+    if not is_combo_version(version, dll_version, water_version):
+        expected = combo_version(dll_version, water_version)
+        raise SystemExit(f'This package must use --version {expected} or add a release revision to the renderer version')
+    return {'version': water_version, 'source_revision': revision,
+            'core_sha256': hashlib.sha256(core).hexdigest()}
 
 
 def commit_time():
@@ -328,11 +346,13 @@ def windows_runtime(tree, pin, stormlib):
     tree.add('LICENSES/Python-LICENSE.txt', tree.data('runtime/LICENSE.txt'))
 
 
-def dxvk_files(pin_name='dxvk'):
+def dxvk_files(pin_name='dxvk', x64=False):
     pin = PINS[pin_name]
+    member = pin['member'].replace('/x32/', '/x64/') if x64 else pin['member']
+    member_sha256 = pin['x64_member_sha256' if x64 else 'member_sha256']
     with tarfile.open(download(pin)) as tar:
-        dll = tar.extractfile(pin['member']).read()
-    if hashlib.sha256(dll).hexdigest() != pin['member_sha256']:
+        dll = tar.extractfile(member).read()
+    if hashlib.sha256(dll).hexdigest() != member_sha256:
         raise SystemExit('DXVK d3d9.dll sha256 does not match the pin')
     license_path = download({**pin, 'file': pin['license_file'], 'sha256': pin['license_sha256']})
     return dll, license_path.read_bytes()
@@ -386,28 +406,23 @@ def launchers(platform, version):
 
 
 def build(platform, version, dll, variants, out, stormlib_dir, atmosphere=None, core=None):
+    x64 = platform == WINDOWS_X64
+    platform = 'windows' if x64 else platform
+    machine = 0x8664 if x64 else 0x14c
     atmosphere_info = atmosphere_metadata(atmosphere) if atmosphere is not None else None
     for manifest in variants.values():
         check_variant_sources(manifest)
-    top = f'Northlight-{version}-{PLATFORMS[platform]}'
+    top = f'Northlight-{version}-{PLATFORMS[platform]}' + ('-x64' if x64 else '')
     tree = Tree(top)
     stamp = commit_time()
     check_closure(APP_FILES)
     for name in APP_FILES:
         tree.add('app/' + name, fp.REPO / name)
     dll_data = dll.read_bytes()
-    dll_version = check_dll(dll_data)
-    water_info = None
-    if core is not None:
-        from tideglass_source import verify
-        revision = verify()['revision']
-        water_version = check_water_core(core, dll_data)
-        expected_version = combo_version(dll_version, water_version)
-        if version != expected_version:
-            raise SystemExit(f'This package must use --version {expected_version}')
-        water_info = {'version': water_version, 'source_revision': revision,
-                      'core_sha256': hashlib.sha256(core).hexdigest()}
-    resources = build_renderer_assets.built_path(dll).read_bytes()
+    dll_version = check_dll(dll_data, machine)
+    water_info = water_metadata(version, dll_version, dll_data, core, machine) if core is not None else None
+    bundle = dll.with_name(build_renderer_assets.FILENAME) if x64 else build_renderer_assets.built_path(dll)
+    resources = bundle.read_bytes()
     resource_identity = build_renderer_assets.verify_pair(dll_data, resources)
     lib = build_stormlib.build(platform, stormlib_dir / platform)
     problems, _ = build_stormlib.verify(lib)
@@ -426,8 +441,8 @@ def build(platform, version, dll, variants, out, stormlib_dir, atmosphere=None, 
     if atmosphere is not None:
         payload[ATMOSPHERE] = atmosphere
     if platform in PROXY_PLATFORMS:
-        backend, license_text = dxvk_files('dxvk')
-        backend2, license_text2 = dxvk_files('dxvk2')
+        backend, license_text = dxvk_files('dxvk', x64=x64)
+        backend2, license_text2 = dxvk_files('dxvk2', x64=x64)
         payload.update({'d3d9.dll': dll_data, DXVK_BACKEND: backend, 'renderer-backends/dxvk/LICENSE': license_text,
                         DXVK2_BACKEND: backend2, 'renderer-backends/dxvk2/LICENSE': license_text2})
         tree.add('LICENSES/DXVK-LICENSE.txt', license_text)
@@ -443,7 +458,7 @@ def build(platform, version, dll, variants, out, stormlib_dir, atmosphere=None, 
     for name, manifest in sorted(variants.items()):
         tree.add(f'variants/{name}.json', (json.dumps(manifest, indent=2) + '\n').encode())
     tree.add('LICENSES/StormLib-NOTICES.txt', build_stormlib.notices(build_stormlib.source_root()).encode('utf-8'))
-    readme = fp.RENDERER / f'{platform}-package' / 'README.txt'
+    readme = fp.RENDERER / f'{platform}-package' / ('README-x64.txt' if x64 else 'README.txt')
     text = readme.read_text(encoding='utf-8').replace('__RELEASE_VERSION__', version)
     if water_info:
         text += ('\nTideglass adds scenery reflections, water waves and foam, slime, magma, '
@@ -465,6 +480,8 @@ def build(platform, version, dll, variants, out, stormlib_dir, atmosphere=None, 
             'app_files': {n: sha(fp.REPO / n) for n in APP_FILES}}
     if water_info:
         info['tideglass'] = water_info
+    if x64:
+        info['renderer_arch'] = 'x64'
     info['cache_versions'] = dict(install_world_cache.CACHE_VERSIONS)
     if atmosphere_info is not None:
         info['forever_atmosphere'] = atmosphere_info
@@ -477,7 +494,7 @@ def build(platform, version, dll, variants, out, stormlib_dir, atmosphere=None, 
     tree.add('LICENSES/St0ny-More-Lights.txt', fp.REPO / 'licenses/st0ny-more-lights.txt')
     path = out / f'{top}.zip'
     tree.write_zip(path, stamp)
-    return {'platform': platform, 'file': path.name, 'sha256': sha(path), 'bytes': path.stat().st_size,
+    return {'platform': WINDOWS_X64 if x64 else platform, 'file': path.name, 'sha256': sha(path), 'bytes': path.stat().st_size,
             'files': len(tree.files), 'dll_version': dll_version}
 
 
@@ -488,7 +505,7 @@ def pe_normalized(data):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument('--platform', choices=[*PLATFORMS, 'all'], default='all')
+    ap.add_argument('--platform', choices=[*PLATFORMS, WINDOWS_X64, 'all'], default='all')
     ap.add_argument('--version', required=True, help='package label, e.g. 0.3.162')
     ap.add_argument('--water-core', type=Path, help='include the cooperative Tideglass DLL and settings')
     ap.add_argument('--dll', type=Path, help='renderer build (default: renderer/frd9.dll or NORTHLIGHT_DLL)')
@@ -529,7 +546,7 @@ def main():
                 shutil.copyfile(zip_path, out / name)
         reports.append({'platform': 'any', 'file': name, 'sha256': sha(out / name), 'bytes': (out / name).stat().st_size,
                         'variant': manifest['variant'], 'cache_digest': manifest['cache_digest']})
-    dll = args.dll or fp.dll()
+    dll = args.dll or (fp.out() / 'x64-proxy/d3d9.dll' if args.platform == WINDOWS_X64 else fp.dll())
     core = args.water_core.read_bytes() if args.water_core else None
     atmosphere = args.forever_atmosphere.read_bytes() if args.forever_atmosphere else None
     for platform in list(PLATFORMS) if args.platform == 'all' else [args.platform]:

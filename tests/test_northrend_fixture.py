@@ -4,6 +4,7 @@
 from argparse import Namespace
 from io import BytesIO
 import json
+import math
 import struct
 from hashlib import sha256
 import sys; from pathlib import Path; sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -804,6 +805,94 @@ def raw_frame_intervals():
         raise AssertionError('Accepted a focused interval in the background measurement')
 
 
+def ratchet_pan():
+    scene = server.RATCHET_PAN
+    spawn = server.spawn_for(scene)
+    roster = server.scene_roster(scene)
+    assert server.map_for(scene) == (1, 392, 'Kalimdor')
+    assert len(roster) == server.RATCHET_CROWD_SIZE == 32
+    assert len({actor[0] for actor in roster.values()}) == 32
+    for equipped in (False, True):
+        actors = [actor for actor in roster.values() if bool(actor[3]) == equipped]
+        assert len(actors) == 16 and len({actor[2] for actor in actors}) == 8
+        assert sorted(round(math.dist(actor[1][:2], spawn[:2])) for actor in actors) == [9] * 8 + [17] * 8
+    assert len(server.crowd_packets(roster)) == 1
+    packet = struct.pack('<II', 1, 0) + b'NorthlightRatchet:left\0'
+    assert server.ratchet_camera_marker(packet) == 'left'
+    assert server.ratchet_camera_marker(packet + b'anything') is None
+    assert server.ratchet_camera_marker(struct.pack('<II', 0, 0) + packet[8:]) is None
+
+    phases = [{'name': name, 'start': begin, 'end': end}
+              for name, begin, end in [('idle', 1000, 5000), ('left', 5000, 9500), ('right', 9500, 14000)]]
+    events = ['RATCHET_CAMERA phase=idle tick=1000', 'RATCHET_CAMERA phase=left tick=5000',
+              'RATCHET_CAMERA phase=right tick=9500', 'RATCHET_CAMERA phase=done tick=14000']
+    assert runner.camera_pan.markers(events) == [(phase['name'], phase['start']) for phase in phases] + [('done', 14000)]
+    try:
+        runner.camera_pan.markers(events[1:])
+    except ValueError:
+        pass
+    else:
+        raise AssertionError('Accepted camera markers without the stationary phase')
+    camera = []
+    for tick in range(1000, 14001, 250):
+        yaw = math.tau * min(tick - 5000, 14000 - tick) / 4500 if tick >= 5000 else 0
+        camera.append({'tick': tick, 'eye': spawn[:3], 'forward': (math.cos(yaw), math.sin(yaw), 0)})
+
+    def windows(kind):
+        tick, last_present = 0, 0
+        rows = []
+        while tick < 17500:
+            samples = []
+            for _ in range(120):
+                delta = 20
+                if kind == 'spike' and tick == 4980:
+                    delta = 100
+                elif kind == 'recovery_spike' and tick == 14020:
+                    delta = 120
+                elif kind == 'sustained' and 5200 <= tick < 9100:
+                    delta = 38
+                tick += delta
+                samples.append(delta)
+            last_present += len(samples)
+            ordered = sorted(samples)
+            rows.append(dict(tick=str(tick), samples='120', device='1', qpcHz='1000', focus='0', enabled='1',
+                             gi='1', shadows='1', fog='0', frame=str(last_present), lastPresent=str(last_present),
+                             meanMs=f'{sum(samples)/120:.3f}', p50Ms=f'{(ordered[59] + ordered[60])/2:.3f}',
+                             p95Ms=str(ordered[113]), maxMs=str(ordered[-1]), deltas=','.join(map(str, samples))))
+        return rows
+
+    assess = runner.camera_pan.assess
+    steady = windows('steady')
+    result = assess(steady, phases, camera, spawn, background=True)
+    assert result['pass'] and result['idle']['p95_ms'] == 20
+    assert [round(sweep['yaw_degrees']) for sweep in result['sweeps']] == [360, -360]
+    result = assess(windows('spike'), phases, camera, spawn, background=True)
+    assert not result['pass'] and result['failed_sweeps'] == ['left']
+    assert result['sweeps'][0]['maximum_ms'] == 100 and result['sweeps'][0]['p95_ms'] == 20
+    present = result['sweeps'][0]['worst'][0]['present']
+    event = (f'CSTREAM QUERYFRAME gameFrame={present + 1} replayed={present} type=8 beforeReplayMs=0.02 '
+             'replayMs=39.44 afterReplayMs=0.04 backendUntouched=2 backendFalse=0')
+    assert runner.camera_pan.event_wait_evidence([event, event.replace('type=8', 'type=9')], result) == [
+        {'present': present, 'before_replay_ms': .02, 'replay_ms': 39.44, 'after_replay_ms': .04,
+         'untouched_trips': 2, 'gpu_pending_trips': 0}]
+    result = assess(windows('sustained'), phases, camera, spawn, background=True)
+    assert result['failed_sweeps'] == ['left'] and result['sweeps'][0]['p95_ms'] == 38
+    assert result['sweeps'][0]['maximum_ms'] < result['limits_ms']['max']
+    result = assess(windows('recovery_spike'), phases, camera, spawn, background=True)
+    assert not result['pass'] and not result['failed_sweeps'] and result['failed_recovery']
+    assert result['recovery']['maximum_ms'] == 120
+    assert assess(steady[:-2], phases, camera, spawn, background=True) is None
+    stationary = [dict(sample, forward=(1, 0, 0)) for sample in camera]
+    for rows, motion in ((steady[:2] + steady[3:], camera), (steady, stationary),
+                         (steady[:1] + [dict(steady[1], focus='1')] + steady[2:], camera)):
+        try:
+            assess(rows, phases, motion, spawn, background=True)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError('Ratchet accepted missing timing, a stationary camera or mixed focus')
+
+
 def native_m2_audit():
     client = 'NATIVE_M2 client12340=1'
     producer = ('NATIVE_M2 producerFrame=127 gxDraws=3200 ordinary=2900 matched=2800 '
@@ -824,6 +913,18 @@ def native_m2_audit():
     assert not runner.observe_m2_stress(lines, events[1:], roster, spawn)['ready']
     assert not runner.observe_m2_stress(lines, events[:-1] + ['CROWD_NAME guid=10000'], roster, spawn)['ready']
     assert not runner.observe_m2_stress(lines[:-1] + [lines[-1].replace('world-ready', 'world-loading')], events, roster, spawn)['ready']
+    x64_host = r'HOST exe=D:\fixture\WowClient64.exe module=D:\fixture\d3d9.dll'
+    compact = 'MODEL_NORMALS frame=127 draws=10580 pending=0 failed=0 compactDraws=9265'
+    next_compact = compact.replace('frame=127', 'frame=254')
+    x64_stress = runner.observe_m2_stress([x64_host, compact, next_compact], events, roster, spawn, x64=True)
+    assert x64_stress['ready'] and x64_stress['proxy_compact_normal_draws'] == [9265, 9265]
+    for x64_lines, x64_events in (
+        ([compact, next_compact], events),
+        ([x64_host, compact, compact], events),
+        ([x64_host, compact, next_compact.replace('failed=0', 'failed=1')], events),
+        ([x64_host, compact, next_compact], events[:-1]),
+    ):
+        assert not runner.observe_m2_stress(x64_lines, x64_events, roster, spawn, x64=True)['ready']
     grouped_client = 'NATIVE_M2 groupedClient12340=1'
     grouped = ('NATIVE_M2 grouped producerFrame=127 shaderDraws=2 softwareDraws=1 alphaTested=1 '
                'matched=1 multiInstance=1 instances=3 triangles=448 rangeMismatch=0 paletteUnavailable=1 paletteMismatch=0')
@@ -1016,6 +1117,51 @@ def dxvk_adapter_evidence():
             except ValueError:
                 continue
             raise AssertionError('Accepted DXVK enumeration without an exclusive selected adapter')
+        compiler = 'info:    dxvk.numCompilerThreads = 8\n'
+        library = 'info:    dxvk.enableGraphicsPipelineLibrary = True\n'
+        options = {'dxvk.numCompilerThreads': '8', 'dxvk.enableGraphicsPipelineLibrary': 'True'}
+        log.write_text(compiler + library + compiler + library, encoding='ascii')
+        runner.verify_dxvk_pipeline_options(log, options)
+        for bad in (compiler, compiler.replace('8', '4') + library, compiler + library.replace('True', 'Auto')):
+            log.write_text(compiler + bad, encoding='ascii')
+            try:
+                runner.verify_dxvk_pipeline_options(log, options)
+            except ValueError:
+                continue
+            raise AssertionError('Accepted missing or conflicting DXVK pipeline options')
+
+
+def dxvk_shader_cache_evidence():
+    with TemporaryDirectory(dir=fp.output_dir()) as temporary:
+        root = Path(temporary)
+        binary = root / '1234.dxvk.bin'
+        index = binary.with_suffix('.lut')
+        binary.write_bytes(b'bytecode')
+        target = root / 'shader-cache'
+        try:
+            runner.seed_dxvk_shader_cache(binary, target)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError('Accepted a DXVK shader cache without its lookup table')
+        index.write_bytes(b'lookup')
+        assert runner.seed_dxvk_shader_cache(binary, target) == {
+            p.name: sha256(p.read_bytes()).hexdigest() for p in (binary, index)}
+        assert (target / binary.name).read_bytes() == binary.read_bytes()
+        assert (target / index.name).read_bytes() == index.read_bytes()
+        log = root / 'dxvk.log'
+        found = f'info:  Found cache file: {target / binary.name}\n'
+        created = found.replace('Found', 'Created')
+        loaded = 'info:  Cache: 123 shaders (5.1 MB)\n'
+        log.write_text(found + loaded)
+        assert runner.verify_dxvk_shader_cache(log, binary.name) == 123
+        for rejected in (created, found, found + loaded.replace('123', '0'), found + loaded + created):
+            log.write_text(rejected)
+            try:
+                runner.verify_dxvk_shader_cache(log, binary.name)
+            except ValueError:
+                continue
+            raise AssertionError('Accepted a cache that DXVK did not load or discarded')
 
 
 def artifact_lifecycle():
@@ -1073,6 +1219,7 @@ if __name__ == '__main__':
     clock()
     intervals()
     raw_frame_intervals()
+    ratchet_pan()
     resize_checkpoints()
     replay_geometry_checkpoint()
     captured_shader_bundle()
@@ -1088,6 +1235,7 @@ if __name__ == '__main__':
     interior_refresh()
     terrain_capture()
     dxvk_adapter_evidence()
+    dxvk_shader_cache_evidence()
     artifact_lifecycle()
     end_to_end()
     print('PASS Northrend fixture packet layout and baseline gates')

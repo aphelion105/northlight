@@ -95,7 +95,7 @@ CaptureResult captureRelativeValue(MaterialValue v,float4 p,float alpha POM_ID_P
 #endif
     return o;
 }
-CaptureResult captureValue(MaterialValue v,float4 p,float alpha POM_ID_PARAMETER,bool alphaChecked=false,bool terrain=false){
+CaptureResult captureValue(MaterialValue v,float4 p,float alpha POM_ID_PARAMETER,bool alphaChecked=false,bool terrain=false,bool foliage=false){
     // Rebase in a fixed frame. Rebasing between two different surface normals
     // in view space changes the resulting world normal when the camera turns.
     v.normal=v.normal.x*CaptureToWorld[0].xyz+v.normal.y*CaptureToWorld[1].xyz+v.normal.z*CaptureToWorld[2].xyz;
@@ -104,8 +104,9 @@ CaptureResult captureValue(MaterialValue v,float4 p,float alpha POM_ID_PARAMETER
     // Signed depth identifies world-frame detail without another render target.
     o.normal.b=-p.w;
     // FP16 sign marks terrain receivers while preserving the octahedral value.
-    if(terrain)o.normal.r=-o.normal.r;
-    if(BumpCapture.x<0)o.normal.g=-o.normal.g; // Opaque structure capture eligible for sunlight.
+    // Sign pairs preserve octahedral magnitudes: terrain R, structures G, foliage RG.
+    if(terrain||foliage)o.normal.r=-o.normal.r;
+    if(BumpCapture.x<0||foliage)o.normal.g=-o.normal.g;
     return o;
 }
 CaptureResult BumpOpaque(float2 uv:TEXCOORD0,float4 p:TEXCOORD7 POM_ID_INPUT){clip(BumpCapture.y-p.w);return captureValue(materialValue(GeneratedNormal,uv,p),p,1 POM_ID_ARGUMENT);}
@@ -115,7 +116,7 @@ CaptureResult BumpTerrainLayer(float2 uv:TEXCOORD0,float2 maskUV:TEXCOORD1,float
 CaptureResult BumpWall(float2 uv:TEXCOORD0,float4 color:COLOR0,float4 p:TEXCOORD7 POM_ID_INPUT){clip(BumpCapture.y-p.w);
     MaterialValue v=materialValue(GeneratedNormal,uv,p);return captureValue(v,p,tex2Dgrad(Diffuse,v.uv,ddx(uv),ddy(uv)).a*color.a+BumpCapture.w POM_ID_ARGUMENT);
 }
-CaptureResult BumpGrass(float2 uv:TEXCOORD0,float4 fade:COLOR1,float4 p:TEXCOORD7 POM_ID_INPUT){clip(BumpCapture.y-p.w);float alpha=tex2D(Diffuse,uv).a*fade.x;clip(alpha-BumpCapture.z);return captureValue(materialValue(GeneratedNormal,uv,p),p,alpha POM_ID_ARGUMENT,true);}
+CaptureResult BumpGrass(float2 uv:TEXCOORD0,float4 fade:COLOR1,float4 p:TEXCOORD7 POM_ID_INPUT){clip(BumpCapture.y-p.w);float alpha=tex2D(Diffuse,uv).a*fade.x;clip(alpha-BumpCapture.z);return captureValue(materialValue(GeneratedNormal,uv,p),p,alpha POM_ID_ARGUMENT,true,false,true);}
 CaptureResult BumpWallOpaque(float2 uv:TEXCOORD0,float4 color:COLOR0,float4 p:TEXCOORD7 POM_ID_INPUT){clip(BumpCapture.y-p.w);float alpha=color.a+BumpCapture.w;clip(alpha-BumpCapture.z);return captureValue(materialValue(GeneratedNormal,uv,p),p,alpha POM_ID_ARGUMENT,true);}
 CaptureResult BumpComposite(float2 uv:TEXCOORD0,float2 uv1:TEXCOORD1,float4 color:COLOR0,float4 blend:COLOR1,float4 p:TEXCOORD7 POM_ID_INPUT){clip(BumpCapture.y-p.w);
     MaterialValue first=materialValue(GeneratedNormal,uv,p),second=materialValue(GeneratedNormal1,uv1,p);
@@ -249,5 +250,36 @@ CaptureResult BumpNormalOpaque(float2 uv:TEXCOORD0,float4 p:TEXCOORD7){clip(Bump
 CaptureResult BumpNormalLayer(float2 uv:TEXCOORD0,float2 maskUV:TEXCOORD1,float4 p:TEXCOORD7){clip(BumpCapture.y-p.w);float alpha=saturate(dot(tex2D(LayerMask,maskUV),NativeLayerMask));clip(alpha-BumpCapture.z);return captureValue(normalMaterialValue(GeneratedNormal,uv,p),p,alpha,true);}
 CaptureResult BumpNormalTerrainOpaque(float2 uv:TEXCOORD0,float3 normal:TEXCOORD5,float4 p:TEXCOORD7){clip(BumpCapture.y-p.w);return captureValue(normalMaterialValue(GeneratedNormal,uv,p,normal),p,1,false,true);}
 CaptureResult BumpNormalTerrainLayer(float2 uv:TEXCOORD0,float2 maskUV:TEXCOORD1,float3 normal:TEXCOORD5,float4 p:TEXCOORD7){clip(BumpCapture.y-p.w);float alpha=saturate(dot(tex2D(LayerMask,maskUV),NativeLayerMask));clip(alpha-BumpCapture.z);return captureValue(normalMaterialValue(GeneratedNormal,uv,p,normal),p,alpha,true,true);}
-CaptureResult BumpNormalGrass(float2 uv:TEXCOORD0,float4 fade:COLOR1,float4 p:TEXCOORD7){clip(BumpCapture.y-p.w);float alpha=tex2D(Diffuse,uv).a*fade.x;clip(alpha-BumpCapture.z);return captureValue(normalMaterialValue(GeneratedNormal,uv,p),p,alpha,true);}
+CaptureResult BumpNormalGrass(float2 uv:TEXCOORD0,float4 fade:COLOR1,float4 p:TEXCOORD7){clip(BumpCapture.y-p.w);float alpha=tex2D(Diffuse,uv).a*fade.x;clip(alpha-BumpCapture.z);return captureValue(normalMaterialValue(GeneratedNormal,uv,p),p,alpha,true,false,true);}
 #endif
+
+// Native canopy epilogue. Reconstruct the leaf plane from interpolated clip
+// position so the highlight follows both the actual geometry and the eye.
+float4 CanopyProjection:register(c40); // reciprocal projection X/Y, broad crown transmission
+float4 CanopyLight:register(c41); // view-space direction, transmission strength
+float4 CanopyRadiance:register(c42); // source RGB, reflection strength
+float4 CanopyResponse(float4 nativeColor:COLOR0,float4 clipPosition:TEXCOORD7):COLOR0 {
+    float3 p=float3(clipPosition.xy*CanopyProjection.xy,clipPosition.w);
+    float3 plane=cross(ddx(p),ddy(p));
+    float planeLength=dot(plane,plane);
+    float3 n=plane*rsqrt(max(planeLength,1e-12));
+    float3 v=-normalize(p);
+    float facing=dot(n,v);
+    n=facing<0?-n:n;
+    float incident=dot(n,CanopyLight.xyz);
+    float grazing=1-saturate(abs(facing));
+    float back=saturate(-dot(v,CanopyLight.xyz))*saturate(-incident);
+    float transmission=back*(.20+.80*grazing*grazing)*CanopyLight.w;
+
+    float3 halfway=v+CanopyLight.xyz;
+    halfway*=rsqrt(max(dot(halfway,halfway),1e-6));
+    float lobe=saturate(dot(n,halfway));
+    float lobe2=lobe*lobe;
+    float lobe4=lobe2*lobe2;
+    float reflection=lobe4*lobe4*saturate(incident*3)*CanopyRadiance.w;
+    float fade=saturate((75-clipPosition.w)/45);
+    float coverage=saturate(nativeColor.a*1.5);
+    float textureWeight=saturate(.25+2*max(nativeColor.r,max(nativeColor.g,nativeColor.b)));
+    float response=(max(transmission,CanopyProjection.z)+reflection)*fade*coverage*textureWeight*(planeLength>1e-12);
+    return float4(nativeColor.rgb+CanopyRadiance.rgb*response,nativeColor.a);
+}

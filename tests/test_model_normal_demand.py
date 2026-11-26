@@ -14,7 +14,7 @@ namespace NorthlightAutoDisplacement {
 struct Args {int draw=0,format=0;const void* indices=nullptr;const void* vertices=nullptr;unsigned stride=0;};
 struct CaptureSource {int mesh=0,pose=0,bank=0;void* declaration=nullptr;};
 }
-struct Normals {unsigned calls=0;template<class...T>void capture(T&&...){++calls;}};
+struct Normals {unsigned calls=0;void setCaptureProfiling(bool){}template<class...T>void capture(T&&...){++calls;}};
 struct Device {
  struct CpuScope {explicit CpuScope(unsigned* count){if(count)++*count;}};
  unsigned cpuNormalCapture=0;

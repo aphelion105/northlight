@@ -41,6 +41,18 @@ static void indexPlacementControls(){
 
 static void sceneControls(){
  using namespace NorthlightGpuScene;NativeStore scene;NativeClient mat(scene,Consumer::Material),shadow(scene,Consumer::Shadow);Device d;auto m=authored(11);Binding first,second;
+ NativeStore shared(true);const auto total=NativeStore::MaterialLimit+NativeStore::ShadowLimit;
+ assert(shared.limit(Consumer::Material)==NativeStore::MaterialLimit&&shared.totalLimit()==total);
+ assert(!scene.setNormalCaptureDemand(10000)&&scene.limit(Consumer::Material)==NativeStore::MaterialLimit);
+ assert(!shared.setNormalCaptureDemand(4095)&&shared.limit(Consumer::Material)==NativeStore::MaterialLimit);
+ assert(shared.setNormalCaptureDemand(4096)&&shared.limit(Consumer::Material)==NativeStore::ShadowLimit);
+ assert(shared.setNormalCaptureDemand(3072)&&shared.limit(Consumer::Material)==NativeStore::ShadowLimit);
+ shared.setMemoryPressure(true,false);
+ assert(shared.limit(Consumer::Material)==NativeStore::MaterialLimit&&shared.limit(Consumer::Shadow)==NativeStore::MaterialLimit&&shared.totalLimit()==total);
+ shared.setMemoryPressure(true,true);assert(shared.totalLimit()==NativeStore::MaterialLimit);
+ shared.setMemoryPressure(false,false);
+ assert(shared.limit(Consumer::Material)==NativeStore::ShadowLimit&&shared.limit(Consumer::Shadow)==NativeStore::ShadowLimit&&shared.totalLimit()==total);
+ assert(!shared.setNormalCaptureDemand(3071)&&shared.limit(Consumer::Material)==NativeStore::MaterialLimit);
  scene.setFrame(1);assert(!mat.bind(&d,m,first.vb,first.ib,admit,first.at));assert(!shadow.bind(&d,m,second.vb,second.ib,admit,second.at));
  assert(mat.population().entries+shadow.population().entries==1&&!d.calls);
  scene.setFrame(2);assert(!mat.bind(&d,m,first.vb,first.ib,admit,first.at));assert(mat.commitPending());assert(mat.bind(&d,m,first.vb,first.ib,admit,first.at)&&exact(*m,first));
@@ -271,6 +283,32 @@ static void automaticPressure(){
  }
  assert(!alive);std::puts("CANONICAL_SCENE_AUTO_PRESSURE_PASS both_consumers byte_budget current_frame_protection retry oldest_eligible foreign_prefix exact_survivors exact_bytes");
 }
+static void repeatedOwnerPressure(){
+ using namespace NorthlightGpuScene;
+ constexpr unsigned prefix=2048,attempts=512;
+ for(unsigned lane=0;lane<2;++lane){
+  NativeStore scene;NativeClient source(scene,Consumer(lane)),other(scene,Consumer(1-lane));Device device;Binding binding;
+  std::vector<Owner> foreign;
+  scene.setFrame(1);
+  for(unsigned i=0;i<prefix;++i){foreign.push_back(authored(440000+i));assert(!other.bind(&device,foreign.back(),binding.vb,binding.ib,admit,binding.at));}
+  auto protectedMesh=authored(450000);
+  scene.setFrame(2);assert(!source.bind(&device,protectedMesh,binding.vb,binding.ib,admit,binding.at));
+  source.setLimit(source.chargedBytes());
+  const auto started=std::chrono::steady_clock::now();
+  for(unsigned i=0;i<attempts;++i){auto missed=authored(451000+i);assert(!source.bind(&device,missed,binding.vb,binding.ib,admit,binding.at));}
+  const auto elapsed=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-started).count();
+  const auto& stats=source.stats();
+  assert(stats.roomRejected==attempts&&stats.evictions==0);
+  assert(stats.ownerVictimVisits==prefix+1);
+  assert(other.population().entries==prefix&&source.population().entries==1&&!device.calls);
+  scene.setFrame(3);
+  auto replacement=authored(460000);
+  assert(!source.bind(&device,replacement,binding.vb,binding.ib,admit,binding.at));
+  assert(source.stats().evictions==1&&source.population().entries==1&&other.population().entries==prefix);
+  std::printf("CANONICAL_SCENE_OWNER_SCAN_PASS lane=%u attempts=%u foreignPrefix=%u cpuMs=%.3f\n",lane,attempts,prefix,elapsed);
+ }
+ assert(!alive);
+}
 static void protectedClock(){
  using namespace NorthlightGpuScene;
  for(unsigned lane=0;lane<2;++lane)for(uint64_t later:{uint64_t(2),uint64_t(UINT32_MAX)}){
@@ -378,7 +416,7 @@ int main(int argc,char** argv){
  if(argc>2){const auto overlap=argc>3?unsigned(std::stoul(argv[3])):100;const bool canonical=std::string(argv[2])=="canonical";
   auto r=canonical?unified(meshes,false,overlap):run(meshes,true,false,96,overlap);
   std::printf("CANONICAL_SCENE_TIMING canonical=%u overlap=%u cpuMs=%.6f uploads=%zu fallbackBytes=%zu peak=%zu creates=%u digest=%llu\n",canonical,overlap,r.ms,r.uploaded,r.up,r.peak,r.creates,(unsigned long long)r.digest);return 0;}
- indexWidthControls();indexPlacementControls();sceneControls();assert(!alive);faultsAndCollisions();assert(!alive);limitsAndClock();assert(!alive);boundedCommits();reentrantAdmission();reentrantTimeBudget();batchPreservation();retiredBatchMembers();partialTrimOrder();fragmentedBatches();automaticPressure();protectedClock();entryRehashLifetime();countPressureControls();
+ indexWidthControls();indexPlacementControls();sceneControls();assert(!alive);faultsAndCollisions();assert(!alive);limitsAndClock();assert(!alive);boundedCommits();reentrantAdmission();reentrantTimeBudget();batchPreservation();retiredBatchMembers();partialTrimOrder();fragmentedBatches();automaticPressure();repeatedOwnerPressure();protectedClock();entryRehashLifetime();countPressureControls();
  for(unsigned overlap:{0u,50u,100u}){auto reference=run(meshes,true,true,96,overlap),current=unified(meshes,true,overlap),rebuilt=unified(meshes,true,overlap,96,true);
   std::printf("CANONICAL_SCENE_CHECK overlap=%u reference=%llu current=%llu reconstructed=%llu uploads=%zu/%zu fallback=%zu/%zu\n",overlap,(unsigned long long)reference.digest,(unsigned long long)current.digest,(unsigned long long)rebuilt.digest,reference.uploaded,current.uploaded,reference.up,current.up);
   // Earlier residency replaces repeated UP transfers: compare all transferred

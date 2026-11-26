@@ -1,5 +1,6 @@
 #pragma once
 #include <d3d9.h>
+#include <chrono>
 #include <unordered_map>
 #include "model_normal_mrt_patch.h"
 
@@ -7,8 +8,11 @@
 // The immutable replay queue remains the rollback journal until commit.
 class NorthlightNativeModelNormals {
     template<class T> static void drop(T*& p){if(p)p->Release();p=nullptr;}
-    struct Vertex {IDirect3DVertexShader9* source=nullptr;IDirect3DVertexShader9* shader[16]={};unsigned tried=0,semantics=0;bool valid=false;};
-    struct Pixel {IDirect3DPixelShader9* source=nullptr;IDirect3DPixelShader9* normal[16][3]={},*zero[3]={};unsigned tried[16]={},zeroTried=0,semantics=0,outputs=0;bool valid=false;};
+    using Clock=std::chrono::steady_clock;
+    struct Vertex {IDirect3DVertexShader9* source=nullptr;IDirect3DVertexShader9* shader[16]={};Clock::time_point ready[16]={};unsigned tried=0,semantics=0;bool valid=false;};
+    struct Pixel {IDirect3DPixelShader9* source=nullptr;IDirect3DPixelShader9* normal[16][3]={},*zero[3]={};Clock::time_point ready[16][3]={};unsigned tried[16]={},zeroTried=0,semantics=0,outputs=0;bool valid=false;};
+    std::chrono::milliseconds hybridWarmup{};
+    Clock::time_point frameTime{};
     IDirect3DDevice9* d;
     void* rasterContext=nullptr;bool(*rasterReader)(void*,const D3DRENDERSTATETYPE*,unsigned,DWORD*)=nullptr;
     void* targetContext=nullptr;bool(*emptyTargets)(void*)=nullptr;
@@ -21,12 +25,37 @@ class NorthlightNativeModelNormals {
     D3DCAPS9 caps{};bool capable=false,linearTarget=false,blendTarget=false,enabled=false,lastComplete=false,allowed=false,complete=true,started=false,refused=false,depthOnlySeen=false;
     const char* reason="none";
     unsigned probes=0,modelDraws=0,zeroDraws=0,builds=0,committed=0,fallbacks=0,coldPairs=0;
+    enum HybridRefusal { RasterState,DepthOrRgb,SrgbFormat,PostBlend,BlendReceiver,BlendState,BlendFunction,
+        TargetState,TargetMsaa,FixedPixel,Allocation,PixelProgram,TargetQuery,OccupiedMrt,VertexProvenance,
+        VertexProgram,Varyings,VertexFactory,PixelFactory,ShaderWarmup,ShaderFactory,PendingReplay,ClearFailed,
+        WriteMask,BindFailed,SubmitFailed,RefusalCount };
+    static constexpr const char* refusalNames[]={"raster-state","depth-or-rgb","srgb-format","post-blend","blended-receiver",
+        "blend-state","blend-function","target-state","target-msaa","fixed-pixel","allocation","pixel-program",
+        "target-query","occupied-mrt","vertex-provenance","vertex-program","varyings","vertex-factory","pixel-factory",
+        "shader-warmup","shader-factory","pending-replay","clear","write-mask","bind","draw-restore"};
+    static_assert(std::size(refusalNames)==RefusalCount);
+    unsigned hybridRefusals[RefusalCount]={};
     unsigned retryFrames=0;
+    struct BlendRefusal {
+        DWORD source=0,destination=0,operation=0,alphaTest=0,writeMask=0,depthFunction=0;
+        bool mainColor=false;
+        std::uint64_t vertex=0,pixel=0;
+    } blendRefusal;
     template<class Shader> static bool code(Shader* shader,std::vector<std::uint32_t>& words){UINT bytes=0;
         if(!shader||FAILED(shader->GetFunction(nullptr,&bytes))||bytes<8||bytes>65536||bytes%4)return false;
         words.resize(bytes/4);return SUCCEEDED(shader->GetFunction(reinterpret_cast<DWORD*>(words.data()),&bytes));
     }
     template<class T> struct Ref {T* p=nullptr;~Ref(){if(p)p->Release();}};
+    template<class Shader> static std::uint64_t fingerprint(Shader* shader){
+        try{
+            std::vector<std::uint32_t> words;
+            if(!code(shader,words))return 0;
+            std::uint64_t hash=UINT64_C(14695981039346656037);
+            for(auto word:words)for(unsigned byte=0;byte<4;++byte)
+                hash=(hash^((word>>(byte*8))&255))*UINT64_C(1099511628211);
+            return hash;
+        }catch(const std::bad_alloc&){return 0;}
+    }
     static unsigned semantics(const std::uint32_t* words,const NorthlightTerrainCoverage::Program& p){unsigned bits=0;
         for(const auto& op:p.ops)if(op.code==31&&(words[op.at+1]&15)==5&&NorthlightWaterShaderPatch::regType(words[op.at+2])==(p.vertex?6u:1u)){unsigned s=(words[op.at+1]>>16)&15;if(s<8)bits|=1u<<s;}return bits;
     }
@@ -48,7 +77,9 @@ class NorthlightNativeModelNormals {
         if(v){
             if(!(v->tried&(1u<<variant))){std::vector<std::uint32_t> pixelWords;unsigned actual=8;
                 if(code(v->source,words)&&code(p.source,pixelWords)&&NorthlightModelNormalMrt::vertex(words.data(),words.size(),pixelWords.data(),pixelWords.size(),patched,actual,terrain)&&actual==semantic){
-                    if(SUCCEEDED(d->CreateVertexShader(reinterpret_cast<const DWORD*>(patched.data()),v->shader+variant)))++builds;else drop(v->shader[variant]);}
+                    if(SUCCEEDED(d->CreateVertexShader(reinterpret_cast<const DWORD*>(patched.data()),v->shader+variant))){
+                        ++builds;if(hybridWarmup.count())v->ready[variant]=Clock::now()+hybridWarmup;
+                    }else drop(v->shader[variant]);}
                 v->tried|=1u<<variant;
             }
             vs=v->shader[variant];if(!vs)return false;
@@ -56,7 +87,9 @@ class NorthlightNativeModelNormals {
         auto& tried=v?p.tried[variant]:p.zeroTried;auto& shader=v?p.normal[variant][slot-1]:p.zero[slot-1];
         if(!(tried&(1u<<slot))){
             if(code(p.source,words)&&NorthlightModelNormalMrt::pixel(words.data(),words.size(),slot,v!=nullptr,semantic,patched,terrain)){
-                if(SUCCEEDED(d->CreatePixelShader(reinterpret_cast<const DWORD*>(patched.data()),&shader)))++builds;else drop(shader);}
+                if(SUCCEEDED(d->CreatePixelShader(reinterpret_cast<const DWORD*>(patched.data()),&shader))){
+                    ++builds;if(v&&hybridWarmup.count())p.ready[variant][slot-1]=Clock::now()+hybridWarmup;
+                }else drop(shader);}
             tried|=1u<<slot;
         }
         ps=shader;return ps!=nullptr;
@@ -96,13 +129,17 @@ public:
     }
     ~NorthlightNativeModelNormals(){reset();}
     void configure(bool on){enabled=on;if(!on){lastComplete=false;cancel("disabled");}}
+    void setHybridShaderWarmup(std::chrono::milliseconds duration){hybridWarmup=duration;}
     bool usesDepth(IDirect3DSurface9* value)const{return sceneDepth&&sceneDepth==value;}
     bool accepting()const{return enabled&&capable&&!refused&&complete;}
+    bool acceptingHybrid()const{return enabled&&capable&&!refused;}
+    bool clearHybrid(IDirect3DSurface9* target){return clear(target);}
     void cancel(const char* cause){if(complete){reason=cause;
             // Structural refusal keeps exact replay. Probe again shortly so a
             // changed scene can resume MRT, without redoing failed admission
             // on every frame of the same depth/MRT configuration.
             if(!std::strcmp(cause,"depth-only-before-rgb")||!std::strcmp(cause,"occupied-mrt")||!std::strcmp(cause,"fixed-pixel")||
+               !std::strcmp(cause,"blend-function")||
                (!std::strcmp(cause,"capture-hazard")&&probes&&!allowed))retryFrames=3;
         }complete=false;lastComplete=false;}
     void frameTarget(IDirect3DSurface9* color,const D3DSURFACE_DESC& desc){
@@ -110,8 +147,8 @@ public:
         if(desc.MultiSampleType!=D3DMULTISAMPLE_NONE||
            (desc.Format!=D3DFMT_A16B16G16R16F&&!(caps.PrimitiveMiscCaps&D3DPMISCCAPS_MRTINDEPENDENTBITDEPTHS)))cancel("target-msaa");
     }
-    void beginFrame(){drop(sceneDepth);describedColor=nullptr;allowed=enabled&&lastComplete;complete=retryFrames==0;if(retryFrames)--retryFrames;started=depthOnlySeen=false;reason=complete?"none":"structural-retry";probes=modelDraws=zeroDraws=builds=committed=fallbacks=coldPairs=0;}
-    void reset(){retryFrames=0;beginFrame();lastComplete=allowed=false;refused=false;
+    void beginFrame(){if(hybridWarmup.count())frameTime=Clock::now();drop(sceneDepth);describedColor=nullptr;allowed=enabled&&lastComplete;complete=retryFrames==0;if(retryFrames)--retryFrames;started=depthOnlySeen=false;reason=complete?"none":"structural-retry";probes=modelDraws=zeroDraws=builds=committed=fallbacks=coldPairs=0;std::fill_n(hybridRefusals,RefusalCount,0u);}
+    void reset(){retryFrames=0;beginFrame();lastComplete=allowed=false;refused=false;blendRefusal={};
         recentVertex=nullptr;recentPixel=nullptr;
         for(auto& item:vertices){for(auto*& shader:item.second.shader)drop(shader);drop(item.second.source);}vertices.clear();
         for(auto& item:pixels){for(auto& row:item.second.normal)for(auto*& shader:row)drop(shader);for(auto*& shader:item.second.zero)drop(shader);drop(item.second.source);}pixels.clear();
@@ -123,16 +160,23 @@ public:
     }
     template<class Log> void report(unsigned frame,Log log)const{
         log("MODEL_NORMALS MRT frame=%u enabled=%u allowed=%u complete=%u committed=%u probes=%u modelDraws=%u occluderDraws=%u shaderBuilds=%u fallbacks=%u reason=%s vertices=%zu pixels=%zu retryFrames=%u",frame,unsigned(enabled),unsigned(allowed),unsigned(lastComplete),committed,probes,modelDraws,zeroDraws,builds,fallbacks,reason,vertices.size(),pixels.size(),retryFrames);
+        if(blendRefusal.pixel)log("MODEL_NORMALS MRT blend witness frame=%u src=%lu dst=%lu op=%lu alphaTest=%lu rgbMask=%lu depthFunc=%lu mainColor=%u vs=%016llx ps=%016llx",
+            frame,blendRefusal.source,blendRefusal.destination,blendRefusal.operation,blendRefusal.alphaTest,blendRefusal.writeMask,blendRefusal.depthFunction,unsigned(blendRefusal.mainColor),
+            (unsigned long long)blendRefusal.vertex,(unsigned long long)blendRefusal.pixel);
+        for(unsigned i=0;i<RefusalCount;++i)if(hybridRefusals[i])
+            log("MODEL_NORMALS hybrid fallback frame=%u reason=%s draws=%u",frame,refusalNames[i],hybridRefusals[i]);
     }
     template<class Draw,class Prove> Result draw(Draw submit,IDirect3DSurface9* target,IDirect3DSurface9* color,UINT width,UINT height,
-                                              IDirect3DVertexShader9* original,bool receiver,Prove prove,bool terrain=false){
-        auto fallback=[&](const char* cause){cancel(cause);return Result{submit(),false,false};};
-        if(!enabled||!capable||refused||!complete)return {submit(),false,false};
+                                              IDirect3DVertexShader9* original,bool receiver,Prove prove,bool terrain=false,
+                                              void* hybridOwner=nullptr,bool(*prepareHybrid)(void*)=nullptr){
+        const bool hybrid=prepareHybrid!=nullptr;
+        auto fallback=[&](HybridRefusal cause){if(hybrid){reason=refusalNames[cause];++hybridRefusals[cause];}else cancel(refusalNames[cause]);return Result{submit(),false,false};};
+        if(!enabled||!capable||refused||(!hybrid&&!complete))return {submit(),false,false};
         // Receivers are opaque. Blended depth writers clear auxiliary RGB with
         // alpha=1 independently of their original native colour/alpha output.
         const D3DRENDERSTATETYPE keys[]={D3DRS_ZENABLE,D3DRS_ZWRITEENABLE,D3DRS_ALPHABLENDENABLE,D3DRS_SRGBWRITEENABLE,D3DRS_ALPHATESTENABLE,D3DRS_COLORWRITEENABLE,D3DRS_ZFUNC};DWORD values[7]={};
         if(!(rasterReader&&rasterReader(rasterContext,keys,7,values)))
-            for(unsigned i=0;i<7;++i)if(FAILED(d->GetRenderState(keys[i],values+i)))return fallback("raster-state");
+            for(unsigned i=0;i<7;++i)if(FAILED(d->GetRenderState(keys[i],values+i)))return fallback(RasterState);
         const auto z=values[0],write=values[1],blend=values[2],srgb=values[3],alpha=values[4];
         if(!z||!write)return {submit(),false,false};
         // The replay queue ignores draws without scene RGB writes too. Keep
@@ -140,68 +184,93 @@ public:
         if(!receiver&&!(values[5]&7)){depthOnlySeen|=values[6]!=D3DCMP_EQUAL&&values[6]!=D3DCMP_NEVER;const auto hr=submit();if(FAILED(hr))cancel("native-submit");return {hr,false,false};}
         // A later RGB depth writer could fail native Z against that invisible
         // occluder but pass the replay's private depth. Retain exact rollback.
-        if(depthOnlySeen)return fallback("depth-only-before-rgb");
-        if(srgb&&!linearTarget)return fallback("srgb-format");
-        if((blend||alpha)&&(!blendTarget||!(caps.PrimitiveMiscCaps&D3DPMISCCAPS_MRTPOSTPIXELSHADERBLENDING)))return fallback("post-blend");
+        if(!hybrid&&depthOnlySeen){cancel("depth-only-before-rgb");return {submit(),false,false};}
+        if(hybrid&&((values[5]&7)!=7||(values[6]!=D3DCMP_LESS&&values[6]!=D3DCMP_LESSEQUAL)))return fallback(DepthOrRgb);
+        if(srgb&&!linearTarget)return fallback(SrgbFormat);
+        if((blend||alpha)&&(!blendTarget||!(caps.PrimitiveMiscCaps&D3DPMISCCAPS_MRTPOSTPIXELSHADERBLENDING)))return fallback(PostBlend);
         if(blend){
-            if(receiver)return fallback("blended-receiver");
-            const D3DRENDERSTATETYPE states[]={D3DRS_SRCBLEND,D3DRS_DESTBLEND,D3DRS_BLENDOP};DWORD values[3]={};
-            if(!(rasterReader&&rasterReader(rasterContext,states,3,values)))
-                for(unsigned i=0;i<3;++i)if(FAILED(d->GetRenderState(states[i],values+i)))return fallback("blend-state");
-            if((values[0]!=D3DBLEND_ONE&&values[0]!=D3DBLEND_SRCALPHA)||
-               (values[1]!=D3DBLEND_ZERO&&values[1]!=D3DBLEND_INVSRCALPHA)||values[2]!=D3DBLENDOP_ADD)return fallback("blend-function");
+            if(receiver)return fallback(BlendReceiver);
+            const D3DRENDERSTATETYPE states[]={D3DRS_SRCBLEND,D3DRS_DESTBLEND,D3DRS_BLENDOP};DWORD factors[3]={};
+            if(!(rasterReader&&rasterReader(rasterContext,states,3,factors)))
+                for(unsigned i=0;i<3;++i)if(FAILED(d->GetRenderState(states[i],factors+i)))return fallback(BlendState);
+            if((factors[0]!=D3DBLEND_ONE&&factors[0]!=D3DBLEND_SRCALPHA)||
+               (factors[1]!=D3DBLEND_ZERO&&factors[1]!=D3DBLEND_INVSRCALPHA)||factors[2]!=D3DBLENDOP_ADD){
+                if(!blendRefusal.pixel){
+                    Ref<IDirect3DSurface9> rt;
+                    Ref<IDirect3DVertexShader9> vs;
+                    Ref<IDirect3DPixelShader9> ps;
+                    d->GetRenderTarget(0,&rt.p);d->GetVertexShader(&vs.p);d->GetPixelShader(&ps.p);
+                    blendRefusal={factors[0],factors[1],factors[2],alpha,values[5],values[6],rt.p==color,fingerprint(vs.p),fingerprint(ps.p)};
+                }
+                return fallback(BlendFunction);
+            }
         }
         Ref<IDirect3DSurface9> rt,depth;D3DVIEWPORT9 vp{};
         if(FAILED(d->GetRenderTarget(0,&rt.p))||!rt.p||FAILED(d->GetDepthStencilSurface(&depth.p))||!depth.p||
-           FAILED(d->GetViewport(&vp)))return fallback("target-state");
-        if(rt.p!=color||(describedColor&&describedColor!=color))return fallback("target-state");
+           FAILED(d->GetViewport(&vp)))return fallback(TargetState);
+        if(rt.p!=color||(describedColor&&describedColor!=color))return fallback(TargetState);
         // The owner retains frameTarget. Surface dimensions/format/sample count
         // are immutable; current RT/DS/viewport ownership is still proved above.
-        if(!describedColor){if(FAILED(color->GetDesc(&colorDescription)))return fallback("target-state");describedColor=color;}
+        if(!describedColor){if(FAILED(color->GetDesc(&colorDescription)))return fallback(TargetState);describedColor=color;}
         const auto& desc=colorDescription;
         if(vp.X||vp.Y||vp.Width!=width||vp.Height!=height||desc.Width!=width||desc.Height!=height||
            desc.MultiSampleType!=D3DMULTISAMPLE_NONE||(sceneDepth&&sceneDepth!=depth.p)||
-           (desc.Format!=D3DFMT_A16B16G16R16F&&!(caps.PrimitiveMiscCaps&D3DPMISCCAPS_MRTINDEPENDENTBITDEPTHS)))return fallback("target-msaa");
-        Ref<IDirect3DPixelShader9> oldPS;if(FAILED(d->GetPixelShader(&oldPS.p))||!oldPS.p)return fallback("fixed-pixel");
-        Pixel* p=nullptr;try{p=pixel(oldPS.p);}catch(const std::bad_alloc&){return fallback("allocation");}if(!p||!p->valid)return fallback("pixel-program");
+           (desc.Format!=D3DFMT_A16B16G16R16F&&!(caps.PrimitiveMiscCaps&D3DPMISCCAPS_MRTINDEPENDENTBITDEPTHS)))return fallback(TargetMsaa);
+        Ref<IDirect3DPixelShader9> oldPS;if(FAILED(d->GetPixelShader(&oldPS.p))||!oldPS.p)return fallback(FixedPixel);
+        Pixel* p=nullptr;try{p=pixel(oldPS.p);}catch(const std::bad_alloc&){return fallback(Allocation);}if(!p||!p->valid)return fallback(PixelProgram);
         const bool vacant=emptyTargets&&emptyTargets(targetContext);
         unsigned slot=0;for(unsigned i=1;i<4&&i<caps.NumSimultaneousRTs;++i){if(p->outputs&(1u<<i))continue;if(vacant){slot=i;break;}Ref<IDirect3DSurface9> used;const auto hr=d->GetRenderTarget(i,&used.p);
-            if(FAILED(hr)&&hr!=D3DERR_NOTFOUND)return fallback("target-query");if(!used.p){slot=i;break;}}
-        if(!slot)return fallback("occupied-mrt");
+            if(FAILED(hr)&&hr!=D3DERR_NOTFOUND)return fallback(TargetQuery);if(!used.p){slot=i;break;}}
+        if(!slot)return fallback(OccupiedMrt);
         Ref<IDirect3DVertexShader9> oldVS;Vertex* v=nullptr;unsigned semantic=0,proof=0;
-        if(receiver){if(FAILED(d->GetVertexShader(&oldVS.p))||!oldVS.p||!original)return fallback("vertex-provenance");
-            proof=prove(original,oldVS.p,oldPS.p);if(!(proof&PairValid))return fallback("vertex-provenance");
-            try{v=vertex(oldVS.p);}catch(const std::bad_alloc&){return fallback("allocation");}if(!v||!v->valid)return fallback("vertex-program");
-            while(semantic<8&&((v->semantics|p->semantics)&(1u<<semantic)))++semantic;if(semantic==8)return fallback("varyings");}
+        if(receiver){if(FAILED(d->GetVertexShader(&oldVS.p))||!oldVS.p||!original)return fallback(VertexProvenance);
+            proof=prove(original,oldVS.p,oldPS.p);if(!(proof&PairValid))return fallback(VertexProvenance);
+            try{v=vertex(oldVS.p);}catch(const std::bad_alloc&){return fallback(Allocation);}if(!v||!v->valid)return fallback(VertexProgram);
+            while(semantic<8&&((v->semantics|p->semantics)&(1u<<semantic)))++semantic;if(semantic==8)return fallback(Varyings);}
         IDirect3DVertexShader9* vs=nullptr;IDirect3DPixelShader9* ps=nullptr;
         const unsigned variant=semantic+(terrain?8:0);
-        const bool cold=(v&&!(v->tried&(1u<<variant)))||!((v?p->tried[variant]:p->zeroTried)&(1u<<slot));
-        if(cold){if(coldPairs)return fallback("shader-warmup");++coldPairs;}
+        const bool vertexTried=v&&(v->tried&(1u<<variant));
+        const bool pixelTried=(v?p->tried[variant]:p->zeroTried)&(1u<<slot);
+        // A known ineligible program must not monopolize the cold-pair budget.
+        if(hybrid&&vertexTried&&!v->shader[variant])return fallback(VertexFactory);
+        if(hybrid&&pixelTried&&!(v?p->normal[variant][slot-1]:p->zero[slot-1]))return fallback(PixelFactory);
+        const bool cold=(v&&!vertexTried)||!pixelTried;
+        if(cold){if(coldPairs)return fallback(ShaderWarmup);++coldPairs;}
         const auto beforeBuilds=builds;
-        try{if(!programs(v,*p,slot,semantic,vs,ps,terrain))return fallback("shader-factory");}catch(const std::bad_alloc&){return fallback("allocation");}
+        try{if(!programs(v,*p,slot,semantic,vs,ps,terrain))return fallback(ShaderFactory);}catch(const std::bad_alloc&){return fallback(Allocation);}
         // A newly encountered pair is prepared on an ordinary replay frame.
         // Never pay a partial MRT plus its full rollback every steady frame.
-        if(builds!=beforeBuilds)allowed=false;
+        if(builds!=beforeBuilds){if(hybrid)return fallback(ShaderWarmup);allowed=false;}
+        if(hybrid&&v&&hybridWarmup.count()&&std::max(v->ready[variant],p->ready[variant][slot-1])>frameTime)
+            return fallback(ShaderWarmup);
         ++probes;
         if(!sceneDepth){sceneDepth=depth.p;sceneDepth->AddRef();}
-        if(!allowed){const auto hr=submit();if(FAILED(hr)){cancel("native-submit");return {hr,false,false};}return {hr,true,false};}
-        if(!started){if(!clear(target)){refused=true;return fallback("clear");}started=true;}
+        if(!hybrid&&!allowed){const auto hr=submit();if(FAILED(hr)){cancel("native-submit");return {hr,false,false};}return {hr,true,false};}
+        if(hybrid){if(!prepareHybrid(hybridOwner))return fallback(PendingReplay);}
+        else if(!started){if(!clear(target)){refused=true;return fallback(ClearFailed);}started=true;}
         const auto key=slot==1?D3DRS_COLORWRITEENABLE1:slot==2?D3DRS_COLORWRITEENABLE2:D3DRS_COLORWRITEENABLE3;
-        DWORD mask=0;if(FAILED(d->GetRenderState(key,&mask)))return fallback("write-mask");
+        DWORD mask=0;if(FAILED(d->GetRenderState(key,&mask)))return fallback(WriteMask);
+        auto preserveViewport=[&]{
+            D3DVIEWPORT9 current{};
+            return (SUCCEEDED(d->GetViewport(&current))&&!std::memcmp(&current,&vp,sizeof vp))||
+                retry([&]{return d->SetViewport(&vp);});
+        };
         bool touchedTarget=false,touchedMask=false,touchedVS=false,touchedPS=false;
         auto restore=[&](bool failedBind=false){bool ok=true;
             if(touchedPS&&(failedBind||!(proof&OuterRestoresPixel)))ok=retry([&]{return d->SetPixelShader(oldPS.p);})&&ok;
             if(touchedVS&&(failedBind||!(proof&OuterRestoresVertex)))ok=retry([&]{return d->SetVertexShader(oldVS.p);})&&ok;
             if(touchedMask)ok=retry([&]{return d->SetRenderState(key,mask);})&&ok;
             if(touchedTarget)ok=retry([&]{return d->SetRenderTarget(slot,nullptr);})&&ok;
+            if(touchedTarget&&hybrid)ok=preserveViewport()&&ok;
             return ok;};
         touchedTarget=true;bool bound=SUCCEEDED(d->SetRenderTarget(slot,target));
+        if(bound&&hybrid)bound=preserveViewport();
         if(bound&&mask!=15){touchedMask=true;bound=SUCCEEDED(d->SetRenderState(key,15));}
         if(bound&&receiver){touchedVS=true;bound=SUCCEEDED(d->SetVertexShader(vs));}
         if(bound){touchedPS=true;bound=SUCCEEDED(d->SetPixelShader(ps));}
-        if(!bound){refused=true;cancel("bind");const bool restored=restore(true);return {restored?submit():E_FAIL,false,false};}
+        if(!bound){refused=true;if(hybrid)++hybridRefusals[BindFailed];cancel("bind");const bool restored=restore(true);return {restored?submit():E_FAIL,false,false};}
         const auto hr=submit();const bool restored=restore();
-        if(FAILED(hr)||!restored){cancel("draw-restore");return {FAILED(hr)?hr:E_FAIL,false,false};}
+        if(FAILED(hr)||!restored){if(hybrid)++hybridRefusals[SubmitFailed];cancel("draw-restore");return {FAILED(hr)?hr:E_FAIL,false,false};}
         if(receiver)++modelDraws;else ++zeroDraws;return {hr,true,receiver};
     }
 };

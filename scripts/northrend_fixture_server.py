@@ -1,9 +1,10 @@
-"""Loopback-only WoW 12340 fixture for rendering scenes on map 571.
+"""Loopback-only WoW 12340 fixture for rendering scenes from local client data.
 
 Packet layouts and SRP parameters follow the 3.3.5 branch of TrinityCore.
 The fixed test credentials are local to this fixture. No world DB is needed.
 """
 import argparse
+import ctypes
 from hashlib import sha1, sha256
 import hmac
 import math
@@ -27,6 +28,11 @@ SHORELINE_SPAWN = (6902.08, 585.42, 425.99, math.pi)
 INTERIOR_SPAWN = (3648.70, -719.65, 215.50, .945)
 # Camera region of the retained heavy terrain QA run.
 TERRAIN_SPAWN = (6132.55, -2047.18, 416.50, 3.741)
+# Ratchet (AreaTable 392), on the road above the harbor in Kalimdor_39_33.
+RATCHET_SPAWN = (-948.0, -3749.0, 6.2, 1.5 * math.pi)
+RATCHET_PAN = 'ratchet-pan'
+RATCHET_CROWD_SIZE = 32
+RATCHET_PHASES = ('idle', 'left', 'right', 'done')
 MAP = 571
 ZONE = 65  # Dragonblight. The client derives the local area from its own ADT.
 BUILD = 12340
@@ -35,7 +41,7 @@ PRIME = 0x894B645E89E1535BBDAD5B8B290650530801B18EBFBF5E8FAB3C82872A3E9BB7
 GENERATOR = 7
 SERVER_KEY = bytes.fromhex('cc98ae04e897eaca12ddc09342915357')
 CLIENT_KEY = bytes.fromhex('c2b3723cc6aed9b5343c53ee2f4367ce')
-SCENES = ('solo', 'crowd', 'm2-stress', 'rain', 'shoreline', 'interior', 'terrain')
+SCENES = ('solo', 'crowd', 'm2-stress', 'rain', 'shoreline', 'interior', 'terrain', RATCHET_PAN)
 RAIN_STATE = 5  # Heavy rain in the 3.3.5 SMSG_WEATHER state table.
 CROWD_SIZES = range(50, 129)
 DEFAULT_CROWD_SIZE = 128
@@ -85,6 +91,21 @@ def crowd_roster(count=DEFAULT_CROWD_SIZE, *, stress=False):
 
 
 def scene_roster(scene, crowd_size=DEFAULT_CROWD_SIZE):
+    if scene == RATCHET_PAN:
+        # Road heights sampled from the stock ADT. Each ring alternates an
+        # enchanted character and one without a weapon or enchant.
+        heights = ((7.95, 8.21, 7.90, 6.95, 6.15, 5.73, 5.58, 5.52, 5.41, 5.37, 5.53, 5.61, 5.46, 5.63, 6.44, 7.32),
+                   (9.34, 9.33, 8.57, 6.92, 5.68, 5.65, 5.70, 5.32, 4.97, 4.82, 4.72, 4.19, 3.96, 4.87, 6.93, 8.76))
+        roster = {}
+        for ring, (radius, levels) in enumerate(zip((9., 17.), heights)):
+            for i, height in enumerate(levels):
+                angle = (i + ring * .5) * math.tau / len(levels)
+                appearance = OUTFITS[(i // 2 + 3 * ring) % len(OUTFITS)]
+                position = (RATCHET_SPAWN[0] + radius * math.cos(angle),
+                            RATCHET_SPAWN[1] + radius * math.sin(angle), height + .05, (angle + math.pi) % math.tau)
+                name = f'Ratchet{chr(65 + ring)}{chr(97 + i)}'.encode('ascii') + b'\0'
+                roster[2 + len(roster)] = (name, position, appearance[:5], appearance[5:] if (i + ring) % 2 == 0 else ())
+        return roster
     if scene == 'm2-stress':
         return crowd_roster(M2_STRESS_SIZE, stress=True)
     return crowd_roster(crowd_size) if scene == 'crowd' else {}
@@ -204,12 +225,24 @@ def send_realm_lists(incoming, sock, world_port):
 
 def spawn_for(scene):
     return {'shoreline': SHORELINE_SPAWN, 'interior': INTERIOR_SPAWN,
-            'terrain': TERRAIN_SPAWN}.get(scene, SPAWN)
+            'terrain': TERRAIN_SPAWN, RATCHET_PAN: RATCHET_SPAWN}.get(scene, SPAWN)
 
 
-def character_list(spawn=SPAWN):
+def map_for(scene):
+    return (1, 392, 'Kalimdor') if scene == RATCHET_PAN else (MAP, ZONE, 'Northrend')
+
+
+def ratchet_camera_marker(body):
+    # CMSG_MESSAGECHAT: 32-bit type and language, followed by the SAY text.
+    if body[:4] == struct.pack('<I', 1):
+        return next((phase for phase in RATCHET_PHASES
+                     if body[8:] == f'NorthlightRatchet:{phase}\0'.encode('ascii')), None)
+    return None
+
+
+def character_list(spawn=SPAWN, *, map_id=MAP, zone=ZONE):
     appearance = bytes([1, 1, 0, 0, 0, 0, 0, 0, 80])  # Human male warrior.
-    position = struct.pack('<II3f', ZONE, MAP, *spawn[:3])
+    position = struct.pack('<II3f', zone, map_id, *spawn[:3])
     return b'\x01' + struct.pack('<Q', 1) + PLAYER + appearance + position + bytes(25 + 23 * 9)
 
 
@@ -311,6 +344,7 @@ def world(sock, session, scene, crowd_size=DEFAULT_CROWD_SIZE, return_to_menu=No
           flying=False, camera_route=None, camera_updates=None):
     roster = scene_roster(scene, crowd_size)
     spawn = spawn_for(scene)
+    map_id, zone, _ = map_for(scene)
     outgoing = incoming_cipher = lambda data: data
     with sock.makefile('rb') as incoming:
         def receive():
@@ -397,10 +431,10 @@ def world(sock, session, scene, crowd_size=DEFAULT_CROWD_SIZE, return_to_menu=No
             if opcode is None:
                 return
             if opcode == 0x037:
-                send(0x03B, character_list(spawn))
+                send(0x03B, character_list(spawn, map_id=map_id, zone=zone))
                 print('CHAR_LIST', flush=True)
             elif opcode == 0x03D and body == struct.pack('<Q', 1) and not in_world:
-                send(0x236, struct.pack('<I4f', MAP, *spawn))
+                send(0x236, struct.pack('<I4f', map_id, *spawn))
                 send(0x042, login_clock())
                 send(0x12A, bytes(5))  # Initial spell and cooldown counts.
                 send(0x0A9, player_create(spawn, flying=flying))
@@ -418,10 +452,14 @@ def world(sock, session, scene, crowd_size=DEFAULT_CROWD_SIZE, return_to_menu=No
                         send(0x0A9, packet)
                     print(spawn_record(roster, b''.join(crowd)), flush=True)
                 send(0x390, bytes(4))  # Time sync request.
-                print(f'PLAYER_SPAWN map={MAP} position={spawn}', flush=True)
+                print(f'PLAYER_SPAWN map={map_id} position={spawn}', flush=True)
                 in_world = True
             elif opcode == 0x1DC and len(body) == 8:
                 send(0x1DD, body[:4])
+            elif opcode == 0x095 and in_world and scene == RATCHET_PAN:
+                if phase := ratchet_camera_marker(body):
+                    tick = ctypes.windll.kernel32.GetTickCount() & 0xffffffff
+                    print(f'RATCHET_CAMERA phase={phase} tick={tick}', flush=True)
             elif (opcode == 0x0C7 and pending_camera is not None and len(body) == 10 and
                   body[:6] == packed_guid(1) + struct.pack('<I', pending_camera)):
                 label = 'CAMERA_TURN_ACK' if pending_camera == 1 else 'CAMERA_ROUTE_ACK'

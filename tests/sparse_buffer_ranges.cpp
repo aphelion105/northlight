@@ -70,13 +70,37 @@ static void sparseProofs(){
     // A subset selecting the other overlapping copy must also see the rewrite.
     cache.read(result,128,64);for(unsigned i=0;i<64;++i)CHECK(result[i]==(i<32?0x29:0x71));
     cache.clear();cache.discard();
-    for(unsigned i=0;i<8;++i)cache.remember(i*(5u<<20),64,source,RangeShadowBudgetBytes-cache.capacity());
-    CHECK(cache.canRead(1024,32));
-    cache.remember(8*(5u<<20),64,source,RangeShadowBudgetBytes-cache.capacity());
-    CHECK(!cache.canRead(0,32)&&!cache.canRead(1024,32)); // ninth interval evicts and revokes DISCARD proof
-    CHECK(cache.covers(8*(5u<<20),64)&&cache.capacity()<=RangeShadowItemBytes);
+    constexpr unsigned spans=RangeShadowSpans,gap=3u<<20;
+    for(unsigned i=0;i<spans;++i)cache.remember(i*gap,64,source,RangeShadowBudgetBytes-cache.capacity());
+    CHECK(cache.canRead(32,64));
+    cache.remember(spans*gap,64,source,RangeShadowBudgetBytes-cache.capacity());
+    CHECK(!cache.canRead(0,32)&&!cache.canRead(32,64)); // one interval past the span count evicts and revokes DISCARD proof
+    CHECK(cache.canRead(1024,32)); // bytes never written since the DISCARD stay undefined
+    CHECK(cache.covers(spans*gap,64)&&cache.capacity()<=RangeShadowItemBytes);
     CHECK(!cache.canRead(UINT32_MAX-8,16));
-    cache.invalidate();CHECK(!cache.canRead(8*(5u<<20),64));cache.clear();
+    cache.invalidate();CHECK(!cache.canRead(spans*gap,64));
+    cache.discard();cache.clear(); // the slot pool below starts as a fresh buffer: nothing written, no DISCARD proof
+    // A slot pool (the client's terrain VB): 8120-byte slots written in one ascending run, then
+    // rewritten scattered. Joins stop at RangeShadowJoinBytes, so the whole run stays readable.
+    std::vector<unsigned char> slot(8120,0x44);
+    for(unsigned i=0;i<256;++i)cache.remember(i*8120u,8120,slot.data(),RangeShadowBudgetBytes-cache.capacity());
+    constexpr unsigned scattered=40u<<20;   // 64 slots 2 apart: no joins, more ranges than the old 8
+    for(unsigned i=0;i<64;++i)cache.remember(scattered+i*2*8120u,8120,slot.data(),RangeShadowBudgetBytes-cache.capacity());
+    for(unsigned i=0;i<64;++i)CHECK(cache.canRead(scattered+i*2*8120u,8120));
+    for(unsigned i=0;i<256;i+=7)CHECK(cache.canRead(i*8120u,8120));
+    for(unsigned i=0;i<256;i+=7){slot[0]=std::uint8_t(i);cache.remember(i*8120u,8120,slot.data(),RangeShadowBudgetBytes-cache.capacity());}
+    for(unsigned i=0;i<256;i+=7){cache.read(result,i*8120u,64);CHECK(result[0]==std::uint8_t(i)&&result[1]==0x44);}
+    CHECK(cache.capacity()<=RangeShadowItemBytes);cache.clear();
+    // Fresh slots: never-written bytes are undefined even after the cache drops everything, so the next
+    // slot past the run stages zeros. Written-and-dropped slots, or a slot touching one, stay unreadable.
+    CHECK(!cache.canRead(0,8120)&&!cache.canRead(255*8120u,16240)&&!cache.canRead(scattered,8120));
+    CHECK(cache.canRead(256*8120u,8120)&&cache.canRead(scattered-8120u,8120));
+    cache.read(result,256*8120u,64);for(unsigned i=0;i<64;++i)CHECK(result[i]==0);
+    // More disjoint writes than tracked intervals widen one: never a false proof.
+    cache.discard();CHECK(cache.canRead(0,8120));
+    for(unsigned i=0;i<16;++i)cache.remember(i*(1u<<20),64,source,0);
+    for(unsigned i=0;i<16;++i)CHECK(!cache.canRead(i*(1u<<20),64));
+    CHECK(cache.canRead(16u<<20,64));cache.clear();
     // Two buffers share the existing global ceiling. A third cannot allocate
     // proof; replacing a span under pressure must never exceed either ceiling.
     BufferRangeShadow second,third;std::vector<unsigned char> large(1u<<20,0x5a);

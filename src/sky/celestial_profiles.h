@@ -17,6 +17,8 @@ struct Profile {
     float light[2][3]={{1,1,1},{1,1,1}};
     float mix[2]={0,0},strength[2]={1,1};
     float moonTerrainSpecular=0,sunSurfaceSpecular=0;
+    float sunWetStoneSpecular=0,sunTerrainIce=0,sunTerrainSnow=0,localSurfaceSpecular=0;
+    float foliageTransmission[2]={};
     // Independent artistic volume controls. Identity defaults retain all
     // existing zones; neither control changes surface light or the sun disc.
     float fogGain[2]={1,1},fogHeightScale[2]={1,1};
@@ -31,7 +33,12 @@ inline Profile blend(const Profile& a,const Profile& b,float t){
     Profile p; t=std::clamp(t,0.f,1.f);
     p.moonTerrainSpecular=a.moonTerrainSpecular+(b.moonTerrainSpecular-a.moonTerrainSpecular)*t;
     p.sunSurfaceSpecular=a.sunSurfaceSpecular+(b.sunSurfaceSpecular-a.sunSurfaceSpecular)*t;
+    p.sunWetStoneSpecular=a.sunWetStoneSpecular+(b.sunWetStoneSpecular-a.sunWetStoneSpecular)*t;
+    p.sunTerrainIce=a.sunTerrainIce+(b.sunTerrainIce-a.sunTerrainIce)*t;
+    p.sunTerrainSnow=a.sunTerrainSnow+(b.sunTerrainSnow-a.sunTerrainSnow)*t;
+    p.localSurfaceSpecular=a.localSurfaceSpecular+(b.localSurfaceSpecular-a.localSurfaceSpecular)*t;
     for(unsigned s=0;s<2;++s){
+        p.foliageTransmission[s]=a.foliageTransmission[s]+(b.foliageTransmission[s]-a.foliageTransmission[s])*t;
         for(unsigned c=0;c<3;++c){p.disc[s][c]=a.disc[s][c]+(b.disc[s][c]-a.disc[s][c])*t;p.light[s][c]=a.light[s][c]+(b.light[s][c]-a.light[s][c])*t;p.glow[s][c]=a.glow[s][c]+(b.glow[s][c]-a.glow[s][c])*t;}
         p.glowStrength[s]=a.glowStrength[s]+(b.glowStrength[s]-a.glowStrength[s])*t;p.glowMix[s]=a.glowMix[s]+(b.glowMix[s]-a.glowMix[s])*t;
         p.gain[s]=a.gain[s]+(b.gain[s]-a.gain[s])*t;
@@ -63,6 +70,7 @@ struct Table {
 // Shared by the ini parser and the dev tuning overlay (zone_tuning.h).
 inline float* keyTarget(Profile& profile,const std::string& key,unsigned& count,float& minimum,float& maximum){
     Profile* p=&profile;
+    if(key=="local_surface_specular"){count=1;minimum=0;maximum=1;return &p->localSurfaceSpecular;}
     unsigned s;if(key.rfind("sun_",0)==0)s=0;else if(key.rfind("moon_",0)==0)s=1;else return nullptr;
     auto name=key.substr(s?5:4);float* target=nullptr;count=1;minimum=0;maximum=1;
     if(name=="disc"){target=p->disc[s];count=3;}
@@ -79,6 +87,10 @@ inline float* keyTarget(Profile& profile,const std::string& key,unsigned& count,
     else if(name=="glow_mix")target=&p->glowMix[s];
     else if(s&&name=="terrain_specular")target=&p->moonTerrainSpecular;
     else if(!s&&name=="surface_specular")target=&p->sunSurfaceSpecular;
+    else if(!s&&name=="wet_stone_specular")target=&p->sunWetStoneSpecular;
+    else if(!s&&name=="terrain_ice")target=&p->sunTerrainIce;
+    else if(!s&&name=="terrain_snow")target=&p->sunTerrainSnow;
+    else if(name=="foliage_transmission")target=&p->foliageTransmission[s];
     else return nullptr;
     if(name=="fog_height_scale")minimum=.25f;
     return target;

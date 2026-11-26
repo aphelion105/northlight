@@ -4,6 +4,7 @@ import re
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import northlight_paths  # noqa: E402
+from generate_extension_raw_methods import AUXILIARY_BARRIER, AUXILIARY_BOUNDARIES
 # MirrorDevice overrides already take the gate first thing; re-guarding them
 # only added a nested acquisition per game call (0.3.136 single-gate switch).
 SKIP_SELF_GUARDED = True
@@ -19,7 +20,10 @@ def generated():
         overridden = set(re.findall(r'STDMETHODCALLTYPE (\w+)\([^\n]*?override', mirror))
         assert guarded == overridden and len(guarded) == 46, (overridden - guarded, len(guarded))
         methods = [line for line in methods if re.search(r'STDMETHODCALLTYPE (\w+)\(', line).group(1) not in guarded]
-    lines += [line.replace('{ return real->', '{ MirrorGuard lock(m->gate,MirrorSite::Device);return MirrorDevice::') for line in methods]
+    for line in methods:
+        name = re.search(r'STDMETHODCALLTYPE (\w+)\(', line).group(1)
+        barrier = AUXILIARY_BARRIER if name in AUXILIARY_BOUNDARIES else ''
+        lines.append(line.replace('{ return real->', '{ MirrorGuard lock(m->gate,MirrorSite::Device);' + barrier + 'return MirrorDevice::'))
     lines.append('};')
     return '\n'.join(lines)+'\n'
 

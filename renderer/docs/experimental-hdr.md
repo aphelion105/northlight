@@ -1,6 +1,16 @@
 # HDR pipeline
 
-Windows HDR requires packaged DXVK 2 or 3, `CommandStream=1` and windowed or borderless presentation. Enable HDR for the current display in Windows. Northlight follows that display and switches SDR/scRGB output live. A missing capability or failed HDR allocation selects SDR and exposes the reason in Renderer & HDR.
+Windows HDR requires windowed or borderless presentation and HDR enabled for the current display in Windows. The x86 proxy uses DXVK 2 or 3 with `CommandStream=1`. The x64 proxy presents directly with DXVK or system Direct3D 9. Northlight follows the display and switches SDR/scRGB output live. A missing capability or failed HDR allocation selects SDR and exposes the reason in Renderer & HDR.
+
+For the native x64 path, set `Backend=native` and `ExperimentalHDR=1` in
+`northlight-renderer.ini`, clear any `BackendPath` override, and restart the
+client. Use 1× MSAA. The proxy keeps the classic D3D9 interface so the client's
+managed textures and buffers still work. Windows D3D9On12 shares the finished
+FP16 texture with D3D12 for a GPU copy to the DXGI scRGB swapchain. When the
+D3D9On12 factory is unavailable, the classic driver can present through a
+synchronous readback and a D3D11/DXGI scRGB swapchain. The 1× scene-depth path binds an INTZ texture
+and samples it into an R32F snapshot. The native HDR path can still present
+when sampleable depth is unavailable.
 
 On the first launch of this pipeline, one atomic migration resets all earlier HDR tuning, requests HDR output, and selects Auto exposure and Auto peak. It preserves every non-HDR renderer setting. The migration marker is `HDRPipelineVersion=2`; later launches preserve the new values.
 
@@ -27,7 +37,7 @@ Deferred native particles with known Particle/ParticleUnlit vertex identities, a
 
 Legacy expansion precedes Northlight additions. Material albedo is inferred from the unexpanded legacy input so expansion does not increase Northlight's lighting coefficients. The separate UI transfer follows world presentation. For DISCARD swapchains, the client's 8-bit scene mirror is generated on its first logical copy/readback/partial-write request. COPY/FLIP retain the eager compatibility MRT. This mirror precedes HDR exposure, contrast and bloom. The game's logical formats, buffer count and Reset parameters stay unchanged.
 
-HDR uses an additional FP16 swapchain and never resets the game's device merely to toggle output. Windows output state is queried separately from Vulkan scRGB support. The latter can remain available while Windows HDR is off. Game-initiated Reset still recreates resources normally. HDR shaders, target sizes, samples and ownership are bounded; the diagnostics show HDR frame/output payload separately from driver allocations and residency.
+HDR uses an additional FP16 swapchain and never resets the game's device merely to toggle output. Windows output state is queried separately from swapchain scRGB support. The latter can remain available while Windows HDR is off. Game-initiated Reset still recreates resources normally. HDR shaders, target sizes, samples and ownership are bounded. Diagnostics show HDR frame/output payload separately from driver allocations and residency.
 
 ## Verification
 

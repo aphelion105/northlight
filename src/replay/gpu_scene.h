@@ -34,14 +34,11 @@ struct Scene {
   IDirect3DTexture9* occlusion=nullptr;IDirect3DSurface9* occlusionTarget=nullptr;
   ~MaterialTargets(){if(target)target->Release();if(height)height->Release();if(depth)depth->Release();if(occlusionTarget)occlusionTarget->Release();if(occlusion)occlusion->Release();}
  } materialTargets;
- explicit Scene(IDirect3DDevice9* d):device(d){}
+ explicit Scene(IDirect3DDevice9* d,bool shareMaterialCapacity=false):device(d),native(shareMaterialCapacity){}
  Scene(const Scene&)=delete;Scene& operator=(const Scene&)=delete;
  bool attach(NorthlightDrawSnapshot::Frame& frame){if(!captureSources){captureSources=frame.sharedSources();return true;}return frame.joinSnapshotPool(captureSources);}
  // One policy for every consumer, including standalone render/test scenes.
- void setMemoryPressure(bool episode,bool critical){
-  native.setTotalLimit(episode&&critical?32u<<20:SIZE_MAX);
-  materials.setLimit(32u<<20);shadows.setLimit(episode?32u<<20:64u<<20);
- }
+ void setMemoryPressure(bool episode,bool critical){native.setMemoryPressure(episode,critical);}
  void setFrame(uint64_t frame){native.setFrame(frame);}
 };
 inline std::shared_ptr<Scene> forDevice(IDirect3DDevice9* d,std::shared_ptr<Scene> scene){

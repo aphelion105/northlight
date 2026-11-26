@@ -95,6 +95,8 @@ def probe(name):
         except fp.Missing as e:
             return str(e)
     if name == 'cxx':
+        if os.name == 'nt':
+            return 'Host C++ tests require a POSIX toolchain; run them under WSL or on macOS/Linux'
         missing = [c for c in ('clang++', 'c++') if not shutil.which(c)]
         return f'host C++ compiler not on PATH: {", ".join(missing)}' if missing else None
     if name == 'libcxx':
@@ -126,6 +128,9 @@ def probe(name):
         return None
     if name in ('lldb', 'objdump'):
         return None if shutil.which(name) else f'{name} is not on PATH'
+    if name == 'd3dcompiler':
+        from scripts.shaders.shader_compiler import DLL
+        return None if DLL.is_file() else f'Microsoft d3dcompiler_47.dll is missing: expected {DLL}'
     if name == 'windows-gpu':
         if os.name != 'nt':
             return 'The offscreen D3D9 oracle requires Windows'

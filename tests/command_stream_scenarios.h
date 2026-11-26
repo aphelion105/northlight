@@ -48,28 +48,48 @@ static void orderedParticleWindows(){
         std::memset(a+1,0,16);
         q.commit();
     };
-    draw(0);upload(D3::kLockNoOverwrite);
-    record_Device_SetVertexShaderConstantF(q,7,values,1);
-    record_Device_SetTexture(q,1,nullptr);
-    draw(4);
-    rig.sync();
-    CHECK(opens==1&&closes==1&&observed.first.base==0&&observed.second.base==4);
-    CHECK(observed.uploadBuffer==ProxyBase::of(buffer)->raw&&observed.uploadOffset==64&&observed.uploadBytes==16);
-    CHECK(observed.textureStage==1&&observed.firstConstant==7&&observed.constantCount==1);
-    draw(0);upload(D3::kLockDiscard);draw(4);
-    draw(0);record_Device_SetRenderState(q,D3DRS_ALPHABLENDENABLE,0);draw(4);
-    draw(0);draw(8);
-    rig.sync();
-    CHECK(opens==1&&closes==1);
+    // A pairing window can only see commands already published. Keep replay
+    // behind BeginScene until each complete sequence is visible to it.
+    const auto batch=[&](auto record){
+        gKnobs.hold.store(true);
+        rig.dev->BeginScene();
+        record();
+        q.publish();
+        gKnobs.hold.store(false);
+        rig.sync();
+    };
+    batch([&]{
+        draw(0);upload(D3::kLockNoOverwrite);
+        record_Device_SetVertexShaderConstantF(q,7,values,1);
+        record_Device_SetTexture(q,1,nullptr);
+        draw(4);
+    });
+    const unsigned firstWindow=kDirectReplay?1:0;
+    CHECK(opens==firstWindow&&closes==firstWindow);
+    if(kDirectReplay){
+        CHECK(observed.first.base==0&&observed.second.base==4);
+        CHECK(observed.uploadBuffer==ProxyBase::of(buffer)->raw&&observed.uploadOffset==64&&observed.uploadBytes==16);
+        CHECK(observed.textureStage==1&&observed.firstConstant==7&&observed.constantCount==1);
+    }
+    batch([&]{
+        draw(0);upload(D3::kLockDiscard);draw(4);
+        draw(0);record_Device_SetRenderState(q,D3DRS_ALPHABLENDENABLE,0);draw(4);
+        draw(0);draw(8);
+    });
+    CHECK(opens==firstWindow&&closes==firstWindow);
     IDirect3DTexture9* texture=nullptr;
     CHECK(rig.dev->CreateTexture(16,16,1,0,(D3DFORMAT)22,(D3DPOOL)D3::kPoolManaged,&texture,nullptr)==D3D_OK);
     rig.sync();
-    draw(0);upload(D3::kLockNoOverwrite);
-    record_Device_SetTexture(q,0,texture);
-    draw(8);
-    rig.sync();
-    CHECK(opens==2&&closes==2&&observed.first.base==0&&observed.second.base==8);
-    CHECK(observed.textureStage==0&&observed.nextTexture==ProxyBase::of(texture)->raw);
+    batch([&]{
+        draw(0);upload(D3::kLockNoOverwrite);
+        record_Device_SetTexture(q,0,texture);
+        draw(8);
+    });
+    CHECK(opens==2*firstWindow&&closes==2*firstWindow);
+    if(kDirectReplay){
+        CHECK(observed.first.base==0&&observed.second.base==8);
+        CHECK(observed.textureStage==0&&observed.nextTexture==ProxyBase::of(texture)->raw);
+    }
     record_Device_SetTexture(q,0,nullptr);
     rig.sync();
     texture->Release();
@@ -479,9 +499,17 @@ static void pressureKeepsShadows(){
     rig.core().memoryPressure.store(false);frames(rig.dev,1);rig.finish();checkClean();
 }
 // 0.3.216: the sync-storm detector only logs (start and end, once per ~2 s window); it lifts no cap and drops nothing.
-static std::vector<std::string> gStormLines;
+class TestLog {
+    std::mutex mutex;
+    std::vector<std::string> lines;
+public:
+    void clear(){std::lock_guard<std::mutex> lock(mutex);lines.clear();}
+    void record(const char* line){std::lock_guard<std::mutex> lock(mutex);lines.emplace_back(line);}
+    std::vector<std::string> snapshot(){std::lock_guard<std::mutex> lock(mutex);return lines;}
+};
+static TestLog gStormLines;
 static void syncStormDetector(){
-    gTrace.clear();gStormLines.clear();StreamDevice::Options opt;opt.log=[](const char* l){gStormLines.push_back(l);};
+    gTrace.clear();gStormLines.clear();StreamDevice::Options opt;opt.log=[](const char* l){gStormLines.record(l);};
     Rig rig(true,opt);auto* d=rig.dev;auto& q=rig.core().q;auto& s=q.stats;
     rig.sync();rig.core().memoryPressure.store(true);frames(d,1);rig.sync();CHECK(q.pressure());
     auto storm=[&](unsigned per){for(int i=0;i<30;++i){
@@ -489,10 +517,10 @@ static void syncStormDetector(){
         add(s.expressReadbacks,per/20);add(s.dynShadowReadbacks,per/10);add(s.texShadowReadbacks,per/20);
         add(s.renameWaits,per*10);frames(d,1);
     }std::this_thread::sleep_for(std::chrono::milliseconds(80));};
-    auto count=[&](const char* what){unsigned n=0;for(auto& l:gStormLines)if(l.find(what)!=std::string::npos)++n;return n;};
+    auto count=[&](const char* what){unsigned n=0;for(const auto& l:gStormLines.snapshot())if(l.find(what)!=std::string::npos)++n;return n;};
     for(int w=0;w<30&&!count("sync-storm begins");++w)storm(StreamDevice::kStormSyncPerFrame+100);   // ~2.4 s per 30 rounds
     CHECK(count("sync-storm begins")==1&&get(s.syncStorms)==1&&q.pressure()&&q.shadowCap()==ShadowBudgetBytes);
-    for(const auto& line:gStormLines)if(line.find("sync-storm begins")!=std::string::npos){
+    for(const auto& line:gStormLines.snapshot())if(line.find("sync-storm begins")!=std::string::npos){
         double lock=0,unlock=0,query=0,other=0,express=0,buffer=0,texture=0;
         const auto at=line.find("syncKinds/frame[");CHECK(at!=std::string::npos);
         CHECK(std::sscanf(line.c_str()+at,"syncKinds/frame[lock=%lf unlock=%lf query=%lf other=%lf textureExpress=%lf] readbacks/frame[buffer=%lf texture=%lf]",&lock,&unlock,&query,&other,&express,&buffer,&texture)==7);
@@ -585,7 +613,56 @@ static void textureExpressReadback(){
     }
     rig.finish();
 }
+static void shadowedImageUnlockWithoutBlock(){
+    gTrace.clear();StreamDevice::Options options;options.budget=ChunkBytes;
+    Rig rig(true,options);auto& q=rig.core().q;auto& s=q.stats;
+    IDirect3DTexture9* texture=nullptr;
+    CHECK(rig.dev->CreateTexture(16,16,1,0,(D3DFORMAT)22,(D3DPOOL)1,&texture,nullptr)==D3D_OK);
+    D3DLOCKED_RECT lock{};
+    CHECK(texture->LockRect(0,&lock,nullptr,0)==D3D_OK&&lock.Pitch==64);
+    std::memset(lock.pBits,0x17,std::size_t(lock.Pitch)*16);
+    CHECK(texture->UnlockRect(0)==D3D_OK);
+    auto& sub=static_cast<StreamTexture*>(ProxyBase::of(texture))->subs[0];
+    CHECK(sub.shadowOn);
+    const RECT region{12,12,16,16};
+    CHECK(texture->LockRect(0,&lock,&region,0)==D3D_OK&&lock.Pitch==64);
+    for(unsigned row=0;row<4;++row)std::memset(static_cast<unsigned char*>(lock.pBits)+row*lock.Pitch,0xA0+row,16);
+    const auto blocks=get(s.blockRefused),syncs=get(s.syncCalls);
+    refuseAllocationBytes=64; // The old fallback tried to allocate four rows of 16 bytes here.
+    const HRESULT unlocked=texture->UnlockRect(0);
+    refuseAllocationBytes=0;
+    CHECK(unlocked==D3D_OK&&get(s.blockRefused)==blocks+1&&get(s.syncCalls)==syncs+1);
+    const auto* surface=gLastTexture->surf[0];
+    for(unsigned y=0;y<16;++y)for(unsigned x=0;x<64;++x)
+        CHECK(surface->mem[y*surface->pitch+x]==(y>=12&&x>=48?0xA0+y-12:0x17));
+    CHECK(sub.shadowOn&&sub.mode==SubRes::Free);
+
+    CHECK(texture->LockRect(0,&lock,&region,0)==D3D_OK);
+    for(unsigned row=0;row<4;++row)std::memset(static_cast<unsigned char*>(lock.pBits)+row*lock.Pitch,0xB0+row,16);
+    static StreamCore* waitingCore;
+    static IDirect3DTexture9* waitingTexture;
+    waitingCore=&rig.core();waitingTexture=texture;
+    gKnobs.hold.store(true);CHECK(rig.dev->BeginScene()==D3D_OK);
+    pumpHook=[]{
+        D3DLOCKED_RECT nested{};
+        CHECK(waitingTexture->LockRect(0,&nested,nullptr,D3::kLockReadOnly)==D3DERR_INVALIDCALL);
+        CHECK(waitingTexture->UnlockRect(0)==D3DERR_INVALIDCALL);
+        auto& pending=static_cast<StreamTexture*>(ProxyBase::of(waitingTexture))->subs[0];
+        markGpuWritten(*waitingCore,pending);
+        CHECK(!pending.shadowOn&&!pending.shadow.empty());
+        pumpHook=nullptr;
+        gKnobs.hold.store(false);
+    };
+    CHECK(texture->UnlockRect(0)==D3D_OK&&!pumpHook);
+    CHECK(!sub.shadowOn&&sub.shadow.empty()&&sub.contentSeq==~std::uint64_t(0)&&sub.mode==SubRes::Free);
+    for(unsigned y=0;y<16;++y)for(unsigned x=0;x<64;++x)
+        CHECK(surface->mem[y*surface->pitch+x]==(y>=12&&x>=48?0xB0+y-12:0x17));
+
+    texture->Release();rig.finish();checkClean();gTrace.clear();
+    std::puts("PASS block refusal uploads a partial texture without allocation and pins the source through a pumped wait");
+}
 static void textureShadows(){
+    shadowedImageUnlockWithoutBlock();
     gTrace.clear();Rig rig(true);auto& q=rig.core().q;auto& s=q.stats;
     auto fill=[&](unsigned char* base,INT pitch,unsigned rows,unsigned rowBytes,unsigned seed){for(unsigned y=0;y<rows;++y)for(unsigned x=0;x<rowBytes;++x)base[std::size_t(y)*pitch+x]=(unsigned char)(seed+y*7+x);};
     {   // fresh, small: the first write lock is the shadow; later write locks, partial, never read back and never pass through
@@ -953,25 +1030,26 @@ static void initFailureFallback(){
     gKnobs.failSwapChain.store(false);t->Release();checkClean();
 }
 // The periodic stats line: >600 presents with Diagnostics on give exactly one line, and it carries the CSTREAM tag the log is searched by.
-static std::vector<std::string> gStatLines;
+static TestLog gStatLines;
 static void statsLine(bool idle=false){
     gTrace.clear();gStatLines.clear();StreamDevice::Options opt;
-    opt.log=[](const char* l){gStatLines.push_back(l);};opt.diagnostics=[]{return true;};
+    opt.log=[](const char* l){gStatLines.record(l);};opt.diagnostics=[]{return true;};
     if(idle)opt.idleProfiling=[]{return true;};
     Rig rig(true,opt);
     for(int i=0;i<610;++i){rig.dev->DrawPrimitive((D3DPRIMITIVETYPE)4,0,2);rig.dev->Present(nullptr,nullptr,nullptr,nullptr);}
-    rig.sync();
-    std::vector<std::string> lines;for(auto& l:gStatLines)if(l.find(" frames=600 ")!=std::string::npos)lines.push_back(l);   // the 600th replayed frame
+    rig.finish();
+    const auto log=gStatLines.snapshot();
+    std::vector<std::string> lines;for(const auto& l:log)if(l.find(" frames=600 ")!=std::string::npos)lines.push_back(l);   // the 600th replayed frame
     CHECK(lines.size()==1&&lines[0].rfind("CSTREAM cmds=",0)==0&&lines[0].find("passPerFrame=")!=std::string::npos&&lines[0].find("census[")!=std::string::npos&&lines[0].back()==']');
     for(const char* field:{"game[per frame]: ms=","coop=","split[per frame]: lockMs=","recordMs~=","snapMs=","presentMs=","syncMs=","presentWaitMs=","bpMs=","sleeps=","publishes=","replayBusyMs/frame=","recorded=","answered=","texShadow=","readbacks=","bufShadow=","readbacks/frame=","evicted/frame=","(hot ","refused/frame=","grows=","large=","memMB=","texFreshSkipped=","texReadbackCause[freshDrop=","relockedEvict=","neverShadowed=","freshSkip="," skipped="})CHECK(lines[0].find(field)!=std::string::npos);   // per-window numbers
     CHECK(lines[0].size()<2000);
-    {bool top=false;for(auto& l:gStatLines)if(l.rfind("CSTREAM top[per frame]: Device::DrawPrimitive=",0)==0)top=true;CHECK(top);}   // 0.3.204 (task 21): the sampled per-command split, the draws first
-    {unsigned wakeLines=0;for(const auto& line:gStatLines)if(line.rfind("CSTREAM WAKE_PUBLICATIONS ",0)==0){
+    {bool top=false;for(const auto& l:log)if(l.rfind("CSTREAM top[per frame]: Device::DrawPrimitive=",0)==0)top=true;CHECK(top);}   // 0.3.204 (task 21): the sampled per-command split, the draws first
+    {unsigned wakeLines=0;for(const auto& line:log)if(line.rfind("CSTREAM WAKE_PUBLICATIONS ",0)==0){
         ++wakeLines;unsigned long long frame=0,batches=0,commands=0,bytes=0,signals=0;
         CHECK(std::sscanf(line.c_str(),"CSTREAM WAKE_PUBLICATIONS streamFrame=%llu heldBatches=%llu heldCommands=%llu heldBytes=%llu wakeSignals=%llu",&frame,&batches,&commands,&bytes,&signals)==5);
         CHECK(frame==600&&line.find("scope=cumulative-independent-counters duration=unmeasured")!=std::string::npos&&line.size()<384);
     }CHECK(wakeLines==unsigned(idle));}
-    rig.finish();checkClean();
+    checkClean();
 }
 // Redundant-state filtering: a repeated Set of the value the game last set is not recorded; anything else is.
 static void redundantFiltering(){
@@ -1652,7 +1730,7 @@ struct ZcRig {
     std::size_t held()const{const auto b=large?s->largeShadowBytes.load():s->shadowBytes.load();return (b>0?std::size_t(b):0)+std::size_t(s->ringBytes.load())+std::size_t(s->retiredBytes.load());}   // 0.3.204: the shadows plus the ring and retired slices (accounted apart from the caps)
     explicit ZcRig(UINT len=15800000,unsigned framesAhead=3):L(len),m(len){
         gTrace.clear();gStatLines.clear();opt.readBackLock=&dxvk3ReadBack;opt.framesAhead=framesAhead;
-        opt.log=[](const char* l){gStatLines.push_back(l);};opt.diagnostics=[]{return true;};
+        opt.log=[](const char* l){gStatLines.record(l);};opt.diagnostics=[]{return true;};
         rig.reset(new Rig(true,opt));d=rig->dev;core=&rig->core();q=&core->q;s=&q->stats;large=L>q->shadowItemLimit();
         CHECK(d->CreateVertexBuffer(L,D3::kUsageDynamic,0,(D3DPOOL)0,&vb,nullptr)==D3D_OK&&shadowOn(vb)&&held()==L&&buf().large==large);
     }
@@ -1737,7 +1815,7 @@ static void zeroCopyRenames(UINT len=10000000){   // (10 MB: three ring slices f
     z.verify();
     // the "zerocopy" line: next to the CSTREAM one (the main line stays under its cap)
     for(int i=0;i<610;++i)z.present();z.rig->sync();
-    {bool zl=false;for(auto& l:gStatLines)if(l.rfind("CSTREAM zerocopy[per frame]: unlocks=",0)==0&&l.find(" MB=")!=std::string::npos&&l.find(" renames=")!=std::string::npos&&l.find(" allocs=")!=std::string::npos&&l.find(" renameWaits=")!=std::string::npos&&l.find(" renameWaitMs=")!=std::string::npos&&l.find(" writeWaits=")!=std::string::npos&&l.find(" writeWaitMs=")!=std::string::npos&&l.find(" retiredMB=")!=std::string::npos&&l.find(" ringMB=")!=std::string::npos&&l.find(" slices=")!=std::string::npos)zl=true;CHECK(zl);}
+    {bool zl=false;for(const auto& l:gStatLines.snapshot())if(l.rfind("CSTREAM zerocopy[per frame]: unlocks=",0)==0&&l.find(" MB=")!=std::string::npos&&l.find(" renames=")!=std::string::npos&&l.find(" allocs=")!=std::string::npos&&l.find(" renameWaits=")!=std::string::npos&&l.find(" renameWaitMs=")!=std::string::npos&&l.find(" writeWaits=")!=std::string::npos&&l.find(" writeWaitMs=")!=std::string::npos&&l.find(" retiredMB=")!=std::string::npos&&l.find(" ringMB=")!=std::string::npos&&l.find(" slices=")!=std::string::npos)zl=true;CHECK(zl);}
     z.vb->Release();z.rig->sync();CHECK(z.held()==0&&s.ringBytes.load()==0&&s.ringSlices.load()==0&&s.retiredBytes.load()==0);
     z.rig->finish();checkClean();
 }
@@ -1890,7 +1968,7 @@ static void zeroCopyReasons(){
     CHECK(big->Lock(0,8192,&p,D3::kLockDiscard)==D3D_OK&&big->Unlock()==D3D_OK&&get(s.zcSkipNoShadow)==1&&get(s.zcSkipOther)==0&&get(s.zeroCopyUnlocks)==1);
     z.rig->sync();
     for(int i=0;i<610;++i)z.present();z.rig->sync();
-    {bool ok=false;for(auto& l:gStatLines)if(l.rfind("CSTREAM zerocopy[per frame]:",0)==0&&l.find("notZeroCopy[pool=1 noShadow=1 small=1 pressure=0 other=0 overlap=0]")!=std::string::npos)ok=true;CHECK(ok);}
+    {bool ok=false;for(const auto& l:gStatLines.snapshot())if(l.rfind("CSTREAM zerocopy[per frame]:",0)==0&&l.find("notZeroCopy[pool=1 noShadow=1 small=1 pressure=0 other=0 overlap=0]")!=std::string::npos)ok=true;CHECK(ok);}
     man->Release();big->Release();z.vb->Release();z.rig->sync();z.rig->finish();checkClean();
 }
 
@@ -2018,7 +2096,7 @@ struct OvPark {
     void end(){cancel.store(true);if(dog.joinable())dog.join();gKnobs.holdUnlockSize.store(0,std::memory_order_relaxed);}
     ~OvPark(){end();}
 };
-static bool zcLineHas(const char* a,const char* b){for(auto& l:gStatLines)if(l.rfind("CSTREAM zerocopy[per frame]:",0)==0&&l.find(a)!=std::string::npos&&l.find(b)!=std::string::npos)return true;return false;}
+static bool zcLineHas(const char* a,const char* b){for(const auto& l:gStatLines.snapshot())if(l.rfind("CSTREAM zerocopy[per frame]:",0)==0&&l.find(a)!=std::string::npos&&l.find(b)!=std::string::npos)return true;return false;}
 // After a sync: the game-side truth (what a READONLY lock reads, the slice with its patches in) equals the model (only without a DISCARD rename: a renamed slice holds just what was written since).
 static bool zcSliceTruth(ZcRig& z){
     void* p=nullptr;if(z.vb->Lock(0,0,&p,D3::kLockReadOnly)!=D3D_OK||!p)return false;

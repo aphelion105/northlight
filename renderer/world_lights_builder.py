@@ -21,6 +21,7 @@ import wmo_lamp_emission
 
 RECORD=struct.Struct('<8fQII')
 VERSION=2
+MOONWELL=256
 INSTANCE=struct.Struct('<32sQI18f')
 MAPS=['Azeroth','Kalimdor','Expansion01','Northrend']
 class Unsupported(ValueError):pass
@@ -196,6 +197,11 @@ def m2_sources(path,blob,native,emitter_index):
     """Shared source identity for light records and their opaque lamp shells."""
     from light_attachments import REQUIRES_NATIVE
     import world_emitter_index
+    profile=emitter_index.catalog.get(path)
+    if not native and profile and profile['family']=='blue_moonwell':
+        # Use the reviewed rim source even when the installed MPQ index has an older profile.
+        return [(*source[:-1],source[-1]|MOONWELL)
+                for source in outdoor_light_profiles.fallback(emitter_index.catalog,path,blob,[])]
     authored=emitter_index.get(path,blob) if not unpack('<I',blob,264)[0] else None
     sources=world_emitter_index.records(authored) if authored is not None else outdoor_light_profiles.fallback(emitter_index.catalog,path,blob,native)
     from world_emitter_coverage import emission_kind

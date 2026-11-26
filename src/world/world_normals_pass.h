@@ -11,9 +11,18 @@ class NorthlightWorldNormalsPass {
     IDirect3DSurface9* surface_=nullptr;
     IDirect3DPixelShader9* shader_=nullptr;
     IDirect3DPixelShader9* normalsOnly_=nullptr;
+    IDirect3DPixelShader9* viewShader_=nullptr;
     bool normalsOnlyRefused_=false;
 
     template<class T> static void drop(T*& pointer){if(pointer){pointer->Release();pointer=nullptr;}}
+    static void pointClamp(IDirect3DDevice9* d,DWORD slot){
+        d->SetSamplerState(slot,D3DSAMP_ADDRESSU,D3DTADDRESS_CLAMP);
+        d->SetSamplerState(slot,D3DSAMP_ADDRESSV,D3DTADDRESS_CLAMP);
+        d->SetSamplerState(slot,D3DSAMP_MINFILTER,D3DTEXF_POINT);
+        d->SetSamplerState(slot,D3DSAMP_MAGFILTER,D3DTEXF_POINT);
+        d->SetSamplerState(slot,D3DSAMP_MIPFILTER,D3DTEXF_NONE);
+        d->SetSamplerState(slot,D3DSAMP_SRGBTEXTURE,FALSE);
+    }
 public:
     NorthlightWorldNormalsPass()=default;
     NorthlightWorldNormalsPass(const NorthlightWorldNormalsPass&)=delete;
@@ -32,9 +41,20 @@ public:
     void reset(){
         drop(shader_);
         drop(normalsOnly_);
+        drop(viewShader_);
         normalsOnlyRefused_=false;
         drop(texture_);
         drop(surface_);
+    }
+
+    bool drawView(IDirect3DDevice9* d,IDirect3DSurface9* output,UINT width,UINT height,
+                  const DWORD* viewShader,IDirect3DTexture9* modelNormals){
+        if(modelNormals)pointClamp(d,13);
+        const auto succeeded=[](HRESULT hr,const char*){return SUCCEEDED(hr);};
+        return (viewShader_||SUCCEEDED(d->CreatePixelShader(viewShader,&viewShader_)))&&
+            draw(d,width/2,height/2,modelNormals,nullptr,succeeded)&&
+            SUCCEEDED(d->SetRenderTarget(0,output))&&SUCCEEDED(d->SetPixelShader(viewShader_))&&
+            SUCCEEDED(NorthlightScreen::drawQuad(d,width,height));
     }
 
     template<class Check>
@@ -60,12 +80,7 @@ public:
         d->SetTexture(13,nullptr);
         if(distance&&!check(d->SetRenderTarget(1,nullptr),"current distance unbind"))return false;
         d->SetTexture(14,texture_);
-        d->SetSamplerState(14,D3DSAMP_ADDRESSU,D3DTADDRESS_CLAMP);
-        d->SetSamplerState(14,D3DSAMP_ADDRESSV,D3DTADDRESS_CLAMP);
-        d->SetSamplerState(14,D3DSAMP_MINFILTER,D3DTEXF_POINT);
-        d->SetSamplerState(14,D3DSAMP_MAGFILTER,D3DTEXF_POINT);
-        d->SetSamplerState(14,D3DSAMP_MIPFILTER,D3DTEXF_NONE);
-        d->SetSamplerState(14,D3DSAMP_SRGBTEXTURE,FALSE);
+        pointClamp(d,14);
         return true;
     }
 };

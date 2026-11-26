@@ -15,6 +15,7 @@ from shader_compiler import Compiler,validate_assembly
 p=argparse.ArgumentParser(__doc__)
 p.add_argument('--output',type=Path,required=True);p.add_argument('--backend',type=Path,action='append',required=True);p.add_argument('--benchmark',action='store_true');p.add_argument('--negative-control',action='store_true')
 p.add_argument('--headers',type=Path)
+p.add_argument('--x64',action='store_true',help='Use an AMD64 test device and backend')
 p.add_argument('--m2-preflight',action='store_true',help='Pair M2 pose/range admission across Normal, POM and Displacement with near/mixed/far poses')
 p.add_argument('--preflight-source',action='store_true',help='Keep current admission in both policies; compare only same-draw snapshot reuse')
 p.add_argument('--subdivision-sharing',action='store_true',help='Compare exact GPU-height VB/IB reuse across two texture owners')
@@ -164,7 +165,8 @@ compiler=Compiler(allow_compatible_binary=True);compiler.compile(out/'consumer.h
 consumer_stats=validate_assembly(out/'consumer.bin.asm','ps_3_0')
 sha=lambda p:hashlib.sha256(p.read_bytes()).hexdigest()
 inputs={str(f):sha(f) for f in [*overlay.glob('*.h'),*fp.SRC.rglob('*.h'),*fp.SRC.rglob('*.inl'),Path(__file__),header,test_cpp,ROOT/'tests/material_equal_depth_gpu.cpp',ROOT/'tests/model_normals_gpu.cpp',overlay/'auto_bump_renderer.h',fp.SHADERS/'auto_bump_normal.hlsl',out/'consumer.hlsl',out/'consumer.bin',out/'rigid.bin',out/'skin.bin',out/'alpha.bin']}
-exe=out/'material-equal.exe';cmd=[fp.zig(),'c++','-target','x86-windows-gnu','-O2','-UNDEBUG','-std=c++17','-Wno-microsoft-exception-spec','-I'+str(overlay),*fp.test_include_flags(),'-I'+str(ROOT/'tests'),test_cpp,fp.src('world_gi.cpp'),'-luser32','-luuid','-o',exe]
+target='x86_64-windows-gnu' if a.x64 else 'x86-windows-gnu'
+exe=out/'material-equal.exe';cmd=[fp.zig(),'c++','-target',target,'-O2','-UNDEBUG','-std=c++17','-Wno-microsoft-exception-spec','-I'+str(overlay),*fp.test_include_flags(),'-I'+str(ROOT/'tests'),test_cpp,fp.src('world_gi.cpp'),'-luser32','-luuid','-o',exe]
 with (out/'compile.log').open('w') as log:subprocess.run(list(map(str,cmd)),env=fp.zig_env(),stdout=log,stderr=subprocess.STDOUT,check=True,timeout=300)
 games=processes();results=[]
 for index,backend in enumerate(a.backend):

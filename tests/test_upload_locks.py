@@ -170,9 +170,10 @@ reset=tracked[tracked.index('inline void invalidateAll('):tracked.index('templat
 assert 'NorthlightReplayCopies::invalidate(r.copy)' in reset
 assert '!preserveManaged||!r.poolKnown||r.pool!=D3DPOOL_MANAGED||r.locks.load(std::memory_order_relaxed)' in reset
 assert tracked.count('NorthlightReplayCopies::enabled.load(')>=3 # attach, Lock and Unlock are all behind the stream gate
-assert renderer.count('NorthlightReplayCopies::enabled.store(true')==1 and renderer.index('NorthlightReplayCopies::enabled.store(true')<renderer.index('real->CreateDevice(adapter,type,window,flags,pp,out)')
-assert 'if(stream)NorthlightReplayCopies::enabled.store(true' in renderer and 'NorthlightReplayCopies::setPressure(memoryCaps==1)' in renderer
-assert [n for n,t in sources.items() if 'enabled.store(true' in t and 'NorthlightReplayCopies' in t]==['renderer.cpp']
+enable='NorthlightReplayCopies::enabled.exchange(true,std::memory_order_relaxed)'
+assert renderer.index('\n        HRESULT hr=real->CreateDevice(adapter,type,window,flags,pp,out)')<renderer.index(enable)<renderer.index('new Device(*out,this,presentation)')
+assert 'streamSetup(stream&&SUCCEEDED(hr)&&out&&*out)' in renderer and 'NorthlightReplayCopies::setPressure(memoryCaps==1)' in renderer
+assert [(n,t.count(enable)) for n,t in sources.items() if enable in t]==[('renderer.cpp',1)]
 # every write a stream replays into a game buffer is a Lock/Unlock on the stream's inner object, which is the wrapper (Device::Create*Buffer wraps)
 replay=sources['replay_thread.h']
 assert 'static_cast<IDirect3DVertexBuffer9*>(p->inner)->Lock(off,size,&dst,flags)' in replay and replay.count('->Lock(off,size,&dst,flags)')==2 and 'writeBuffer(a->proxy,a->off,a->size,a->flags,a->src+a->off,a->firstSize)' in replay and 'static_cast<IDirect3DVertexBuffer9*>(p->inner)->Unlock()' in replay

@@ -20,6 +20,9 @@
         else if(method&&aoQuality!=quality)drop(aoContactBloomPS);
         aoMethod=method;aoQuality=quality;
     }
+    DWORD depthSnapshotUsage()const{
+        return depthSnapshotFormat==D3DFMT_R32F?D3DUSAGE_RENDERTARGET:D3DUSAGE_DEPTHSTENCIL;
+    }
     bool resources(UINT w, UINT h, D3DFORMAT format, bool colorOnly=false) {
         // DXVK 3's 1x depth+stencil RESZ copy can leave INTZ unchanged (proved
         // with a nonzero sentinel). DF24 copies depth alone, which is all our
@@ -30,7 +33,7 @@
         // format: deciding INTZ there recreated every effect resource, and DF24 again on the next frame. A DF24 the
         // device refused stays INTZ for the session (df24Refused).
         const D3DFORMAT intz=(D3DFORMAT)MAKEFOURCC('I','N','T','Z'),df24=(D3DFORMAT)MAKEFOURCC('D','F','2','4');
-        const D3DFORMAT depthFormat=!worldDepthDescKnown&&depthSnapshotFormat!=D3DFMT_UNKNOWN?depthSnapshotFormat
+        const D3DFORMAT depthFormat=hdr.nativeOutput?D3DFMT_R32F:!worldDepthDescKnown&&depthSnapshotFormat!=D3DFMT_UNKNOWN?depthSnapshotFormat
             :NorthlightBackend::isPackagedDxvk(selectedBackend)&&!df24Refused&&worldDepthDescKnown&&worldDepthDesc.MultiSampleType==D3DMULTISAMPLE_NONE?df24:intz;
         if(!colorOnly){
             // Method switches replace shaders while keeping the existing scene/depth targets.
@@ -65,7 +68,7 @@
         if(colorOnly)return true; // HDR conversion needs no depth snapshot, AO targets or effect shaders.
         depthSnapshotFormat=depthFormat;
         if (!depthTex) {
-            HRESULT hr=ext->CreateTexture(w, h, 1, D3DUSAGE_DEPTHSTENCIL, depthSnapshotFormat, D3DPOOL_DEFAULT, &depthTex, nullptr);
+            HRESULT hr=ext->CreateTexture(w, h, 1, depthSnapshotUsage(), depthSnapshotFormat, D3DPOOL_DEFAULT, &depthTex, nullptr);
             // A DXVK without the DF formats (d3d9.supportDFFormats off) refuses DF24: INTZ, not the effects disabled.
             if (FAILED(hr) && depthSnapshotFormat==df24) {
                 logf("Depth snapshot DF24 refused HRESULT=0x%08lx: INTZ for this session", (unsigned long)hr);
@@ -78,6 +81,6 @@
         if (!aoRaw && error(ext->CreateTexture(w/2, h/2, 1, D3DUSAGE_RENDERTARGET, D3DFMT_A16B16G16R16F, D3DPOOL_DEFAULT, &aoRaw, nullptr), "half resolution raw AO texture")) return false;
         if (!aoSurface && error(ao->GetSurfaceLevel(0, &aoSurface), "AO surface")) return false;
         if (!aoRawSurface && error(aoRaw->GetSurfaceLevel(0, &aoRawSurface), "raw AO surface")) return false;
-        logf("Resources %ux%u, AO %ux%u, format=%u depthSnapshot=%s sourceMSAA=%u", w,h,w/2,h/2,unsigned(format),depthSnapshotFormat==(D3DFORMAT)MAKEFOURCC('D','F','2','4')?"DF24":"INTZ",unsigned(worldDepthDesc.MultiSampleType));
+        logf("Resources %ux%u, AO %ux%u, format=%u depthSnapshot=%s sourceMSAA=%u", w,h,w/2,h/2,unsigned(format),depthSnapshotFormat==D3DFMT_R32F?"R32F":depthSnapshotFormat==df24?"DF24":"INTZ",unsigned(worldDepthDesc.MultiSampleType));
         return true;
     }

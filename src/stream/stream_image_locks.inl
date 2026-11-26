@@ -2,7 +2,7 @@
 // A texture level / cube face / volume level, or a standalone surface.
 struct SubRes {
     bool written=false;                 // a GPU write or an earlier lock: later write locks need a shadow or pass through
-    enum Mode:std::uint8_t{Free,Staged,Pass,Shadowed} mode=Free;
+    enum Mode:std::uint8_t{Free,Staged,Pass,Shadowed,Uploading} mode=Free;
     Block* stage=nullptr;DWORD flags=0;bool hasRect=false;RECT rect{};D3DBOX box{};UINT rows=0,slices=1,rowBytes=0,pitch=0,slicePitch=0;
     // A CPU copy of the whole level in our own tight layout (block rows of levelRowBytes), plus slack. Locks return pointers into it
     // and Unlock records the locked rows; shadowDead: never again (GPU-written, readback failed, ...).
@@ -27,19 +27,21 @@ struct UnlockImageArgs {ProxyBase* proxy;UINT level,face;DWORD flags;UINT hasRec
 enum ImageRoute:UINT{RouteSurface=0,RouteTexture=1,RouteCube=2,RouteVolumeTexture=3,RouteVolume=4};
 
 inline ProxyBase* particleTextureRoot(ProxyBase* p){if(p&&p->kind==Kind::Surface)p=p->parent;return p&&p->kind==Kind::Texture?p:nullptr;}
-inline void invalidateParticleTexture(ProxyBase* p,bool material=true){if(auto* root=particleTextureRoot(p)){NorthlightParticleTextures::cache().invalidate(root->raw);if(material)NorthlightMaterialTextures::cache().invalidate(root->raw);}}
+inline void invalidateParticleTexture(ProxyBase* p,bool material=true){if(auto* root=particleTextureRoot(p)){NorthlightParticleTextures::cache().invalidate(root->raw);NorthlightTreeCanopy::forget(root->raw);if(material)NorthlightMaterialTextures::cache().invalidate(root->raw);}}
 inline void captureParticleTexture(const UnlockImageArgs& a,const unsigned char* src,bool success){
     auto* root=particleTextureRoot(a.proxy);if(!root||a.flags&D3::kLockReadOnly)return;
     // Only immutable creation metadata is read here, on the replay thread.
     unsigned level=a.level;if(a.proxy!=root){level=0;for(;level<root->info.levels;++level)if(D3::mipDim(root->info.w,level)==a.proxy->info.w&&D3::mipDim(root->info.h,level)==a.proxy->info.h)break;if(level>=root->info.levels){invalidateParticleTexture(root);return;}}
     const unsigned w=D3::mipDim(root->info.w,level),h=D3::mipDim(root->info.h,level);
     const bool whole=a.slices==1&&(!a.hasRect||(a.l==0&&a.t==0&&a.r==LONG(w)&&a.b==LONG(h)));
-    if(!(root->info.usage&(D3::kUsageDS|D3::kUsageRT))&&((root->info.usage&D3::kUsageDynamic)||((root->info.usage&D3::kUsageAutoGen)&&root->info.fmt==21)||(root->info.levels==1&&root->info.fmt==21&&root->info.w>=256&&root->info.h>=256))){auto& cache=NorthlightMaterialTextures::cache();if(whole)cache.upload(root->raw,root,w,h,level,root->info.fmt,src,std::size_t(a.rows)*a.pitch,a.pitch,true,success,root->info.pool);else if(a.hasRect&&a.slices==1)cache.updateRect(root->raw,root,w,h,level,root->info.fmt,src,std::size_t(a.rows)*a.pitch,a.pitch,unsigned(a.l),unsigned(a.t),unsigned(a.r),unsigned(a.b),success);else cache.invalidate(root->raw);}
+    const std::size_t bytes=a.rows?std::size_t(a.rows-1)*a.pitch+a.rowBytes:0;
+    if(!(root->info.usage&(D3::kUsageDS|D3::kUsageRT))&&((root->info.usage&D3::kUsageDynamic)||((root->info.usage&D3::kUsageAutoGen)&&root->info.fmt==21)||(root->info.levels==1&&root->info.fmt==21&&root->info.w>=256&&root->info.h>=256))){auto& cache=NorthlightMaterialTextures::cache();if(whole)cache.upload(root->raw,root,w,h,level,root->info.fmt,src,bytes,a.pitch,true,success,root->info.pool);else if(a.hasRect&&a.slices==1)cache.updateRect(root->raw,root,w,h,level,root->info.fmt,src,bytes,a.pitch,unsigned(a.l),unsigned(a.t),unsigned(a.r),unsigned(a.b),success);else cache.invalidate(root->raw);}
     if(root->info.usage&(D3::kUsageRT|D3::kUsageDS|D3::kUsageAutoGen)){NorthlightParticleTextures::cache().invalidate(root->raw);return;}
-    NorthlightParticleTextures::cache().upload(root->raw,root,w,h,level,root->info.fmt,src,std::size_t(a.rows)*a.pitch,a.pitch,whole,success,root->info.pool);
+    NorthlightParticleTextures::cache().upload(root->raw,root,w,h,level,root->info.fmt,src,bytes,a.pitch,whole,success,root->info.pool);
+    NorthlightTreeCanopy::upload(root->raw,level,root->info.fmt,w,h,src,a.rows,a.pitch,whole&&success);
 }
 
-// Both need StreamCore::texMutex held. A shadow is game-side memory and no queued command refers to it (Unlock copies the rows into a Block).
+// Both need StreamCore::texMutex held. Async uploads own a Block, and a synchronous upload pins the shadow until replay completes.
 inline LruList<SubRes>& texListOf(StreamCore& c,const SubRes& s){return s.relocked?c.texRelocked:c.texFresh;}
 // 0.3.200 (pipeline): recycle (the game thread's evictions only): the allocation goes to an empty spare slot, or replaces a smaller spare, unless under pressure or too large.
 inline void spareTexShadowLocked(StreamCore& c,std::vector<unsigned char>& v){
@@ -52,8 +54,12 @@ inline void dropShadowLocked(StreamCore& c,SubRes& s,bool recycle=false){
     if(!s.shadowOn)return;
     texListOf(c,s).remove(&s);
     c.q.addTexShadowBytes(-std::int64_t(std::size_t(s.levelRows)*s.levelRowBytes*s.levelSlices));
-    if(recycle)spareTexShadowLocked(c,s.shadow);
-    std::vector<unsigned char>().swap(s.shadow);s.shadowOn=false;
+    // A GPU write recorded from the message pump can invalidate a shadow while replay still uses it.
+    if(s.mode!=SubRes::Uploading){
+        if(recycle)spareTexShadowLocked(c,s.shadow);
+        std::vector<unsigned char>().swap(s.shadow);
+    }
+    s.shadowOn=false;
 }
 // 0.3.200 (pipeline): game thread, before a level shadow is made: the smallest spare that holds `bytes` without wasting more than half of it moves into `out`
 // (its assign() then neither frees nor allocates). Zero-filled as before (assign): a fresh level's unwritten bytes stay deterministic.
@@ -74,8 +80,8 @@ inline bool makeRoomForShadow(StreamCore& c,std::size_t bytes,bool mayEvictReloc
     while(!c.q.texShadowAdmit(bytes)){
         std::lock_guard<std::mutex> l(c.texMutex);
         SubRes* victim=nullptr;
-        for(SubRes* s=c.texFresh.head;s&&!victim;s=s->lru.next)if(s!=keep&&s->mode!=SubRes::Shadowed)victim=s;
-        if(!victim&&mayEvictRelocked)for(SubRes* s=c.texRelocked.head;s&&!victim;s=s->lru.next)if(s!=keep&&s->mode!=SubRes::Shadowed)victim=s;
+        for(SubRes* s=c.texFresh.head;s&&!victim;s=s->lru.next)if(s!=keep&&s->mode==SubRes::Free)victim=s;
+        if(!victim&&mayEvictRelocked)for(SubRes* s=c.texRelocked.head;s&&!victim;s=s->lru.next)if(s!=keep&&s->mode==SubRes::Free)victim=s;
         if(!victim)return false;
         victim->gone=victim->relocked?SubRes::GoneRelocked:SubRes::GoneFresh;   // which list it was on: the cause of the readback its next write lock costs
         dropShadowLocked(c,*victim,true);add(c.q.stats.texShadowEvicted);   // 0.3.200 (pipeline): the allocation may serve the next shadow
@@ -91,7 +97,7 @@ inline bool makeRoomForFreshKeep(StreamCore& c,std::size_t bytes,const SubRes* k
     while(!c.q.texShadowAdmit(bytes)){
         std::lock_guard<std::mutex> l(c.texMutex);
         SubRes* victim=nullptr;
-        for(SubRes* s=c.texFresh.head;s&&!victim;s=s->lru.next)if(s!=keep&&s->mode!=SubRes::Shadowed)victim=s;
+        for(SubRes* s=c.texFresh.head;s&&!victim;s=s->lru.next)if(s!=keep&&s->mode==SubRes::Free)victim=s;
         if(!victim||c.frameNo-victim->lastLockFrame<kFreshEvictAgeFrames)return false;
         victim->gone=SubRes::GoneFresh;dropShadowLocked(c,*victim,true);add(c.q.stats.texShadowEvicted);   // 0.3.200 (pipeline): the fresh keep that evicted it usually takes this allocation
     }
@@ -302,7 +308,7 @@ inline HRESULT lockImage(ProxyBase& self,ProxyBase& root,SubRes& sub,UINT route,
 }
 inline HRESULT unlockImage(ProxyBase& self,SubRes& sub,UINT route,UINT level,UINT face){
     LockScope _ts(*self.core);Queue& q=self.core->q;
-    if(sub.mode==SubRes::Free)return D3DERR_INVALIDCALL;
+    if(sub.mode==SubRes::Free||sub.mode==SubRes::Uploading)return D3DERR_INVALIDCALL;
     if(self.core->idleImages.enabled())self.core->reportIdleImage(self.core->idleImages.unlock(std::uint64_t(reinterpret_cast<std::uintptr_t>(&sub)),nowNs()));
     const bool volume=route==RouteVolume||route==RouteVolumeTexture;
     const std::uint16_t cmd=(std::uint16_t)(volume?Cmd::UnlockBox:Cmd::UnlockRect);
@@ -312,22 +318,27 @@ inline HRESULT unlockImage(ProxyBase& self,SubRes& sub,UINT route,UINT level,UIN
         q.commit();sub.stage=nullptr;sub.mode=SubRes::Free;sub.written=true;sub.contentSeq=q.recordedSeq();q.publish();return D3D_OK;
     }
     if(sub.mode==SubRes::Shadowed){
-        sub.mode=SubRes::Free;
-        if(sub.flags&D3::kLockReadOnly)return D3D_OK;
+        if(!sub.shadowOn||(sub.flags&D3::kLockReadOnly)){sub.mode=SubRes::Free;return D3D_OK;}
+        sub.mode=SubRes::Uploading;
         const std::size_t total=std::size_t(sub.rows)*sub.rowBytes*sub.slices,sliceBytes=std::size_t(sub.levelRows)*sub.levelRowBytes;
+        const auto* source=sub.shadow.data()+sub.shadowOffset;
         auto gather=[&](unsigned char* out){
             for(UINT z=0;z<sub.slices;++z)for(UINT y=0;y<sub.rows;++y)
-                std::memcpy(out+(std::size_t(z)*sub.rows+y)*sub.rowBytes,sub.shadow.data()+sub.shadowOffset+z*sliceBytes+std::size_t(y)*sub.levelRowBytes,sub.rowBytes);};
-        sub.pitch=sub.rowBytes;sub.slicePitch=sub.rowBytes*sub.rows;
+                std::memcpy(out+(std::size_t(z)*sub.rows+y)*sub.rowBytes,source+z*sliceBytes+std::size_t(y)*sub.levelRowBytes,sub.rowBytes);};
+        bool submitted=true;
         if(Block* blk=q.tryAllocBlock(total?total:1)){
             blk->used=std::uint32_t(total);gather(blk->data());
+            sub.pitch=sub.rowBytes;sub.slicePitch=sub.rowBytes*sub.rows;
             auto* a=static_cast<UnlockImageArgs*>(q.reserveWithBlock(cmd,sizeof(UnlockImageArgs),blk));*a=makeUnlockArgs(self,sub,route,level,face);q.commit();
-        }else{   // no Block: the same rows written synchronously
-            std::vector<unsigned char> tmp(total?total:1);gather(tmp.data());const UnlockImageArgs a=makeUnlockArgs(self,sub,route,level,face);
-            add(self.core->q.stats.passThrough[unsigned(PassReason::Budget)]);
-            if(!runTask(*self.core,[&](StreamCore& c){applyImageUnlock(c,a,tmp.data());},Cmd::SyncUnlock))return D3DERR_INVALIDCALL;
+        }else{   // No Block: borrow the full-level pitches for the synchronous upload.
+            auto a=makeUnlockArgs(self,sub,route,level,face);a.pitch=sub.levelRowBytes;a.slicePitch=UINT(sliceBytes);
+            countPass(self,PassReason::Budget);
+            submitted=runTask(*self.core,[&](StreamCore& c){applyImageUnlock(c,a,source);},Cmd::SyncUnlock);
         }
-        sub.written=true;sub.contentSeq=q.recordedSeq();q.publish();return D3D_OK;   // Ready uploads can run while the caller decodes the next image.
+        sub.mode=SubRes::Free;
+        if(!sub.shadowOn)std::vector<unsigned char>().swap(sub.shadow);
+        if(!submitted)return D3DERR_INVALIDCALL;
+        sub.written=true;if(sub.shadowOn)sub.contentSeq=q.recordedSeq();q.publish();return D3D_OK;   // Ready uploads can run while the caller decodes the next image.
     }
     HRESULT hr=D3DERR_INVALIDCALL;
     if(!runTask(*self.core,[&](StreamCore&){if(!(sub.flags&D3::kLockReadOnly)){invalidateParticleTexture(&self);if(NorthlightAtlasProof::enabled.load(std::memory_order_relaxed))NorthlightAtlasProof::cache().invalidate((self.parent?self.parent:&self)->raw);}if(self.inner)hr=callUnlock(route,self.inner,level,face);},Cmd::SyncUnlock))return D3DERR_INVALIDCALL;

@@ -14,6 +14,7 @@ import os
 import re
 from pathlib import Path, PurePosixPath
 import shutil
+import struct
 import subprocess
 import sys
 import uuid
@@ -32,6 +33,24 @@ MARKER = b'Northlight renderer '
 PROXY_SIGNATURE = b'PROXY module=%ls root=%ls'   # the proxy's start-up log line; carries no product name
 PACKAGE = Path(__file__).resolve().parent
 RESOURCES = 'northlight-assets.bin'
+AMD64 = 0x8664
+
+
+def pe_machine(path):
+    try:
+        with path.open('rb') as stream:
+            header = stream.read(64)
+            if len(header) != 64 or header[:2] != b'MZ':
+                return None
+            stream.seek(struct.unpack_from('<I', header, 0x3c)[0])
+            pe = stream.read(26)
+        if len(pe) == 26 and pe[:4] == b'PE\0\0':
+            machine = int.from_bytes(pe[4:6], 'little')
+            if pe[24:26] == {0x14c: b'\x0b\x01', AMD64: b'\x0b\x02'}.get(machine):
+                return machine
+    except OSError:
+        pass
+    return None
 
 
 def renderer_resources(dll):
@@ -139,9 +158,17 @@ def is_ours(client, name=PROXY):
     return is_renderer(data) or hashlib.sha256(data).hexdigest() in \
         {a for _, r in transactions(client) for e in r['files'] if e['path'] == name for a in afters(e)}
 
+def renderer_ini(path):
+    data = path.read_bytes()
+    for prefix, encoding in ((b'\xff\xfe', 'utf-16-le'), (b'\xfe\xff', 'utf-16-be'), (b'\xef\xbb\xbf', 'utf-8')):
+        if data.startswith(prefix):
+            return data[len(prefix):].decode(encoding, errors='surrogateescape'), prefix, encoding
+    return data.decode('utf-8', errors='surrogateescape'), b'', 'utf-8'
+
+
 def config_backend(path):
     if not path.is_file(): return None
-    for line in path.read_text(encoding='utf-8', errors='replace').splitlines():
+    for line in renderer_ini(path)[0].splitlines():
         key, _, value = line.partition('=')
         if key.strip().lower() == 'backend': return value.strip().lower()
     return None
@@ -453,7 +480,32 @@ def resolve_backend(client, backend=None):
 def config_bytes(backend):
     return ('[Renderer]\r\nBackend='+backend+'\r\n').encode('ascii')
 
-def payload_plan(client, package, use_existing=False, backend=None, extra=None, proxy=True):
+
+def x64_config(path, backend):
+    """Select the packaged backend, keeping unrelated settings and the original encoding."""
+    if not path.is_file():
+        return config_bytes(backend)
+    old, bom, encoding = renderer_ini(path)
+    result, renderer, found = [], False, False
+    for line in old.splitlines(keepends=True):
+        stripped = line.strip()
+        if stripped.startswith('[') and stripped.endswith(']'):
+            renderer = stripped.lower() == '[renderer]'
+            if renderer and not found:
+                result.extend((line if line.endswith(('\r', '\n')) else line + '\r\n', f'Backend={backend}\r\n'))
+                found = True
+                continue
+        if renderer and line.partition('=')[0].strip().lower() in ('backend', 'backendpath'):
+            continue
+        result.append(line)
+    if not found:
+        if result and not result[-1].endswith(('\r', '\n')):
+            result.append('\r\n')
+        result.append(f'[Renderer]\r\nBackend={backend}\r\n')
+    return bom + ''.join(result).encode(encoding, errors='surrogateescape')
+
+
+def payload_plan(client, package, use_existing=False, backend=None, extra=None, proxy=True, x64=False):
     """(plan, staged, foreign): the entries that bring client to the package payload.
     backend is already resolved (resolve_backend; None only with proxy=False, which writes no ini): 'dxvk'/'dxvk2'/'native'
     writes Backend=<backend>; 'legacy' (like use_existing) selects a foreign d3d9.dll kept as the legacy backend.
@@ -467,6 +519,9 @@ def payload_plan(client, package, use_existing=False, backend=None, extra=None, 
     first, staged, config, foreign = switch_plan(client, use_existing) if proxy else ([], {}, None, False)
     effective = 'legacy' if config else backend if backend in ('dxvk', 'dxvk2', 'native') else None
     if config is None and backend in ('dxvk', 'dxvk2', 'native'): config = config_bytes(backend)
+    if x64:
+        effective = 'legacy' if use_existing else backend
+        config = x64_config(safe_path(client, CONFIG), effective)
     manifest = json.loads((package/'payload-manifest.json').read_text(encoding='utf-8'))
     resource_dll = package/'payload'/PROXY
     resource_data = renderer_resources(resource_dll) if resource_dll.is_file() else None
@@ -483,7 +538,7 @@ def payload_plan(client, package, use_existing=False, backend=None, extra=None, 
     # product may have removed it) is skipped with a notice; 'native' and 'legacy' need neither.
     selected = backend or 'dxvk'
     # An installed ini that already says the effective backend is kept byte for byte (BackendPath= and other keys survive).
-    keep_ini = proxy and effective is not None and config_backend(safe_path(client, CONFIG)) == effective
+    keep_ini = not x64 and proxy and effective is not None and config_backend(safe_path(client, CONFIG)) == effective
     if proxy and backend is not None and not keep_ini and CONFIG not in [e['path'] for e in manifest]:
         manifest = manifest+[{'path':CONFIG, 'sha256':None}]
     print('Verifying package and comparing installed files...', flush=True)

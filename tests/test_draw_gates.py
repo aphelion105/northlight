@@ -194,14 +194,14 @@ ctor=renderer[renderer.index('    Device(IDirect3DDevice9* d,IDirect3D9* p'):ren
 code=re.sub(r'"(?:[^"\\]|\\.)*"','""',re.sub(r'/\*.*?\*/|//[^\n]*','',renderer))  # no comments, no string literals
 writes=lambda name,text=None:re.findall(r'(?<![.>:\w])'+name+r'\s*=(?!=)\s*([^;,]*)',code if text is None else text)
 checks['enabled: frame-boundary pipeline refresh combines F10 and enabled effects']=(
-    sorted(writes('enabled'))==['!extensionFault&&masterEnabled&&(!world||world->effectsEnabled())','false','true'] and 'masterEnabled=!masterEnabled;' in member(finish,'if(masterPressed)')
+    sorted(writes('enabled'))==['(!hdr.nativeOutput||nativeSceneDepth)&&!extensionFault&&masterEnabled&&(!world||world->effectsEnabled())','false','true'] and 'masterEnabled=!masterEnabled;' in member(finish,'if(masterPressed)')
     and 'if(!overlay||!overlay->masterHotkey(focus,masterPressed))masterPressed=k10&&!key10;' in finish
     and finish.index('if(masterPressed)')<finish.index('refreshPipeline();')<finish.index('latchDrawGates();'))
 checks['failed=false only in Reset (latched there) and the retry in finishFrameImpl']=(len(re.findall(r'\bfailed\s*=\s*false',code))==3  # + the member initialiser
     and 'failed=false;latchDrawGates();' in reset and 'failed=false;logf("Effects retry requested after frame cleanup");' in finish
     and finish.index('failed=false;logf("Effects retry')<finish.index('latchDrawGates();'))
-checks['F9/F12/setEffects only in finishFrameImpl, before the latch']=(code.count('effectKeys.poll(')==1 and sorted(writes('worldDebug'))==['(worldDebug+1)%4','0'] and code.count('->setEffects(')==1
-    and all(x in finish and finish.index(x)<finish.index('latchDrawGates();') for x in ('effectKeys.poll(','worldDebug=(worldDebug+1)%4;','world->setEffects(settings);'))
+checks['F9/F12/setEffects only in finishFrameImpl, before the latch']=(code.count('effectKeys.poll(')==1 and sorted(writes('worldDebug'))==['(worldDebug+1)%(SsaoView+1)','0'] and code.count('->setEffects(')==1
+    and all(x in finish and finish.index(x)<finish.index('latchDrawGates();') for x in ('effectKeys.poll(','worldDebug=(worldDebug+1)%(SsaoView+1);','world->setEffects(settings);'))
     and finish.rstrip().endswith('latchDrawGates(); /* 0.3.187: the next frame\'s draw gates, after every input above */\n    }'))
 checks['renderers created in the constructor (latched there), released only at destroy']=(
     all(code.count(x+'=std::make_unique<')==1 and x+'=std::make_unique<' in ctor for x in ('world','celestialDiscs','shadowBlobs'))
@@ -389,6 +389,9 @@ struct Base{
     bool bindWorldDepth(const D3DSURFACE_DESC&){return false;}
     bool extensionFault=false,failed=false,enabled=true,applied=false,terrain=false,gateFrame=false,rainMaskCleared=false,rainMaskDrawn=false,rainMaskFrame=false,rainMaskOk=false,rainMrtBound=false,rainMaskFailed=false,rainMaskMismatchLogged=false;UINT width=0,height=0;IDirect3DTexture9* rainMask=nullptr;IDirect3DSurface9* rainMaskSurface=nullptr;IDirect3DSurface9* rainMaskMS=nullptr;D3DMULTISAMPLE_TYPE rainMaskMsType=D3DMULTISAMPLE_NONE,rainMaskWantType=D3DMULTISAMPLE_NONE;DWORD rainMaskMsQuality=0,rainMaskWantQuality=0;unsigned rainMaskDraws=0;
     static constexpr int debugMode=0,kTagMask=3,kFamilyShift=3,kNativeShadowTag=64;int worldDebug=0;
+    static constexpr int SsaoView=5;
+    struct{unsigned left=0;} uiDrawDiagnostic;
+    void captureUiDraw(){}
     struct SpellMock{void reset(){}} spell;void spellSync(){}bool spellOn=false;NorthlightSpellLayer::DrawArgs spellArgs;bool spellGate(){return false;}bool spellDraw(bool,bool){return false;}
     std::unordered_map<IDirect3DVertexShader9*,int> vsTags;
     std::unordered_map<IDirect3DVertexShader9*,std::uint64_t> vsHashes;std::unordered_map<IDirect3DPixelShader9*,std::uint64_t> psHashes;

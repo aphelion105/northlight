@@ -142,10 +142,10 @@ cf=r[r.index('void clearFrame() {'):r.index('void releaseResources(bool preserve
 checks['clearFrame resets the latch and the census']='earlyDepth.reset()' in cf and 'resetTranslucentCensus()' in cf
 fin=r[r.index('void finishFrameImpl() {'):r.index('++frame;mirrorState.gate.frame')]
 checks['TRANSLUCENT logged before clearFrame in finishFrameImpl']=fin.index('TRANSLUCENT frame=')<fin.index('clearFrame();')
-terrain_start=r.index('if(!bindWorldDepth(desc))return;')
-terrain_publish='terrain=true; captured=false;'
-terr=r[terrain_start:r.index(terrain_publish,terrain_start)+len(terrain_publish)]
-checks['terrain draw undo uses earlyCaptured, counted before captured=false']=terr.index('captured&&earlyDepth.earlyCaptured')<terr.index('++earlyResolveUndone')<terr.index('terrain=true; captured=false;')
+terr=r[r.index('void beginTerrainDepth()'):r.index('void beforeDraw(')]
+checks['terrain draw undo uses earlyCaptured, counted before captured=false']=terr.index('captured&&earlyDepth.earlyCaptured')<terr.index('++earlyResolveUndone')<terr.index('terrain=true;captured=false;')
+admission=r[r.index('if(!bindWorldDepth(desc))return;'):r.index('if(resources(desc.Width,desc.Height')]
+checks['terrain admission reopens depth only after a successful bind']=admission.index('if(!bindWorldDepth(desc))return;')<admission.index('beginTerrainDepth();')
 clr=r[r.index('HRESULT STDMETHODCALLTYPE Clear('):];clr=clr[:clr.index('\n    }')+6]
 checks['Clear(Z) after the early resolve freezes it instead of resolving']='earlyDepth.earlyCaptured' in clr and 'earlyDepth.freeze()' in clr and 'resolveDepth()' in clr
 checks['state reads cached per draw']=('NorthlightDrawPreparation::lazyState(readState,type)' in impl and 'known=true' in fp.src('draw_world_state.h').read_text())

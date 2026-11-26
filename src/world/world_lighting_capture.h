@@ -212,16 +212,19 @@ public:
     bool presentedFrame(IDirect3DSurface9* color,IDirect3DTexture9* resolvedDepth,
                         const D3DSURFACE_DESC& sceneDepth)noexcept{
         D3DSURFACE_DESC desc{},resolved{};
+        const bool single=sceneDepth.MultiSampleType==D3DMULTISAMPLE_NONE;
+        const auto intz=D3DFORMAT(MAKEFOURCC('I','N','T','Z')),df24=D3DFORMAT(MAKEFOURCC('D','F','2','4'));
         if(!active()||!color||!resolvedDepth||FAILED(color->GetDesc(&desc))||
-           FAILED(resolvedDepth->GetLevelDesc(0,&resolved))||resolved.Format!=(D3DFORMAT)MAKEFOURCC('I','N','T','Z')||
+           FAILED(resolvedDepth->GetLevelDesc(0,&resolved))||(resolved.Format!=intz&&!(single&&resolved.Format==df24))||
            resolved.Width!=sceneDepth.Width||resolved.Height!=sceneDepth.Height||
-           desc.Format!=D3DFMT_A16B16G16R16F||desc.MultiSampleType!=D3DMULTISAMPLE_2_SAMPLES||
-           sceneDepth.Format!=D3DFMT_D24S8||sceneDepth.MultiSampleType!=D3DMULTISAMPLE_2_SAMPLES||
+           desc.Format!=D3DFMT_A16B16G16R16F||desc.MultiSampleType!=sceneDepth.MultiSampleType||
+           (!single&&(sceneDepth.Format!=D3DFMT_D24S8||sceneDepth.MultiSampleType!=D3DMULTISAMPLE_2_SAMPLES))||
            desc.MultiSampleQuality!=sceneDepth.MultiSampleQuality||desc.Width!=sceneDepth.Width||desc.Height!=sceneDepth.Height){
             unavailable("presented-frame","unexpected-color-or-depth-source");return false;
         }
-        std::fprintf(journal_,"{\"event\":\"depth-resolve\",\"source_format\":%u,\"source_samples\":%u,\"sample_quality\":%lu,\"method\":\"RESZ-INTZ\"}\n",
-                     unsigned(sceneDepth.Format),unsigned(sceneDepth.MultiSampleType),(unsigned long)sceneDepth.MultiSampleQuality);
+        std::fprintf(journal_,"{\"event\":\"depth-resolve\",\"source_format\":%u,\"source_samples\":%u,\"sample_quality\":%lu,\"method\":\"%s\"}\n",
+                     unsigned(sceneDepth.Format),unsigned(sceneDepth.MultiSampleType),(unsigned long)sceneDepth.MultiSampleQuality,
+                     resolved.Format==df24?"RESZ-DF24":"RESZ-INTZ");
         const bool savedColor=surface("color",color);
         if(!call("BeginScene-frame-parity",device_->BeginScene()))return false;
         const bool savedDepth=depth("depth",resolvedDepth,sceneDepth);

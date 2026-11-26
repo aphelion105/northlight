@@ -90,8 +90,8 @@ Every effect below is on by default and is drawn on top of the game's own frame.
   negative and positive percentages (-100..200). Northrend aurora adds a subtle
   green/purple sky fill between sunset and moonrise, transported through the
   existing GI probes and blocked by geometry. Its strength is adjustable (0 disables it).
-- **Hotkeys** (with Ctrl+Shift): F7 fog and haze, F8 GI, F9 shadows, F10 all effects, F11 the settings window, F12 debug views
-  (shadows, GI, fog volume). On a Mac, first remove macOS's own Control+F7 shortcut. The settings window (Ctrl+Shift+F11) is
+- **Hotkeys** (with Ctrl+Shift): F4 UI draw capture, F7 fog and haze, F8 GI, F9 shadows, F10 all effects, F11 the settings window, F12 [debug views](docs/development.md#in-game-inspection)
+  (shadows, GI, fog volume, normals, SSAO). On a Mac, first remove macOS's own Control+F7 shortcut. The settings window (Ctrl+Shift+F11) is
   drawn by the renderer over the game; it takes the mouse only over the window and the keyboard only while one of its text
   fields is active. `[Renderer] SettingsOverlay=0` in `northlight-renderer.ini` turns it off; `[Renderer] SettingsOverlayKey`
   (default `Ctrl+Shift+F11`, F1-F12 with Ctrl/Shift/Alt) changes its key.

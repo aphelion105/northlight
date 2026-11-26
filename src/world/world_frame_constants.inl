@@ -80,21 +80,28 @@
         if(profileSampled())logf("WORLD fog clouds active=%d coverage=%.3f threshold=%.3f height=%.1f speed=%.2f dir=(%.2f %.2f) sigmaMax=%.4f lush=%.2f noiseReady=%d",cf.active?1:0,cf.coverage,cf.threshold,cf.height,cloudWind.speed,cloudWind.dir[0],cloudWind.dir[1],cf.sigmaMax,cloudLush,fogCloudNoise().ready.load(std::memory_order_acquire)?1:0);
     }
 
+    void setScreenCamera(float (&c)[68][4],UINT w,UINT h,float nearZ,float farZ,float minZ,float maxZ)const{
+        c[0][0]=1.f/w;c[0][1]=1.f/h;c[0][2]=nearZ;c[0][3]=farZ;
+        c[1][0]=projection[0];c[1][1]=projection[1];c[1][2]=projection[2];c[1][3]=minZ;
+        c[2][0]=1.f/(maxZ-minZ);
+        memcpy(c[3],context.inverseView,64);
+        c[33][0]=float(w);c[33][1]=float(h);c[33][2]=float(w/2);c[33][3]=float(h/2);
+    }
+
     void prepareFrameShaderBank(const ScreenFrameInputs& in,const NorthlightWeatherEffects::Frame& wx,
                                 const NorthlightFogClouds::Frame& cf,const NorthlightCelestialProfiles::Profile& volumePalette,
                                 ScreenFrameConstants& frame){
         auto& c=frame.rows;
-        const UINT w=in.w,h=in.h;
-        const float farZ=in.farZ,minZ=in.minZ,maxZ=in.maxZ;
+        const UINT w=in.w;
+        const float farZ=in.farZ;
         const int debug=in.debug,firstSource=in.firstSource;
         const auto& sourceActive=in.sourceActive;
         const bool hdrMode=in.hdrMode;
         const auto& frameMap=in.frameMap;
         skyTransmittanceFrame=cf.active?atmosphere.veil[1]:atmosphere.veil[0]; /* the clouds' term only when the pass is really active (1: no fog field or no fog) */
-        c[33][0]=float(w);c[33][1]=float(h);c[33][2]=float(w/2);c[33][3]=float(h/2);
-        c[1][0]=projection[0];c[1][1]=projection[1];c[1][2]=projection[2];c[1][3]=minZ;
-        c[2][0]=1.f/(maxZ-minZ);c[2][1]=NorthlightShadowCascades::NearRadius;c[2][2]=farMapRadius(firstSource);c[2][3]=1.f/1024;
-        memcpy(c[3],context.inverseView,64);memcpy(c[7],sourceMatrices[firstSource][0],64);memcpy(c[11],sourceMatrices[firstSource][1],64);
+        setScreenCamera(c,w,in.h,c[0][2],farZ,in.minZ,in.maxZ);
+        c[2][1]=NorthlightShadowCascades::NearRadius;c[2][2]=farMapRadius(firstSource);c[2][3]=1.f/1024;
+        memcpy(c[7],sourceMatrices[firstSource][0],64);memcpy(c[11],sourceMatrices[firstSource][1],64);
         memcpy(c[15],context.camera,12);memcpy(c[16],context.lightDirection,12);memcpy(c[17],context.direct,12);memcpy(c[18],context.ambient,12);
         /* Ambient policies follow the selected solar/lunar schedule. */
         const auto naturalSky=NorthlightForeverSky::evaluateSelected(celestialValid?celestial.dayFraction:-1.,NorthlightQuality::foreverCelestial(quality));

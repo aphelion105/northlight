@@ -3,6 +3,7 @@
 #include "composite_distance_gpu.cpp"
 #undef main
 #include "effect_coverage.h"
+#include "device_mirror.h"
 #include "forwarders.h"
 #include <array>
 using namespace NorthlightEffectCoverage;
@@ -160,6 +161,9 @@ int main(int argc,char** argv){
             auto compositePixels=[&](unsigned variant,bool protected_){std::vector<float> p(N*N*4);for(unsigned y=0;y<N;++y)for(unsigned x=0;x<N*4;++x){std::uint16_t h;std::memcpy(&h,static_cast<char*>(lock.pBits)+(variant*N+y)*lock.Pitch+((protected_?N*4:0)+x)*2,2);p[y*N*4+x]=half(h);}return p;};
             for(unsigned variant=0;variant<11;++variant){
                 const bool hdr=variant==2||variant==3||variant==5||variant==6||variant==8||variant==10;
+                const bool world=variant<4||variant==6||variant>=9;
+                // SDR world and material composites encode after doing their coverage math in linear light.
+                const bool encodedLinear=!hdr&&(world||variant==4);
                 const auto unmasked=compositePixels(variant,false),masked=compositePixels(variant,true);
                 if(control==5)blanketReceiver[variant]=masked;
                 if(control>=6){assert(masked==unmasked);assert(blanketReceiver[variant].size()==masked.size());
@@ -167,12 +171,13 @@ int main(int argc,char** argv){
                 for(unsigned i=0;i<N*N;++i)for(unsigned k=0;k<3;++k){float original=actual[i*4+2-k]/255.f;
                     float cover=coverage[i*4+2]/255.f;
                     if(additive){float remaining=std::max(original-coverage[i*4+2-k]/255.f,0.f);cover=std::clamp(((hdr?linear(original):original)-(hdr?linear(remaining):remaining))/std::max(hdr?linear(original):original,.000001f),0.f,1.f);}
-                    if(hdr)original=linear(original);
-                    const bool world=variant<4||variant==6||variant>=9;
+                    if(hdr||encodedLinear)original=linear(original);
+                    const float open=encodedLinear?linear(unmasked[i*4+k]):unmasked[i*4+k];
+                    const float protectedColor=encodedLinear?linear(masked[i*4+k]):masked[i*4+k];
                     const float fogRgb[3]={control>=5?.4f:.05f,control>=5?.35f:.02f,control>=5?.3f:0.f};
-                    const float expected=unmasked[i*4+k]*(1-cover)+original*cover+(additive&&world?fogRgb[k]*cover:0);
-                    const float error=std::fabs(masked[i*4+k]-expected);worst=std::max(worst,error);if(!(error<.003f)){std::fprintf(stderr,"variant=%s sm=%u ms=%u a=%g cover=%g actual=%g expected=%g\n",entries[variant],sm+2,ms,alpha,cover,masked[i*4+k],expected);std::abort();}
-                    if(cover==1&&std::fabs(unmasked[i*4+k]-original)>.05f)++negativeControls;
+                    const float expected=open*(1-cover)+original*cover+(additive&&world?fogRgb[k]*cover:0);
+                    const float error=std::fabs(protectedColor-expected);worst=std::max(worst,error);if(!(error<.003f)){std::fprintf(stderr,"variant=%s sm=%u ms=%u a=%g cover=%g actual=%g expected=%g\n",entries[variant],sm+2,ms,alpha,cover,protectedColor,expected);std::abort();}
+                    if(cover==1&&std::fabs(open-original)>.05f)++negativeControls;
                 }
                 ++compositeCases;
             }
@@ -292,5 +297,32 @@ int main(int argc,char** argv){
         ok(d->EndScene());assert(submits==1&&!capture.active()&&!calls.failNext);
     }
     assert(negativeControls>0&&bannerCounterfactuals>0&&projectedCounterfactuals>0);std::printf("EFFECT_COVERAGE_PASS native=%u composites=%u mixedOrder=%u negativeControls=%u maxError=%g mrtMsaa=%u bannerCounterfactuals=%u projectedCounterfactuals=%u bannerLift=%g sm2 sm3 msaa0 msaa2 alpha premultiplied additive depth alphaTest opaqueOverwrite modulate modulate2x litAlphaErasesProportionally litBannerReceivesFog oldBlanketAlphaDarkControl projectedShadowBelowFog blackZeroEmission nativePixelsExact oneDrawPerInput batchedReplay opaqueOnlyNoDeviceCalls\n",cases,compositeCases,mixed,negativeControls,worst,unsigned(allowMsaa),bannerCounterfactuals,projectedCounterfactuals,bannerLift);
+    if(argc==5&&allowMsaa){
+        DeviceMirror mirror;ExtensionDevice ext(d,&mirror);MirrorGuard gate(mirror.gate);
+        std::vector<unsigned char> expected,expectedScene;
+        for(bool retain:{false,true}){
+            Capture tracked;
+            if(retain)tracked.setTargetRelease([](IDirect3DDevice9* device,unsigned slot,IDirect3DSurface9* image){
+                static_cast<ExtensionDevice*>(device)->releaseCoverageTarget(slot,image);
+            });
+            baseState();mirror.invalidate();ok(ext.SetDepthStencilSurface(nullptr));ok(ext.SetRenderTarget(0,surface));
+            ok(ext.Clear(0,nullptr,D3DCLEAR_TARGET,0,1,0));ok(ext.SetRenderState(D3DRS_ZENABLE,FALSE));
+            ok(ext.SetRenderState(D3DRS_ZWRITEENABLE,FALSE));ok(ext.SetPixelShader(native[1]));ok(ext.BeginScene());
+            const Vertex q[]={{-.5f,-.5f,.5f,1,0,0},{N-.5f,-.5f,.5f,1,1,0},{-.5f,N-.5f,.5f,1,0,1},{N-.5f,N-.5f,.5f,1,1,1}};
+            auto draw=[&]{return ext.DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,q,sizeof(Vertex));};
+            const float light[]={.05f,.1f,.025f,.2f};ok(ext.SetPixelShaderConstantF(0,light,1));
+            ok(ext.SetRenderState(D3DRS_ALPHABLENDENABLE,TRUE));ok(ext.SetRenderState(D3DRS_SRCBLEND,D3DBLEND_SRCALPHA));
+            ok(ext.SetRenderState(D3DRS_DESTBLEND,D3DBLEND_ONE));ok(tracked.draw(&ext,Write::Additive,draw));
+            ok(ext.SetRenderState(D3DRS_DESTBLEND,D3DBLEND_INVSRCALPHA));
+            for(unsigned i=0;i<8;++i)ok(tracked.draw(&ext,Write::Alpha,draw));
+            ok(ext.EndScene());assert(!mirror.deferredTargetMask);
+            auto* packed=tracked.texture(&ext,surface);assert(packed&&tracked.hasEmission());
+            IDirect3DSurface9* packedSurface=nullptr;ok(packed->GetSurfaceLevel(0,&packedSurface));
+            auto mask=pixels(packedSurface),sceneImage=pixels(surface);packedSurface->Release();
+            if(retain){assert(mask==expected&&sceneImage==expectedScene&&mirror.coverageTargetReuses>=12);
+                std::printf("EFFECT_COVERAGE_ATTACHMENT_PASS reuse=%u pixels=bitexact\n",mirror.coverageTargetReuses);}
+            else{expected=std::move(mask);expectedScene=std::move(sceneImage);assert(!mirror.coverageTargetReuses);}
+        }
+    }
     capture.reset();coverageBenchmark(d,native[1]);for(auto* p:native)p->Release();for(auto* p:nativeMrt)p->Release();for(auto* p:composites)p->Release();surface->Release();stage->Release();output->Release();outputStage->Release();scene->Release();d->Release();api->Release();FreeLibrary(module);DestroyWindow(window);
 }

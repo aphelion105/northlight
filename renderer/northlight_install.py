@@ -273,9 +273,13 @@ def host_platform():
 
 
 def windows_running():
-    out = subprocess.run(['tasklist.exe', '/FI', 'IMAGENAME eq wow.exe', '/FO', 'CSV', '/NH'], capture_output=True,
-                         text=True, errors='replace').stdout
-    return ['wow.exe'] if 'wow.exe' in out.lower() else []
+    found = []
+    for name in ('wow.exe', 'WowClient64.exe'):
+        out = subprocess.run(['tasklist.exe', '/FI', 'IMAGENAME eq ' + name, '/FO', 'CSV', '/NH'],
+                             capture_output=True, text=True, errors='replace').stdout
+        if name.lower() in out.lower():
+            found.append(name)
+    return found
 
 
 # Wine and Proton start a game as a process whose command line names the Windows path of Wow.exe
@@ -356,6 +360,8 @@ class Package:
     def __init__(self, root, platform):
         self.root, self.platform = Path(root), platform
         self.info = read_json(self.root / 'BUILD-INFO.json') or {}
+        self.x64 = platform == 'windows' and self.info.get('renderer_arch') == 'x64'
+        self.game_exe = 'WowClient64.exe' if self.x64 else 'wow.exe'
         self.version = self.info.get('version', 'dev')
         self.payload = self.root / 'payload'
         self.dll = self.payload / 'd3d9.dll'
@@ -530,7 +536,7 @@ class Installer:
             return found[int(raw) - 1] if raw.isdigit() and 0 < int(raw) <= len(found) else raw
         if self.platform == 'linux':
             return input('Game folder (the folder with Wow.exe, inside your Wine prefix or Steam/Lutris library): ')
-        return input('Game folder (the folder with wow.exe): ')
+        return input(f'Game folder (the folder with {self.pkg.game_exe}): ')
 
     def preflight(self, client, locale):
         """Read-only checks; returns the locale. Raises Refusal with what to do next."""
@@ -557,9 +563,12 @@ class Installer:
                 raise Refusal(f'The game folder path is too long for the game under Wine ({shown}: {path_length} '
                               f'characters; at most {WINDOWS_MAX_PATH - LONGEST_CACHE_NAME}). Move the game folder to a '
                               'shorter path, for example ~/Games/WoW.')
-        entries = {p.name.lower() for p in client.iterdir()}
-        if 'wow.exe' not in entries:
-            raise Refusal(f'wow.exe is not in {client}. Choose the folder that holds wow.exe.')
+        entries = {p.name.lower(): p for p in client.iterdir()}
+        game = entries.get(self.pkg.game_exe.lower())
+        if game is None or not game.is_file():
+            raise Refusal(f'{self.pkg.game_exe} is not in {client}. Choose the folder that holds it.')
+        if self.pkg.x64 and INSTALL.pe_machine(game) != INSTALL.AMD64:
+            raise Refusal(f'{game.name} is not a valid AMD64 executable. Choose the x64 game folder.')
         try:
             data = client_archives.data_dir(client)
         except FileNotFoundError:
@@ -628,6 +637,8 @@ class Installer:
             if path.is_file():
                 if INSTALL.package_sha(path) != e['sha256']:
                     raise Refusal(INSTALL.package_problem(e['path'], backend, False, 'payload/' + e['path']))
+                if self.pkg.x64 and path.suffix.lower() == '.dll' and INSTALL.pe_machine(path) != INSTALL.AMD64:
+                    raise Refusal(f'{e["path"]} is not an AMD64 DLL. Unzip the x64 package again.')
             elif self.proxy and other:
                 self.say(f'Note: payload/{e["path"]} is missing (an antivirus product may have removed it); '
                          f'backend {other} will not be available.')
@@ -1142,6 +1153,9 @@ class Installer:
             if not ((proxy.is_file() and not INSTALL.is_ours(client)) or (client / INSTALL.LEGACY).is_file()):
                 raise Refusal('--backend legacy keeps the d3d9.dll found in the game folder as the backend, '
                               'but there is none. Use --backend dxvk, dxvk2 or native.')
+            legacy = proxy if proxy.is_file() and not INSTALL.is_ours(client) else client / INSTALL.LEGACY
+            if self.pkg.x64 and INSTALL.pe_machine(legacy) != INSTALL.AMD64:
+                raise Refusal('The legacy D3D9 backend is not AMD64. Use --backend dxvk, dxvk2 or native.')
         if self.platform == 'mac':
             try:
                 migrate().plan(client, self.pkg.dll, roots=[self.mac_backups(client)])
@@ -1286,7 +1300,7 @@ class Installer:
                 payload = 'installed (mods/d3d9.dll preloaded from dlls.txt)'
             plan, staged, _ = INSTALL.payload_plan(client, self.pkg.root, extra=layer, proxy=False)
         else:
-            plan, staged, _ = INSTALL.payload_plan(client, self.pkg.root, backend=p['backend'], extra=layer)
+            plan, staged, _ = INSTALL.payload_plan(client, self.pkg.root, backend=p['backend'], extra=layer, x64=self.pkg.x64)
         files = [e['path'] for e in plan if e['path'] not in layer]
         if plan:
             self.still_closed('installing the renderer files')
@@ -1441,7 +1455,7 @@ def main(argv=None):
     ap.add_argument('action', nargs='?', choices=['install', 'uninstall', 'status'])
     # The launchers pass their own action here, so `Install Northlight.command status --client X` works too.
     ap.add_argument('--default-action', choices=['install', 'uninstall', 'status'], help=argparse.SUPPRESS)
-    ap.add_argument('--client', help='the game folder (the folder with wow.exe); asked when missing')
+    ap.add_argument('--client', help='folder containing the game executable for this package; asked when missing')
     ap.add_argument('--locale', help='the game language, e.g. enUS (default: WTF/Config.wtf, else the only one)')
     ap.add_argument('--cache', help='the Northlight-cache-<variant>-<digest>.zip (or its expanded folder)')
     ap.add_argument('--backend', choices=['dxvk', 'dxvk2', 'native', 'legacy'], default=None,

@@ -21,6 +21,9 @@
 
 #ifdef NORTHLIGHT_WATER
 #include "host_client.h"
+#ifdef _WIN64
+#include "tideglass_x64_inputs.h"
+#endif
 #endif
 
 namespace NorthlightStream {
@@ -113,10 +116,16 @@ public:
     GameSnapshot()noexcept{}
 #ifdef NORTHLIGHT_WATER
     WaterHostFrameRef waterFrame;
+#ifdef _WIN64
+    std::shared_ptr<const NorthlightTideglassX64::Inputs> water64;
+#endif
 #endif
     void clear(){
 #ifdef NORTHLIGHT_WATER
         waterFrame = {};
+#ifdef _WIN64
+        water64.reset();
+#endif
 #endif
         keyCount_=copyCount_=0;used_=0;overflowed_=false;mode=Mode::Idle;triggerKind=0;triggerDraw=0;hits=misses=0;
         nativeLights.clear();menu.clear();menuCaptureReject=0;

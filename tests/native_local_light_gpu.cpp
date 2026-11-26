@@ -291,6 +291,27 @@ int main(int argc,char** argv){
     NorthlightNativeLocalLighting budget(d);light.rendererFrame=10;must(d->SetPixelShader(bad));must(budget.draw(light,vs,bad,[]{return S_OK;}));assert(budget.coldPairs==1);must(d->SetPixelShader(ps));must(budget.draw(light,vs,ps,[]{return S_OK;}));assert(budget.coldPairs==1&&budget.deferredPairs==1);
     light.rendererFrame=11;must(d->SetPixelShader(bad));must(budget.draw(light,vs,bad,[]{return S_OK;}));must(d->SetPixelShader(ps));must(budget.draw(light,vs,ps,[]{return S_OK;}));assert(budget.coldPairs==2);must(d->SetPixelShader(second));must(budget.draw(light,vs,second,[]{return S_OK;}));assert(budget.coldPairs==2);
     light.rendererFrame=12;must(d->SetPixelShader(second));must(budget.draw(light,vs,second,[]{return S_OK;}));assert(budget.coldPairs==3);must(d->SetPixelShader(ps));budget.reset();must(budget.draw(light,vs,ps,[]{return S_OK;}));assert(budget.coldPairs==3);light.rendererFrame=13;must(budget.draw(light,vs,ps,[]{return S_OK;}));assert(budget.coldPairs==4);budget.reset();bad->Release();second->Release();checked.reset();
+    {
+        NorthlightNativeLocalLighting warmup(d);
+        warmup.setShaderWarmup(50);
+        unsigned submissions=0;
+        IDirect3DVertexShader9* active=nullptr;
+        const auto once=[&]{
+            must(d->GetVertexShader(&active));
+            assert(active&&(submissions==0)==(active==vs));
+            active->Release();
+            ++submissions;
+            return S_OK;
+        };
+        must(warmup.draw(light,vs,ps,once));
+        assert(submissions==1&&warmup.coldPairs==1&&warmup.draws==0&&warmup.warmupDeferrals==1);
+        Sleep(65);
+        ++light.rendererFrame;
+        must(warmup.draw(light,vs,ps,once));
+        assert(submissions==2&&warmup.coldPairs==1&&warmup.draws==1&&warmup.warmupDeferrals==1);
+        must(d->GetVertexShader(&active));assert(active==vs);active->Release();
+        std::printf("NATIVE_SHADER_WARMUP_PASS originalWhilePending=1 patchedAfterWarmup=1 noRecreation=1 restored=1\n");
+    }
 #ifndef NORTHLIGHT_NATIVE_DUPLICATE_BASELINE
     if(std::getenv("NORTHLIGHT_TEST_SHARING_FAULTS"))nativeLocalCreationFallback(d,light,vs,ps,two);
 #endif

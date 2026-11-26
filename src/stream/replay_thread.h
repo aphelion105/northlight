@@ -469,6 +469,9 @@ private:
                 (unsigned long long)t.large,(unsigned long long)t.invalidations,(unsigned long long)t.evictions,(unsigned long long)t.releases);log(line);
         }
         touched_.clear();std::fill(touchedFlag_.begin(),touchedFlag_.end(),false);
+#if defined(_WIN64) && !defined(NORTHLIGHT_REPLAY_STAND)
+        clearFrameSnapshot();
+#endif
     }
     IdlePoint idlePoint()const{
         const auto epoch=core.queryEpoch.load(std::memory_order_acquire);const auto cooperative=core.coopState.load(std::memory_order_acquire);
@@ -692,7 +695,7 @@ private:
         case Cmd::Device_UpdateTexture:destination=reinterpret_cast<const Args_Device_UpdateTexture*>(h+1)->pDestinationTexture;break;
         case Cmd::Device_StretchRect:destination=reinterpret_cast<const Args_Device_StretchRect*>(h+1)->dst_surface;break;
         case Cmd::Device_ColorFill:destination=reinterpret_cast<const Args_Device_ColorFill*>(h+1)->surface;break;
-        case Cmd::Texture_GenerateMipSubLevels:{auto* proxy=particleTextureRoot(ProxyBase::of(reinterpret_cast<const Args_Texture_GenerateMipSubLevels*>(h+1)->self));if(proxy){NorthlightParticleTextures::cache().invalidate(proxy->raw);NorthlightParticleTextures::View view;if(NorthlightMaterialTextures::cache().lookup(proxy->raw,view)&&view.mip)NorthlightMaterialTextures::cache().invalidate(proxy->raw);}return;}
+        case Cmd::Texture_GenerateMipSubLevels:{auto* proxy=particleTextureRoot(ProxyBase::of(reinterpret_cast<const Args_Texture_GenerateMipSubLevels*>(h+1)->self));if(proxy){NorthlightParticleTextures::cache().invalidate(proxy->raw);NorthlightTreeCanopy::forget(proxy->raw);NorthlightParticleTextures::View view;if(NorthlightMaterialTextures::cache().lookup(proxy->raw,view)&&view.mip)NorthlightMaterialTextures::cache().invalidate(proxy->raw);}return;}
         default:return;
         }
         // Full-copy material snapshots are compared after the real HRESULT in
@@ -820,12 +823,20 @@ private:
             if(particleTail){particlePair(nullptr);particleTail=nullptr;}
         };
         std::uint16_t lastCmd=kExpressIdle;   // the id of the last command executed (an express readback records what it waited behind), kExpressIdle after an idle wait
+        std::uint16_t lastIdleCmd=kExpressIdle;
+        const auto idleCommand=[](const CommandHeader* header){
+            if(header->id!=std::uint16_t(Cmd::Quiesce))return header->id;
+            Task* task;
+            std::memcpy(&task,header+1,sizeof task);
+            return std::uint16_t(task->diagnosticLabel);
+        };
         for(;;){
             const CommandHeader* h=q.next(false);
             if(!h){
                 endPair();
-                const auto before=lastCmd;
+                const auto before=lastIdleCmd;
                 lastCmd=kExpressIdle;
+                lastIdleCmd=kExpressIdle;
                 q.serveExpress(lastCmd);
                 // Pending queries keep the original 1 ms wait; publication wakes
                 // either path. Profiling reuses this wait's existing clock pair.
@@ -834,12 +845,12 @@ private:
                 if(profile){
                     const auto first=idlePoint();const auto t0=nowNs();const auto cpu=idleProfile_.open()?IdleCpuSample{}:producerCpuSample();h=timedWait?q.nextTimed(1):q.next(true);
                     const auto waitEnd=nowNs();own(idleNs,waitEnd-t0);const auto last=idlePoint();
-                    idleProfile_.wait(t0,waitEnd,first,last,before,cpu);if(h)finishIdle(waitEnd,last,h->id);
+                    idleProfile_.wait(t0,waitEnd,first,last,before,cpu);if(h)finishIdle(waitEnd,last,idleCommand(h));
                     else if(stopNow_.load()){finishIdle(waitEnd,last,kExpressIdle,true);logIdleGaps();return;}
                 }else{const auto t0=nowNs();h=timedWait?q.nextTimed(1):q.next(true);own(idleNs,nowNs()-t0);}
                 if(!h){if(stopNow_.load())return;continue;}
             }
-            else if(idleTracking_&&diag_&&idleProfile_.open())finishIdle(nowNs(),idlePoint(),h->id);
+            else if(idleTracking_&&diag_&&idleProfile_.open())finishIdle(nowNs(),idlePoint(),idleCommand(h));
             // The batch that published this command has already been acquired.
             // A future END cannot pass an earlier posted query task.
             q.serveExpress(lastCmd,endPair);
@@ -905,11 +916,16 @@ private:
             if(h==indexedTail||h==particleTail)endPair();
             if(timed){const auto ended=nowNs();replayProfile_.record(id,ended>=started?ended-started:0);}
             lastCmd=h->id;
+            if(idleTracking_&&diag_)lastIdleCmd=idleCommand(h);
             q.retire(h);
             if(id==(unsigned)Cmd::Present||id==(unsigned)Cmd::SwapPresent)logReplayProfile();
         }
     }
 public:
+#if defined(_WIN64) && !defined(NORTHLIGHT_REPLAY_STAND)
+    // Replay owner only. Device Reset and Present end the snapshot's frame.
+    void clearFrameSnapshot(){activateSnapshot(nullptr);}
+#endif
     // Game thread, creating a proxy synchronously (memory pressure, shared handles): the same create the queue would run.
     HRESULT createNow(const CreateArgs& a,Cmd id,const void* extra){return create(a,id,extra);}
 };

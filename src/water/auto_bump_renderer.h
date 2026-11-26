@@ -200,7 +200,8 @@ class NorthlightAutoBump {
     VertexIdentity vertexIdentity=nullptr;void* vertexIdentityContext=nullptr;bool vertexOverflow=false;
     std::unordered_map<IDirect3DPixelShader9*,unsigned> pixels;
     IDirect3DPixelShader9* shaders[8]={},*sharedShaders[8]={},*normalShaders[8]={};
-    struct NativeCapture {IDirect3DPixelShader9* source=nullptr,*shader=nullptr;unsigned constant=128,first=256,last=0,samplers=0;bool deferredSafe=false,pixelFloatOnly=false;};
+    using ShaderClock=std::chrono::steady_clock;
+    struct NativeCapture {IDirect3DPixelShader9* source=nullptr,*shader=nullptr;unsigned constant=128,first=256,last=0,samplers=0;bool deferredSafe=false,pixelFloatOnly=false;ShaderClock::time_point readyAfter{};};
     // Rare CPU creation work can happen outside sampled draw scopes, including
     // recognized vertex registration while materials are disabled.
     struct ColdWork {unsigned vertexSources=0,vertexQueued=0,modelMisses=0,modelBuilt=0,staticCreates=0,staticBuilt=0,pendingMaterialRejected=0;uint64_t sourceBytes=0;double vertexMs=0,modelMs=0,staticMs=0;} cold;
@@ -211,7 +212,8 @@ class NorthlightAutoBump {
     }
     bool compileVertex(IDirect3DVertexShader9* original,Vertex& vertex,const DWORD* code,size_t count){
         std::vector<std::uint32_t> patched;
-        if(NorthlightWaterShaderPatch::patch(reinterpret_cast<const std::uint32_t*>(code),count,patched))return false;
+        std::uint64_t samplers=0;
+        if(NorthlightWaterShaderPatch::patch(reinterpret_cast<const std::uint32_t*>(code),count,patched,&samplers))return false;
         if(vertex.kind==1)vertex.smoothTerrain=NorthlightAutoBumpVertex::terrainNormal(reinterpret_cast<const uint32_t*>(code),count,patched);
         NorthlightAutoBumpVertex::constantRange(reinterpret_cast<const uint32_t*>(code),count,vertex.constantFirst,vertex.constantCount);
         if(vertex.smoothTerrain){vertex.constantCount=std::max(3u,vertex.constantFirst+vertex.constantCount);vertex.constantFirst=0;}
@@ -219,7 +221,7 @@ class NorthlightAutoBump {
         if(FAILED(d->CreateVertexShader(reinterpret_cast<const DWORD*>(patched.data()),shader.out()))||!shader.p)return false;
         const auto usage=NorthlightShaderConstants::analyze(patched.data(),patched.size(),vertex.kind==1||vertex.kind==3?1:2);
         vertex.floatOnly=usage.analyzed&&!usage.integers.count&&!usage.booleans.count;
-        NorthlightWaterShaderPatch::Analysis analysis;if(!NorthlightWaterShaderPatch::analyse(reinterpret_cast<const uint32_t*>(code),count,analysis))vertex.deferredSafe=analysis.used[10]==0;
+        vertex.deferredSafe=samplers==0;
         displacement.registerMaterial(original,code,count,vertex.kind);displacement.registerVariant(shader.p,reinterpret_cast<const DWORD*>(patched.data()),patched.size(),displacement.skinned(original),vertex.kind==2);
         vertex.patched=shader.p;shader.p=nullptr;return true;
     }
@@ -287,7 +289,7 @@ class NorthlightAutoBump {
     bool cleared=false,privateDepthCleared=false,drawn=false,failed=false,occlusionCleared=false,occlusionDrawn=false;
     bool enabled=false,terrain=true,walls=true,grass=true,memoryPressure=false;
     float strength=.75f,range=48,terrainSpecularDistance=0;
-    bool sunSurfaceSpecular=false;
+    bool solidMaterialSpecular=false;
     unsigned modes[4]={2,2,1,1},modelMinPixels=0;float pomControl[4]={.018f,16,16,0};
     // An unprepared wall draw still needs relief when mesh subdivision is
     // unsupported or outside its range. Never shift an already displaced draw.
@@ -502,7 +504,6 @@ public:
 #endif
     explicit NorthlightAutoBump(IDirect3DDevice9* device,std::shared_ptr<NorthlightGpuScene::Scene> scene={}):gpuScene(NorthlightGpuScene::forDevice(device,std::move(scene))),d(device),captureStates(device),normals(*(gpuScene->normalMaps?gpuScene->normalMaps:(gpuScene->normalMaps=std::make_shared<NorthlightAutoNormalCache>(device)))),sharedPOM(device),parallax(device,normals),displacement(device,gpuScene){
         if(!gpuScene->attach(deferredSnapshots))throw std::runtime_error("Cannot join material capture sources");
-        deferredGPU.setLimit(32u<<20);
         deferredSnapshots.setSnapshotCacheLimit(24u<<20);deferredSnapshots.setChargeResidentHits(false);deferredSnapshots.setReplayContentReuse(true);
         displacement.shareCaptureSources(deferredSnapshots);
         deferredSnapshots.setDeclarationProvider(&deferredDeclarations,[](void* c,IDirect3DVertexDeclaration9* v,const D3DVERTEXELEMENT9*& e,UINT& n){return static_cast<NorthlightVertexDeclarations::Cache*>(c)->get(v,e,n);});
@@ -712,7 +713,7 @@ public:
         deferredSnapshots.setSnapshotCacheLimit(on?4u<<20:24u<<20);const double sourceLimitMs=phase();
         if(on)sparePackets.clear();
         if(on&&!deferred.empty()){deferredDiscarded+=unsigned(deferred.size());clearDeferred();drawn=occlusionDrawn=false;}
-        const double packetClearMs=phase();deferredGPU.setLimit(on?pressureReplayLimit:32u<<20);const double replayGpuMs=phase();
+        const double packetClearMs=phase();deferredGPU.setLimit(on?pressureReplayLimit:deferredGPU.defaultLimit());const double replayGpuMs=phase();
         if(on)deferredDeclarations.clear();const double declarationClearMs=phase();
         normals.setMemoryPressure(on);const double normalMs=phase();
         displacement.setMemoryPressure(on,retirement,batch);const double geometryMs=phase();
@@ -730,7 +731,7 @@ public:
     bool geometryPrepared()const{return displacement.prepared();}
     unsigned geometryPrimitives()const{return displacement.preparedPrimitives();}
     bool geometryHeightGPU()const{return displacement.preparedHeightGPU();}
-    void allowNativeM2Fusion(bool allow,IDirect3DSurface9* worldDepth,float nearZ){allowFusedM2=allow;fusedM2WorldDepth=worldDepth;fusedM2Near=nearZ;}
+    void allowNativeM2Fusion(bool allow,IDirect3DSurface9* worldDepth,float nearZ,bool warmup=false){allowFusedM2=allow;fusedM2Warmup=warmup;fusedM2WorldDepth=worldDepth;fusedM2Near=nearZ;}
     template<class Draw> HRESULT submitNativeMaterial(Draw draw,const NorthlightEffectCoverage::NativePixel* coverage){return submitFusedM2(draw,coverage);}
     void beginDraw(){if(drawDeferred&&!nativeSubmitted)beforeDepthChange();drawDeferred=nativeSubmitted=false;displacement.beginDraw();sharedMaps[0]={};sharedMaps[1]={};sharedPOM.beginDraw();pomInRange=true;profileTag=profilePrimitives=0;
         if(fusedM2.normal){fusedM2.normal={};drop(fusedM2.color.p);drop(fusedM2.depth.p);}
@@ -757,7 +758,7 @@ public:
     template<class Submit> bool deferModelOverlay(Submit submit){return displacement.deferModelOverlay(submit);}
     void setProjection(float x,float y,float z){projection[0]=x;projection[1]=y;projection[2]=z;}
     void setTerrainSpecularDistance(float distance){terrainSpecularDistance=distance;}
-    void setSunSurfaceSpecular(bool enabled){sunSurfaceSpecular=enabled;}
+    void setSolidMaterialSpecular(bool enabled){solidMaterialSpecular=enabled;}
     void setInverseView(const float* rows,bool known=true){worldLightStamp=~std::uint64_t(0);std::copy(rows,rows+12,captureToWorld);displacement.setDistanceView(known?rows:nullptr);}
     void setLight(const float* light){worldLightStamp=~std::uint64_t(0);std::copy(light,light+4,occlusionLight);}
     template<class Source> bool syncWorldLighting(const Source& source){
@@ -852,6 +853,7 @@ public:
         ((modes[0]==2||modes[1]==2||modes[1]==3||modes[2]==2||modes[3]==2)&&pomControl[0]>0)||
         ((modes[0]==3||modes[1]==3||modes[2]==3||modes[3]==3)&&displacement.hasDisplacement()))&&!failed;}
     IDirect3DTexture9* texture()const{return active()&&drawn?(fusedM2MsaaComplete?(fusedM2DepthBase?fusedM2Merged:fusedM2Resolved):height):nullptr;}
+    bool capturedFoliage()const{return draws[2]!=0;}
     bool hasCaptureResources()const{return height!=nullptr;}
     bool capturedThisFrame()const{return active()&&drawn&&deferred.empty();}
     IDirect3DTexture9* occlusionTexture()const{return active()&&drawn&&occlusionDrawn?occlusionMap:nullptr;}
@@ -942,12 +944,12 @@ public:
         // Unsupported material pairs cannot capture or apply native POM.
         // Reject them before reading geometry or evaluating a skin envelope.
         NorthlightDrawSnapshot::Ref<IDirect3DPixelShader9> nativeSource;
+        IDirect3DPixelShader9* pixel=nullptr;
         unsigned material=0;
         const float materialRange=captureRange(domain);
         const bool needsCapture=materialRange>0;
         if(needsCapture||geometryMode){
             const auto rejected=[&]{cold.pendingMaterialRejected+=v->second.pending!=nullptr;};
-            IDirect3DPixelShader9* pixel=nullptr;
             const bool borrowed=drawStateSource&&drawStateSource->peekPixelShader(pixel);
             if(!borrowed){
                 if(FAILED(d->GetPixelShader(nativeSource.out()))||!nativeSource.p){rejected();return;}
@@ -956,8 +958,6 @@ public:
             const auto p=pixels.find(pixel);if(p==pixels.end()){rejected();return;}
             material=p->second;
             if((domain==1&&material>2)||(domain==2&&material!=3&&material!=5&&material!=6)||(domain==3&&material!=4)){rejected();return;}
-            // Replay may change the binding. Only admitted draws need to retain it.
-            if(borrowed){pixel->AddRef();nativeSource.p=pixel;}
         }
         if(!ensureVertex(original,v->second))return;
         if(geometry&&(!geometryMode||domain==4||!displacement.skinned(original))){float nearest=0;
@@ -1013,6 +1013,9 @@ public:
             }
         }
         timing.next(P::CaptureSetup);
+        // Admission above reads state and may create resources. The first
+        // replay binding change needs an owned copy of the original shader.
+        if(pixel&&!nativeSource.p){pixel->AddRef();nativeSource.p=pixel;}
         ReplayState saved(d,original,D3DVIEWPORT9{},profile);saved.pixel=nativeSource.p;nativeSource.p=nullptr;auto* native=saved.pixel;NorthlightSharedPOM::Binding sharedBinding(d);
         NativeCapture* model=nullptr;
         saved.stencilEnabled=stencil;
@@ -1161,7 +1164,7 @@ public:
         }
         DWORD addressU=D3DTADDRESS_WRAP,addressV=D3DTADDRESS_WRAP;d->GetSamplerState(0,D3DSAMP_ADDRESSU,&addressU);d->GetSamplerState(0,D3DSAMP_ADDRESSV,&addressV);
         if(domain==2&&!coverageAlpha)++opaqueCoverage;
-        const bool solarStructure=domain==2&&sunSurfaceSpecular&&(material==5||opaqueWall);
+        const bool solarStructure=domain==2&&solidMaterialSpecular&&(material==5||opaqueWall);
         const float constants[]={domain==1?.18f:domain==2?(solarStructure?-.14f:.14f):.06f,materialRange,alpha?(float(ref)+(alphaFunc==D3DCMP_GREATER?.5f:0.f))/255.f:.001f,domain==4?(alpha?1.f:0.f):(coverageAlpha?0.f:1.f)};
         float pom[4];std::copy(pomControl,pomControl+4,pom);if(!pomInRange||!parallaxMode(domain)||!parallax.supports(saved.pixel,material))pom[0]=0;
         float occult[4];std::copy(occlusionControl,occlusionControl+4,occult);occult[3]=needsOcclusion&&occlusionTarget?occlusionDistance():0.f;if(pom[0]<=0||occlusionLight[3]<=0)occult[0]=0;

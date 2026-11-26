@@ -8,6 +8,10 @@
 #include <cstdint>
 #include <sstream>
 #include "hdr_presentation.h"
+#if defined(_WIN64) || defined(NORTHLIGHT_X86_D3D9ON12)
+#include <optional>
+#include "hdr_output_native.h"
+#endif
 
 namespace NorthlightHdr {
 struct OutputInfo {
@@ -90,16 +94,42 @@ public:
 
 class OutputChain {
     IDirect3DSwapChain9* chain=nullptr;
+#if defined(_WIN64) || defined(NORTHLIGHT_X86_D3D9ON12)
+    std::optional<NativeOutputChain> native;
+#endif
 public:
     OutputChain()=default;OutputChain(const OutputChain&)=delete;
     OutputChain& operator=(const OutputChain&)=delete;
     ~OutputChain(){reset();}
-    void reset(){if(chain){chain->Release();chain=nullptr;}}
-    bool exists()const{return chain!=nullptr;}
+    void reset(){if(chain){chain->Release();chain=nullptr;}
+#if defined(_WIN64) || defined(NORTHLIGHT_X86_D3D9ON12)
+        native.reset();
+#endif
+    }
+    bool exists()const{
+#if defined(_WIN64) || defined(NORTHLIGHT_X86_D3D9ON12)
+        if(native)return true;
+#endif
+        return chain!=nullptr;
+    }
     IDirect3DSwapChain9* get()const{return chain;}
-    HRESULT create(IDirect3DDevice9* calls,Presentation& state,IDirect3DSurface9** back){
+    const char* nativeTransfer()const{
+#if defined(_WIN64) || defined(NORTHLIGHT_X86_D3D9ON12)
+        if(native)return native->gpuTransfer()?"D3D9On12 GPU":"D3D9 CPU readback";
+#endif
+        return "unavailable";
+    }
+    HRESULT create(IDirect3DDevice9* calls,Presentation& state,IDirect3DSurface9** back,IDirect3DDevice9* backend=nullptr){
         *back=nullptr;reset();state.active=false;
         state.reason=state.ineligible();if(state.reason)return state.lastStatus=S_FALSE;
+#if defined(_WIN64) || defined(NORTHLIGHT_X86_D3D9ON12)
+        if(state.nativeOutput){
+            const HRESULT hr=native.emplace().create(backend?backend:calls,state.logical,back);
+            state.lastStatus=hr;
+            if(FAILED(hr)){reset();state.reason="native-scRGB-create-failed";return S_FALSE;}
+            state.active=true;state.reason="active";return S_OK;
+        }
+#endif
         auto physical=state.logical;physical.BackBufferFormat=D3DFMT_A16B16G16R16F;physical.EnableAutoDepthStencil=FALSE;
         HRESULT hr=calls->CreateAdditionalSwapChain(&physical,&chain);
         SwapExtension* ext=nullptr;
@@ -114,6 +144,9 @@ public:
         state.active=true;state.reason="active";state.lastStatus=S_OK;return S_OK;
     }
     HRESULT present(const RECT* source,const RECT* destination,HWND window,const RGNDATA* dirty,DWORD flags=0){
+#if defined(_WIN64) || defined(NORTHLIGHT_X86_D3D9ON12)
+        if(native)return native->present(source,destination,window,dirty,flags);
+#endif
         return chain?chain->Present(source,destination,window,dirty,flags):D3DERR_INVALIDCALL;
     }
 };

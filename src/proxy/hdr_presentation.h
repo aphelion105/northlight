@@ -50,11 +50,17 @@ struct Settings {
 };
 struct Presentation {
     Settings settings;D3DPRESENT_PARAMETERS logical{};bool active=false,stream=false,dxvk=false,formatsPrepared=false;
+    bool nativeOutput=false;
     HRESULT lastStatus=S_OK;
     const char* reason="disabled";
+    bool supportsSubmission()const{
+        // Native DXGI and the x64 proxy also support direct submission.
+        return nativeOutput||stream||sizeof(void*)==8;
+    }
     const char* ineligible()const{
-        if(!settings.requested)return "disabled";if(!stream)return "command-stream-disabled";if(!dxvk)return "backend-not-dxvk";
+        if(!settings.requested)return "disabled";if(!supportsSubmission())return "command-stream-disabled";if(!dxvk&&!nativeOutput)return "backend-not-dxvk";
         if(!logical.hDeviceWindow)return "missing-window";if(!logical.Windowed)return "windowed-mode-required";
+        if(nativeOutput&&logical.MultiSampleType!=D3DMULTISAMPLE_NONE)return "native-hdr-msaa-unsupported";
         if(logical.BackBufferFormat!=D3DFMT_X8R8G8B8&&logical.BackBufferFormat!=D3DFMT_A8R8G8B8)return "unsupported-legacy-format";
         return nullptr;
     }

@@ -1,4 +1,7 @@
 // Standalone CS5 experiment; not part of the production D3D9 shader bundle.
+#ifndef RAY_GROUP_SIZE
+#define RAY_GROUP_SIZE 64
+#endif
 struct Vertex { float3 p; float3 n; float2 uv; };
 struct Material { float3 albedo; float cutoff; uint width, height, offset, addressU; uint addressV, opaque, pad0, pad1; };
 struct Box { float3 lo; float3 hi; };
@@ -6,11 +9,16 @@ struct Ray { float3 o; float minT; float3 d; float maxT; };
 struct Hit { float distance; uint triId; float u,v; float3 normal; uint back; float3 geometric; uint error; float3 albedo; uint pad; };
 struct ProbeIn { float3 p; uint seed; };
 struct ProbeOut { float4 sh[4]; float2 moments[6]; uint samples, back, valid, error; };
+// Morton-order intersection data. Generated on the device; indexed UVs and
+// normals are fetched only for cutouts and the final shaded hit.
+struct AccelTriangle { float3 p; uint id; float3 ab; uint material; float3 ac; uint opaque; };
+struct ProbeRayOut { float3 color; float distance; uint back,error; float2 padding; };
 cbuffer Params : register(b0) {
  uint n, padded, leaves, count;
  uint stage, jump, sceneRoot, rayCount;
  uint leafSize, anyHit, maxBounces, unused;
  float4 sun; float4 sunRGB; float4 sky; float4 up;
+ uint cachedTriangles, reciprocalBoxes, option2, option3;
 };
 StructuredBuffer<Vertex> vertices : register(t0);
 StructuredBuffer<uint4> triangles : register(t1);
@@ -19,6 +27,7 @@ StructuredBuffer<uint> texels : register(t3);
 StructuredBuffer<float> srgb : register(t4);
 StructuredBuffer<Ray> rays : register(t5);
 StructuredBuffer<ProbeIn> probes : register(t6);
+StructuredBuffer<AccelTriangle> acceleration : register(t7);
 RWStructuredBuffer<uint2> keys : register(u0);
 globallycoherent RWStructuredBuffer<Box> nodes : register(u1);
 RWStructuredBuffer<Box> reductions : register(u2);
@@ -26,6 +35,10 @@ RWStructuredBuffer<Hit> hits : register(u3);
 RWStructuredBuffer<ProbeOut> output : register(u4);
 globallycoherent RWStructuredBuffer<uint4> links : register(u5); // children, parent, completion count
 RWStructuredBuffer<Material> materialOutput : register(u6);
+RWStructuredBuffer<AccelTriangle> accelerationOutput : register(u7);
+RWStructuredBuffer<ProbeRayOut> rayOutput : register(u6); // exclusive with material preprocessing
+float dot3(float3 a,float3 b){precise float3 p=a*b;precise float v=(p.x+p.y)+p.z;return v;}
+float3 cross3(float3 a,float3 b){precise float3 v=a.yzx*b.zxy-a.zxy*b.yzx;return v;}
 groupshared float3 lows[256], highs[256];
 groupshared uint2 sorting[256];
 groupshared uint alphaMinimum[256];
@@ -74,6 +87,13 @@ bool greaterKey(uint2 a,uint2 b){return a.x>b.x||(a.x==b.x&&a.y>b.y);}
  GroupMemoryBarrierWithGroupSync();sorting[lane]=(greaterKey(a,b)==small)?b:a;GroupMemoryBarrierWithGroupSync();}
  keys[id.x]=sorting[lane];
 }
+[numthreads(256,1,1)] void CacheTriangles(uint3 id:SV_DispatchThreadID) {
+ uint i=id.x;if(i>=n)return;uint ti=keys[i].y;uint4 t=triangles[ti];
+ AccelTriangle a;a.p=vertices[t.x].p;a.id=ti;
+ precise float3 ab=vertices[t.y].p-a.p,ac=vertices[t.z].p-a.p;
+ float3 area=cross3(ab,ac);a.ab=ab;a.ac=ac;a.material=t.w;
+ a.opaque=materials[t.w].opaque|(dot3(area,area)<=1e-16?2:0);accelerationOutput[i]=a;
+}
 [numthreads(256,1,1)] void LeafBounds(uint3 id:SV_DispatchThreadID) {
  uint i=id.x;if(i>=leaves)return;Box b=emptyBox();for(uint j=0;j<leafSize;++j){uint k=i*leafSize+j;if(k<n)b=merge(b,triangleBox(keys[k].y));}
  // Conservative traversal bounds, including nearly parallel and equal-distance rays.
@@ -110,26 +130,37 @@ float4 sampleMaterial(Material m,float2 uv) {
  uint p=texels[m.offset+iy*m.width+ix];float4 c=float4(srgb[p&255],srgb[(p>>8)&255],srgb[(p>>16)&255],float(p>>24)/255);
  s+=c*(x?f.x:1-f.x)*(y?f.y:1-f.y);}s.rgb*=m.albedo;return s;
 }
-float dot3(float3 a,float3 b){precise float3 p=a*b;precise float v=(p.x+p.y)+p.z;return v;}
-float3 cross3(float3 a,float3 b){precise float3 v=a.yzx*b.zxy-a.zxy*b.yzx;return v;}
 float3 safeNormalize(float3 v){precise float d=dot3(v,v);precise float len=sqrt(d);precise float inv=1/len;precise float3 result=v*inv;return d>1e-20&&isfinite(d)?result:0;}
 bool boxHit(Box b,Ray r,float upper,out float entry){entry=r.minT;float exit=upper;
  [unroll]for(uint i=0;i<3;++i){if(abs(r.d[i])<1e-12){if(r.o[i]<b.lo[i]||r.o[i]>b.hi[i])return false;}
  else{float a=(b.lo[i]-r.o[i])/r.d[i],c=(b.hi[i]-r.o[i])/r.d[i];entry=max(entry,min(a,c));exit=min(exit,max(a,c));}}return entry<=exit;}
+bool boxHitReciprocal(Box b,Ray r,float3 inverse,float upper,out float entry){
+ float3 a=(b.lo-r.o)*inverse,c=(b.hi-r.o)*inverse;
+ bool3 parallel=abs(r.d)<1e-12;
+ float3 near=parallel?-3.402823e38:min(a,c),far=parallel?3.402823e38:max(a,c);
+ entry=max(r.minT,max(near.x,max(near.y,near.z)));
+ return !any(parallel&&((r.o<b.lo)||(r.o>b.hi)))&&entry<=min(upper,min(far.x,min(far.y,far.z)));
+}
 Hit trace(Ray r,bool occlusion) {
  Hit h=(Hit)0;h.distance=r.maxT;h.triId=0xffffffff;r.d=safeNormalize(r.d);
  if(!n||!all(isfinite(r.o))||dot3(r.d,r.d)<.5||!isfinite(r.minT)||!isfinite(r.maxT)||r.minT<0||r.maxT<=r.minT)return h;
+ float3 inverse=1/(abs(r.d)<1e-12?float3(1,1,1):r.d);
  uint stack[64];float entries[64];uint top=0;stack[top]=unused?0:1;entries[top++]=r.minT;
  [loop]while(top){--top;uint node=stack[top];float entry=entries[top];float upper=h.distance+abs(h.distance)*1e-6;
  if(entry>upper)continue;if(node>=(unused?leaves-1:leaves)){uint start=(node-(unused?leaves-1:leaves))*leafSize;uint limit=leafSize;
- [loop]for(uint j=0;j<limit&&start+j<n;++j){uint ti=keys[start+j].y;uint4 t=triangles[ti];Vertex a=vertices[t.x],b=vertices[t.y],c=vertices[t.z];
- float3 ab=b.p-a.p,ac=c.p-a.p,p=cross3(r.d,ac);float determinant=dot3(ab,p);if(abs(determinant)<1e-10)continue;
- float3 area=cross3(ab,ac);if(dot3(area,area)<=1e-16)continue;
- float inverse=1/determinant;float3 s=r.o-a.p;float u=dot3(s,p)*inverse;if(u<0||u>1)continue;float3 q=cross3(s,ab);float v=dot3(r.d,q)*inverse;
- if(v<0||u+v>1)continue;float d=dot3(ac,q)*inverse;if(d<r.minT||d>h.distance||d==h.distance&&(h.triId==0xffffffff||ti>=h.triId))continue;
- Material m=materials[t.w];precise float w=1-u-v;precise float2 uv=a.uv*w+b.uv*u+c.uv*v;if(!m.opaque&&sampleMaterial(m,uv).a<m.cutoff)continue;
+ [loop]for(uint j=0;j<limit&&start+j<n;++j){uint ti,materialId,opaque;float3 origin,ab,ac;
+ if(cachedTriangles){AccelTriangle a=acceleration[start+j];ti=a.id;origin=a.p;ab=a.ab;ac=a.ac;materialId=a.material;opaque=a.opaque;}
+ else{ti=keys[start+j].y;uint4 t=triangles[ti];origin=vertices[t.x].p;ab=vertices[t.y].p-origin;ac=vertices[t.z].p-origin;materialId=t.w;opaque=materials[t.w].opaque;}
+ float3 p=cross3(r.d,ac);float determinant=dot3(ab,p);if(abs(determinant)<1e-10)continue;
+ if(cachedTriangles){if(opaque&2)continue;}else{float3 area=cross3(ab,ac);if(dot3(area,area)<=1e-16)continue;}
+ float determinantInverse=1/determinant;float3 s=r.o-origin;float u=dot3(s,p)*determinantInverse;if(u<0||u>1)continue;float3 q=cross3(s,ab);float v=dot3(r.d,q)*determinantInverse;
+ if(v<0||u+v>1)continue;float d=dot3(ac,q)*determinantInverse;if(d<r.minT||d>h.distance||d==h.distance&&(h.triId==0xffffffff||ti>=h.triId))continue;
+ if(!(opaque&1)){uint4 t=triangles[ti];Material m=materials[materialId];precise float w=1-u-v;
+ precise float2 uv=vertices[t.x].uv*w+vertices[t.y].uv*u+vertices[t.z].uv*v;if(sampleMaterial(m,uv).a<m.cutoff)continue;}
  h.distance=d;h.triId=ti;h.u=u;h.v=v;if(occlusion)return h;}
- }else{uint2 children=unused?links[node].xy:uint2(node*2,node*2+1);float left,right;bool l=boxHit(nodes[children.x],r,upper,left),rr=boxHit(nodes[children.y],r,upper,right);
+ }else{uint2 children=unused?links[node].xy:uint2(node*2,node*2+1);float left,right;bool l,rr;
+ if(reciprocalBoxes){l=boxHitReciprocal(nodes[children.x],r,inverse,upper,left);rr=boxHitReciprocal(nodes[children.y],r,inverse,upper,right);}
+ else{l=boxHit(nodes[children.x],r,upper,left);rr=boxHit(nodes[children.y],r,upper,right);}
  if(top+uint(l)+uint(rr)>64){h.error=1;return h;}
  if(l&&rr){bool nearLeft=left<right;stack[top]=nearLeft?children.y:children.x;entries[top++]=nearLeft?right:left;stack[top]=nearLeft?children.x:children.y;entries[top++]=nearLeft?left:right;}
  else if(l){stack[top]=children.x;entries[top++]=left;}else if(rr){stack[top]=children.y;entries[top++]=right;}}
@@ -149,9 +180,9 @@ float3 cosineDirection(float3 n,inout uint rng){float u=randomFloat(rng),phi=6.2
  return safeNormalize(t*(r*cos(phi))+b*(r*sin(phi))+n*sqrt(max(0,1-u)));}
 // First GI feasibility gate: production sun/sky transport, alpha and normal rules.
 // Points, extra directions, aurora, moving overlays and relight caches are not implemented.
-float3 transport(Ray ray,inout uint rng,out float distance,out uint back,out uint error){
+float3 transport(Ray ray,inout uint rng,out float distance,out uint back,out uint error,Hit first,bool firstReady){
  float3 throughput=1,radiance=0;distance=ray.maxT;back=0;error=0;
- [loop]for(uint bounce=0;bounce<=maxBounces;++bounce){Hit h=trace(ray,false);error|=h.error;if(!bounce){distance=h.distance;back=h.back;}
+ [loop]for(uint bounce=0;bounce<=maxBounces;++bounce){Hit h;if(!bounce&&firstReady)h=first;else h=trace(ray,false);error|=h.error;if(!bounce){distance=h.distance;back=h.back;}
  if(h.triId==0xffffffff){if(dot3(ray.d,up.xyz)>0)radiance+=throughput*sky.xyz;break;}if(bounce==maxBounces)break;
  float3 offset=ray.o+safeNormalize(ray.d)*h.distance+h.geometric*sun.w;
  float cosine=max(0,dot3(h.normal,sun.xyz));
@@ -160,12 +191,13 @@ float3 transport(Ray ray,inout uint rng,out float distance,out uint back,out uin
  throughput*=h.albedo;if(max(throughput.x,max(throughput.y,throughput.z))<1e-6)break;ray.d=cosineDirection(h.normal,rng);if(dot3(ray.d,h.geometric)<=0)break;ray.o=offset;
  }return max(radiance,0);
 }
-[numthreads(64,1,1)] void SolveProbes(uint3 id:SV_DispatchThreadID){if(id.x>=count)return;ProbeIn p=probes[id.x];ProbeOut o=(ProbeOut)0;
+[numthreads(64,1,1)] void SolveProbes(uint3 id:SV_DispatchThreadID){if(id.x>=count)return;
+ ProbeIn p=probes[id.x];ProbeOut o=(ProbeOut)0;
  float weights[6]={0,0,0,0,0,0},sums[6]={0,0,0,0,0,0},squares[6]={0,0,0,0,0,0};float closest=up.w;
  uint orient=p.seed^0xa511e9b3;float azimuth=randomFloat(orient)*6.28318530718;float s=sin(azimuth),c=cos(azimuth);
  [loop]for(uint i=0;i<rayCount;++i){float z=1-2*(float(i)+.5)/rayCount,r=sqrt(max(0,1-z*z)),phi=float(i)*2.39996322972865332;
  float3 d=float3(r*cos(phi),r*sin(phi),z);d=float3(d.x*c-d.y*s,d.x*s+d.y*c,d.z);uint rng=p.seed^((i+1)*0x9e3779b9);if(!rng)rng=0x9e3779b9;
- Ray ray;ray.o=p.p;ray.minT=.0005;ray.d=d;ray.maxT=up.w;float distance;uint back,error;float3 color=transport(ray,rng,distance,back,error);
+ Ray ray;ray.o=p.p;ray.minT=.0005;ray.d=d;ray.maxT=up.w;float distance;uint back,error;float3 color=transport(ray,rng,distance,back,error,(Hit)0,false);
  o.back+=back;o.error|=error;closest=min(closest,distance);float4 sh=float4(.2820947918,.4886025119*d);
  [unroll]for(uint j=0;j<4;++j)o.sh[j].xyz+=color*(sh[j]*(12.56637061436/rayCount));
  [unroll]for(uint axis=0;axis<3;++axis){uint j=axis*2+(d[axis]<0);float w=abs(d[axis]);w*=w;w*=w;w*=w;weights[j]+=w;sums[j]+=w*distance;squares[j]+=w*distance*distance;}}
@@ -175,13 +207,23 @@ float3 transport(Ray ray,inout uint rng,out float distance,out uint back,out uin
 groupshared float3 rayColors[32],rayDirections[32];
 groupshared float rayDistances[32];
 groupshared uint rayBack[32],rayErrors[32];
+groupshared uint continueTransport;
 // One 32-ray production-sized probe per group. No repeated traversal on one lane.
 [numthreads(32,1,1)] void SolveParallel(uint3 group:SV_GroupID,uint lane:SV_GroupIndex){
  ProbeIn p=probes[group.x];uint orient=p.seed^0xa511e9b3;float azimuth=randomFloat(orient)*6.28318530718;
  float z=1-2*(float(lane)+.5)/32,r=sqrt(max(0,1-z*z)),phi=float(lane)*2.39996322972865332;
  float3 d=float3(r*cos(phi),r*sin(phi),z);float s=sin(azimuth),c=cos(azimuth);d=float3(d.x*c-d.y*s,d.x*s+d.y*c,d.z);
  uint rng=p.seed^((lane+1)*0x9e3779b9);if(!rng)rng=0x9e3779b9;Ray ray;ray.o=p.p;ray.minT=.0005;ray.d=d;ray.maxT=up.w;
- float distance;uint back,error;rayColors[lane]=transport(ray,rng,distance,back,error);rayDirections[lane]=d;rayDistances[lane]=distance;rayBack[lane]=back;rayErrors[lane]=error;
+ Hit first=(Hit)0;
+ if(option2){first=trace(ray,false);rayDistances[lane]=first.distance;rayBack[lane]=first.back;
+  GroupMemoryBarrierWithGroupSync();
+  if(!lane){uint backs=0;float closest=up.w;[unroll]for(uint i=0;i<32;++i){backs+=rayBack[i];closest=min(closest,rayDistances[i]);}continueTransport=backs<=8&&closest>=.02;}
+  GroupMemoryBarrierWithGroupSync();
+ }
+ float distance;uint back,error;float3 color;
+ if(option2&&!continueTransport){color=0;distance=first.distance;back=first.back;error=first.error;}
+ else color=transport(ray,rng,distance,back,error,first,option2!=0);
+ rayColors[lane]=color;rayDirections[lane]=d;rayDistances[lane]=distance;rayBack[lane]=back;rayErrors[lane]=error;
  GroupMemoryBarrierWithGroupSync();
  if(!lane){ProbeOut o=(ProbeOut)0;float weights[6]={0,0,0,0,0,0},sums[6]={0,0,0,0,0,0},squares[6]={0,0,0,0,0,0};float closest=up.w;
  [loop]for(uint i=0;i<32;++i){float3 color=rayColors[i],d=rayDirections[i];float distance=rayDistances[i];o.back+=rayBack[i];o.error|=rayErrors[i];closest=min(closest,distance);
@@ -189,4 +231,28 @@ groupshared uint rayBack[32],rayErrors[32];
  [unroll]for(uint axis=0;axis<3;++axis){uint j=axis*2+(d[axis]<0);float w=abs(d[axis]);w*=w;w*=w;w*=w;weights[j]+=w;sums[j]+=w*distance;squares[j]+=w*distance*distance;}}
  [unroll]for(uint j=0;j<6;++j)o.moments[j]=weights[j]>1e-10?float2(sums[j],squares[j])/weights[j]:float2(up.w,up.w*up.w);
  o.samples=32;o.valid=o.back<=8&&closest>=.02;if(!o.valid){[unroll]for(uint k=0;k<4;++k)o.sh[k]=0;}output[group.x]=o;}
+}
+// Separate transport from SH/moment reduction: traversal registers and the
+// dynamic ray stack are no longer reserved alongside a probe accumulator.
+[numthreads(RAY_GROUP_SIZE,1,1)] void TraceProbeRays(uint3 id:SV_DispatchThreadID){
+ uint probeIndex=option3?id.x:id.x/32,lane=option3?id.y:id.x%32;
+ if(probeIndex>=count||lane>=32)return;
+ ProbeIn p=probes[probeIndex];uint orient=p.seed^0xa511e9b3;float azimuth=randomFloat(orient)*6.28318530718;
+ float z=1-2*(float(lane)+.5)/32,r=sqrt(max(0,1-z*z)),phi=float(lane)*2.39996322972865332;
+ float3 d=float3(r*cos(phi),r*sin(phi),z);float s=sin(azimuth),c=cos(azimuth);d=float3(d.x*c-d.y*s,d.x*s+d.y*c,d.z);
+ uint rng=p.seed^((lane+1)*0x9e3779b9);if(!rng)rng=0x9e3779b9;Ray ray;ray.o=p.p;ray.minT=.0005;ray.d=d;ray.maxT=up.w;
+ ProbeRayOut o=(ProbeRayOut)0;o.color=transport(ray,rng,o.distance,o.back,o.error,(Hit)0,false);rayOutput[probeIndex*32+lane]=o;
+}
+[numthreads(64,1,1)] void ReduceProbes(uint3 id:SV_DispatchThreadID){
+ if(id.x>=count)return;ProbeIn p=probes[id.x];ProbeOut o=(ProbeOut)0;
+ float weights[6]={0,0,0,0,0,0},sums[6]={0,0,0,0,0,0},squares[6]={0,0,0,0,0,0};float closest=up.w;
+ uint orient=p.seed^0xa511e9b3;float azimuth=randomFloat(orient)*6.28318530718;float s=sin(azimuth),c=cos(azimuth);
+ [loop]for(uint i=0;i<32;++i){
+  float z=1-2*(float(i)+.5)/32,r=sqrt(max(0,1-z*z)),phi=float(i)*2.39996322972865332;
+  float3 d=float3(r*cos(phi),r*sin(phi),z);d=float3(d.x*c-d.y*s,d.x*s+d.y*c,d.z);
+  ProbeRayOut value=rayOutput[id.x*32+i];float distance=value.distance;o.back+=value.back;o.error|=value.error;closest=min(closest,distance);
+  float4 sh=float4(.2820947918,.4886025119*d);[unroll]for(uint j=0;j<4;++j)o.sh[j].xyz+=value.color*(sh[j]*(12.56637061436/32));
+  [unroll]for(uint axis=0;axis<3;++axis){uint j=axis*2+(d[axis]<0);float w=abs(d[axis]);w*=w;w*=w;w*=w;weights[j]+=w;sums[j]+=w*distance;squares[j]+=w*distance*distance;}}
+ [unroll]for(uint j=0;j<6;++j)o.moments[j]=weights[j]>1e-10?float2(sums[j],squares[j])/weights[j]:float2(up.w,up.w*up.w);
+ o.samples=32;o.valid=o.back<=8&&closest>=.02;if(!o.valid){[unroll]for(uint k=0;k<4;++k)o.sh[k]=0;}output[id.x]=o;
 }

@@ -93,7 +93,7 @@
                     const bool updated=autoBump->syncWorldLighting(*world);
                     if(updated){
                         autoBump->setTerrainSpecularDistance(world->moonTerrainSpecularGain()>0?WorldRenderer::MoonTerrainSpecularDistance:0.f);
-                        autoBump->setSunSurfaceSpecular(world->sunSurfaceSpecularGain()>0);
+                        autoBump->setSolidMaterialSpecular(world->solidMaterialSpecularWanted());
                     }
                     if(gateFrame){++gateCounts.materialViews;gateCounts.materialViewUpdates+=updated;}
                 }

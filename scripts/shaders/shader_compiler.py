@@ -1,9 +1,9 @@
-"""The one offline HLSL toolchain: Microsoft d3dcompiler_47 10.0.17134.12 (x64), IEEE strict.
+"""Offline HLSL toolchain: Microsoft d3dcompiler_47 10.0.26100.9457 (x64), IEEE strict.
 
 compile_shaders.cpp runs under Wine on macOS (natively on Windows) next to a pinned copy of
 Microsoft's redistributable DLL; WINEDLLOVERRIDES and the tool's own module check make Wine's
 builtin d3dcompiler_47 impossible. The DLL is not in git: put it in
-<tools>/d3dcompiler_47-10.0.17134.12-x64/ (northlight.local.ini [paths] tools).
+<tools>/d3dcompiler_47-10.0.26100.9457-x64/ (northlight.local.ini [paths] tools).
 Never loads WoW, a game DLL or a graphics device.
 """
 from pathlib import Path
@@ -18,16 +18,17 @@ sys.path[:0] = [str(Path(__file__).resolve().parents[2]), str(Path(__file__).res
 import northlight_paths as fp  # noqa: E402
 
 HERE = Path(__file__).resolve().parent   # compile_shaders.cpp
-DLL_SHA256 = "3c5f066a121a446e55db9c699b392da5d3aca6ad9019437b722360d09698e3c3"
+DLL_VERSION = "10.0.26100.9457"
+DLL_SHA256 = "1da540a0ddbc54de4142570c8ec4a4566ef610fce72c181efb55a9332c480790"
 COMPATIBLE_DLL_SHA256 = "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3"
 # D3DCOMPILE_ENABLE_BACKWARDS_COMPATIBILITY | D3DCOMPILE_IEEE_STRICTNESS | D3DCOMPILE_OPTIMIZATION_LEVEL3
-COMPILER = "Microsoft d3dcompiler_47 10.0.17134.12 IEEE strict"
+COMPILER = f"Microsoft d3dcompiler_47 {DLL_VERSION} IEEE strict"
 PROVENANCE = {"compiler": COMPILER, "compiler_sha256": DLL_SHA256}
 
 
 def __getattr__(name):
     if name == 'DLL':
-        return fp.tools() / 'd3dcompiler_47-10.0.17134.12-x64/d3dcompiler_47.dll'
+        return fp.tools() / f'd3dcompiler_47-{DLL_VERSION}-x64/d3dcompiler_47.dll'
     raise AttributeError(name)
 
 
@@ -39,24 +40,31 @@ class Compiler:
     """Builds compile_shaders.exe beside a verified copy of the DLL in out/shader-compiler/."""
 
     def __init__(self, allow_compatible_binary=False):
-        from build_environment import wine_build_prefix, zig_env, TOOLS, ZIG
-        DLL = TOOLS / 'd3dcompiler_47-10.0.17134.12-x64/d3dcompiler_47.dll'
-        if not DLL.is_file():
-            raise SystemExit(f"Microsoft d3dcompiler_47.dll 10.0.17134.12 (x64) missing: expected {DLL}")
-        actual_hash = sha256(DLL)
-        # A second signed distribution of the same Microsoft version. The native
-        # helper independently verifies the PE/version and exact loaded path.
-        if actual_hash != DLL_SHA256 and not (allow_compatible_binary and actual_hash == COMPATIBLE_DLL_SHA256):
-            raise SystemExit(f"{DLL}: SHA-256 {sha256(DLL)} is not the pinned {DLL_SHA256}")
-        self.provenance = {**PROVENANCE, 'compiler_sha256': actual_hash}
+        from build_environment import wine_build_prefix, zig_env, ZIG
+        dll = __getattr__('DLL')
+        version, expected_hash = DLL_VERSION, DLL_SHA256
+        if allow_compatible_binary and not dll.is_file():
+            legacy = dll.parent.with_name('d3dcompiler_47-10.0.17134.12-x64') / dll.name
+            if legacy.is_file():
+                dll = legacy
+                version, expected_hash = "10.0.17134.12", COMPATIBLE_DLL_SHA256
+        if not dll.is_file():
+            raise SystemExit(f"Microsoft d3dcompiler_47.dll {version} (x64) missing: expected {dll}")
+        actual_hash = sha256(dll)
+        if actual_hash != expected_hash:
+            raise SystemExit(f"{dll}: SHA-256 {actual_hash} is not the pinned {expected_hash}")
+        self.provenance = {"compiler": f"Microsoft d3dcompiler_47 {version} IEEE strict",
+                           "compiler_sha256": actual_hash}
         self.dir = fp.out() / "shader-compiler"
         self.dir.mkdir(parents=True, exist_ok=True)
         self.exe = self.dir / "compile_shaders.exe"
         self.env = zig_env()
+        build, revision = version.split(".")[2:]
         subprocess.run([str(ZIG), "c++", "-target", "x86_64-windows-gnu", "-O2", "-s", "-static",
+                        f"-DNL_SHADER_COMPILER_BUILD={build}", f"-DNL_SHADER_COMPILER_REVISION={revision}",
                         str(HERE / "compile_shaders.cpp"), "-o", str(self.exe)], env=self.env, check=True)
         local = self.dir / "d3dcompiler_47.dll"
-        shutil.copyfile(DLL, local)
+        shutil.copyfile(dll, local)
         if sha256(local) != actual_hash:
             raise RuntimeError(f"{local}: copy does not match the pinned SHA-256")
         self.command = [str(self.exe)]

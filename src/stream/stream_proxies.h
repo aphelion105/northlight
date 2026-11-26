@@ -35,6 +35,7 @@
 #include "tex_readback_diag.h"
 #include "atlas_upload_proof.h"
 #include "particle_texture_stats.h"
+#include "tree_canopy_textures.h"
 #include "particle_upload_range_12340.h"
 
 namespace NorthlightStream {
@@ -84,16 +85,38 @@ constexpr std::size_t kLockSlack=4096;   // bytes past a staged range / a shadow
 
 // A Task runs on the replay thread while the game thread waits (pumped): pass-through locks, creates under memory
 // pressure, GetData(FLUSH), Reset, the defaults batch, final release. fn executes with the replay-side core.
-struct Task {void (*fn)(void*,StreamCore&);void* arg;};
+struct Task {void (*fn)(void*,StreamCore&);void* arg;Cmd diagnosticLabel=Cmd::Quiesce;};
 
-// 0.3.204 (task 21): a vector whose resize() leaves new bytes uninitialized (default-init, no memset): the slices of a buffer's ring, whose contents are undefined (DISCARD) anyway. assign(n,0) still zero-fills.
-template<class T> struct DefaultInitAllocator:std::allocator<T> {
-    template<class U> struct rebind{using other=DefaultInitAllocator<U>;};
-    using std::allocator<T>::allocator;
-    template<class U> void construct(U* p) noexcept(std::is_nothrow_default_constructible<U>::value){::new(static_cast<void*>(p)) U;}
-    template<class U,class... A> void construct(U* p,A&&... a){::new(static_cast<void*>(p)) U(std::forward<A>(a)...);}
+// The retirement link shares the allocation with the bytes so a queued
+// reader can keep a discarded slice alive without any further allocation.
+struct SliceMem {
+    struct Header {
+        unsigned char* allocation;
+        Header* next=nullptr;
+        std::uint64_t seq=0;
+        std::size_t bytes=0;
+        bool large=false;
+    };
+    struct Reclaim {
+        void operator()(Header* node)const noexcept{
+            while(node){
+                Header* next=node->next;
+                delete[] node->allocation;
+                node=next;
+            }
+        }
+    };
+    using Storage=std::unique_ptr<Header,Reclaim>;
+    Storage storage;
+    void allocate(std::size_t size,bool zero){
+        if(size>SIZE_MAX-sizeof(Header))throw std::bad_alloc();
+        auto* allocation=new unsigned char[sizeof(Header)+size];
+        storage.reset(::new(static_cast<void*>(allocation)) Header{allocation});
+        if(zero)std::memset(data(),0,size);
+    }
+    unsigned char* data(){return storage->allocation+sizeof(Header);}
+    const unsigned char* data()const{return storage->allocation+sizeof(Header);}
 };
-using SliceMem=std::vector<unsigned char,DefaultInitAllocator<unsigned char>>;
 struct PrivEntry {std::string key;std::vector<unsigned char> bytes;IUnknown* unk=nullptr;};
 #ifdef NORTHLIGHT_REPLAY_STAND
 inline std::atomic<std::uint64_t> standProxySerial{0};
@@ -196,14 +219,14 @@ public:
     std::function<IUnknown*(IUnknown*,Kind)> rawOf;
     static bool takesRaw(Kind k){return k==Kind::Surface||k==Kind::Texture||k==Kind::CubeTexture||k==Kind::VolumeTexture||k==Kind::VertexBuffer||k==Kind::IndexBuffer||k==Kind::VertexShader||k==Kind::PixelShader||k==Kind::VertexDeclaration;}
     void bindInner(ProxyBase* p,IUnknown* inner){
-        if(p->kind==Kind::Texture)NorthlightParticleTextures::cache().erase(p->raw,p);if(p->kind==Kind::Texture)NorthlightMaterialTextures::cache().erase(p->raw);
+        if(p->kind==Kind::Texture){NorthlightParticleTextures::cache().erase(p->raw,p);NorthlightMaterialTextures::cache().erase(p->raw);NorthlightTreeCanopy::forget(p->raw);}
         {std::lock_guard<std::mutex> l(m_);p->inner=inner;byInner_[inner]=p;}
         p->raw=rawOf&&inner&&takesRaw(p->kind)?rawOf(inner,p->kind):nullptr;
     }   // the newest proxy of an object wins identity
-    void unbindInner(ProxyBase* p){if(p->kind==Kind::Texture)NorthlightParticleTextures::cache().erase(p->raw,p);if(p->kind==Kind::Texture)NorthlightMaterialTextures::cache().erase(p->raw);p->raw=nullptr;std::lock_guard<std::mutex> l(m_);if(p->inner){auto i=byInner_.find(p->inner);if(i!=byInner_.end()&&i->second==p)byInner_.erase(i);}}
+    void unbindInner(ProxyBase* p){if(p->kind==Kind::Texture){NorthlightParticleTextures::cache().erase(p->raw,p);NorthlightMaterialTextures::cache().erase(p->raw);NorthlightTreeCanopy::forget(p->raw);}p->raw=nullptr;std::lock_guard<std::mutex> l(m_);if(p->inner){auto i=byInner_.find(p->inner);if(i!=byInner_.end()&&i->second==p)byInner_.erase(i);}}
     ProxyBase* findInner(const void* inner){std::lock_guard<std::mutex> l(m_);auto i=byInner_.find(inner);return i==byInner_.end()?nullptr:i->second;}
     // Replay thread (destroy): forget the proxy; the inner entry only if it still names this proxy.
-    void erase(ProxyBase* p){if(p->kind==Kind::Texture)NorthlightParticleTextures::cache().erase(p->raw,p);if(p->kind==Kind::Texture)NorthlightMaterialTextures::cache().erase(p->raw);std::lock_guard<std::mutex> l(m_);byProxy_.erase(p->unk);if(p->inner){auto i=byInner_.find(p->inner);if(i!=byInner_.end()&&i->second==p)byInner_.erase(i);}}
+    void erase(ProxyBase* p){if(p->kind==Kind::Texture){NorthlightParticleTextures::cache().erase(p->raw,p);NorthlightMaterialTextures::cache().erase(p->raw);NorthlightTreeCanopy::forget(p->raw);}std::lock_guard<std::mutex> l(m_);byProxy_.erase(p->unk);if(p->inner){auto i=byInner_.find(p->inner);if(i!=byInner_.end()&&i->second==p)byInner_.erase(i);}}
     // The Target-level object behind a proxy pointer the game stored in its own memory (an opaque value, never dereferenced).
     const void* innerOf(const void* maybeProxy){std::lock_guard<std::mutex> l(m_);auto i=byProxy_.find(maybeProxy);return i==byProxy_.end()||!i->second->inner?maybeProxy:static_cast<const void*>(i->second->inner);}
 #ifdef NORTHLIGHT_REPLAY_STAND
@@ -287,8 +310,7 @@ struct StreamCore {
     unsigned framesAhead=1;          // 0.3.204 (task 21): StreamFramesAhead (clamped), set once by the StreamDevice: the buffers' slice rings hold framesAhead+2 slices at most
     // 0.3.204 (task 21): large-buffer slices that were dropped or swapped away while the replay thread may still read them (a zero-copy unlock refers to the bytes until it retires): the storage waits here
     // (under texMutex) with the seq of the last command that reads it, and is freed by trimRetired once replayedSeq has passed it. Their bytes leave shadowBytes/largeShadowBytes at once and count in the ring budget (retired*Bytes) until freed.
-    struct Retired {SliceMem mem;std::uint64_t seq;std::size_t bytes;bool large;};   // large: counted in retiredLargeBytes (the ring budget of the large allowance), else in retiredRegularBytes
-    std::vector<Retired> retired;
+    SliceMem::Storage retired;
     // 0.3.204 (task 21): Diagnostics split timers. timing is the game thread's own copy of the Diagnostics switch, refreshed at each Present (StreamDevice::presentCommon);
     // timingN counts the generated calls for the 1-in-16 sampling. Both are game-thread only: the replay thread never runs a game-facing method or a Lock/Unlock path.
     bool timing=false;unsigned timingN=0;
@@ -425,7 +447,7 @@ template<Cmd C,class... A> typename MethodTraits<C>::Ret ProxyBase::syncCall(Cmd
 template<class F> inline bool runTask(StreamCore& c,F&& fn,Cmd label=Cmd::Quiesce){   // label: the census name of this sync call
     if(inPumpedWait){add(c.q.stats.nestedSyncs);return false;}
     using Fn=typename std::remove_reference<F>::type;
-    Task t{[](void* a,StreamCore& core){(*static_cast<Fn*>(a))(core);},&fn};
+    Task t{[](void* a,StreamCore& core){(*static_cast<Fn*>(a))(core);},&fn,label};
     Task* p=&t;own(c.q.stats.census[(std::size_t)label]);own(c.q.stats.syncCalls);
     std::memcpy(c.q.reserve((std::uint16_t)Cmd::Quiesce,sizeof p,kFlagWaitTarget),&p,sizeof p);c.q.commit();   // 0.3.196 (task 12): flagged, the wait below targets it
     c.q.waitReplayed(c.q.recordedSeq(),WaitKind::Sync);

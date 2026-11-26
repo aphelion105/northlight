@@ -72,7 +72,7 @@ def link_renderer(command, env, output_dll):
         final = [command[0], *linker, '-OPT:REF', '-OPT:NOICF', '-MAP:' + str(output / (output_dll.stem + '.map'))]
         subprocess.run(final, cwd=cwd, env=env, check=True)
 
-def check_compiler(zig, env):
+def check_compiler(zig, env, target='x86-windows-gnu'):
     if sys.platform != 'win32':
         return
     output = northlight_paths.out()
@@ -80,7 +80,7 @@ def check_compiler(zig, env):
     with tempfile.TemporaryDirectory(prefix='compiler-probe-', dir=output) as folder:
         source = Path(folder) / 'probe.cpp'
         source.write_text('int main(){return 0;}\n', encoding='utf-8')
-        result = subprocess.run([str(zig), 'c++', '-target', 'x86-windows-gnu',
+        result = subprocess.run([str(zig), 'c++', '-target', target,
                                  '-O0', '-c', str(source), '-o', str(source.with_suffix('.obj'))],
                                 env=env, capture_output=True, text=True)
     if result.returncode:
@@ -100,6 +100,13 @@ def main(argv=None):
     dev_tuning = '--dev-tuning' in arguments
     stand_replay = '--stand-replay' in arguments
     profile_symbols = '--profile-symbols' in arguments
+    x64 = '--x64' in arguments
+    x86_on12 = '--x86-on12' in arguments
+    if x86_on12 and (x64 or dev_tuning or stand_replay or profile_symbols):
+        raise SystemExit('--x86-on12 builds a separate 32-bit comparison proxy.')
+    if x64 and (dev_tuning or stand_replay):
+        raise SystemExit('--x64 builds the standalone game-folder proxy.')
+    target = 'x86_64-windows-gnu' if x64 else 'x86-windows-gnu'
     if profile_symbols and (dev_tuning or stand_replay):
         raise SystemExit('--profile-symbols builds a separate optimized profiling DLL')
     if dev_tuning and stand_replay:
@@ -113,7 +120,7 @@ def main(argv=None):
     except northlight_paths.Missing as e:
         raise SystemExit(f'build_renderer.py: {e}\nInstall zig {northlight_paths.ZIG_VERSION} (https://ziglang.org/download/) and point NORTHLIGHT_ZIG at it.')
     env = northlight_paths.zig_env()
-    check_compiler(zig, env)
+    check_compiler(zig, env, target)
     subprocess.run([sys.executable, str(ROOT/'generate_glue_lighting_selection.py'), '--check'], check=True)
     from build_sky_material_catalog import check_generated
     check_generated()
@@ -147,7 +154,7 @@ def main(argv=None):
     normal_inputs=normal_sources()
     if (world_manifest.get('normal_sources')!=normal_inputs or
         any(world_manifest['shaders'][entry]['source_sha256']!=normal_inputs['world_normals.hlsl'] for entry in NORMAL_ENTRIES)):
-        raise SystemExit('World normal inputs differ from the offline build. Recompile both normal entries.')
+        raise SystemExit('World normal inputs differ from the offline build. Recompile all normal entries.')
     transition_manifest = json.loads((SHADERS/'shadow-transition-shader-build.json').read_text())
     if transition_manifest['sources'] != source_hashes(SHADERS/'shadow_transition.hlsl'):
         raise SystemExit('Shadow transition source differs from offline build; run scripts/shaders/compile_shadow_transition_shaders.py.')
@@ -197,21 +204,33 @@ def main(argv=None):
         raise SystemExit("Parallax shaders differ from the offline build.")
     from build_renderer_assets import prepare, FILENAME, built_path
     output_dll = PROFILE_DLL if profile_symbols else STAND_DLL if stand_replay else DEV_DLL if dev_tuning else DLL
-    assets_dir = northlight_paths.out() / 'renderer-assets' / output_dll.stem
+    exports = northlight_paths.src('frd9.def')
+    if x64 or x86_on12:
+        output_dll = northlight_paths.out() / ('x64-profile-proxy' if x64 and profile_symbols else 'x64-proxy' if x64 else 'x86-on12-proxy') / 'd3d9.dll'
+        output_dll.parent.mkdir(parents=True, exist_ok=True)
+    asset_key = 'd3d9-x64' if x64 else 'd3d9-x86-on12' if x86_on12 else output_dll.stem
+    assets_dir = northlight_paths.out() / 'renderer-assets' / asset_key
     assets = prepare(assets_dir)
+    if x64:
+        # Keep ordinals in the common definition. AMD64 has no stdcall aliases.
+        x64_exports = assets_dir / 'd3d9.def'
+        x64_exports.write_text(re.sub(r'=\w+@\d+', '', exports.read_text()).replace(
+            'LIBRARY frd9', 'LIBRARY d3d9'), encoding='ascii')
+        exports = x64_exports
     print('Resources', assets['raw_bytes'], '->', assets['bytes'], 'bytes', flush=True)
     identity = source_identity()
     built_utc = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')
     print('Source identity', identity, flush=True)
     print('Build time', built_utc, flush=True)
-    command = [str(zig), 'c++', '-target', 'x86-windows-gnu', '-O2', '-shared',
+    command = [str(zig), 'c++', '-target', target, '-O2', '-shared',
                '-DNORTHLIGHT_SOURCE_ID="' + identity + '"',
                '-DNORTHLIGHT_BUILD_UTC="' + built_utc + '"',
                '-std=c++17', '-fno-rtti', '-ffunction-sections', '-fdata-sections',
                '-DNORTHLIGHT_EXTERNAL_ASSETS=1', '-I', str(assets_dir),
                '-Wall', '-Wextra', '-Wno-microsoft-exception-spec',
                *northlight_paths.include_flags(),
-               *[str(northlight_paths.src(n)) for n in ('renderer.cpp', 'world_gi.cpp', 'world_mesh_plan.cpp', 'static_shadow_scene.cpp', 'renderer_assets.cpp', 'frd9.def')],
+               *[str(northlight_paths.src(n)) for n in ('renderer.cpp', 'world_gi.cpp', 'world_mesh_plan.cpp', 'static_shadow_scene.cpp', 'renderer_assets.cpp')],
+               str(exports),
                # Settings overlay (src/overlay/) and the vendored Dear ImGui it draws with (src/imgui/, configured by northlight_imconfig.h).
                '-DIMGUI_USER_CONFIG="northlight_imconfig.h"',
                *[str(northlight_paths.src(n)) for n in OVERLAY_SOURCES],
@@ -222,6 +241,10 @@ def main(argv=None):
         *['-I' + str(water / folder) for folder in ('src', 'integrations', 'generated')],
         str(water / 'src/surface_depth.cpp'), str(water / 'src/screen_pass.cpp'),
     ]
+    if x64 or x86_on12:
+        command[command.index('-luser32'):command.index('-luser32')] = ['-ld3d11', '-ldxgi']
+    if x86_on12:
+        command.insert(command.index('-luser32'), '-DNORTHLIGHT_X86_D3D9ON12=1')
     if profile_symbols:
         command[command.index('-shared'):command.index('-shared')] = ['-g', '-DNORTHLIGHT_PROFILE_BUILD=1']
     if dev_tuning:
@@ -232,8 +255,9 @@ def main(argv=None):
         command.insert(command.index('-luser32'), '-DNORTHLIGHT_REPLAY_STAND=1')
         print('Building the STAND REPLAY variant: imported context only, not for game installation.')
     link_renderer(command, env, output_dll)
-    shutil.copyfile(assets_dir/FILENAME, built_path(output_dll))
-    print('Built', output_dll, 'and', built_path(output_dll))
+    bundle = output_dll.with_name(FILENAME) if x64 or x86_on12 else built_path(output_dll)
+    shutil.copyfile(assets_dir/FILENAME, bundle)
+    print('Built', output_dll, 'and', bundle)
 
 if __name__ == '__main__':
     main()

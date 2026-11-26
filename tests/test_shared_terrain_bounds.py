@@ -101,7 +101,7 @@ namespace NorthlightAutoDisplacement {using Args=Geometry;using CaptureSource=No
 struct Bump {
  std::vector<std::string>* events;unsigned calls=0;bool hint=false,activeValue=true;
  bool active()const{return activeValue;}
- void allowNativeM2Fusion(bool,void*,float){}
+ void allowNativeM2Fusion(bool,void*,float,bool=false){}
  template<class Draw>void capture(IDirect3DVertexShader9* vs,Draw draw,bool up,const Geometry* geometry,const NorthlightCaptureMetadata::PositionBounds* bounds,NormalSource* source,const std::shared_ptr<const NorthlightDrawSnapshot::Mesh>* batchSource=nullptr){
   assert(source&&!batchSource);source->captured=true;
   events->push_back("bump");++calls;assert(!up&&bounds&&bounds->owner==geometry&&bounds->shader==vs&&"SHARED_BOUND_OWNER_MISMATCH");hint=bounds->known;assert(draw()==42);

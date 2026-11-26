@@ -13,10 +13,12 @@ void capture(IDirect3DVertexShader9* vs,const NorthlightAutoDisplacement::Args& 
 #ifdef NORTHLIGHT_REPLAY_STAND
              ,NorthlightCaptureWork::Route* audit=nullptr
 #endif
-             ,const std::shared_ptr<const NorthlightDrawSnapshot::Mesh>* sourceHint=nullptr
+             ,const std::shared_ptr<const NorthlightDrawSnapshot::Mesh>* sourceHint=nullptr,
+             NorthlightAutoDisplacement::CaptureSource* captureHandoff=nullptr
              ){
     const auto& args=geometry.draw;
-    NorthlightAutoDisplacement::CaptureSource source;
+    NorthlightAutoDisplacement::CaptureSource localSource;
+    auto& source=captureHandoff?*captureHandoff:localSource;
     NorthlightCaptureMetadata::PositionBounds positions;
     positions.owner=&geometry;positions.shader=vs;
     auto captureWorld=[&](NorthlightCaptureMetadata::PositionBounds* bounds=nullptr){

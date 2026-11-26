@@ -15,7 +15,8 @@ from shader_compiler import Compiler
 
 ENTRIES = ('SceneBounds', 'ReduceBounds', 'Morton', 'SortLocal', 'SortGlobal',
            'MergeLocal', 'LeafBounds', 'InnerBounds', 'TraceRays', 'SolveProbes', 'SolveParallel',
-           'RadixTopology', 'ClearVisits', 'RadixBounds', 'MaterialOpacity')
+           'RadixTopology', 'ClearVisits', 'RadixBounds', 'MaterialOpacity', 'CacheTriangles',
+           'TraceProbeRays', 'ReduceProbes', 'TraceProbeRays32', 'TraceProbeRays128', 'TraceProbeRays256')
 
 
 def validate_cs5(path):
@@ -34,14 +35,22 @@ def validate_cs5(path):
     assert found, path
 
 
-def build(out):
+def build(out, cpu_source=None):
     compiler = Compiler(allow_compatible_binary=True)  # Explicit fixture-only distribution.
     for entry in ENTRIES:
         destination = out/(entry+'.bin')
+        source = ROOT/'scripts/gpu_bvh_prototype.hlsl'
+        target_entry = entry
+        if entry.startswith('TraceProbeRays') and entry != 'TraceProbeRays':
+            capacity = int(entry.removeprefix('TraceProbeRays'))
+            source = out/(entry+'.hlsl')
+            source.write_text(f'#define RAY_GROUP_SIZE {capacity}\n'+
+                              (ROOT/'scripts/gpu_bvh_prototype.hlsl').read_text())
+            target_entry = 'TraceProbeRays'
         # Reuse the verified Microsoft helper; its Python SM3 marker checker
         # intentionally cannot validate a DXBC compute container.
-        compiled = subprocess.run([*compiler.command, str(ROOT/'scripts/gpu_bvh_prototype.hlsl'),
-                        entry, 'cs_5_0', str(destination)], env=compiler.env,
+        compiled = subprocess.run([*compiler.command, str(source),
+                        target_entry, 'cs_5_0', str(destination)], env=compiler.env,
                        capture_output=True, timeout=120)
         (out/(entry+'-compile.log')).write_bytes(compiled.stdout+compiled.stderr)
         if compiled.returncode:
@@ -50,8 +59,9 @@ def build(out):
         validate_cs5(destination)
     exe = out/'gpu-bvh-prototype.exe'
     command = [str(fp.zig()), 'c++', '-target', 'x86-windows-gnu', '-std=c++17', '-O2',
-               '-UNDEBUG', *fp.include_flags(), str(ROOT/'scripts/gpu_bvh_prototype.cpp'),
-               str(fp.src('world_gi.cpp')), '-ld3d11', '-ldxgi', '-luuid', '-lbcrypt', '-o', str(exe)]
+               '-UNDEBUG', *(['-I'+str(cpu_source.parent)] if cpu_source else []),
+               *fp.include_flags(), str(ROOT/'scripts/gpu_bvh_prototype.cpp'),
+               str(cpu_source or fp.src('world_gi.cpp')), '-ld3d11', '-ldxgi', '-luuid', '-lbcrypt', '-o', str(exe)]
     result = subprocess.run(command, env=fp.zig_env(), capture_output=True, text=True)
     (out/'compile.log').write_text(result.stdout+result.stderr, encoding='utf-8')
     if result.returncode:
