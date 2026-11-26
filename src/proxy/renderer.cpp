@@ -1619,14 +1619,12 @@ private:
             return autoBump->nativeDraw(draw,vs,ps);
         }return draw();
     }
-#ifdef _WIN64
     struct HybridNormalDraw {
         NorthlightDrawSnapshot::Ref<IDirect3DVertexShader9> shader;
         NorthlightAutoDisplacement::CaptureSource handoff;
         bool submitted=false,written=false;
     };
     HybridNormalDraw* hybridNormalDraw=nullptr;
-#endif
     template<class Draw> HRESULT nativeLocalSubmit(Draw draw,bool prepared=false,IDirect3DVertexShader9* source=nullptr){
         // Factory provenance names the original material and bound private pair
         // for POM and supported skinned displacement.
@@ -1643,7 +1641,6 @@ private:
                     if(displacement&&displacement->originalVS==original&&displacement->matches(bound))return M::PairValid;
                     return 0;
                 };
-#ifdef _WIN64
             if(domain&&hybridNormalDraw&&hybridNormalDraw->shader.p){
                 auto* original=hybridNormalDraw->shader.p;
                 auto& written=hybridNormalDraw->written;
@@ -1659,7 +1656,6 @@ private:
                 cpuPrep+=extra;cpuCapture+=extra;cpuNormalCapture+=extra;
                 return result;
             }
-#endif
             return modelNormals->nativeDraw(draw,domain,prove);
         };
         return world&&nativeLocalDomain&&enabled&&!applied&&!failed&&projectionValid&&!debugMode&&!worldDebug?world->nativeLocalDraw(frame,worldDepth,native,prepared,autoBump?autoBump->nativePOM():nullptr,source,autoBump?autoBump->nativeDisplacement():nullptr,effectCoverage.nativePixel()):native();
@@ -1773,13 +1769,11 @@ private:
             [&]{return enabled&&!applied&&!failed;},
             [&](auto& source){
                 if constexpr(!userMemory)noteIndexedPairSource(vs,source);
-#ifdef _WIN64
                 if constexpr(!userMemory)if(hybridNormalDraw&&modelNormalsNeeded&&modelNormals->beginHybridMrt(worldDepth)&&
                     classifyVs(vs).skinned&&drawRenderState(D3DRS_ZWRITEENABLE)&&!drawRenderState(D3DRS_ALPHABLENDENABLE)&&
                     !drawRenderState(D3DRS_ALPHATESTENABLE)&&(drawRenderState(D3DRS_COLORWRITEENABLE)&7)==7){
                     vs->AddRef();hybridNormalDraw->shader.p=vs;return;
                 }
-#endif
                 captureModelNormals(vs,raw,userMemory,geometry,&source);
             },
             [&]{captureWater(vs,UserPointer,draw);}
@@ -1787,9 +1781,7 @@ private:
             ,audit?&route:nullptr
 #endif
             ,sourceHint?&sourceHint:nullptr
-#ifdef _WIN64
             ,hybridNormalDraw?&hybridNormalDraw->handoff:nullptr
-#endif
         );
 #ifdef NORTHLIGHT_REPLAY_STAND
         if(audit)logCaptureWork(geometry.draw,userMemory,route,before,shaderClass,alphaTest);
@@ -3393,6 +3385,12 @@ public:
         const bool hybrid=presentation.dxvk&&presentation.stream&&hybridMrt&&!std::strcmp(hybridMrt,"1");
         const char* grace=std::getenv("NORTHLIGHT_X64_M2_MRT_SHADER_GRACE");
         modelNormals->enableHybridMrt(hybrid,std::chrono::milliseconds(hybrid&&(!grace||std::strcmp(grace,"0"))?50:0));
+#elif !defined(NORTHLIGHT_REPLAY_STAND)
+        const bool dxvkX86=presentation.dxvk&&presentation.stream&&
+            NorthlightStream::dxvk311EventPayload.load(std::memory_order_relaxed)&&
+            !GetProcAddress(GetModuleHandleW(L"ntdll.dll"),"wine_get_version");
+        world->setStaggerColdCaptures(dxvkX86);
+        modelNormals->enableHybridMrt(dxvkX86,std::chrono::milliseconds(dxvkX86?50:0));
 #endif
         autoBump=std::make_unique<NorthlightAutoBump>(ext,gpuScene);if(rootPath[0])autoBump->setPersistentCache(std::filesystem::path(rootPath)/L"Cache"/L"Northlight"/L"Materials-v1",NorthlightBackend::name(selectedBackend),materialCacheBackendIdentity.c_str(),materialCacheAsyncReadback);autoBump->setGeometryTracking(&NorthlightTrackedBuffers::identity,&NorthlightTrackedBuffers::version,&NorthlightTrackedBuffers::captureMetadata);autoBump->configure(world->surfaceSettings());
         modelNormals->setDrawStateSource(*ext);
@@ -4478,13 +4476,11 @@ public:
         if(enabled||uiDrawDiagnostic.left)spellArgs=NorthlightSpellLayer::DrawArgs::primitive(t,start,count);
         return drawHook(t,count,[&](IDirect3DVertexShader9* vs){captureGameDraw<NorthlightWaterRenderer::NoUserPointer>(vs,geometry,raw,draw);},draw,&nativeSky,&skyCaptured,&geometry);}
     HRESULT STDMETHODCALLTYPE DrawIndexedPrimitive(D3DPRIMITIVETYPE t,INT base,UINT min,UINT vertices,UINT start,UINT count) override { Guard mirrorLock(mirrorState.gate);
-#ifdef _WIN64
         std::optional<HybridNormalDraw> hybrid;
         if(modelNormals&&modelNormals->hybridRequested()&&t==D3DPT_TRIANGLELIST&&!indexedPairGate&&!particlePairGate&&!worldDebug)
             hybrid.emplace();
         struct RestoreHybridDraw {HybridNormalDraw*& slot;HybridNormalDraw* previous;~RestoreHybridDraw(){slot=previous;}} restoreHybrid{hybridNormalDraw,hybridNormalDraw};
         hybridNormalDraw=hybrid?&*hybrid:nullptr;
-#endif
 #ifdef NORTHLIGHT_PROFILE_BUILD
         NorthlightStream::ReplayFrameProfile::IndexedDraw* timing=nullptr;
         if(auto* profile=NorthlightStream::sampledIndexedReplay){
@@ -4498,9 +4494,7 @@ public:
         bool nativeSky=false,skyCaptured=false;
         beginIndexedPairDraw();
         auto raw=[&]{return submitIndexedPair(geometry.draw,[&]{
-#ifdef _WIN64
             if(hybrid)hybrid->submitted=true;
-#endif
 #ifdef NORTHLIGHT_PROFILE_BUILD
             if(timing){
                 const auto submitStart=NorthlightStream::nowNs();
@@ -4514,14 +4508,12 @@ public:
         auto draw=[&]{return submitGameDraw(count,nativeSky,&skyCaptured,raw,&geometry.draw);};
         if(enabled||uiDrawDiagnostic.left)spellArgs=NorthlightSpellLayer::DrawArgs::indexed(t,base,min,vertices,start,count);
         const auto result=drawHook(t,count,[&](IDirect3DVertexShader9* vs){captureGameDraw<NorthlightWaterRenderer::NoUserPointer>(vs,geometry,raw,draw);},draw,&nativeSky,&skyCaptured,&geometry);
-#ifdef _WIN64
         if(hybrid&&hybrid->submitted&&hybrid->shader.p&&!hybrid->written&&SUCCEEDED(result)&&!failed){
             extensionWork("normal fallback",[&]{
                 CpuScope captureCost(sampledDrawTimers()?&cpuCapture:nullptr),prepCost(sampledDrawTimers()?&cpuPrep:nullptr);
                 captureModelNormals(hybrid->shader.p,raw,false,geometry,&hybrid->handoff);
             });
         }
-#endif
 #ifdef NORTHLIGHT_PROFILE_BUILD
         if(timing)timing->ns+=NorthlightStream::nowNs()-drawStart;
 #endif
@@ -4687,6 +4679,27 @@ public:
 #endif
         if(stream)flags|=D3DCREATE_MULTITHREADED; /* DXVK's window-proc hook may touch the swap chain on the game thread while the replay thread presents */
         presentation.stream=stream;
+#if !defined(_WIN64) && !defined(NORTHLIGHT_REPLAY_STAND)
+        if(stream&&presentation.dxvk&&NorthlightStream::dxvk311EventPayload.load(std::memory_order_relaxed)&&
+           !GetProcAddress(GetModuleHandleW(L"ntdll.dll"),"wine_get_version")){
+            // DXVK EVENT can wait behind a competing graphics context after encoding.
+            // Request the WDDM priority class for this client process before creating the device.
+            enum GpuPriority : int {GpuNormal=2,GpuHigh=4};
+            using GetGpuPriority=LONG (WINAPI*)(HANDLE,GpuPriority*);
+            using SetGpuPriority=LONG (WINAPI*)(HANDLE,GpuPriority);
+            const auto gdi=GetModuleHandleW(L"gdi32.dll");
+            const auto get=gdi?reinterpret_cast<GetGpuPriority>(GetProcAddress(gdi,"D3DKMTGetProcessSchedulingPriorityClass")):nullptr;
+            const auto set=gdi?reinterpret_cast<SetGpuPriority>(GetProcAddress(gdi,"D3DKMTSetProcessSchedulingPriorityClass")):nullptr;
+            const HANDLE process=GetCurrentProcess();
+            GpuPriority previous{};
+            if(get&&set&&get(process,&previous)==0&&previous==GpuNormal){
+                const LONG status=set(process,GpuHigh);
+                GpuPriority current=previous;
+                const LONG observed=get(process,&current);
+                logf("DXVK x86 GPU priority previous=%d current=%d set=0x%08lx read=0x%08lx",int(previous),int(current),(unsigned long)status,(unsigned long)observed);
+            }
+        }
+#endif
         if(presentation.supportsSubmission()&&presentation.dxvk)presentation.formatsPrepared=NorthlightHdr::unlockFormats(real);
         memmapProcess("pre-create",InterlockedCompareExchange(&deviceSerial,0,0)+1); /* task 42 (MEMMAP): what the backend's CreateDevice (and our Device) add shows in the create diff */
         HRESULT hr=real->CreateDevice(adapter,type,window,flags,pp,out);

@@ -1,6 +1,6 @@
 #pragma once
 
-static void configureDxvkCompatibility(const NorthlightBackendLoader::Inspection& info,bool disableFse=false){
+static void configureDxvkCompatibility(const NorthlightBackendLoader::Inspection& info,bool disableFse,bool latencyX86){
     // Do not edit dxvk.conf or global launcher/Wine settings. Only this client
     // process receives the required D3D9 compatibility options. Explicit
     // DXVK_CONFIG assignments remain last and can override them for diagnosis.
@@ -14,13 +14,15 @@ static void configureDxvkCompatibility(const NorthlightBackendLoader::Inspection
             if(copied>=buffer.size()){logf("DXVK compatibility configuration changed concurrently; defaults not applied");return;}
             existing.assign(buffer.data(),copied);
         }
-        const auto combined=NorthlightDxvkCompatibility::config(existing,disableFse);
+        const auto combined=NorthlightDxvkCompatibility::config(existing,disableFse,latencyX86);
         const BOOL set=SetEnvironmentVariableA("DXVK_CONFIG",combined.c_str());
         // DXVK 1.10.x reads only dxvk.conf/DXVK_CONFIG_FILE: the variable is then inert.
         // 0.3.189: DXVK 2.x reads cachedDynamicBuffers, >=3.0 cachedWriteOnlyBuffers; each ignores the other's key.
         logf("DXVK compatibility process defaults applied=%u vendor=1002 cachedDynamicBuffers(2.x)=True cachedWriteOnlyBuffers(>=3.0)=True descriptorHeap=False explicitInlineOverrides=%u dxvk=%s DXVK_CONFIG supported=%u",
              unsigned(set!=FALSE),unsigned(!existing.empty()),info.dxvkVersion.empty()?"unknown":info.dxvkVersion.c_str(),unsigned(info.dxvkConfigEnv));
         if(disableFse)logf("DXVK3 engine-name FSE forced=False process-config-applied=%u",unsigned(set!=FALSE));
+        if(latencyX86)logf("DXVK x86 pacing defaults applied=%u",
+            unsigned(set!=FALSE&&combined.find("dxvk.latencySleep=True;")!=std::string::npos));
     }catch(...){logf("DXVK compatibility defaults unavailable: allocation failure");}
 }
 // Win32 adapter for NorthlightBackendLoader; optional DXVK-only import redirect.
@@ -69,7 +71,8 @@ struct Win32BackendSys {
         const bool presentWaitRequested=GetPrivateProfileIntW(L"Renderer",L"DxvkPresentWaitWorkaround",1,(std::wstring(rootPath)+L"northlight-renderer.ini").c_str())!=0;
         presentWaitWorkaround=presentWaitRequested&&NorthlightBackend::isPackagedDxvk(kind)&&info.dxvk&&info.dxvkVersion=="v3.1.1"&&!wine;
         if(requested)logf("DXVK3 engine-name requested=1 eligible=%u wine=%u backend=%s version=%s",unsigned(engineNameWorkaround),unsigned(wine),NorthlightBackend::name(kind),info.dxvkVersion.c_str());
-        if(NorthlightBackend::isPackagedDxvk(kind))configureDxvkCompatibility(info,engineNameWorkaround);
+        const bool latencyX86=sizeof(void*)==4&&info.dxvkVersion=="v3.1.1"&&!wine;
+        if(NorthlightBackend::isPackagedDxvk(kind))configureDxvkCompatibility(info,engineNameWorkaround,latencyX86);
     }
     HMODULE load(const std::wstring& path,unsigned long& error){
         HMODULE m=LoadLibraryW(path.c_str());error=m?0:GetLastError();

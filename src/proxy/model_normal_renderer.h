@@ -758,7 +758,6 @@ public:
     void enableHybridMrt(bool on,std::chrono::milliseconds warmup={}){hybridEnabled=on;nativeMrt.setHybridShaderWarmup(warmup);}
     bool hybridRequested()const{return hybridEnabled;}
     bool beginHybridMrt(IDirect3DSurface9* mainDepth){
-#ifdef _WIN64
         if(!hybridEnabled||!deferred||!mainDepth||bad)return false;
         if(hybridDepth)return hybridDepth==mainDepth;
         if(frameTarget||draws||!pending.empty()||!nativeMrt.acceptingHybrid())return false;
@@ -772,10 +771,6 @@ public:
         std::swap(frameTarget,color.p);std::swap(hybridDepth,depth.p);cleared=true;
         nativeMrt.frameTarget(frameTarget,desc);
         return true;
-#else
-        (void)mainDepth;
-        return false;
-#endif
     }
     bool hybridDepthMatches(){
         if(!hybridDepth)return true;
@@ -783,7 +778,6 @@ public:
         return SUCCEEDED(d->GetDepthStencilSurface(activeDepth.out()))&&activeDepth.p==hybridDepth;
     }
     template<class Draw,class Prove> HRESULT hybridDraw(Draw submit,IDirect3DVertexShader9* original,Prove prove,bool& written){
-#ifdef _WIN64
         if(!hybridDepth||!nativeMrt.acceptingHybrid()||bad||!hybridDepthMatches())return submit();
         ++hybridAttempts;
         // Replays compare against the live depth without changing it. Finish
@@ -795,10 +789,6 @@ public:
             }:nullptr);
         if(result.written){written=true;++hybridWritten;++nativeCommittedPackets;++draws;}
         return result.hr;
-#else
-        (void)original;(void)prove;(void)written;
-        return submit();
-#endif
     }
 #ifdef NORTHLIGHT_REPLAY_STAND
     void setTraceOrdinal(unsigned ordinal){traceOrdinal=ordinal;}
@@ -838,9 +828,7 @@ public:
         return false;
     }
     void clearHybridDepthCopy(){
-#ifdef _WIN64
         if(hybridDepth&&!nativeMrt.clearHybrid(surface))bad=true;
-#endif
     }
     void clearHybridRegion(DWORD count,const D3DRECT* rectangles){
         if(!hybridDepth)return;
@@ -859,9 +847,7 @@ public:
         }
     }
     template<class Draw,class Prove> HRESULT nativeDraw(Draw submit,bool domain,Prove prove){
-#ifdef _WIN64
         if(hybridDepth)return submit();
-#endif
         if(bad||pending.empty()||!surface||!frameTarget||!nativeMrt.accepting())return submit();
         if(!domain){
             // A scene-depth writer outside the receiver domain owns its visible
@@ -998,9 +984,7 @@ public:
             const NorthlightConstantEpoch::BankHandoff* materialBank=nullptr){
         if(bad||!source)return;
         NorthlightCapturePhases::Scope<CapturePhaseCount> phase(profileCapture?&capturePhases:nullptr,Admission);
-#ifdef _WIN64
         if(!hybridDepthMatches())return;
-#endif
         // The stream's scope owns this proof for this draw only. Compare
         // against actual capture inputs before admitting a tagged packet.
         auto* nativeSection=NorthlightM2Draw::current;

@@ -39,7 +39,8 @@ source = values['harness'].split('int main(){')[0] + r'''
 #include <string>
 #include "adt_draw_bounds.h"
 #include "captured_constant_epoch.h"
-struct IDirect3DVertexShader9 {};
+struct IDirect3DVertexShader9 {void AddRef(){assert(false);}};
+enum {D3DRS_ZWRITEENABLE,D3DRS_ALPHABLENDENABLE,D3DRS_ALPHATESTENABLE,D3DRS_COLORWRITEENABLE};
 namespace NorthlightDrawSnapshot {struct Mesh;}
 namespace NorthlightPoseBounds {struct Handoff {};}
 static unsigned adtSummaries=0,adtCompared=0,adtContained=0,adtExamples=0;
@@ -120,6 +121,14 @@ struct Native {
 CAPTURE_NAMESPACE
 struct Route {
  World* world;Bump* autoBump;Native* ext;std::vector<std::string>* events;
+ struct {bool beginHybridMrt(void*){return false;}} normals{};
+ decltype(normals)* modelNormals=&normals;
+ bool modelNormalsNeeded=false;
+ struct HybridDraw {struct{IDirect3DVertexShader9* p;}shader;NormalSource handoff;};
+ HybridDraw* hybridNormalDraw=nullptr;
+ struct ShaderClass{bool skinned;};
+ ShaderClass classifyVs(IDirect3DVertexShader9*)const{return {false};}
+ unsigned drawRenderState(unsigned)const{return 0;}
  bool enabled=true,applied=false,failed=false;unsigned frame=127;
  NorthlightBackend::Kind selectedBackend=NorthlightBackend::Kind::Dxvk;
  struct{bool active=false;}hdr{};bool indexedPairGate=false,particlePairGate=false;void* worldDepth=nullptr;float nearZ=.22f;

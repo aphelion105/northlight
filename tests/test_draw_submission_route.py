@@ -24,9 +24,12 @@ def member(text, signature):
 
 harness=r'''#include <cassert>
 #include <cstdio>
+#include <optional>
 #include <vector>
 using HRESULT=int;using UINT=unsigned;using INT=int;using D3DPRIMITIVETYPE=int;using D3DFORMAT=int;
 constexpr int D3DFMT_UNKNOWN=0;
+constexpr int D3DPT_TRIANGLELIST=1;
+inline bool SUCCEEDED(HRESULT hr){return hr>=0;}
 struct IDirect3DVertexShader9{};
 namespace NorthlightDrawSnapshot {
 struct Draw{D3DPRIMITIVETYPE type;INT base;UINT minimum,vertices,start,primitives;bool indexed;};
@@ -51,7 +54,20 @@ struct Model {
     bool enabled=true,applied=false,failed=false,skyCaptured=false,restoreFailed=false;
     int bound=0,calls=0,form=0,spellArgs=0;
     IDirect3DVertexShader9 source;Model *ext=this,*autoBump=this,*world=this,*nativeMoreLights=nullptr,*gameParticlePair=this;
-    bool particlePairGate=false,auroraDrawProven=false;
+    bool indexedPairGate=false,particlePairGate=false,auroraDrawProven=false;
+    struct {bool hybridRequested()const{return false;}} normals;
+    decltype(normals)* modelNormals=&normals;
+    struct HybridNormalDraw {
+        struct {IDirect3DVertexShader9* p=nullptr;} shader;
+        int handoff=0;
+        bool submitted=false,written=false;
+    };
+    HybridNormalDraw* hybridNormalDraw=nullptr;
+    int cpuCapture=0,cpuPrep=0;
+    struct CpuScope{explicit CpuScope(int*){}};
+    bool sampledDrawTimers()const{return false;}
+    template<class Work> void extensionWork(const char*,Work work){work();}
+    template<class... Args> void captureModelNormals(Args&&...){assert(false);}
     struct {int gate=0;IDirect3DVertexShader9* vertexShader=nullptr;} mirrorState;
     struct Guard{explicit Guard(int){}};
     struct {bool active=true;} hdr;

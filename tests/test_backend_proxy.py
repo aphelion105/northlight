@@ -74,7 +74,8 @@ def audit():
         assert forbidden not in loader,forbidden   # the executable and candidates are only read
     # 0.3.175: DXVK_ASYNC is never set (the runtime's own setting applies); vendor/buffer defaults only for Backend=dxvk.
     assert 'DXVK_ASYNC' not in src.replace('DXVK_ASYNC is left to the runtime','')
-    assert 'if(NorthlightBackend::isPackagedDxvk(kind))configureDxvkCompatibility(info,engineNameWorkaround);' in loader and src.count('configureDxvkCompatibility(')==2
+    assert 'if(NorthlightBackend::isPackagedDxvk(kind))configureDxvkCompatibility(info,engineNameWorkaround,latencyX86);' in loader and src.count('configureDxvkCompatibility(')==2
+    assert 'latencyX86=sizeof(void*)==4&&info.dxvkVersion=="v3.1.1"&&!wine' in loader
     assert 'DxvkEngineNameWorkaround' in loader and 'dxvkMajor(info.dxvkVersion)==3&&!wine' in loader
     assert 'if(m&&(engineNameWorkaround||presentWaitWorkaround))' in loader
     assert 'info.dxvkVersion=="v3.1.1"&&!wine' in loader and 'DxvkPresentWaitWorkaround' in loader
@@ -92,12 +93,13 @@ def audit():
     be=src[src.index('static HMODULE backend()'):src.index('static HMODULE recursionBackend')]
     assert be.count('NorthlightBackendLoader::load(')==1 and 'NorthlightBackendLoader::Result<HMODULE> result=NorthlightBackendLoader::load(sys,candidates,system);' in be
     c9=src[src.index('Direct3DCreate9(UINT'):src.index('Direct3DCreate9Ex(UINT')]
-    assert 'IDirect3D9* p=fn(sdk);' in c9 and 'return p&&!NorthlightBackendLoader::ExportScope::reentered()?new Factory(p):p;' in c9
+    raw_return='if(!p||NorthlightBackendLoader::ExportScope::reentered())return p;'
+    assert 'IDirect3D9* p=fn(sdk);' in c9 and raw_return in c9
+    assert c9.index(raw_return)<c9.index('return new Factory(p);')
     cex=src[src.index('Direct3DCreate9Ex(UINT'):];cex=cex[:cex.index('\n}\n')]
     assert 'return fn(sdk,out);' in cex
     assert 'static bool applied=false;if(applied)return;applied=true;' in src   # one prefix, even after a refusal
     assert 'NorthlightBackendLoader::ExportScope::reentered()?recursionBackend():backend()' in src
-    assert '!NorthlightBackendLoader::ExportScope::reentered()?new Factory(p):p' in src
     # Nothing depends on the host exe: its path is logged, it is never read or hashed.
     host=src[src.index('static void logHostExecutable'):];host=host[:host.index('\n}\n')]
     assert 'logHostExecutable(sys.selfPath);' in src and 'HOST exe=%ls module=%ls' in host
