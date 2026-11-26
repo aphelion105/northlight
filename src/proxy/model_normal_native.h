@@ -168,7 +168,8 @@ public:
     }
     template<class Draw,class Prove> Result draw(Draw submit,IDirect3DSurface9* target,IDirect3DSurface9* color,UINT width,UINT height,
                                               IDirect3DVertexShader9* original,bool receiver,Prove prove,bool terrain=false,
-                                              void* hybridOwner=nullptr,bool(*prepareHybrid)(void*)=nullptr){
+                                              void* hybridOwner=nullptr,bool(*prepareHybrid)(void*)=nullptr,
+                                              HRESULT(*releaseHybridTarget)(void*,unsigned,IDirect3DSurface9*)=nullptr){
         const bool hybrid=prepareHybrid!=nullptr;
         auto fallback=[&](HybridRefusal cause){if(hybrid){reason=refusalNames[cause];++hybridRefusals[cause];}else cancel(refusalNames[cause]);return Result{submit(),false,false};};
         if(!enabled||!capable||refused||(!hybrid&&!complete))return {submit(),false,false};
@@ -256,11 +257,14 @@ public:
                 retry([&]{return d->SetViewport(&vp);});
         };
         bool touchedTarget=false,touchedMask=false,touchedVS=false,touchedPS=false;
-        auto restore=[&](bool failedBind=false){bool ok=true;
+        auto restore=[&](bool failedBind,bool retainTarget){bool ok=true;
             if(touchedPS&&(failedBind||!(proof&OuterRestoresPixel)))ok=retry([&]{return d->SetPixelShader(oldPS.p);})&&ok;
             if(touchedVS&&(failedBind||!(proof&OuterRestoresVertex)))ok=retry([&]{return d->SetVertexShader(oldVS.p);})&&ok;
             if(touchedMask)ok=retry([&]{return d->SetRenderState(key,mask);})&&ok;
-            if(touchedTarget)ok=retry([&]{return d->SetRenderTarget(slot,nullptr);})&&ok;
+            if(touchedTarget){
+                const bool retain=retainTarget&&ok&&releaseHybridTarget;
+                ok=retry([&]{return retain?releaseHybridTarget(hybridOwner,slot,target):d->SetRenderTarget(slot,nullptr);})&&ok;
+            }
             if(touchedTarget&&hybrid)ok=preserveViewport()&&ok;
             return ok;};
         touchedTarget=true;bool bound=SUCCEEDED(d->SetRenderTarget(slot,target));
@@ -268,8 +272,8 @@ public:
         if(bound&&mask!=15){touchedMask=true;bound=SUCCEEDED(d->SetRenderState(key,15));}
         if(bound&&receiver){touchedVS=true;bound=SUCCEEDED(d->SetVertexShader(vs));}
         if(bound){touchedPS=true;bound=SUCCEEDED(d->SetPixelShader(ps));}
-        if(!bound){refused=true;if(hybrid)++hybridRefusals[BindFailed];cancel("bind");const bool restored=restore(true);return {restored?submit():E_FAIL,false,false};}
-        const auto hr=submit();const bool restored=restore();
+        if(!bound){refused=true;if(hybrid)++hybridRefusals[BindFailed];cancel("bind");const bool restored=restore(true,false);return {restored?submit():E_FAIL,false,false};}
+        const auto hr=submit();const bool restored=restore(false,SUCCEEDED(hr));
         if(FAILED(hr)||!restored){if(hybrid)++hybridRefusals[SubmitFailed];cancel("draw-restore");return {FAILED(hr)?hr:E_FAIL,false,false};}
         if(receiver)++modelDraws;else ++zeroDraws;return {hr,true,receiver};
     }

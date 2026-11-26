@@ -274,7 +274,11 @@ class NorthlightModelNormals {
     // the current write bank available to the next capture.
     struct FloatBank {std::unique_ptr<float[]> values;unsigned registers=0;};
     std::vector<FloatBank> floatBanks;
+#ifdef _WIN64
+    static constexpr size_t batchLimit=32u<<20;
+#else
     static constexpr size_t batchLimit=8u<<20;
+#endif
     size_t ownedBanks=0,floatBankBytes=0,peakFloatBanks=0,peakPackets=0,peakBatchBytes=0;
     float* writeBank(unsigned end){
         if(ownedBanks==floatBanks.size())floatBanks.emplace_back();
@@ -287,7 +291,7 @@ class NorthlightModelNormals {
         }
         return bank.values.get();
     }
-    // Recycled buffers and queued geometry share the same 8 MiB allowance.
+    // Recycled buffers and queued geometry share the batch allowance.
     size_t pendingBytes=0,spareBytes=0;unsigned pendingTextureSlots=0;bool deferred=false,sourceSharing=false;
     std::array<const NorthlightDrawSnapshot::Mesh*,1024> chargedSources{};
     size_t sharedMeshBytesAvoided=0;
@@ -785,7 +789,10 @@ public:
         // Replays compare against the live depth without changing it. Finish
         // earlier fallback draws before the next native write to preserve depth ties.
         auto result=nativeMrt.draw(submit,surface,frameTarget,width,height,original,true,prove,false,this,
-            [](void* owner){return static_cast<NorthlightModelNormals*>(owner)->finishCaptures();});
+            [](void* owner){return static_cast<NorthlightModelNormals*>(owner)->finishCaptures();},
+            drawStateSource?+[](void* owner,unsigned slot,IDirect3DSurface9* target){
+                return static_cast<NorthlightModelNormals*>(owner)->drawStateSource->releaseAuxiliaryTarget(slot,target,true);
+            }:nullptr);
         if(result.written){written=true;++hybridWritten;++nativeCommittedPackets;++draws;}
         return result.hr;
 #else

@@ -76,11 +76,12 @@ struct DeviceMirror {
     unsigned nPatchWrites=0;
     D3DVIEWPORT9 viewport={};bool viewportKnown=false;
     IDirect3DSurface9* targets[Targets]={};bool targetKnown[Targets]={},targetAbsent[Targets]={};
-    // DXVK may retain an internal coverage attachment between compatible
+    // DXVK may retain an internal auxiliary attachment between compatible
     // draws. Its logical state is empty until the same attachment is rebound.
     IDirect3DDevice9* deferredTargetDevice=nullptr;
     IDirect3DSurface9* deferredTargets[Targets]={};
-    unsigned deferredTargetMask=0,coverageTargetReuses=0;
+    bool deferredModelNormal[Targets]={};
+    unsigned deferredTargetMask=0,coverageTargetReuses=0,modelNormalTargetReuses=0;
     unsigned targetWrites=0,pixelShaderWrites=0,viewportWrites=0;
     IDirect3DSurface9* depth=nullptr;bool depthKnown=false;
     using FloatRow=float[4];
@@ -374,7 +375,10 @@ public:
     HRESULT STDMETHODCALLTYPE SetRenderTarget(DWORD n,IDirect3DSurface9* value) override{
         Guard lock(m->gate);
         const bool reuse=m->targetDeferred(n)&&value==m->deferredTargets[n]&&m->active()&&!m->targetWrites;
-        if(reuse){m->deferredTargetMask&=~(1u<<n);m->deferredTargets[n]=nullptr;++m->coverageTargetReuses;}
+        if(reuse){
+            m->deferredTargetMask&=~(1u<<n);m->deferredTargets[n]=nullptr;
+            ++(m->deferredModelNormal[n]?m->modelNormalTargetReuses:m->coverageTargetReuses);
+        }
         else if(!m->finishDeferredTargets())return E_FAIL;
         DeviceMirror::TargetWrite write(m,n);
         if(n==0&&m->synced)m->synced->viewport(); /* target 0 resets the viewport */const std::uint64_t serial=m->mutations+1;HRESULT hr=reuse?D3D_OK:real->SetRenderTarget(n,value);const bool slot=n<DeviceMirror::Targets;if(slot)m->targetKnown[n]=false;
@@ -716,18 +720,21 @@ public:
 #include "extension_raw_methods.inl"
 
     ExtensionDevice(IDirect3DDevice9* device,DeviceMirror* mirror):MirrorDevice(device,mirror){}
-    void releaseCoverageTarget(unsigned slot,IDirect3DSurface9* surface){
+    HRESULT releaseAuxiliaryTarget(unsigned slot,IDirect3DSurface9* surface,bool modelNormal){
         // Only the owner of the just-submitted private draw may hide this
         // attachment. In raw/recording mode the backend remains authoritative.
         if(!slot||slot>=DeviceMirror::Targets||!surface||!m->heldByThisThread()||!m->active()||
-           m->targetWrites||m->targets[slot]!=surface||indexedPairOwner==this){SetRenderTarget(slot,nullptr);return;}
+           m->targetWrites||m->targets[slot]!=surface||indexedPairOwner==this)return SetRenderTarget(slot,nullptr);
         m->deferredTargetDevice=real;
         m->deferredTargets[slot]=surface;
+        m->deferredModelNormal[slot]=modelNormal;
         m->deferredTargetMask|=1u<<slot;
         m->targetKnown[slot]=m->targetAbsent[slot]=false;
         m->forget(DeviceMirror::TargetSlot+slot);
         ++m->mutations;
+        return D3D_OK;
     }
+    void releaseCoverageTarget(unsigned slot,IDirect3DSurface9* surface){releaseAuxiliaryTarget(slot,surface,false);}
     const DeviceMirror* constantMirror()const{return m;}
     NorthlightConstantEpoch::TrustedSource trustedConstantSource(){
         return NorthlightConstantEpoch::TrustedSource(static_cast<IDirect3DDevice9*>(this),[](void* context,NorthlightConstantEpoch::Stamp& stamp){return static_cast<ExtensionDevice*>(static_cast<IDirect3DDevice9*>(context))->constantStamp(stamp);},[](void* context,unsigned first,unsigned count,float* out,NorthlightConstantEpoch::Stamp& stamp){return static_cast<ExtensionDevice*>(static_cast<IDirect3DDevice9*>(context))->knownVertexConstantSpan(first,count,out,stamp);},

@@ -1117,7 +1117,7 @@ private:
         }}
         if(celestialDiscs)celestialDiscs->endFrame();if(shadowBlobs)shadowBlobs->endFrame();
         terrainAdmission.target=nullptr;drop(terrainAdmissionTarget.p);
-        effectCoverage.endFrame();mirrorState.finishDeferredTargets();mirrorState.coverageTargetReuses=0;drop(worldDepth);worldDepthDescKnown=false; rainMrtUnbind();terrain = captured = applied = projectionValid = skySeen = menuScene = false;rainMaskCleared=rainMaskDrawn=rainMaskFrame=rainMaskOk=rainDepthOk=false; /* 0.3.202 (rain mask MRT): RT1 never outlives a frame */earlyDepth.reset();resetTranslucentCensus(); /* the TRANSLUCENT line is logged before clearFrame */
+        effectCoverage.endFrame();mirrorState.finishDeferredTargets();mirrorState.coverageTargetReuses=mirrorState.modelNormalTargetReuses=0;drop(worldDepth);worldDepthDescKnown=false; rainMrtUnbind();terrain = captured = applied = projectionValid = skySeen = menuScene = false;rainMaskCleared=rainMaskDrawn=rainMaskFrame=rainMaskOk=rainDepthOk=false; /* 0.3.202 (rain mask MRT): RT1 never outlives a frame */earlyDepth.reset();resetTranslucentCensus(); /* the TRANSLUCENT line is logged before clearFrame */
     }
     void captureWeatherDiagnostics(const NorthlightSurfaceFrame* constants,IDirect3DSurface9* target,IDirect3DSurface9* nameDepth,const char* unavailable,
                                    const std::string& directory={},bool consumeRequest=true){
@@ -4001,6 +4001,8 @@ public:
             const double us=cpuFrequency.QuadPart>0?1e6/double(cpuFrequency.QuadPart):0.0;
             const double decide=nameDecideTimed?double(cpuNameDecide)*double(nameDecideCalls)/double(nameDecideTimed)*us:0.0,mark=double(cpuNameMark)*us,unmark=double(cpuNameUnmark)*us;
             if(modelNormals)modelNormals->report(frame,[](const char* format,auto... args){logf(format,args...);});
+            if(modelNormals&&modelNormals->hybridRequested())
+                logf("MODEL_NORMALS hybrid attachments frame=%u reused=%u",frame,mirrorState.modelNormalTargetReuses);
             logf("NAMEMASK frame=%u marked=%u runs=%u unmarked=%u composite=%d depthFormat=%lu stencil=%d prelit=%u unlit=%u decisions=%u decisionsTimed=%u decideUs=%.1f markUs=%.1f unmarkUs=%.1f cpuUs=%.1f",frame,nameMask.marks,nameMask.runs,nameMask.unmarkDraws,int(nameMask.composited),(unsigned long)(worldDepthDescKnown?worldDepthDesc.Format:D3DFMT_UNKNOWN),int(maskStencil),prelitMarks,unlitMarks,nameDecideCalls,nameDecideTimed,decide,mark,unmark,decide+mark+unmark);
         }
         if(sampledDrawTimers()&&modelNormals)modelNormals->reportCaptureProfile(frame,[](const char* format,auto... args){logf(format,args...);});
