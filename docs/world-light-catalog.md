@@ -1,34 +1,34 @@
-# Каталог света для тестирования
+# World lighting catalog for testing
 
-[Скачать каталог решений по 2 555 моделям](world-light-catalog.tsv). Это таблица TSV в UTF-8. В каждой строке стоит статус **«не утверждено»**. Колонка «Реализация» отмечает 93 модели с правками в этой ветке. Для остальных строк принято решение по игровому кадру и записаны параметры, если их удалось обосновать.
+[Download the catalog of decisions for all 2,555 models](world-light-catalog.tsv). The table is a UTF-8 TSV. Every row is marked **"Not approved"**. The Implementation column identifies the 93 models with changes in this branch. For the remaining models, each row records a decision based on an in-game capture and includes proposed parameters where the evidence supports them.
 
-## Что проверено в игре
+## In-game checks
 
-| Эффект | Моделей |
+| Effect | Models |
 |---|---:|
-| Прямой свет выбранной точки | 386 |
-| Тени | 233 |
-| Отклик поверхности на GI | 755 |
-| Локальное рассеяние в тумане | 7 |
+| Direct contribution of the selected light | 386 |
+| Shadows | 233 |
+| Surface response to GI | 755 |
+| Local light scattering in fog | 7 |
 
-Открыты 918 проверок прямого света и 35 проверок точечных теней применимых профилей. Счётчик GI относится к реакции поверхности на отдельное переключение GI. Рассеяние засчитывалось только при отрисованном тумане и контроле выбранной точки.
+There are 918 direct-light checks and 35 point-shadow checks still open for applicable profiles. The GI count reflects a surface response to toggling GI. Fog scattering was counted only when fog rendered and the selected light was tested independently.
 
-## С чего начать тестирование
+## Where to start testing
 
-- В Утгарде проверьте маленькие ковры, щиты, знамёна и ящики в тёмной комнате. Для двух размещений маленьких ковров скорректирован запечённый оттенок.
-- В Острогорье проверьте камень и пол возле древнего дренейского фонаря. Розовый отсвет должен проходить сбоку, под корпусом должна сохраняться тень.
-- В Хиджале проверьте руины `classicalelfruin10` и лес под склоном. У этого размещения убраны две точки, которые находились более чем в 560 ярдах от руин.
-- Для `giantlantern01` интересен пересвет стекла на штатном размещении. На стенде ореол сохранился при отключении точки, GI и частицы.
+- In Utgarde, check small rugs, shields, banners, and crates in dark rooms. The baked tint was reduced on two small-rug placements.
+- In Blade's Edge Mountains, check the masonry and ground around the ancient draenei lamppost. Pink light should reach the stone to the side, with a shadow beneath the housing.
+- In Hyjal, check the `classicalelfruin10` ruins and the wooded slope below. Two lights positioned more than 560 yards from the ruins were removed from this placement.
+- If you encounter `giantlantern01` at a normal world placement, check for blown-out glass or a halo. The halo persisted on the test stand when the point light, GI, and particle emitter were each disabled.
 
-Для отчёта укажите карту, ближайший ориентир или координаты и время суток. По возможности приложите два кадра с одной камеры. После телепорта дождитесь загрузки GI и эффектов, прежде чем оценивать итоговый вид. Отметьте, что изменилось на кадре: яркость предмета, свет на соседней поверхности, тень или туман.
+Include the map, a nearby landmark or coordinates, and the time of day in your report. If possible, attach two screenshots from the same camera angle. After teleporting, allow GI and other effects to finish loading before judging the result. Describe what changed in the image, such as the brightness of the object itself, illumination on a nearby surface, the shadow, or the fog.
 
-## Сопоставление с Lumenveil
+## Comparison with Lumenveil
 
-Lumenveil собирает `lampdata.bin` из архивов клиента. Сравнение правил выявило четыре дополнительных кандидата. Их параметры света остаются штатными до изолированной проверки. [Экстрактор Lumenveil](https://github.com/lumenveil/Lumenveil/blob/main/engine/tools/lamp_extract/main.cpp) · [Правила M2](https://github.com/lumenveil/Lumenveil/blob/main/engine/tools/lamp_extract/m2_lights.cpp)
+Lumenveil generates `lampdata.bin` from the game archives. Comparing its extraction rules surfaced four additional candidates. Their existing lighting settings are retained pending isolated tests. [Lumenveil extractor](https://github.com/lumenveil/Lumenveil/blob/main/engine/tools/lamp_extract/main.cpp) · [M2 rules](https://github.com/lumenveil/Lumenveil/blob/main/engine/tools/lamp_extract/m2_lights.cpp)
 
-| Модель | Решение для тестирования |
+| Model | Testing decision |
 |---|---|
-| `caveminelantern02` | В Долине Призрачной Луны на грунте и досках уже виден тёплый свет. Выделить вклад ближайшей точки перед изменением. |
-| `ancient_drainei_lamppost_ruined` | В Пустоверти проверить короткий слабый розовый отсвет у кристалла. Основание должно заслонять свет под ним. |
-| `wt_lantern01` | В Борейской тундре нужен открытый вид на фонарь и соседний снег. |
-| `wt_lanternhanging01` | В Драконьем Погосте нужен открытый вид на фонарь, кронштейн и соседнюю стену. |
+| `caveminelantern02` | Warm light already reaches the ground and boards in Shadowmoon Valley. Isolate the nearest light's contribution before changing the fixture. |
+| `ancient_drainei_lamppost_ruined` | In Netherstorm, test for a short-range, faint pink contribution near the crystal. The base should block light beneath it. |
+| `wt_lantern01` | In Borean Tundra, capture a clear view of the lantern and the snow next to it. |
+| `wt_lanternhanging01` | In Dragonblight, capture a clear view of the lantern, its bracket, and the adjacent wall. |
