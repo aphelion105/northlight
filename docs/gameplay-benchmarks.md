@@ -17,7 +17,9 @@ its own account and never connects to a realm outside localhost.
 
 ## Run on Windows
 
-Use a 3.3.5a enGB client with `Wow.exe`. The x64 stock and DXVK cases use
+Use a 3.3.5a client of any locale with `Wow.exe`. The runner uses the locale
+folder in Data that holds `locale-<locale>.MPQ`, and records it in each report.
+If Data holds several, choose one with `--locale`. The x64 stock and DXVK cases use
 `WowClient64.exe` and its companion files. Set `NORTHLIGHT_CLIENT` or pass
 `--client` explicitly. For Northlight cases, the client directory must also
 hold the appropriate `world-cache/Northrend` and `world-cache/Kalimdor` data.
@@ -28,8 +30,10 @@ profile's saved first-launch consent values when present.
 
 The [checked-in graphics preset](../scripts/fixtures/gameplay-benchmark/gameplay-4k.wtf)
 uses the same scene settings in every case. Runs default to 3840×2160 and
-1× MSAA, with sound, VSync, and FPS caps off. Use `--resolution 1920x1080` or
-`1280x720` on a smaller display, or `--graphics` to provide another preset.
+1× MSAA, with sound, VSync, and FPS caps off. Use `--resolution 2560x1440`,
+`1920x1080` or `1280x720` on a smaller display, or `--graphics` to provide another
+preset. A resolution equal to the primary display runs maximized, a smaller one
+runs windowed, and a larger one is refused.
 The default `--desktop private` runs on an inactive Windows desktop. Use
 `--desktop interactive` for a background window on the current desktop if the
 driver cannot initialize on an inactive desktop. Use `--desktop foreground`
@@ -65,7 +69,8 @@ python scripts/benchmark_gameplay.py --case native-vulkan --runtime <native-x64-
 Commands run all four scenes sequentially by default. Add `--scene crowd128 ratchet`
 to narrow a run. Use `--dxvk-adapter` to select and verify a DXVK device and
 `--keep-client` to retain the private copies for investigation. Give each
-repeat a fresh output directory. Run one benchmark at a time on the GPU.
+repeat a fresh output directory. Without Windows Developer Mode the runner
+hard-links the client archives, so the output must be on the client's drive. Run one benchmark at a time on the GPU.
 
 ## Read the results
 

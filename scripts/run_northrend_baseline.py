@@ -16,6 +16,7 @@ import time
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import northlight_paths as fp
+import client_archives
 from prepare_native_scene import digest, pe32, tool_runtime
 from capture_files import BLOBS
 import northrend_fixture_server as fixture
@@ -66,14 +67,32 @@ def write_json(path, data):
         file.write('\n')
 
 
-def graphics_profile(text, resolution, msaa):
+def data_locale(data, wanted=None):
+    """The locale of a Data folder with Data/<xxXX>/locale-<xxXX>.MPQ: the wanted one, else the only one."""
+    installed = sorted(path.name for path in Path(data).iterdir() if path.is_dir() and len(path.name) == 4 and
+                       any(file.name.lower() == f'locale-{path.name.lower()}.mpq' for file in path.iterdir()))
+    found = ', '.join(installed) or 'none'
+    matches = [name for name in installed if wanted is None or name.lower() == wanted.lower()]
+    if wanted and not matches:
+        raise ValueError(f'{data}: locale {wanted} is not installed (found: {found})')
+    if len(matches) != 1:
+        raise ValueError(f'{data}: several locales are installed ({found}); pass --locale' if matches else
+                         f'{data}: no <locale>/locale-<locale>.MPQ client archives')
+    return next((locale for locale in client_archives.LOCALES if locale.lower() == matches[0].lower()), matches[0])
+
+
+def realmlist_path(locale):
+    return f'Data/{locale}/realmlist.wtf'
+
+
+def graphics_profile(text, resolution, msaa, locale='enGB', maximize=None):
     options = {}
     for key, value in re.findall(r'^SET (\w+) "([^"\r\n]*)"', text, re.M | re.I):
         key = key.lower()
         if key.startswith('gx') or key in GRAPHICS:
             options[key] = value
-    options.update(realmlist=LOOPBACK, patchlist=LOOPBACK, locale='enGB', gxapi='d3d9', gxwindow='1',
-                   gxmaximize='1' if resolution == '3840x2160' else '0',
+    options.update(realmlist=LOOPBACK, patchlist=LOOPBACK, locale=locale, gxapi='d3d9', gxwindow='1',
+                   gxmaximize='1' if (resolution == '3840x2160' if maximize is None else maximize) else '0',
                    gxresolution=resolution, gxmultisample=str(msaa), gxvsync='0', hwdetect='0',
                    videooptionsversion='3', showtutorials='0', maxfps='0', maxfpsbk='0',
                    accountname=fixture.ACCOUNT.decode('ascii'))
@@ -169,10 +188,17 @@ def link_asset(origin, target):
     origin = origin.resolve(strict=True)
     try:
         target.symlink_to(origin)
+        return
     except OSError as error:
         if getattr(error, 'winerror', None) != 1314:
             raise
+    try:
         os.link(origin, target)
+    except OSError as error:
+        if getattr(error, 'winerror', None) != 17:
+            raise
+        raise ValueError(f'Cannot link {origin} into {target.anchor}: without Windows Developer Mode the archives '
+                         'are hard-linked, so put --output on the same drive as the client and Data') from error
 
 
 def fixed_clock_image(original):
