@@ -9,6 +9,15 @@
         "sources": [0, 1],
         "basis": "At this Dun Morogh entrance the two MOLT points are suspended about 28 to 30 yards above cave geometry directly underneath. The 8.33-yard points leave the ice and stalactites unchanged. The second creates a detached green patch above the entrance that persists with WorldFog disabled."
       }
+    ],
+    "HyjalPast": [
+      {
+        "model": "world\\wmo\\kalimdor\\buildings\\classicalelfruins\\classicalelfruin10.wmo",
+        "asset_sha256": "be5c26df7bc8b683e40beb17edddb3991f858272e4fa7acc611cad161bd0c5a8",
+        "placement": 665954,
+        "sources": [0, 1],
+        "basis": "The two MOLT points are 561 and 563 yards from this ruin. Their ranges of 36 and 66 yards leave both lights detached from the structure."
+      }
     ]
   },
   "native_anchors": {
