@@ -29,6 +29,33 @@ def events(scene):
 
 
 class GameplayBenchmarkTests(unittest.TestCase):
+    def test_client_locale_follows_the_installed_locale_archive(self):
+        locale_of = bench.live.data_locale
+        with TemporaryDirectory() as temp:
+            data = Path(temp)
+            with self.assertRaisesRegex(ValueError, 'no <locale>'):
+                locale_of(data)
+            (data / 'dede').mkdir()
+            (data / 'dede' / 'locale-dede.MPQ').write_bytes(b'MPQ')
+            self.assertEqual(locale_of(data), 'deDE')
+            self.assertEqual(locale_of(data, 'DEDE'), 'deDE')
+            with self.assertRaisesRegex(ValueError, r'locale frFR is not installed \(found: dede\)'):
+                locale_of(data, 'frFR')
+            (data / 'ruRU').mkdir()
+            (data / 'ruRU' / 'locale-ruRU.MPQ').write_bytes(b'MPQ')
+            with self.assertRaisesRegex(ValueError, 'several locales'):
+                locale_of(data)
+            self.assertEqual(locale_of(data, 'ruRU'), 'ruRU')
+        self.assertEqual(bench.live.realmlist_path('ruRU'), 'Data/ruRU/realmlist.wtf')
+        self.assertIn('SET locale "ruRU"\n', bench.live.graphics_profile('', '1920x1080', 1, 'ruRU'))
+        self.assertIn('SET locale "enGB"\n', bench.live.graphics_profile('', '1920x1080', 1))
+
+    def test_display_sized_resolution_is_maximized(self):
+        profile = bench.live.graphics_profile
+        self.assertIn('SET gxmaximize "1"\n', profile('', '2560x1440', 1, 'enUS', True))
+        self.assertIn('SET gxmaximize "0"\n', profile('', '3840x2160', 1, 'enUS', False))
+        self.assertIn('SET gxmaximize "1"\n', profile('', '3840x2160', 1))
+
     def test_all_scene_receipts_match_the_fixture_roster(self):
         for scene, (_, count) in bench.SCENES.items():
             with self.subTest(scene=scene):

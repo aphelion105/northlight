@@ -105,8 +105,6 @@ def stage(args, scene, client, report):
     scene_id, _ = SCENES[scene]
     world = fixture.map_for(scene_id)[2]
     tiles = live.RATCHET_TILES if scene == 'ratchet' else None
-    if not (args.data / 'enGB/base-enGB.MPQ').is_file():
-        raise ValueError('The benchmark needs the enGB 3.3.5a client archives')
     files = {}
     for relative in live.copies(args.client, None if stock else world, base_game, tiles, data=args.data):
         if stock and relative.parts[0] != 'Data' and relative.name not in (
@@ -258,7 +256,7 @@ def measure(args, scene, output, client, report):
     installed_config = args.client / 'WTF' / 'Config.wtf'
     consent = re.compile(r'SET (?:readTOS|readEULA|readTerminationWithoutNotice) "[01]"', re.I)
     profile_lines = [line for line in graphics.splitlines() if not consent.fullmatch(line)]
-    config = live.graphics_profile('\n'.join(profile_lines), args.resolution, 1)
+    config = live.graphics_profile('\n'.join(profile_lines), args.resolution, 1, args.locale, args.maximize)
     if installed_config.is_file():
         config += ''.join(line + '\n' for line in installed_config.read_text(encoding='utf-8-sig').splitlines()
                           if consent.fullmatch(line))
@@ -286,7 +284,7 @@ def measure(args, scene, output, client, report):
         launch_config = live.runtime_client_config(config.encode('utf-8'), endpoint)
         config_path.write_bytes(launch_config)
         (output / 'launch-Config.wtf').write_bytes(launch_config)
-        (client / live.REALMLIST).write_text(live.realmlist_config(endpoint), encoding='ascii')
+        (client / live.realmlist_path(args.locale)).write_text(live.realmlist_config(endpoint), encoding='ascii')
 
         argv = [str(client / game)] + ([launch_flag] if launch_flag else [])
         console = output / 'client.stdout'
@@ -366,7 +364,7 @@ def attempt(args, scene):
     output.mkdir(parents=True)
     client = output / 'client'
     report = {'status': 'FAIL', 'case': args.case, 'scene': scene, 'resolution': args.resolution,
-              'msaa': 1, 'desktop': args.desktop,
+              'msaa': 1, 'locale': args.locale, 'desktop': args.desktop,
               'focus_mode': 'foreground' if args.desktop == 'foreground' else 'background',
               'runtime': {'case': args.case, 'client_executable': CASES[args.case][0], 'client_bits': None}}
     try:
@@ -399,6 +397,7 @@ def main():
     parser.add_argument('--scene', choices=SCENES, nargs='+', default=tuple(SCENES))
     parser.add_argument('--client', type=Path, default=live.fp.client_root(required=False))
     parser.add_argument('--data', type=Path, help='Use MPQs from this Data directory instead of the installed client Data')
+    parser.add_argument('--locale', help='Client locale, such as enUS, when Data holds several (default: the only one)')
     parser.add_argument('--runtime', type=Path, help='Unpacked proxy or source-linked runtime directory')
     parser.add_argument('--backend', type=Path, help='DXVK d3d9.dll with the same bitness as the proxy')
     parser.add_argument('--dxvk-adapter', help='Optional DXVK device name filter')
@@ -406,7 +405,8 @@ def main():
     parser.add_argument('--graphics', type=Path, default=FIXTURES / 'gameplay-4k.wtf',
                         help='Override the versioned benchmark graphics preset')
     parser.add_argument('--output', type=Path, required=True, help='New output directory')
-    parser.add_argument('--resolution', choices=('1280x720', '1920x1080', '3840x2160'), default='3840x2160')
+    parser.add_argument('--resolution', choices=('1280x720', '1920x1080', '2560x1440', '3840x2160'), default='3840x2160',
+                        help='Maximized when it equals the primary display, otherwise windowed')
     parser.add_argument('--desktop', choices=('private', 'interactive', 'foreground'), default='private',
                         help='Inactive desktop, interactive background, or interactive foreground timing')
     parser.add_argument('--timeout', type=int, default=180, help='Maximum client time per scene in seconds')
@@ -424,11 +424,20 @@ def main():
         args.vulkan_shaders = (args.vulkan_shaders or args.runtime / 'VulkanShaders').resolve()
         if not (args.vulkan_shaders / 'manifest.txt').is_file():
             parser.error('Pass --vulkan-shaders with a client-compatible shader set containing manifest.txt')
+    display = tuple(ctypes.windll.user32.GetSystemMetrics(index) for index in (0, 1))
+    requested = tuple(map(int, args.resolution.split('x')))
+    if requested[0] > display[0] or requested[1] > display[1]:
+        parser.error(f'--resolution {args.resolution} exceeds the {display[0]}x{display[1]} primary display')
+    args.maximize = requested == display
     if args.timeout < 45 or len(set(args.scene)) != len(args.scene):
         parser.error('Use distinct scenes and a timeout of at least 45 seconds')
     args.output = args.output.resolve()
     args.client = args.client.resolve()
     args.data = (args.data or args.client / 'Data').resolve()
+    try:
+        args.locale = live.data_locale(args.data, args.locale)
+    except (OSError, ValueError) as error:
+        parser.error(str(error))
     for source in (args.client, args.data, args.runtime, args.vulkan_shaders):
         if source and (args.output.is_relative_to(source.resolve()) or source.resolve().is_relative_to(args.output)):
             parser.error('Benchmark output must be disjoint from client, runtime and shader inputs')
