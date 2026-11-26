@@ -4,6 +4,10 @@
 
 ## In-game checks
 
+The approval marker records review status. The applied profiles and renderer
+fixes are active for testing with this build. Rebuild any world-light cache
+generated from an earlier PR preview before testing the Drak'Tharon bonfire.
+
 | Effect | Models |
 |---|---:|
 | Direct contribution of the selected light | 386 |

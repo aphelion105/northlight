@@ -241,7 +241,7 @@ struct Tracker {
         const auto emit=[&](unsigned slot,const NorthlightLocalLights::Light& l,float score,float gain){
             gain*=NorthlightLocalLights::pulseGain(l,sourceTime);
             auto& source=out.sources[slot];
-            source=l;NorthlightLocalLights::driftFire(source,sourceTime);
+            source=l;
             out.position[slot]={source.position[0],source.position[1],source.position[2],l.attenuationEnd};
             out.fogDistance=std::max(out.fogDistance,score+2*l.attenuationEnd);
             out.color[slot]={l.diffuse[0]*gain,l.diffuse[1]*gain,l.diffuse[2]*gain,transport(l)};

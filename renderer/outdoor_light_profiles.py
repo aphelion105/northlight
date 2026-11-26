@@ -4,7 +4,7 @@ A profile pins one model asset by sha256 (asset_sha256, position, rgb, intensity
 Optional "variants" pin other assets of the same model path, e.g. the stock 3.3.5a model where the
 profile was authored on an HD pack: {sha256: {position, position_basis, [rgb, intensity, start,
 end, family]}}; omitted fields are the profile's own.
-An optional max_world_end limits the primary asset's scaled attenuation range for placed lights.
+An optional max_world_end limits the scaled attenuation range of all pinned assets for placed lights.
 Set merge_emitters to false for reviewed lights separated by opaque fixture geometry.
 """
 import hashlib,json,math,re
@@ -141,3 +141,28 @@ def deduplicate_parent_lights(records,owners):
         if duplicate:removed+=1
         else:out.append(r)
     return out,removed
+
+def merge_drak_bonfire(map_name, records, owners, provenance):
+    if map_name != "DrakTheronKeep":
+        return records
+    # These two adjacent doodads form the stone-bowl fire beside the hanging runes.
+    fire = r'world\exteriordesigners\zuldrak\ed_zuldrakbridge_fire.m2'
+    glow = r'world\expansion01\doodads\generic\draenei\glow\dr_glow.m2'
+    if (provenance.get(fire, {}).get('asset_sha256') != '7ee708d3d9b4393b65f39fcfa4cb0682219516ae106c5c3d90c8394169844ad1'
+            or provenance.get(glow, {}).get('asset_sha256') != 'fa3ed7e3632bd04b5936e472023577dd0d234d9d136bb73a8a3191b2c393fa31'):
+        return records
+    proxy = [light for light in records if owners[light[8]] == (3, 9480539010499056)]
+    flame = [light for light in records if owners[light[8]] == (3, 9480539010499055)]
+    if len(proxy) != 9 or any(light[9:] != (3, 0) for light in proxy) or len(flame) != 1:
+        return records
+    if flame[0][9:] != (2, 2) or max(flame[0][3:6]) >= .01:
+        return records
+    core = max(proxy, key=lambda light: max(light[3:6]))
+    if math.dist(core[:2], flame[0][:2]) > .15 or not 1 < core[2] - flame[0][2] < 3:
+        return records
+    from world_emitter_index import CAST_SHADOW, FIRE
+    # The dim companion source is part of the same fire. Leave one stable
+    # shadow origin and animate its intensity through the ordinary fire pulse.
+    replaced={light[8] for light in proxy+flame}
+    return [light for light in records if light[8] not in replaced] + [
+        (*core[:3], 1.70, .48, 1.92, .7, 15., core[8], 3, CAST_SHADOW | FIRE)]

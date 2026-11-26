@@ -77,6 +77,7 @@ float4 worldCompositeInputs(float2 uv,float2 pixel,bool surfaceLighting,bool hdr
         float2 grid=uv*dimensions-.5,base=floor(grid),fraction=grid-base;
         float center=viewZ;
         float centreLuma=dot(original.rgb,float3(.299,.587,.114)),depthBits=1.4427/max(.15,center*.01);
+        float fogDepthScale=1/max(.2,viewZ*.02);
         [branch]if(relight||!baseLighting){
         [loop]for(int tap=0;tap<4;++tap){
             float row=floor(tap*.5);
@@ -86,11 +87,12 @@ float4 worldCompositeInputs(float2 uv,float2 pixel,bool surfaceLighting,bool hdr
             // Same canonical depth expression as WorldNormals/TemporalLight; AO needs no lighting history.
             float sampleZ=depthFromScene?viewDistance(normalizedDepth(tapUV)):tex2Dlod(CurrentDistance,float4(q,0,0)).r;
             float2 blend=1-abs(fraction-bit);
+            float tentWeight=blend.x*blend.y;
             if(relight){
             float delta=abs(sampleZ-center);
             float tapLuma=dot(tex2Dlod(Scene,float4(tapUV,0,0)).rgb,float3(.299,.587,.114));
-            float guide=16*abs(centreLuma-tapLuma)/(centreLuma+tapLuma+.02),bits=delta*depthBits;
-            float weight=blend.x*blend.y*exp2(-bits-guide);
+            float guide=abs(centreLuma-tapLuma)*rcp(mad(centreLuma+tapLuma,.0625,.00125)),bits=delta*depthBits;
+            float weight=tentWeight*exp2(-bits-guide);
             // The fallback ranks depth at a quarter: at a wall foot a top-row ground pixel is several depth tolerances from the
             // ground texels, and the full depth weight would pick a wall texel again (the light line; measured in test_colour_tent_2d).
             float score=mad(bits,.25,guide);
@@ -112,7 +114,7 @@ float4 worldCompositeInputs(float2 uv,float2 pixel,bool surfaceLighting,bool hdr
             float fogDelta=abs(receiverZ-viewZ);
             float4 fogSample=float4(0,0,0,1);
             [branch]if(!baseLighting&&CompositeWork.x<.5)fogSample=tex2Dlod(fogInput,float4(q,0,0));
-            float fogWeight=blend.x*blend.y*exp(-fogDelta/max(.2,viewZ*.02));
+            float fogWeight=tentWeight*exp(-fogDelta*fogDepthScale);
             fogSum=mad(fogSample,fogWeight,fogSum);fogTotal+=fogWeight;
             if(fogDelta<fogClosest){fogClosest=fogDelta;fogFallbackUV=q;}
             }
@@ -120,7 +122,7 @@ float4 worldCompositeInputs(float2 uv,float2 pixel,bool surfaceLighting,bool hdr
         }
     // Retain only fallback coordinates across the loop; fetch colours only on fallback.
     float4 fogFallback=float4(0,0,0,1);
-    [branch]if(!(fogTotal>.00001)&&!baseLighting&&CompositeWork.x<.5)fogFallback=tex2Dlod(fogInput,float4(fogFallbackUV,0,0));
+    [branch]if(fogTotal<=.00001&&fogClosest<1e20&&!baseLighting&&CompositeWork.x<.5)fogFallback=tex2Dlod(fogInput,float4(fogFallbackUV,0,0));
     float4 fog=baseLighting?float4(0,0,0,1):fogTotal>.00001?fogSum*(1/fogTotal):fogFallback;
     float4 fallbackLight=0;float3 fallbackBase=0;float fallbackAO=1;
     [branch]if(relight&&total<.02&&closest<1e20){

@@ -17,6 +17,11 @@ the regular scene. Each view requires Northlight effects to be enabled.
 textures. Reports, geometry, and shader inputs go to a session under the
 client's diagnostic directory.
 
+For world-light testing, the [catalog](world-light-catalog.md) lists decisions
+and recorded checks. Use `python scripts/plan_world_light_review.py --help` to
+plan capture batches and `python renderer/world_lights_builder.py --help` to
+rebuild the runtime cache from the current client assets.
+
 ## Layout
 
 | Path | Contents |

@@ -212,23 +212,38 @@ def m2_sources(path,blob,native,emitter_index):
     return sources
 
 
-def drak_bonfire(records, owners, provenance):
-    # These two adjacent doodads form the stone-bowl fire beside the hanging runes.
-    fire = r'world\exteriordesigners\zuldrak\ed_zuldrakbridge_fire.m2'
-    glow = r'world\expansion01\doodads\generic\draenei\glow\dr_glow.m2'
-    if (provenance.get(fire, {}).get('asset_sha256') != '7ee708d3d9b4393b65f39fcfa4cb0682219516ae106c5c3d90c8394169844ad1'
-            or provenance.get(glow, {}).get('asset_sha256') != 'fa3ed7e3632bd04b5936e472023577dd0d234d9d136bb73a8a3191b2c393fa31'):
-        return records
-    proxy = [light for light in records if owners[light[8]] == (3, 9480539010499056)]
-    flame = [light for light in records if owners[light[8]] == (3, 9480539010499055)]
-    if len(proxy) != 9 or any(light[9:] != (3, 0) for light in proxy) or len(flame) != 1:
-        return records
-    core = max(proxy, key=lambda light: max(light[3:6]))
-    if math.dist(core[:2], flame[0][:2]) > .15 or not 1 < core[2] - flame[0][2] < 3:
-        return records
-    from world_emitter_index import CAST_SHADOW, FIRE, FIRE_DRIFT
-    return [light for light in records if owners[light[8]] != (3, 9480539010499056)] + [
-        (*core[:3], 1.70, .48, 1.92, .7, 15., core[8], 3, CAST_SHADOW | FIRE | FIRE_DRIFT)]
+def reviewed_placement_sources(sources, map_name, path, uid, sha, omissions, stats):
+    omitted=omissions.get((map_name,path,uid,sha))
+    if not omitted:
+        return sources
+    kept=[source for source in sources if source[5]!=1 or source[4] not in omitted]
+    stats['reviewed_wmo_points_omitted']+=len(sources)-len(kept)
+    return kept
+
+
+def reviewed_native_range(lights, reviewed, sha, stats):
+    if not reviewed or sha!=reviewed[0]:
+        return lights
+    end=reviewed[1]
+    adjusted=[]
+    for light in lights:
+        # Only the reviewed unshadowed native M2 candles are eligible.
+        # Preserve native-attachment and shadow flags for all other records.
+        if light[9:]==(2,0) and light[6]<end<light[7]:
+            light=(*light[:7],end,*light[8:])
+            stats['reviewed_native_ranges_applied']+=1
+        adjusted.append(light)
+    if adjusted==lights:
+        stats['reviewed_native_ranges_no_match']+=1
+    return adjusted
+
+
+def reviewed_world_range(profile, sha):
+    if not profile:
+        return None
+    if sha==profile['asset_sha256'] or sha in profile.get('variants',{}):
+        return profile.get('max_world_end')
+    return None
 
 
 def build(cache,output,maps,assets=None,manifest='manifest.json'):
@@ -312,26 +327,19 @@ def build(cache,output,maps,assets=None,manifest='manifest.json'):
                         if extracted[path]:
                             asset_sha=hashlib.sha256(blob).hexdigest()
                             reviewed_profile=catalog.get(path)
-                            if reviewed_profile and reviewed_profile['asset_sha256']==asset_sha and 'max_world_end' in reviewed_profile:
-                                world_end_limits[path]=reviewed_profile['max_world_end']
+                            limit=reviewed_world_range(reviewed_profile,asset_sha)
+                            if limit is not None:
+                                world_end_limits[path]=limit
                             provenance[path]={'archive':assets.origin(path),
                                 'asset_sha256':asset_sha,'light_records':[x[4] for x in extracted[path]],
                                 'kind':('WMO MOLT and/or enclosed lamp' if path.endswith('.wmo') else ('Authored model emitter' if extracted[path][0][5]==3 else 'M2 constant default tracks'))}
                     except (ValueError,FileNotFoundError,IndexError,KeyError,struct.error) as exc:
                         extracted[path]=[];errors.append({'asset':path,'error':str(exc)})
                 try:
-                    sources=extracted[path]
-                    omitted=wmo_omissions.get((mapname,path,uid,provenance.get(path,{}).get('asset_sha256')))
-                    if omitted:
-                        kept=[light for light in sources if light[5]!=1 or light[4] not in omitted]
-                        stats['reviewed_wmo_points_omitted']+=len(sources)-len(kept)
-                        sources=kept
+                    sha=provenance.get(path,{}).get('asset_sha256')
+                    sources=reviewed_placement_sources(extracted[path],mapname,path,uid,sha,wmo_omissions,stats)
                     placed=instance_lights(sources,r,path,max_world_end=world_end_limits.get(path))
-                    native_range=native_ranges.get((mapname,path,uid))
-                    if native_range and provenance.get(path,{}).get('asset_sha256')==native_range[0]:
-                        end=native_range[1]
-                        placed=[(*light[:7],end,*light[8:]) if light[9:]==(2,0) and light[6]<end<light[7] else light
-                                for light in placed]
+                    placed=reviewed_native_range(placed,native_ranges.get((mapname,path,uid)),sha,stats)
                     records.extend(placed)
                     attachments.extend(light_attachments.placed(attachment_templates.get(path,[]),r,
                         [(source[4],light) for source,light in zip(sources,placed)]))
@@ -370,8 +378,7 @@ def build(cache,output,maps,assets=None,manifest='manifest.json'):
                     adt_count+=1
                 except (ValueError,FileNotFoundError,IndexError,KeyError,struct.error) as exc:
                     errors.append({'placement_adt':path,'error':str(exc)})
-            if mapname == 'DrakTheronKeep':
-                records=drak_bonfire(records,owners,provenance)
+            records=outdoor_light_profiles.merge_drak_bonfire(mapname,records,owners,provenance)
             records,suppressed=outdoor_light_profiles.deduplicate_parent_lights(records,owners)
             records.sort(key=lambda r:r[8])
             if len({r[8] for r in records})!=len(records):raise ValueError("Duplicate light source identity")

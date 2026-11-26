@@ -13,7 +13,7 @@ from outdoor_light_profiles import load, pinned, fixture_emitters
 from world_emitter_coverage import inspect_model, DISABLED
 
 ARCHIVE_PATH = 'northlight\\world-emitters-v1.json'
-CAST_SHADOW, FIRE, CANDLE, FIRE_DRIFT = 2, 4, 8, 512
+CAST_SHADOW, FIRE, CANDLE = 2, 4, 8
 
 
 def validate(document):

@@ -65,7 +65,7 @@
                 unsigned roomLevel=0;
                 const auto& receiver=classifyVs(vs);
                 // Native M2 light banks also contain ambient on rigid doodads.
-                const bool modelRoomLighting=!menuScene&&receiver.family==3;
+                const bool modelRoomLighting=NorthlightUnlitReceiver::modelRoomBank(menuScene,receiver.family);
                 const bool authoredReceiver=receiver.authoredLighting&&!(receiver.entry&(kUnlitTag|kPrelitTag))&&
                     world->authoredReceiverLighting(receiver.family==3,modelRoomLighting?&roomLevel:nullptr);
                 if((nameMask.armed()&&drawUiHashVS)||nameMask.hasMarks()||unlitMarks||prelitMarks||authoredMarks||authoredReceiver||(receiver.entry&(kUnlitTag|kPrelitTag))){
@@ -77,8 +77,8 @@
                     if(((receiver.entry&(kUnlitTag|kPrelitTag))||authoredReceiver)&&zw()&&(cw()&7)&&
                        (!ab()||db()==D3DBLEND_ZERO||(authoredReceiver&&receiver.wmo&&NorthlightNativeDirect::independentBlend(sb(),db(),drawRenderState(D3DRS_BLENDOP))))&&
                        nameMaskReady()&&NorthlightUnlitReceiver::stencilFormat(worldDepthDesc.Format,MAKEFOURCC('I','N','T','Z'))&&nameMaskFullViewport(viewport)&&worldDepthBound()){
-                        if((receiver.entry&kPrelitTag)||roomLevel==3)maskKind=4;
-                        else maskKind=authoredReceiver?5+roomLevel:3;
+                        maskKind=NorthlightUnlitReceiver::receiverMaskKind(
+                            (receiver.entry&kPrelitTag)!=0,authoredReceiver,roomLevel);
                     }
                     if(maskKind==1&&!nameMask.armed())maskKind=0;}
                 }
