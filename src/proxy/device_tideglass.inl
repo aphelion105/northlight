@@ -4,6 +4,31 @@
     IDirect3DPixelShader9 *tideglassMaskPS=nullptr,*tideglassRainPS=nullptr;
 #ifdef _WIN64
     bool tideglassSurfaceLogged=false;
+    unsigned tideglassSpecialLogged=0;
+    unsigned directTideglassFrame=~0u;
+    NorthlightTideglassX64::Inputs directTideglass;
+    NorthlightTideglassX64::Wakes tideglassWakes;
+    const NorthlightTideglassX64::Inputs& tideglassInputs(){
+        if(streamStats){
+            static const NorthlightTideglassX64::Inputs empty;
+            const auto* snapshot=NorthlightStream::activeSnapshot;
+            return snapshot&&snapshot->water64?*snapshot->water64:empty;
+        }
+        if(directTideglassFrame!=frame){
+            directTideglass={};captureTideglass64(directTideglass);directTideglassFrame=frame;
+        }
+        return directTideglass;
+    }
+    bool tideglassSubmerged(){
+        if(!cooperativeWaterEnabled)return false;
+        const auto camera=tideglassInputs().camera;
+        return camera==WaterHostLiquidWater||camera==WaterHostLiquidSlime;
+    }
+    void reportTideglassFeature(unsigned bit,const char* feature){
+        if(tideglassSpecialLogged&bit)return;
+        tideglassSpecialLogged|=bit;
+        logf("TIDEGLASS x64 %s frame=%u hdr=%u stream=%u",feature,frame,unsigned(hdr.active),unsigned(streamStats!=nullptr));
+    }
     void reportTideglassSurface(){
         if(tideglassSurfaceLogged)return;
         WaterHostSurfaceStatus status{};
@@ -23,6 +48,10 @@
     }
     void releaseTideglassTargets(){
         drop(tideglassMaskSurface);drop(tideglassMask);drop(tideglassMaskPS);drop(tideglassRainPS);
+#ifdef _WIN64
+        directTideglassFrame=~0u;
+        tideglassWakes.reset();
+#endif
     }
     IDirect3DTexture9* tideglassCoverage(IDirect3DTexture9* mask){
         D3DSURFACE_DESC desc{};
@@ -75,7 +104,7 @@
 #ifdef _WIN64
             // The renderer's world context comes from this frame's validated draw and camera.
             // In CommandStream mode this uses the context already built from the producer snapshot.
-            if(!liquid||fogForward<=0.f)return;
+            if(fogForward<=0.f)return;
             WaterFrameValues values{};
             if(!world->tideglassFrame(values))return;
             values.viewport=viewport;
@@ -87,6 +116,14 @@
             values.glProjection[10]=1.f+2.f*nearZ/extent;
             values.glProjection[11]=1.f;
             values.glProjection[14]=-2.f*nearZ*(farZ/extent);
+            const auto& inputs=tideglassInputs();
+            values.cameraInWater=inputs.camera==WaterHostLiquidWater;
+            values.cameraInSlime=inputs.camera==WaterHostLiquidSlime;
+            if(values.cameraInWater||values.cameraInSlime){
+                values.cameraWaterHeightKnown=1;
+                values.cameraWaterHeight=values.cameraPosition[2]+inputs.depth;
+            }
+            tideglassWakes.sample(inputs,GetTickCount(),values);
             const auto waterFrame=northlightWaterSettings.Module().Copy(values);
 #else
             const auto* snapshot=NorthlightStream::activeSnapshot;
@@ -95,6 +132,9 @@
 #endif
             ExtensionDevice::RawScope raw(*ext);
             if(!cooperativeWater.Begin(ext,waterFrame))return;
+#ifdef _WIN64
+            if(values.boatCount)reportTideglassFeature(1,"wake tracks accepted");
+#endif
         }
         if(!liquid||!cooperativeWater.Current()||cooperativeWater.Liquid())return;
         rainMrtUnbind();
@@ -105,7 +145,6 @@
             if(resolveDepthInto(depthTex,false))cooperativeWater.BeforeLiquid(depthTex,worldDepth);
         }
     }
-#ifndef _WIN64
     WaterHostLiquidKind cooperativeSurfaceDraw=WaterHostLiquidUnknown;
     const NorthlightAutoDisplacement::Args* cooperativeDrawArgs=nullptr;
     bool cooperativeLiquidBounds(){
@@ -121,7 +160,31 @@
     float liquidBounds[6]{};
     bool liquidBoundsKnown=false;
     int liquidRamp=-1;
+#ifdef _WIN64
+    bool tideglassMagmaShader(){
+        IDirect3DPixelShader9* pixel=nullptr;
+        if(!ext->peekPixelShader(pixel)||!pixel)return false;
+        const auto hash=psHashes.find(pixel);
+        // Stock psLiquidMagma variants from the client archive. The shader is
+        // shared by magma and slime. The native material bank decides which.
+        return hash!=psHashes.end()&&
+            (hash->second==UINT64_C(0x5ae01f3dfba83ace)||hash->second==UINT64_C(0x2965e7011e79b205));
+    }
+#endif
     WaterHostLiquidKind cooperativeLiquidKind(const D3DSURFACE_DESC& desc,const D3DVIEWPORT9& viewport){
+#ifdef _WIN64
+        const auto& inputs=tideglassInputs();
+        IDirect3DBaseTexture9* texture=nullptr;
+        if(!ext->peekTexture(0,texture)||!texture)return WaterHostLiquidUnknown;
+        const auto material=inputs.material(reinterpret_cast<std::uintptr_t>(texture));
+        if(material.kind==WaterHostLiquidUnknown||
+           (material.kind==WaterHostLiquidMagma&&inputs.camera==WaterHostLiquidMagma))return WaterHostLiquidUnknown;
+        prepareCooperativeWater(desc,viewport,false);
+        if(!cooperativeWater.Current())return WaterHostLiquidUnknown;
+        liquidBoundsKnown=cooperativeLiquidBounds();
+        liquidRamp=material.ramp;
+        return material.kind;
+#else
         prepareCooperativeWater(desc,viewport,false);
         if(!cooperativeWater.Current())return WaterHostLiquidUnknown;
         for(DWORD stage=0;stage<8;++stage){
@@ -140,10 +203,15 @@
             }
         }
         return WaterHostLiquidUnknown;
+#endif
     }
     template<class Draw> HRESULT cooperativeSurface(D3DPRIMITIVETYPE type,UINT userStride,bool skipped,Draw draw){
-        if(skipped||(hdr.active&&!legacyTideglassTarget())||debugMode||worldDebug||!enabled||applied||failed||!terrain||!projectionValid||!worldDepth||type!=D3DPT_TRIANGLESTRIP)return draw();
+        if(skipped||debugMode||worldDebug||!enabled||applied||failed||!terrain||!projectionValid||!worldDepth||type!=D3DPT_TRIANGLESTRIP)return draw();
         const bool outdoors=cooperativeSurfaceDraw!=WaterHostLiquidUnknown;
+#ifdef _WIN64
+        if(!cooperativeWaterEnabled||(!outdoors&&!tideglassMagmaShader()))return draw();
+#endif
+        if(hdr.active&&!legacyTideglassTarget())return draw();
         WaterHostLiquidKind surfaceKind=cooperativeSurfaceDraw;
         UINT stride=userStride;
         if(!outdoors&&!stride){
@@ -191,10 +259,15 @@
         {
             ExtensionDevice::RawScope raw(*ext);
             const bool resolved=SUCCEEDED(hr)&&resolveDepthInto(depthTex,false);
-            cooperativeWater.AfterSurface(depthTex,worldDepth,resolved);
+            const bool capturedSurface=cooperativeWater.AfterSurface(depthTex,worldDepth,resolved);
+#ifdef _WIN64
+            if(capturedSurface)reportTideglassFeature(surfaceKind==WaterHostLiquidMagma?2:4,
+                surfaceKind==WaterHostLiquidMagma?"magma surface captured":"slime surface captured");
+#else
+            (void)capturedSurface;
+#endif
         }
         captured=false;
         return hr;
     }
-#endif
 #endif

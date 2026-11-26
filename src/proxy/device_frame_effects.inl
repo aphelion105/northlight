@@ -94,7 +94,9 @@
         bool hdrWaterShaded=false,hdrWaterFinalized=false;
 #ifdef NORTHLIGHT_WATER
         if(cooperativeWaterEnabled&&debugMode==0&&worldDebug==0){
-#ifndef _WIN64
+#ifdef _WIN64
+            if(!cooperativeWater.Attempted()&&tideglassSubmerged())prepareCooperativeWater(desc,saved.viewport,false);
+#else
             prepareCooperativeWater(desc,saved.viewport,false);
 #endif
             if(cooperativeWater.Current()){
@@ -120,6 +122,7 @@
                 if(hdr.active)
                     hdrWaterFinalized=cooperativeWater.WorldDone(worldDepth,saved.targets[0],depthTex,&saved.viewport);
 #ifdef _WIN64
+                if(hdrWaterFinalized&&tideglassSubmerged())reportTideglassFeature(8,"underwater view drawn");
                 reportTideglassSurface();
 #endif
             }
@@ -281,9 +284,12 @@
         }
 #ifdef NORTHLIGHT_WATER
         if(!hdr.active&&cooperativeWater.Current()){
-            cooperativeWater.WorldDone(worldDepth,outputTarget,depthTex,&saved.viewport);
+            const bool tideglassDrawn=cooperativeWater.WorldDone(worldDepth,outputTarget,depthTex,&saved.viewport);
 #ifdef _WIN64
+            if(tideglassDrawn&&tideglassSubmerged())reportTideglassFeature(8,"underwater view drawn");
             reportTideglassSurface();
+#else
+            (void)tideglassDrawn;
 #endif
         }
 #endif

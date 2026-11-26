@@ -39,7 +39,7 @@ inline bool readFrame(uintptr_t address,void* output,size_t size){
 template<class T> bool readFrame(uintptr_t address,T& value){return readFrame(address,&value,sizeof value);}
 
 struct CodeProof {uintptr_t rva;unsigned size;uint64_t hash;};
-template<size_t N> bool verifyCode(uintptr_t base,const CodeProof (&proofs)[N]){
+template<class Proofs> bool verifyCode(uintptr_t base,const Proofs& proofs){
     if(!base)return false;
     for(const auto& proof:proofs){
         unsigned char bytes[80];

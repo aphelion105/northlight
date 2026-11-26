@@ -93,6 +93,9 @@ extern "C" __attribute__((no_builtin("memcmp"),no_builtin("bcmp"))) int memcmp(c
 
 #ifdef NORTHLIGHT_WATER
 #include "../../tideglass/integrations/northlight/water_bridge.h"
+#ifdef _WIN64
+#include "tideglass_x64_client.h"
+#endif
 #endif
 #include "renderer_startup.h"
 static LONG deviceSerial=0,liveDevices=0;
@@ -3173,6 +3176,24 @@ private:
     }
 public:
     // 0.3.192 (CS): the replay thread takes over as owner thread (called on it, before its first command and before CreateDevice returns).
+#if defined(NORTHLIGHT_WATER) && defined(_WIN64)
+    void captureTideglass64(NorthlightTideglassX64::Inputs& inputs){
+        if(!cooperativeWaterEnabled)return;
+        NorthlightTideglassX64::capture(inputs,[&](std::uintptr_t value){
+            if(!value)return std::uintptr_t(0);
+            const auto inner=reinterpret_cast<std::uintptr_t>(
+                NorthlightStream::innerOfActive(reinterpret_cast<const void*>(value)));
+            return mirrorResources.rawOf(inner,!mirrorState.enabled);
+        });
+    }
+    std::shared_ptr<const NorthlightTideglassX64::Inputs> captureTideglass64(){
+        if(!cooperativeWaterEnabled)return {};
+        try{
+            auto inputs=std::make_shared<NorthlightTideglassX64::Inputs>();
+            captureTideglass64(*inputs);return inputs;
+        }catch(const std::bad_alloc&){return {};}
+    }
+#endif
 #if defined(NORTHLIGHT_WATER) && !defined(_WIN64)
     WaterHostFrameRef captureNativeWater(const D3DVIEWPORT9& viewport){
         if(!cooperativeWaterEnabled)return {};
@@ -4557,6 +4578,9 @@ public:
                 NorthlightNativeShadowControl::sampleRendererFrame(&snapshot,true);
             });
         };
+#ifdef NORTHLIGHT_WATER
+        options.captureWater64=[target]{return target->captureTideglass64();};
+#endif
 #else
         options.capture=&NorthlightStream::capture;
 #endif

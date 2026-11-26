@@ -6,18 +6,20 @@ in `renderer/docs/`; they do not replace the current contracts or prove current 
 
 ## Tideglass
 
-On x86 the producer captures Tideglass camera and liquid inputs at the existing
-World snapshot and shares them with the matching UI boundary. Direct mode reads
-those inputs on the device's calling thread. On x64 the device owner passes the
-validated camera, projection, and world lighting already decoded by Northlight.
-The x64 path does this before the first recognised water draw. Both paths use
-the existing water distance and coverage mask and lend the resolved depth to Tideglass.
+The producer captures Tideglass inputs at the World snapshot and shares them
+with the matching UI boundary. Direct mode reads those inputs on the device's
+calling thread. On the supported AMD64 build, the adapter verifies the layout
+before reading the camera's liquid type and depth, the transport list, and
+the texture identities of native magma and slime. The device owner uses
+the captured positions to update wake trails and supplies the frame data
+to Tideglass. Both architectures share the water distance and coverage mask
+and lend the resolved depth to Tideglass.
 Liquid shading runs on the legacy scene before the effects copy. The core
 resolves multisampled colour into its snapshot textures and keeps the game's
 multisampled targets for liquid shading. A conversion at the handoff expands
 the compact distance mask into the distance and coverage channels the core
 expects. The rain mask retains streaks from the native scene at the composite
-boundary. On x86 the underwater pass runs before HDR decode, or on the
+boundary. The underwater pass runs before HDR decode, or on the
 completed world target in SDR, including frames without a visible liquid draw.
 Frame completion closes the Tideglass session, Reset releases
 default-pool resources, and teardown destroys the context on the device owner.

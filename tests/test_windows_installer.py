@@ -133,6 +133,21 @@ class InstallerTests(unittest.TestCase):
         second=m.install(self.client,self.pkg,backend='dxvk')
         self.assertEqual(self.read('northlight-renderer.ini'),b'[Renderer]\r\nBackend=dxvk\r\n')
         m.restore(self.client,second);m.restore(self.client,first)
+    def test_x64_migrates_portable_backend_path_and_restores_ini(self):
+        filename = self.client / m.CONFIG
+        installed = '[Renderer]\r\nBackend=dxvk2\r\nBackendPath=old-amd64.dll\r\n; keep this\r\n'
+        expected = installed.replace('BackendPath=old-amd64.dll\r\n', '')
+        bom = b'\xfe\xff'
+        filename.write_bytes(bom + installed.encode('utf-16-be'))
+        before = self.snapshot()
+        backend = m.resolve_backend(self.client, None)
+        self.assertEqual(backend, 'dxvk2')
+        changes, staged, _ = m.payload_plan(self.client, self.pkg, backend=backend, x64=True)
+        backup = m.commit(self.client, changes, staged, self.pkg / 'payload')
+        self.assertEqual(filename.read_bytes(), bom + expected.encode('utf-16-be'))
+        self.assertEqual(m.payload_plan(self.client, self.pkg, backend=backend, x64=True)[0], [])
+        m.restore(self.client, backup)
+        self.assertEqual(self.snapshot(), before)
     def test_dxvk3_marker_is_not_a_package_file(self):
         marker=self.client/m.LEGACY_DXVK3_MARKER;marker.parent.mkdir(parents=True);marker.write_bytes(b'pending')
         backup=m.install(self.client,self.pkg,backend='dxvk2')

@@ -88,6 +88,9 @@ public:
     struct Options {
 #ifdef NORTHLIGHT_WATER
         std::function<WaterHostFrameRef(const D3DVIEWPORT9&)> captureWater;
+#ifdef _WIN64
+        std::function<std::shared_ptr<const NorthlightTideglassX64::Inputs>()> captureWater64;
+#endif
 #endif
         std::size_t budget=BudgetBytes;
         bool (*capture)(GameSnapshot&,Trigger,std::uint64_t)=nullptr;   // game_snapshot.h capture() in the DLL; null = no snapshots
@@ -530,6 +533,9 @@ public:
         policy.onPresent();takeReplayFailure();
 #ifdef NORTHLIGHT_WATER
         worldWaterFrame={};
+#ifdef _WIN64
+        worldWater64.reset();
+#endif
 #endif
         UINT dirtyBytes=0;
         if(dirty){dirtyBytes=dirty->rdh.dwSize+dirty->rdh.nCount*UINT(sizeof(RECT));if(sizeof(PresentArgs)+dirtyBytes>MaxInlinePayload)dirtyBytes=0;}
@@ -813,6 +819,10 @@ private:
 #ifdef NORTHLIGHT_WATER
     std::function<WaterHostFrameRef(const D3DVIEWPORT9&)> captureWaterFrame;
     WaterHostFrameRef worldWaterFrame;
+#ifdef _WIN64
+    std::shared_ptr<const NorthlightTideglassX64::Inputs> worldWater64;
+    std::function<std::shared_ptr<const NorthlightTideglassX64::Inputs>()> captureWater64;
+#endif
 #endif
     StreamDevice(IDirect3DDevice9* target,IDirect3D9* par,const D3DPRESENT_PARAMETERS* p,Options opt)
         :coreOwner(new StreamCore(opt.budget)),core(*coreOwner),replayer(core,SnapshotPool::capFor(clampFramesAhead(opt.framesAhead))),parent(par),framesAhead_(clampFramesAhead(opt.framesAhead)),capture(opt.capture),snapshotCompleted(opt.snapshotCompleted),snapshotSink(opt.snapshotSink),snapshotObserved(opt.snapshotObserved){
@@ -820,6 +830,9 @@ private:
         if(opt.cursorApi)cursor=*opt.cursorApi;
 #ifdef NORTHLIGHT_WATER
         captureWaterFrame = std::move(opt.captureWater);
+#ifdef _WIN64
+        captureWater64 = std::move(opt.captureWater64);
+#endif
 #endif
         core.queryThreadLog=opt.log;
         restoreOwner=opt.threadStart;replayer.frameSkip=opt.frameSkip!=0;replayer.threadStart=std::move(opt.threadStart);replayer.log=opt.log;replayer.diagnostics=opt.diagnostics;replayer.idleProfiling=opt.idleProfiling;filter=opt.filterRedundant;
@@ -912,6 +925,10 @@ private:
         if(t==Trigger::World&&captureWaterFrame&&st.viewport.known)
             worldWaterFrame=captureWaterFrame(st.viewport.v);
         if(t==Trigger::World||t==Trigger::Ui)s->waterFrame=worldWaterFrame;
+#ifdef _WIN64
+        if(t==Trigger::World&&captureWater64)worldWater64=captureWater64();
+        if(t==Trigger::World||t==Trigger::Ui)s->water64=worldWater64;
+#endif
 #endif
         if(snapshotCompleted)snapshotCompleted(snapshotSink,*s,reinterpret_cast<std::uintptr_t>(this),core.presentsRecorded.load(std::memory_order_relaxed),core.queryEpoch.load(std::memory_order_acquire),Replayer::currentTid());
         if(snapshotObserved)snapshotObserved(snapshotSink,*s,reinterpret_cast<std::uintptr_t>(this),core.presentsRecorded.load(std::memory_order_relaxed),core.queryEpoch.load(std::memory_order_acquire),Replayer::currentTid());

@@ -634,6 +634,7 @@ test_terrain_source_accounting.py
 test_terrain_source_indices.py
 test_terrain_tracked_cache.py
 test_texture_reset_gpu.py
+test_tideglass_x64_inputs.py
 test_tool_imports.py
 test_tracked_buffers.py
 test_tracked_snapshot.py

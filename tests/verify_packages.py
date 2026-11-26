@@ -90,9 +90,14 @@ def verify_installer(path):
         files = {n.split('/', 1)[1]: z.read(n) for n in names}
         modes = {n.split('/', 1)[1]: z.getinfo(n).external_attr >> 16 for n in names}
     info = json.loads(files['BUILD-INFO.json'])
+    if info.get('format') == 'northlight-portable/1':
+        return verify_windows_x64(path)
     check(problems, info.get('cache_versions') == bp.install_world_cache.CACHE_VERSIONS, 'cache generator versions differ from BUILD-INFO')
     plat = info['platform']
-    check(problems, top == f'Northlight-{info["version"]}-{bp.PLATFORMS[plat]}', f'top folder {top}')
+    x64 = info.get('renderer_arch') == 'x64'
+    check(problems, not x64 or plat == 'windows', 'AMD64 installer must target Windows')
+    expected_top = f'Northlight-{info["version"]}-{bp.PLATFORMS[plat]}' + ('-x64' if x64 else '')
+    check(problems, top == expected_top, f'top folder {top}')
     launchers = bp.launchers(plat, info['version'])
     manifest = json.loads(files['payload-manifest.json'])
     payload = {e['path']: e for e in manifest}
@@ -116,6 +121,11 @@ def verify_installer(path):
     # payload
     dll = files.get('payload/d3d9.dll', b'')
     check(problems, sha(dll) == info['dll_sha256'] and bp.MARKER.search(dll) is not None, 'payload/d3d9.dll')
+    machine = 0x8664 if x64 else 0x14c
+    try:
+        check(problems, bp.check_dll(dll, machine) == info['dll_version'], 'renderer machine or version')
+    except (SystemExit, struct.error) as error:
+        problems.append(str(error))
     try:
         asset_name = bp.build_renderer_assets.FILENAME
         asset_identity = bp.build_renderer_assets.verify_pair(dll, files.get('payload/' + asset_name, b''))
@@ -141,7 +151,7 @@ def verify_installer(path):
         check(problems, core is not None and water_files <= payload.keys(), 'Tideglass payload')
         if core:
             try:
-                core_version = bp.check_water_core(core, dll)
+                core_version = bp.check_water_core(core, dll, machine)
                 check(problems, info['tideglass'] == {
                     'version': core_version, 'source_revision': json.loads((fp.REPO / 'tideglass/source.json').read_bytes())['revision'],
                     'core_sha256': sha(core)}, 'Tideglass build identity')
@@ -165,9 +175,10 @@ def verify_installer(path):
         storm_problems, _ = build_stormlib.verify(library)
     check(problems, not storm_problems, f'StormLib: {storm_problems}')
     if plat in bp.PROXY_PLATFORMS:
-        check(problems, sha(files.get('payload/' + bp.DXVK_BACKEND, b'')) == bp.PINS['dxvk']['member_sha256'], 'DXVK pin')
+        member_hash = 'x64_member_sha256' if x64 else 'member_sha256'
+        check(problems, sha(files.get('payload/' + bp.DXVK_BACKEND, b'')) == bp.PINS['dxvk'][member_hash], 'DXVK pin')
         check(problems, info['dxvk']['sha256'] == bp.PINS['dxvk']['sha256'], 'DXVK archive pin')
-        check(problems, sha(files.get('payload/' + bp.DXVK2_BACKEND, b'')) == bp.PINS['dxvk2']['member_sha256'], 'DXVK fallback (dxvk2) pin')
+        check(problems, sha(files.get('payload/' + bp.DXVK2_BACKEND, b'')) == bp.PINS['dxvk2'][member_hash], 'DXVK fallback (dxvk2) pin')
         check(problems, info['dxvk_fallback']['sha256'] == bp.PINS['dxvk2']['sha256'], 'DXVK fallback archive pin')
     if plat == 'windows':
         missing = [n for n in WINDOWS_RUNTIME if 'runtime/' + n not in files]
@@ -330,8 +341,6 @@ def main():
             continue
         if path.name.startswith('Northlight-cache-'):
             reports.append(verify_cache(path, entry))
-        elif path.name.endswith('-Windows-x64.zip'):
-            reports.append(verify_windows_x64(path))
         else:
             reports.append(verify_installer(path))
         print(('OK   ' if not reports[-1]['problems'] else 'FAIL ') + path.name, flush=True)

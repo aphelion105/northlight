@@ -406,19 +406,23 @@ def launchers(platform, version):
 
 
 def build(platform, version, dll, variants, out, stormlib_dir, atmosphere=None, core=None):
+    x64 = platform == WINDOWS_X64
+    platform = 'windows' if x64 else platform
+    machine = 0x8664 if x64 else 0x14c
     atmosphere_info = atmosphere_metadata(atmosphere) if atmosphere is not None else None
     for manifest in variants.values():
         check_variant_sources(manifest)
-    top = f'Northlight-{version}-{PLATFORMS[platform]}'
+    top = f'Northlight-{version}-{PLATFORMS[platform]}' + ('-x64' if x64 else '')
     tree = Tree(top)
     stamp = commit_time()
     check_closure(APP_FILES)
     for name in APP_FILES:
         tree.add('app/' + name, fp.REPO / name)
     dll_data = dll.read_bytes()
-    dll_version = check_dll(dll_data)
-    water_info = water_metadata(version, dll_version, dll_data, core) if core is not None else None
-    resources = build_renderer_assets.built_path(dll).read_bytes()
+    dll_version = check_dll(dll_data, machine)
+    water_info = water_metadata(version, dll_version, dll_data, core, machine) if core is not None else None
+    bundle = dll.with_name(build_renderer_assets.FILENAME) if x64 else build_renderer_assets.built_path(dll)
+    resources = bundle.read_bytes()
     resource_identity = build_renderer_assets.verify_pair(dll_data, resources)
     lib = build_stormlib.build(platform, stormlib_dir / platform)
     problems, _ = build_stormlib.verify(lib)
@@ -437,8 +441,8 @@ def build(platform, version, dll, variants, out, stormlib_dir, atmosphere=None, 
     if atmosphere is not None:
         payload[ATMOSPHERE] = atmosphere
     if platform in PROXY_PLATFORMS:
-        backend, license_text = dxvk_files('dxvk')
-        backend2, license_text2 = dxvk_files('dxvk2')
+        backend, license_text = dxvk_files('dxvk', x64=x64)
+        backend2, license_text2 = dxvk_files('dxvk2', x64=x64)
         payload.update({'d3d9.dll': dll_data, DXVK_BACKEND: backend, 'renderer-backends/dxvk/LICENSE': license_text,
                         DXVK2_BACKEND: backend2, 'renderer-backends/dxvk2/LICENSE': license_text2})
         tree.add('LICENSES/DXVK-LICENSE.txt', license_text)
@@ -454,7 +458,7 @@ def build(platform, version, dll, variants, out, stormlib_dir, atmosphere=None, 
     for name, manifest in sorted(variants.items()):
         tree.add(f'variants/{name}.json', (json.dumps(manifest, indent=2) + '\n').encode())
     tree.add('LICENSES/StormLib-NOTICES.txt', build_stormlib.notices(build_stormlib.source_root()).encode('utf-8'))
-    readme = fp.RENDERER / f'{platform}-package' / 'README.txt'
+    readme = fp.RENDERER / f'{platform}-package' / ('README-x64.txt' if x64 else 'README.txt')
     text = readme.read_text(encoding='utf-8').replace('__RELEASE_VERSION__', version)
     if water_info:
         text += ('\nTideglass adds scenery reflections, water waves and foam, slime, magma, '
@@ -476,6 +480,8 @@ def build(platform, version, dll, variants, out, stormlib_dir, atmosphere=None, 
             'app_files': {n: sha(fp.REPO / n) for n in APP_FILES}}
     if water_info:
         info['tideglass'] = water_info
+    if x64:
+        info['renderer_arch'] = 'x64'
     info['cache_versions'] = dict(install_world_cache.CACHE_VERSIONS)
     if atmosphere_info is not None:
         info['forever_atmosphere'] = atmosphere_info
@@ -488,59 +494,13 @@ def build(platform, version, dll, variants, out, stormlib_dir, atmosphere=None, 
     tree.add('LICENSES/St0ny-More-Lights.txt', fp.REPO / 'licenses/st0ny-more-lights.txt')
     path = out / f'{top}.zip'
     tree.write_zip(path, stamp)
-    return {'platform': platform, 'file': path.name, 'sha256': sha(path), 'bytes': path.stat().st_size,
+    return {'platform': WINDOWS_X64 if x64 else platform, 'file': path.name, 'sha256': sha(path), 'bytes': path.stat().st_size,
             'files': len(tree.files), 'dll_version': dll_version}
 
 
 def pe_normalized(data):
     import pe_normalized_hash
     return pe_normalized_hash.normalized(data)
-
-
-def build_windows_x64(version, dll, out, atmosphere, core):
-    top = f'Northlight-{version}-Windows-x64'
-    tree = Tree(top)
-    dll_data = dll.read_bytes()
-    dll_version = check_dll(dll_data, 0x8664)
-    resources = dll.with_name(build_renderer_assets.FILENAME).read_bytes()
-    resource_identity = build_renderer_assets.verify_pair(dll_data, resources)
-    water_info = water_metadata(version, dll_version, dll_data, core, 0x8664)
-    for name, source in PAYLOAD_COMMON.items():
-        tree.add('payload/' + name, fp.REPO / source)
-    tree.add('payload/d3d9.dll', dll_data)
-    tree.add('payload/' + build_renderer_assets.FILENAME, resources)
-    tree.add('payload/northlight-renderer.ini', b'[Renderer]\nBackend=dxvk\n')
-    tree.add('payload/water-host.ini', fp.REPO / 'client-config/water-host.ini')
-    tree.add('payload/water.ini', b'[Water]\nEnable=1\nSurface=1\n')
-    tree.add('payload/water-core.dll', core)
-    for pin, destination in (('dxvk', DXVK_BACKEND), ('dxvk2', DXVK2_BACKEND)):
-        backend, licence = dxvk_files(pin, x64=True)
-        tree.add('payload/' + destination, backend)
-        tree.add('payload/' + destination.rsplit('/', 1)[0] + '/LICENSE', licence)
-    for name in ('ao-methods', 'imgui', 'roboto', 'miniz', 'nvapi', 'st0ny-more-lights', 'tideglass-archive'):
-        tree.add(f'LICENSES/{name}.txt', fp.REPO / 'licenses' / f'{name}.txt')
-    tree.add('LICENSES/Tideglass.txt', fp.REPO / 'tideglass/LICENSE')
-    if atmosphere is not None:
-        tree.add('payload/' + ATMOSPHERE, atmosphere)
-    tree.add('README.txt', (f'Northlight {version} for Windows x64\n\n'
-        'Close the client. Back up existing DLLs and INIs, then copy the contents of payload/\n'
-        'beside WowClient64.exe in the supported AMD64 3.3.5a client. Launch with -d3d9.\n'
-        'For an existing setup, keep your INIs and merge the package settings. For packaged DXVK,\n'
-        'use Backend=dxvk and clear BackendPath. Use matching AMD64 DLLs.\n'
-        'Keep any compatible world-cache already in the client. You can generate one locally\n'
-        'using the Windows x86 package before installing this portable payload.\n'
-        'Tideglass shades surface water. Set Enable=0 under [WaterIntegration] and restart\n'
-        'to use the client water. Underwater effects, wakes, slime and magma require x86.\n').encode('ascii'))
-    info = {'format': 'northlight-portable/1', 'platform': WINDOWS_X64, 'version': version,
-            'dll_version': dll_version, 'renderer_assets_sha256': resource_identity, 'tideglass': water_info,
-            'files': {name: hashlib.sha256(tree.data(name)).hexdigest() for name in sorted(tree.files)}}
-    if atmosphere is not None:
-        info['forever_atmosphere'] = atmosphere_metadata(atmosphere)
-    tree.add('BUILD-INFO.json', (json.dumps(info, indent=2) + '\n').encode())
-    path = out / (top + '.zip')
-    tree.write_zip(path, commit_time())
-    return {'platform': WINDOWS_X64, 'file': path.name, 'sha256': sha(path), 'bytes': path.stat().st_size,
-            'files': len(tree.files), 'dll_version': dll_version}
 
 
 def main():
@@ -559,8 +519,6 @@ def main():
     args = ap.parse_args()
     if not re.fullmatch(r'\d+\.\d+\.\d+([.-][A-Za-z0-9]+)*', args.version):
         ap.error('--version must look like 0.3.162')
-    if args.platform == WINDOWS_X64 and (not args.water_core or args.variant_manifest or args.cache_zip):
-        ap.error('windows-x64 requires --water-core and ships without cache variants')
     out = args.out or fp.out() / 'packages'
     out.mkdir(parents=True, exist_ok=True)
     variants = {}
@@ -592,8 +550,7 @@ def main():
     core = args.water_core.read_bytes() if args.water_core else None
     atmosphere = args.forever_atmosphere.read_bytes() if args.forever_atmosphere else None
     for platform in list(PLATFORMS) if args.platform == 'all' else [args.platform]:
-        reports.append(build_windows_x64(args.version, dll, out, atmosphere, core) if platform == WINDOWS_X64
-                       else build(platform, args.version, dll, variants, out, fp.out() / 'stormlib', atmosphere, core))
+        reports.append(build(platform, args.version, dll, variants, out, fp.out() / 'stormlib', atmosphere, core))
         print('Built', reports[-1]['file'], reports[-1]['bytes'], 'bytes', flush=True)
     (out / 'packages.json').write_text(json.dumps({'version': args.version, 'packages': reports}, indent=2) + '\n')
     return 0
