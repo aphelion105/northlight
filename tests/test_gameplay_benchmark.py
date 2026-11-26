@@ -140,17 +140,18 @@ class GameplayBenchmarkTests(unittest.TestCase):
             for name in ('Wow.exe', 'd3d9.dll', 'northlight-assets.bin'):
                 (root / name).touch()
             template = root / 'northlight-quality.ini'
-            original = '[Quality]\nDiagnostics=0\nRenderProfile=1\nDiagReplayProbe=1\n'
+            original = '[Quality]\nEffects=1\nDiagnostics=0\nRenderProfile=1\nDiagReplayProbe=1\n'
             template.write_text(original, encoding='ascii')
             args = Namespace(case='x86-dxvk', client=root, data=data, runtime=root, backend=root / 'd3d9.dll')
-            for requested in (True, False):
-                with self.subTest(render_profile=requested):
-                    args.render_profile = requested
+            for requested, effects in ((True, 1), (False, 0)):
+                with self.subTest(render_profile=requested, effects=effects):
+                    args.render_profile, args.effects = requested, effects
                     client = root / str(requested)
                     bench.stage(args, 'crowd8', client, {'runtime': {}})
                     settings = dict(line.split('=') for line in
                                     (client / template.name).read_text(encoding='ascii').splitlines()[1:])
                     self.assertEqual(settings['RenderProfile'], str(int(requested)))
+                    self.assertEqual(settings['Effects'], str(effects))
                     self.assertEqual(settings['Diagnostics'], str(int(requested)))
                     self.assertEqual(settings['DiagReplayProbe'], str(int(not requested)))
             self.assertEqual(template.read_text(encoding='ascii'), original)

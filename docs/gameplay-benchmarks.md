@@ -80,6 +80,11 @@ run requires confirmation in `northlight-renderer.log`. Keep the flag consistent
 across FPS comparisons because profiling adds measurement overhead. RenderProfile
 is off by default and is unavailable in stock and Vulkan cases.
 
+Add `--effects 0` to a Northlight run to set `Effects=0` in the private quality
+file. This bypasses all Northlight scene effects while keeping the renderer
+loaded, and the report shows `northlight=effects-disabled`. The default is
+`--effects 1`. The flag is unavailable in stock cases.
+
 ## Read the results
 
 The add-on waits 20 seconds after entering the world. The fixture arms it

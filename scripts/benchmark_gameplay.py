@@ -156,7 +156,8 @@ def stage(args, scene, client, report):
         quality = client / 'northlight-quality.ini'
         template = quality if quality.is_file() else live.fp.RENDERER / 'windows-package' / quality.name
         profile = template.read_text(encoding='utf-8-sig')
-        settings = {'CommandStream': int(proxy), 'StreamFrameSkip': 0, 'RenderProfile': int(args.render_profile)}
+        settings = {'Effects': args.effects, 'CommandStream': int(proxy), 'StreamFrameSkip': 0,
+                    'RenderProfile': int(args.render_profile)}
         if args.render_profile:
             settings.update(Diagnostics=1, DiagReplayProbe=0)
         for key in settings:
@@ -412,6 +413,7 @@ def attempt(args, scene):
     client = output / 'client'
     report = {'status': 'FAIL', 'case': args.case, 'scene': scene, 'resolution': args.resolution,
               'msaa': 1, 'locale': args.locale, 'desktop': args.desktop, 'render_profile_requested': args.render_profile,
+              'effects_requested': args.effects,
               'focus_mode': 'foreground' if args.desktop == 'foreground' else 'background',
               'runtime': {'case': args.case, 'client_executable': CASES[args.case][0], 'client_bits': None}}
     try:
@@ -463,9 +465,13 @@ def main():
     parser.add_argument('--keep-client', action='store_true', help='Retain private clients for investigation')
     parser.add_argument('--render-profile', action='store_true',
                         help='Enable Northlight per-pass timing for every scene on a Northlight D3D9 case')
+    parser.add_argument('--effects', type=int, choices=(0, 1), default=1,
+                        help='Effects value in the staged northlight-quality.ini (0 bypasses all scene effects)')
     args = parser.parse_args()
     if args.render_profile and (args.case.startswith('stock-') or CASES[args.case][1] == '-vulkan'):
         parser.error('--render-profile requires a Northlight D3D9 case')
+    if args.effects == 0 and args.case.startswith('stock-'):
+        parser.error('--effects 0 requires a Northlight case')
     if os.name != 'nt':
         parser.error('Live gameplay timing requires a Windows GPU and desktop session')
     if not args.client or not live.fp.is_client(args.client):
