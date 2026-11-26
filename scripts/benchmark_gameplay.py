@@ -237,7 +237,7 @@ def primary_display_pixels():
 
     mode = DisplayMode(size=ctypes.sizeof(DisplayMode))
     # EnumDisplaySettingsW reports physical pixels regardless of DPI awareness.
-    current_settings = wintypes.DWORD(-1)
+    current_settings = wintypes.DWORD(0xFFFFFFFF)  # ENUM_CURRENT_SETTINGS; DWORD is 64-bit c_ulong off Windows
     if not ctypes.windll.user32.EnumDisplaySettingsW(None, current_settings, ctypes.byref(mode)):
         raise ValueError('Cannot determine the primary display resolution')
     return mode.width, mode.height
