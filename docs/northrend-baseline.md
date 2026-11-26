@@ -107,6 +107,82 @@ positions from the same draw. The gate requires every audited ADT draw to
 have valid native bounds and a matching consumer check. `unattributed` counts tagged world shaders
 whose caller was outside the supported WMO and ADT paths.
 
+## QA scene capture
+
+Stage the x86 D3D9 client with the SDR QA profile. Use the private wrapper and
+retrace host built for [native capture](#capture-from-launch).
+
+```powershell
+python scripts/run_northrend_baseline.py stage --qa-scene --backend <DXVK-x86.dll> --output <stage> --resolution 1280x720 --msaa 1
+python scripts/run_northrend_baseline.py run --qa-scene --windows 0 --timeout 300 --stage <stage> --output <stage>/scene --capture-wrapper <tool-build>/build/wrappers/d3d9.dll
+```
+
+The default run opens the local Northrend fixture. Add `--qa-realm <host>` to
+log in manually to a QA realm using the staged Northrend cache. After the
+event, press **Ctrl+Alt+F12** in the game or open `Ctrl+Shift+F11 → Diagnostics`
+and click **Save last 15 seconds**.
+For a reproducible camera turn on localhost, add `--camera-turn` to the run
+command. The fixture waits 15 seconds after World readiness, turns the camera
+and marks the scene after the renderer reports the new direction.
+
+The launcher closes the private client and publishes `scene.zip` only after
+the trace and snapshot journal close successfully. The package retains the
+trace from launch to preserve dependencies for the marked Presents. If the
+session or device epoch is younger than 15 seconds, the manifest records the
+available duration. Captures can be large and are excluded from FPS results.
+
+Extract the ZIP to its own folder. Supply the matching local x86 client files,
+world cache and DXVK backend. The package provides the captured settings, trace,
+snapshot journal and log.
+
+```powershell
+python scripts/run_northrend_baseline.py replay --capture <extracted-scene> --qa-client <game-folder> --qa-backend <DXVK-x86.dll> --output <replay-output> --tool-root <official-win32-bundle> --host <tool-build>/build/northlight-native-retrace.exe --timeout 300
+```
+
+Replay verifies the trace join and writes preview PNGs from up to three World
+Presents in the marked interval. `validation.json` records their Present
+ordinals and paths. Add `--qa-visible` to watch playback from launch. To replay
+directly from the capture folder on the same machine, pass `--stage <stage>` in
+place of `--qa-client` and `--qa-backend`.
+
+### WowClient64.exe with Northlight D3D9
+
+Use the [apitrace 14.0 Win64 bundle](https://github.com/apitrace/apitrace/releases/tag/14.0).
+Pass the installed game's folder to stage a private copy, then use
+**Ctrl+Alt+F12** or the in-game **Save last 15 seconds** button.
+
+```powershell
+python scripts/build_renderer.py --x64
+python scripts/run_northrend_baseline.py stage --qa-scene --x64 --client <game-folder> --dll <Northlight-x64-d3d9.dll> --assets <northlight-assets.bin> --backend <DXVK-x64.dll> --output <stage> --resolution 1280x720 --msaa 1
+python scripts/run_northrend_baseline.py run --qa-scene --windows 0 --timeout 300 --stage <stage> --output <stage>/scene --capture-wrapper <apitrace-win64>/lib/wrappers/d3d9.dll
+python scripts/run_northrend_baseline.py replay --capture <extracted-scene> --qa-backend <DXVK-x64.dll> --tool-root <apitrace-win64> --output <replay-output> --timeout 600
+```
+
+The x64 trace records the D3D9 calls Northlight sends to the backend, including
+its effects and shaders. Replay needs the matching backend DLL and restores
+the recorded DXVK profile. It verifies the saved interval and renders three
+preview frames. Use the x86 capture above to feed game inputs back through a
+different Northlight build for A/B comparisons.
+
+### Native Vulkan and other Windows APIs
+
+Launch the stock x64 game with the appropriate tool. The separate QA window
+has the same **Save last 15 seconds** button. For `record-api`, exit the
+game normally after marking the interval.
+
+```powershell
+python scripts/run_northrend_baseline.py record-vulkan --client <WowClient64.exe> --shaders <VulkanShaders> --tool-root <GFXReconstruct-Bin> --output <scene>
+python scripts/run_northrend_baseline.py record-api --renderer d3d11 --client <WowClient64.exe> --tool-root <apitrace-win64> --presentmon <PresentMon-x64.exe> --output <scene>
+python scripts/run_northrend_baseline.py replay --capture <extracted-scene> --tool-root <GFXReconstruct-Bin-or-apitrace-win64> --output <replay-output>
+```
+
+`record-vulkan` uses the [GFXReconstruct capture layer](https://vulkan.lunarg.com/doc/view/latest/windows/capture_tools.html).
+`record-api` accepts `d3d9ex`, `d3d11`, and `opengl` and requires an ETW-capable
+session with [PresentMon 2.6](https://github.com/GameTechDev/PresentMon/blob/main/README-ConsoleApplication.md).
+It publishes a package only when the API trace and PresentMon agree on the
+frame sequence. Vulkan uses the timestamps at which writes become visible
+to the recorder to choose the interval. Use `--qa-visible` to show playback.
+
 ## Capture from launch
 
 Get the official [apitrace 14.0 x86 bundle](https://github.com/apitrace/apitrace/releases/tag/14.0) for the parser and its runtime dependencies. Prepare a byte-exact source checkout for the private instrumentation build. The private loader points the external D3D9 wrapper at `northlight-capture.dll` by exact path. The distinct filename lets `Wow.exe` continue to resolve the outer `d3d9.dll` after querying startup video capabilities. After a successful texture creation, the private wrapper emits `NLTEX1` with the COM pointer returned to the game and the inner identity in the trace. The official parser and the existing D3D9 call serialization are used for the full trace.

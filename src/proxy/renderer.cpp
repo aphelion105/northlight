@@ -58,6 +58,7 @@
 #include "effect_switches.h"
 #include "diagnostics_switch.h"
 #include "diagnostic_capture_request.h"
+#include "qa_scene_capture.h"
 #include "render_thread_probe.h"
 #include "effects_buckets.h"
 #include "contact_ao_pass.h"
@@ -601,6 +602,10 @@ private:
     NorthlightUiDrawDiagnostic::Window uiDrawDiagnostic;
     bool key4=false;
     const int debugMode = 0;int worldDebug=0;bool gpuDiagnosticFrame=false,nativeCaptureDiagnostic=false;
+    std::optional<NorthlightQaScene::History> qaScene;
+    std::wstring qaSceneArm;
+    std::uint64_t qaSceneNextPoll=0;
+    void (WINAPI* qaSceneMarker)(D3DCOLOR,LPCWSTR)=nullptr;
     bool diagnosticAoRaw=false,diagnosticAo=false,diagnosticWorld=false;
     NorthlightEffectSwitches::Hotkeys effectKeys;
     float nearZ = .1f, farZ = 1000.f, scaleX = 1.f, scaleY = 1.f, fogForward = 1.f;
@@ -3207,6 +3212,45 @@ public:
 #endif
     void adoptOwnerThread(){mirrorState.gate.ownerTid=MirrorGuard::threadId();}
     void setNativeCaptureDiagnostic(bool enabled){nativeCaptureDiagnostic=enabled;}
+    void startQaScene(HMODULE backendTracer=nullptr)noexcept try{
+        wchar_t arm[MAX_PATH];
+        const DWORD size=GetEnvironmentVariableW(L"NORTHLIGHT_QA_SCENE_ARM",arm,MAX_PATH);
+        if(!size||size>=MAX_PATH)return;
+        if(backendTracer){
+            const auto marker=GetProcAddress(backendTracer,"D3DPERF_SetMarker");
+            if(!marker)return;
+            static_assert(sizeof qaSceneMarker==sizeof marker);
+            std::memcpy(&qaSceneMarker,&marker,sizeof marker);
+            nativeCaptureDiagnostic=true;
+        }
+        qaSceneArm.assign(arm,size);qaScene.emplace();
+        NorthlightQaScene::state.store(NorthlightQaScene::State::Recording);
+    }catch(...){
+        logf("QA_SCENE unavailable reason=initialization");
+    }
+    void recordQaScene(unsigned frame)noexcept try{
+        using QaState=NorthlightQaScene::State;
+        const auto tick=GetTickCount64();
+        if(qaSceneMarker){
+            wchar_t text[48];
+            swprintf(text,std::size(text),L"NLQA1;present=%u",frame);
+            qaSceneMarker(0x4e4c0002,text);
+        }
+        if(tick>=qaSceneNextPoll){
+            qaSceneNextPoll=tick+250;
+            if(GetFileAttributesW(qaSceneArm.c_str())!=INVALID_FILE_ATTRIBUTES)NorthlightQaScene::requestSave();
+        }
+        unsigned first=0;std::uint64_t duration=0;
+        if(qaScene->present(frame,tick,NorthlightQaScene::state.load()==QaState::Requested,first,duration)){
+            logf("QA_SCENE saved first=%u last=%u durationMs=%llu",first,frame,static_cast<unsigned long long>(duration));
+            NorthlightQaScene::state.store(QaState::Saved);
+            qaScene.reset();
+        }
+    }catch(...){
+        qaScene.reset();
+        NorthlightQaScene::state.store(NorthlightQaScene::State::Disabled);
+        logf("QA_SCENE unavailable reason=recording");
+    }
     // 0.3.192 (CS): direct replay (stream mode). The extension device runs the same MirrorDevice methods on the same real device and mirror as the
     // Device's own non-overridden ones; the replay thread calls it with RAW pointers for the methods the generator's DIRECT list names.
     IDirect3DDevice9* extensionDevice(){return ext;}
@@ -3613,6 +3657,7 @@ public:
         releaseTideglassTargets();
         waterCapsChecked=false;
 #endif
+        if(qaScene)qaScene->clear();
         hdr.active=false;HRESULT hr=ext->Reset(pp);resetMark(8);
 #ifdef NORTHLIGHT_WATER
         if(SUCCEEDED(hr))cooperativeWater.Restored();
@@ -3720,6 +3765,7 @@ public:
         monitorPrimary=implicitChain;extensionWork("frame finish",[&]{finishFrameImpl();});
         if(hdr.active&&!hdrUiPhase)extensionWork("HDR frame finish",[&]{if(SUCCEEDED(hdrBegin(true)))hdrBoundaryLog("present",finishedFrame,effectsApplied,worldSeen);});
         drawOverlay(implicitChain);
+        if(implicitChain&&qaScene)recordQaScene(finishedFrame);
         if(parity){
             ExtensionDevice::RawScope raw(*ext);
             auto* native=hdr.logical.SwapEffect==D3DSWAPEFFECT_DISCARD&&!hdrLegacySynced?hdrLegacyBack:nullptr;
@@ -3872,7 +3918,9 @@ public:
             NorthlightPerformance::store().publish(reinterpret_cast<uintptr_t>(ext),monitorTick.QuadPart,cpuFrequency.QuadPart,focus&&!diagnosticFrame,sample);
         }
         // Poll only while this game owns foreground focus.
-        bool modifiers=(GetAsyncKeyState(VK_CONTROL)&0x8000)&&(GetAsyncKeyState(VK_SHIFT)&0x8000);
+        const bool ctrl=(GetAsyncKeyState(VK_CONTROL)&0x8000)!=0;
+        const bool shift=(GetAsyncKeyState(VK_SHIFT)&0x8000)!=0;
+        const bool modifiers=ctrl&&shift;
         bool k10=focus&&modifiers&&(GetAsyncKeyState(VK_F10)&0x8000);
         const unsigned componentKeys=((GetAsyncKeyState(VK_F7)&0x8000)?NorthlightEffectSwitches::Fog:0u)|
             ((GetAsyncKeyState(VK_F8)&0x8000)?NorthlightEffectSwitches::GI:0u)|
@@ -3891,6 +3939,7 @@ public:
         bool retry=masterPressed&&!masterEnabled;
         if(masterPressed){flushFrameIntervals("master-change",frameEnabled,frameEffects);masterEnabled=!masterEnabled;frameIntervals.reset();frameCost.reset();stallFrames.reset();mirrorResources.queryProfile={};logf("Effects %s tick=%lu device=%llu rendererFrame=%u monotonicNs=%llu",masterEnabled?"ON":"OFF",(unsigned long)GetTickCount(),(unsigned long long)diagnosticId,frame,(unsigned long long)NorthlightStream::nowNs());}
         const bool alt=(GetAsyncKeyState(VK_MENU)&0x8000)!=0;
+        if(qaScene&&focus&&ctrl&&alt&&!shift&&(GetAsyncKeyState(VK_F12)&0x8000))NorthlightQaScene::requestSave();
         const bool k4=focus&&modifiers&&!alt&&(GetAsyncKeyState(VK_F4)&0x8000);
         if(k4&&!key4)armUiDrawDiagnostic();
         key4=k4;
@@ -4602,6 +4651,7 @@ public:
             logf("NATIVE capture active=%u diagnostic=1 fpsEligible=0 traceJoinValidated=0 reason=%s",unsigned(bool(nativeCapture)),captureReason);
         }
         if(nativeCapture){
+            target->startQaScene();
             options.snapshotSink=nativeCapture->sink();
             options.snapshotCompleted=&NorthlightStream::NativeSnapshotCapture::completed;
             options.snapshotObserved=&NorthlightStream::NativeSnapshotCapture::observed;
@@ -4723,6 +4773,13 @@ public:
                 *out=device;
                 hr=device->warmPointPipelinesAtDeviceInit();
                 if(SUCCEEDED(hr))hr=device->initHdrTargets();
+#if defined(_WIN64) && !defined(NORTHLIGHT_REPLAY_STAND)
+                wchar_t tracer[MAX_PATH];
+                const DWORD tracerLength=GetEnvironmentVariableW(L"NORTHLIGHT_QA_SCENE_D3D9_TRACER",tracer,MAX_PATH);
+                if(SUCCEEDED(hr)&&tracerLength&&tracerLength<MAX_PATH){
+                    if(const auto module=GetModuleHandleW(tracer))device->startQaScene(module);
+                }
+#endif
             }catch(const std::bad_alloc&){
                 logf("CreateDevice: Northlight allocation failed");
                 hr=E_OUTOFMEMORY;

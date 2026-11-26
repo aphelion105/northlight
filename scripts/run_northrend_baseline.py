@@ -13,6 +13,7 @@ import struct
 import subprocess
 import sys
 import time
+from zipfile import ZipFile
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import northlight_paths as fp
@@ -115,6 +116,39 @@ def renderer_profile(text):
                 r'^\s*HDR\w*\s*=', line, re.I):
             sections.setdefault(section, []).append(line.strip())
     return ''.join(f'[{name}]\n' + '\n'.join(lines) + '\n' for name, lines in sections.items())
+
+
+def qa_selection(lines):
+    marks = [line for line in lines if line.startswith('QA_SCENE saved ')]
+    if not marks:
+        return None
+    mark = re.fullmatch(r'QA_SCENE saved first=(\d+) last=(\d+) durationMs=(\d+)', marks[0])
+    if len(marks) != 1 or not mark:
+        raise ValueError('Expected one complete QA scene mark')
+    first, last, duration = map(int, mark.groups())
+    if not 0 <= first < last < 2**32 or not duration:
+        raise ValueError('QA scene has no playable Present interval')
+    return {'first_present': first, 'last_present': last, 'duration_ms': duration}
+
+
+def qa_archive(run, root, client, sidecar=None):
+    # The game, backend and world caches are supplied by the replay operator.
+    for path in (root / 'baseline.json', root / 'northlight-renderer.ini', client / 'northlight-quality.ini'):
+        shutil.copyfile(path, run / path.name)
+    archive = run.with_name(run.name + '.zip')
+    pending = archive.with_suffix('.zip.pending')
+    with ZipFile(pending, 'x') as output:
+        for name in ('baseline.json', 'northlight-renderer.ini', 'northlight-quality.ini', 'wow.trace', LOG,
+                     'validation.json', 'capture-wrapper.dll'):
+            output.write(run / name, name)
+        for name in (DXVK_LOG, 'WowClient64_d3d9.log'):
+            if (run / name).is_file():
+                output.write(run / name, name)
+        if sidecar:
+            for path in sorted(sidecar.iterdir()):
+                output.write(path, path.relative_to(run).as_posix())
+    pending.rename(archive)
+    return archive
 
 
 def copies(source, world=SCENE, game='Wow.exe', tiles=None, *, data=None):
@@ -252,6 +286,12 @@ def stage(args):
     ratchet = getattr(args, 'scene', None) == fixture.RATCHET_PAN
     game = 'WowClient64.exe' if getattr(args, 'x64', False) else 'Wow.exe'
     map_id, _, world = fixture.map_for(fixture.RATCHET_PAN if ratchet else 'solo')
+    qa = getattr(args, 'qa_scene', False)
+    if qa and (args.frame_parity or ratchet):
+        raise ValueError('QA capture staging requires D3D9 Northrend without --frame-parity')
+    qa_backend = getattr(args, 'qa_backend_kind', 'dxvk')
+    if qa_backend != 'dxvk' and (not qa or game == 'Wow.exe'):
+        raise ValueError('Select an alternate QA backend only with --x64 --qa-scene')
     if args.frame_parity and (ratchet or game != 'Wow.exe'):
         raise ValueError('Fixed-clock replay parity requires the original x86 Northrend stage')
     for binary in (source / game, args.dll, args.backend):
@@ -305,11 +345,13 @@ def stage(args):
     quality = client / 'northlight-quality.ini'
     if not quality.is_file():
         raise ValueError('Provide a client with the baseline northlight-quality.ini')
-    if args.frame_parity or ratchet:
+    if args.frame_parity or ratchet or qa:
         settings = quality.read_text(encoding='utf-8-sig')
         flags = ['CommandStream=1', 'StreamFrameSkip=0']
         if ratchet:
             flags += ['Diagnostics=1', 'RenderProfile=1']
+        if qa:
+            flags += ['Diagnostics=1', 'RenderProfile=0']
         keys = '|'.join(flag.split('=')[0] for flag in flags)
         settings = re.sub(rf'(?im)^[ \t]*(?:{keys})[ \t]*=[^\n]*\n?', '', settings)
         settings, sections = re.subn(r'(?im)^\[Quality\][ \t]*$', '\n'.join(('[Quality]', *flags)), settings)
@@ -319,8 +361,13 @@ def stage(args):
         hashed[quality.name] = digest(quality)
     renderer = client / 'northlight-renderer.ini'
     installed_renderer = source / renderer.name
-    renderer.write_text(renderer_profile(installed_renderer.read_text(encoding='utf-8-sig', errors='replace')
-                                         if installed_renderer.is_file() else ''), encoding='utf-8')
+    settings = renderer_profile(installed_renderer.read_text(encoding='utf-8-sig', errors='replace')
+                                if installed_renderer.is_file() else '')
+    if qa:
+        settings = settings.replace('ExperimentalHDR=1', 'ExperimentalHDR=0').replace('SettingsOverlay=0', 'SettingsOverlay=1')
+        if game != 'Wow.exe':
+            settings = settings.replace('Backend=dxvk', f'Backend={qa_backend}').replace('BackendPath=backend_d3d9.dll', 'BackendPath=qa-tracer.dll')
+    renderer.write_text(settings, encoding='utf-8')
     config = client / 'WTF/Config.wtf'
     config.parent.mkdir(exist_ok=True)
     realmlist = client / REALMLIST
@@ -336,6 +383,10 @@ def stage(args):
     manifest = {'format': 1, 'map': world, 'map_id': map_id, 'spawn': fixture.RATCHET_SPAWN if ratchet else SPAWN, 'realm': LOOPBACK,
                 'resolution': args.resolution, 'msaa': args.msaa, 'input_sha256': hashed,
                 'linked_assets': sorted(linked), 'frame_parity': args.frame_parity}
+    if qa:
+        manifest['qa_scene'] = True
+        if game != 'Wow.exe':
+            manifest['qa_backend_kind'] = qa_backend
     if game != 'Wow.exe':
         manifest['game_exe'] = game
     if clock_image is not None:
@@ -556,7 +607,7 @@ def observe_m2_stress(lines, events, roster, expected_spawn, *, x64=False):
 
 def child_environment(run):
     env = {key: value for key, value in os.environ.items() if not key.upper().startswith(
-        ('NORTHLIGHT_NATIVE_', 'NORTHLIGHT_RETRACE_', 'NORTHLIGHT_APITRACE_', 'NORTHLIGHT_FRAME_PARITY_',
+        ('NORTHLIGHT_NATIVE_', 'NORTHLIGHT_RETRACE_', 'NORTHLIGHT_APITRACE_', 'NORTHLIGHT_FRAME_PARITY_', 'NORTHLIGHT_QA_SCENE_',
          'APITRACE_', 'TRACE_', 'DXVK_'))}
     if adapter := os.environ.get(DXVK_ADAPTER_ENV):
         env[DXVK_ADAPTER_ENV] = adapter
@@ -773,13 +824,13 @@ class ParityResize:
         return len(self.steps) == 2
 
 
-def close_client(process, window_class=None):
+def close_client(process, window_class=None, *, timeout=12):
     if process.poll() is not None:
         return False
     for hwnd in process_windows(process.pid, window_class):
         ctypes.windll.user32.PostMessageW(hwnd, 0x0010, 0, 0)  # WM_CLOSE
     try:
-        process.wait(timeout=12)
+        process.wait(timeout=timeout)
         return False
     except subprocess.TimeoutExpired:
         process.kill()
@@ -932,12 +983,21 @@ def run_client(args):
         if digest(mutable.get(relative, client / relative)) != inputs[relative]:
             raise ValueError(f'Frozen runtime input differs from the stage manifest: {relative}')
     wrapper = args.capture_wrapper.resolve() if args.capture_wrapper else None
+    qa = getattr(args, 'qa_scene', False)
+    qa_baked = qa and game == 'WowClient64.exe'
+    if qa_baked != bool(manifest.get('qa_backend_kind')):
+        raise ValueError('Use --qa-scene to run the staged x64 QA backend')
+    qa_realm = getattr(args, 'qa_realm', None)
+    if qa and (not manifest.get('qa_scene') or not wrapper or args.target != 'world' or args.windows):
+        raise ValueError('Use a --qa-scene stage, --capture-wrapper and --windows 0 for QA recording')
+    if qa_realm and (not qa or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9.-]*(?::[0-9]{1,5})?', qa_realm)):
+        raise ValueError('--qa-realm requires --qa-scene and a realm hostname or hostname:port')
     scene = getattr(args, 'scene', 'solo')
     map_id, _, world = fixture.map_for(scene)
     ratchet = scene == fixture.RATCHET_PAN
     if world != manifest.get('map', SCENE) or map_id != manifest.get('map_id', 571):
         raise ValueError('The scene and stage must use the same world map')
-    if wrapper and game != 'Wow.exe':
+    if wrapper and game != 'Wow.exe' and not qa_baked:
         raise ValueError('Fixture trace capture requires Wow.exe')
     m2_stress = scene == 'm2-stress'
     private_desktop = m2_stress or ratchet
@@ -945,7 +1005,7 @@ def run_client(args):
     timeout = args.timeout if args.timeout is not None else (240 if m2_stress else 90)
     background = private_desktop or getattr(args, 'background', False)
     camera_turn = getattr(args, 'camera_turn', False)
-    if camera_turn and (args.windows or args.target != 'world' or args.manual):
+    if camera_turn and (args.windows or args.target != 'world' or args.manual or qa_realm):
         raise ValueError('--camera-turn requires an automated World run with --windows 0')
     return_to_menu = getattr(args, 'return_to_menu', False)
     if ratchet and (args.windows or args.target != 'world' or args.manual or wrapper or camera_turn or return_to_menu):
@@ -957,8 +1017,8 @@ def run_client(args):
     if package_runtime and (wrapper or package_runtime.keys() - PACKAGE_RUNTIME_FILES or
                             any(path is None and name != 'forever-atmosphere.bin' for name, path in package_runtime.items())):
         raise ValueError('Package staging is restricted to the live release smoke payload')
-    output_mode = getattr(args, 'output_mode', 'hdr')
-    if output_mode not in ('hdr', 'sdr') or (output_mode == 'sdr' and not package_runtime):
+    output_mode = 'sdr' if qa else getattr(args, 'output_mode', 'hdr')
+    if output_mode not in ('hdr', 'sdr') or (output_mode == 'sdr' and not (package_runtime or qa)):
         raise ValueError('The SDR output contract is reserved for a packaged live smoke')
     native_m2_samples = getattr(args, 'native_m2_audit_samples', 0)
     require_grouped_m2 = getattr(args, 'native_m2_require_grouped', False)
@@ -969,6 +1029,8 @@ def run_client(args):
         raise ValueError('Native M2 audit requires an untraced World run with --windows 0')
     candidate = getattr(args, 'live_dll', None)
     assets = getattr(args, 'live_assets', None)
+    if qa_baked and (candidate or assets):
+        raise ValueError('Stage the x64 QA renderer and its assets together')
     if (candidate is None) != (assets is None):
         raise ValueError('Use --live-dll and --live-assets together')
     renderer_hash = inputs['d3d9.dll']
@@ -986,7 +1048,7 @@ def run_client(args):
     crowd_size = fixture.DEFAULT_CROWD_SIZE if requested_crowd_size is None else requested_crowd_size
     roster = fixture.scene_roster(scene, crowd_size)
     packets = fixture.crowd_packets(roster)
-    trace_budget_gib = 2 + len(packets)
+    trace_budget_gib = (6 if qa_baked else 2) + len(packets)
     trace_budget = trace_budget_gib << 30
     if scene != 'solo' and args.target != 'world':
         raise ValueError(f'The {scene} scene requires the world checkpoint')
@@ -1028,9 +1090,9 @@ def run_client(args):
     if roster:
         expected_spawn = fixture.spawn_record(roster, b''.join(packets))
     if wrapper:
-        pe32(wrapper)
+        stage_pe(wrapper, game)
         binary = wrapper.read_bytes()
-        if b'NORTHLIGHT_APITRACE_D3D9_TARGET\0' not in binary or 'NLTEX1;'.encode('utf-16le') not in binary:
+        if not qa_baked and (b'NORTHLIGHT_APITRACE_D3D9_TARGET\0' not in binary or 'NLTEX1;'.encode('utf-16le') not in binary):
             raise ValueError('Build the private apitrace wrapper with the downstream path and texture witnesses')
         if draw_probe and b'NORTHLIGHT_APITRACE_DRAW_PROBE\0' not in binary:
             raise ValueError('Build the private apitrace wrapper with indexed draw probes')
@@ -1046,6 +1108,9 @@ def run_client(args):
     report['window_mode'] = 'background' if background else 'focused'
     timing_windows = []
     report['runtime_inputs'].update({'d3d9.dll': renderer_hash, 'northlight-assets.bin': assets_hash})
+    if qa_baked:
+        report['qa_transport'] = 'd3d9-backend'
+        report['qa_backend_kind'] = manifest['qa_backend_kind']
     proxy = client / 'd3d9.dll'
     shader_bundle = client / 'northlight-assets.bin'
     saved = run / 'downstream/northlight-capture.dll'
@@ -1053,6 +1118,9 @@ def run_client(args):
     original = run / 'staged-d3d9.dll'
     original_assets = run / 'staged-northlight-assets.bin'
     env = child_environment(run)
+    qa_arm = run / 'qa-save'
+    if qa:
+        env['NORTHLIGHT_QA_SCENE_ARM'] = str(qa_arm)
     cache_seed = getattr(args, 'dxvk_shader_cache_seed', None)
     if cache_seed:
         report['dxvk_shader_cache'] = {'inputs': seed_dxvk_shader_cache(cache_seed, Path(env['DXVK_SHADER_CACHE_PATH']))}
@@ -1112,27 +1180,30 @@ def run_client(args):
             server_args.extend(('--camera-turn', str(turn_signal)))
         if scene == 'crowd':
             server_args.extend(('--crowd-size', str(crowd_size)))
-        with fixture_log.open('x', encoding='utf-8') as output:
-            server = subprocess.Popen(server_args, cwd=run,
-                                      stdout=output, stderr=subprocess.STDOUT, env=env,
-                                      creationflags=subprocess.CREATE_NO_WINDOW)
-        for _ in range(50):
-            readiness = next((line for line in log_lines(fixture_log) if line.startswith('READY ')), None)
-            if readiness:
-                break
-            if server.poll() is not None:
-                raise ValueError('The loopback fixture server exited before readiness')
-            time.sleep(.1)
+        if qa_realm:
+            endpoint = qa_realm
         else:
-            raise ValueError('Loopback fixture server readiness timed out')
-        ports = re.fullmatch(r'READY auth=([0-9]{1,5}) world=([0-9]{1,5})', readiness)
-        if not ports:
-            raise ValueError('Loopback fixture server reported invalid ports')
-        auth_port, world_port = map(int, ports.groups())
-        if not (1 <= auth_port <= 65535 and 1 <= world_port <= 65535 and auth_port != world_port):
-            raise ValueError('Loopback fixture server reported invalid ports')
-        endpoint = f'{LOOPBACK}:{auth_port}'
-        report['fixture_ports'] = {'auth': auth_port, 'world': world_port}
+            with fixture_log.open('x', encoding='utf-8') as output:
+                server = subprocess.Popen(server_args, cwd=run,
+                                          stdout=output, stderr=subprocess.STDOUT, env=env,
+                                          creationflags=subprocess.CREATE_NO_WINDOW)
+            for _ in range(50):
+                readiness = next((line for line in log_lines(fixture_log) if line.startswith('READY ')), None)
+                if readiness:
+                    break
+                if server.poll() is not None:
+                    raise ValueError('The loopback fixture server exited before readiness')
+                time.sleep(.1)
+            else:
+                raise ValueError('Loopback fixture server readiness timed out')
+            ports = re.fullmatch(r'READY auth=([0-9]{1,5}) world=([0-9]{1,5})', readiness)
+            if not ports:
+                raise ValueError('Loopback fixture server reported invalid ports')
+            auth_port, world_port = map(int, ports.groups())
+            if not (1 <= auth_port <= 65535 and 1 <= world_port <= 65535 and auth_port != world_port):
+                raise ValueError('Loopback fixture server reported invalid ports')
+            endpoint = f'{LOOPBACK}:{auth_port}'
+            report['fixture_ports'] = {'auth': auth_port, 'world': world_port}
 
         for name in ('WTF', 'Cache'):
             previous = client / name
@@ -1146,6 +1217,10 @@ def run_client(args):
             target.parent.mkdir(parents=True, exist_ok=True)
             if relative == 'WTF/Config.wtf':
                 config = runtime_client_config(path.read_bytes(), endpoint)
+                if qa_realm:
+                    config = re.sub(rb'(?im)^SET accountname [^\r\n]*\r?\n', b'', config)
+                if qa and camera_turn:
+                    config = re.sub(rb'(?im)^(SET maxfps(?:bk)? )"0"', rb'\g<1>"30"', config)
                 target.write_bytes(config)
                 report['runtime_inputs'][relative] = hashlib.sha256(config).hexdigest()
                 if background:
@@ -1177,7 +1252,20 @@ def run_client(args):
                     target.parent.mkdir(parents=True, exist_ok=True)
                     shutil.copyfile(source, target)
                 report['runtime_inputs'][relative] = digest(target) if source is not None else None
-        if wrapper:
+        if qa_baked:
+            downstream = run / 'downstream'
+            downstream.mkdir()
+            shutil.copyfile(client / 'backend_d3d9.dll', downstream / 'd3d9.dll')
+            tracer = client / 'qa-tracer.dll'
+            if tracer.exists():
+                raise ValueError('QA tracer already exists in the private stage')
+            replaced_payload.append((tracer, run / 'unused-qa-tracer'))
+            shutil.copyfile(wrapper, tracer)
+            shutil.copyfile(wrapper, run / 'capture-wrapper.dll')
+            report['wrapper_sha256'] = digest(tracer)
+            env.update(TRACE_FILE=str(run / 'wow.trace'), APITRACE_FORCE_MODULE_PATH=str(downstream),
+                       NORTHLIGHT_QA_SCENE_D3D9_TRACER=str(tracer))
+        elif wrapper:
             from build_renderer_assets import verify_pair
 
             saved.parent.mkdir()
@@ -1237,10 +1325,14 @@ def run_client(args):
         logout_line = None
         before_turn = None
         turn_sent = False
+        qa_turn_at = None
         while process.poll() is None and time.monotonic() - start < timeout:
             if desktop is not None:
                 desktop.confirm_inactive()
             lines = log_lines(log)
+            if qa and qa_selection(lines):
+                report['checkpoint'] = 'qa-scene-marked'
+                break
             state = scan(lines, spawn, world, camera_history=ratchet)
             events = log_lines(fixture_log)
             if logout_line is not None:
@@ -1299,13 +1391,22 @@ def run_client(args):
                 report['native_m2'] = observe_native_m2(lines, native_m2_samples, require_grouped_m2, require_world_batches)
                 world_ready = world_ready and report['native_m2']['ready']
             if camera_turn and world_ready:
+                if qa and qa_turn_at is None:
+                    qa_turn_at = time.monotonic() + 15
+                if qa and time.monotonic() < qa_turn_at:
+                    time.sleep(.25)
+                    continue
                 if not turn_sent:
                     before_turn = sample
-                    turn_signal.touch(exist_ok=False)
+                    pending_turn = turn_signal.with_suffix('.pending')
+                    pending_turn.touch(exist_ok=False)
+                    pending_turn.rename(turn_signal)
                     turn_sent = True
                 world_ready = 'CAMERA_TURN_ACK sequence=1' in events and observed_camera_turn(before_turn, sample)
                 if world_ready:
                     report.setdefault('camera_turn', {'before': before_turn, 'after': sample, 'ack_sequence': 1})
+                    if qa and not qa_arm.exists():
+                        qa_arm.touch(exist_ok=False)
             resize_ready = resize is None or len(resize.steps) == 2
             if not resize_ready and state['world_seen'] and correct_camera:
                 resize_ready = resize.advance(process.pid, lines)
@@ -1321,7 +1422,7 @@ def run_client(args):
                     any(line.startswith('CreateDevice HRESULT=0x00000000') for line in lines)):
                 report['checkpoint'] = 'menu-character-ready' if package_runtime else 'device'
                 break
-            if args.target == 'world' and world_ready and parity_ready and not ratchet:
+            if args.target == 'world' and world_ready and parity_ready and not ratchet and not qa:
                 if m2_stress and not stress_skip_intervals:
                     # The first interval emitted after admission can include loading frames.
                     stress_skip_intervals = len(state['frames']) + 1
@@ -1337,7 +1438,7 @@ def run_client(args):
                         continue
                     report['checkpoint'] = 'northrend-static-ready'
                     break
-            if args.target == 'world' and not args.manual and state['identity']:
+            if args.target == 'world' and not args.manual and not qa_realm and state['identity']:
                 handles = process_windows(process.pid, game_window_class)
                 if handles:
                     now = time.monotonic()
@@ -1356,6 +1457,8 @@ def run_client(args):
                 raise ValueError(f'Capture exceeded the {trace_budget_gib} GiB live fixture budget')
             time.sleep(.25)
         if 'checkpoint' not in report:
+            if qa:
+                raise ValueError('QA recording ended before receiving a scene mark')
             if logout_line is not None:
                 raise ValueError('The private WoW did not acknowledge logout and reach character selection')
             if resize and len(resize.steps) != 2:
@@ -1506,8 +1609,20 @@ def run_client(args):
         if wrapper and (run / 'wow.trace').is_file():
             trace = run / 'wow.trace'
             report['trace'] = {'bytes': trace.stat().st_size, 'sha256': digest(trace)}
+        sidecar = None
+        if qa_baked and 'trace' in report and 'log_sha256' in report:
+            try:
+                from qa_d3d9_replay import certify, dxvk_runtime
+                selection = qa_selection(lines)
+                if selection:
+                    report['qa_scene'] = certify(trace, wrapper.parents[2], selection, run, args.timeout or 120)
+                    if manifest['qa_backend_kind'] != 'native':
+                        report['qa_dxvk'] = dxvk_runtime((run / 'WowClient64_d3d9.log').read_text(encoding='utf-8'))
+            except (OSError, ValueError, subprocess.SubprocessError) as error:
+                report.setdefault('error', str(error))
+        elif wrapper and 'trace' in report:
             journals = sorted((run / 'snapshots').glob('*/native-capture-status.json'))
-            report['sidecars'] = [str(path.parent) for path in journals]
+            report['sidecars'] = [(path.parent.relative_to(run).as_posix() if qa else str(path.parent)) for path in journals]
             if len(journals) == 1:
                 try:
                     sidecar = journals[0].parent
@@ -1522,6 +1637,14 @@ def run_client(args):
                         selected = parity.selected_frames(log_lines(run / LOG))
                         report['world_clock'] = world_clock(records, packets, selected, manifest['fixed_world_minute'])
                     report['complete_snapshot_records'] = len(records)
+                    if qa:
+                        selection = qa_selection(lines)
+                        world_frames = [row['frame'] for row in records if selection and row['trigger'] == 2 and
+                                        selection['first_present'] <= row['frame'] <= selection['last_present']]
+                        if len(world_frames) < 2:
+                            raise ValueError('The marked interval needs at least two World snapshots')
+                        selection['preview_presents'] = sorted({world_frames[0], world_frames[len(world_frames)//2], world_frames[-1]})
+                        report['qa_scene'] = selection
                 except (ValueError, OSError) as error:
                     report['sidecar_error'] = str(error)
         if frame_parity and 'checkpoint' in report:
@@ -1582,12 +1705,19 @@ def run_client(args):
         if (not report.get('error') and report.get('exit_code') == 0 and not report.get('forced_shutdown') and
                 report.get('observation', {}).get('assets') == assets_hash and
                 measured_output(report['observation'], output_mode) == {key: manifest[key] for key in ('resolution', 'msaa')} and
-                (not wrapper or (report['observation']['capture_active'] and report.get('trace', {}).get('bytes') and
-                                 report['trace']['bytes'] <= trace_budget and report.get('complete_snapshot_records')))):
+                 (not qa or 'qa_scene' in report) and
+                  (not wrapper or (report.get('trace', {}).get('bytes') and report['trace']['bytes'] <= trace_budget and
+                                   (qa_baked or (report['observation']['capture_active'] and report.get('complete_snapshot_records')))))):
             report['status'] = 'PASS'
         elif 'error' not in report:
             report['error'] = 'Measured output, renderer identity, trace or shutdown did not satisfy the run contract'
         write_json(run / 'validation.json', report)
+        if qa and report['status'] == 'PASS':
+            try:
+                print(f'QA capture package: {qa_archive(run, root, client, sidecar)}', flush=True)
+            except OSError as error:
+                report.update(status='INCOMPLETE', error=str(error))
+                write_json(run / 'validation.json', report)
         if not any((run / f'prior-{name}').exists() for name in private_state):
             lock.unlink()
     print(f'{report["status"]}: {run / "validation.json"}')
@@ -1857,13 +1987,97 @@ def certify_world_checkpoints(checkpoints, summary, log_hash):
     return bound
 
 
+def replay_backend_qa(args, capture, run, source):
+    from qa_d3d9_replay import certify, dxvk_runtime
+
+    trace = capture / 'wow.trace'
+    capture_log = capture / LOG
+    selection = qa_selection(log_lines(capture_log))
+    if (source.get('status') != 'PASS' or not selection or digest(trace) != source['trace']['sha256'] or
+            digest(capture_log) != source['log_sha256']):
+        raise ValueError('Use a complete, unmodified x64 QA capture')
+    backend = args.qa_backend or (args.stage or capture.parent) / 'client/backend_d3d9.dll'
+    backend = backend.resolve()
+    stage_pe(backend, 'WowClient64.exe')
+    backend_sha = digest(backend)
+    if backend_sha != source['runtime_inputs']['backend_d3d9.dll']:
+        raise ValueError('Local D3D9 backend differs from the captured runtime')
+    if run.is_relative_to(capture):
+        raise ValueError('Replay output must be separate from the capture')
+    tools = args.tool_root.resolve()
+    host, parser = (tools / 'bin' / name for name in ('d3dretrace.exe', 'apitrace.exe'))
+    for tool in (host, parser):
+        stage_pe(tool, 'WowClient64.exe')
+    run.mkdir(parents=True, exist_ok=False)
+    env = child_environment(run)
+    result = {'status': 'INCOMPLETE', 'qa_transport': source['qa_transport'], 'trace_sha256': source['trace']['sha256'],
+              'backend_sha256': backend_sha, 'fps_eligible': False}
+    try:
+        marked = certify(trace, tools, selection, run, args.timeout)
+        if marked != source['qa_scene']:
+            raise ValueError('Backend trace markers differ from the closed capture receipt')
+        result['qa_scene'] = marked
+        for path in (host, *host.parent.glob('*.dll')):
+            shutil.copyfile(path, run / path.name)
+        if source.get('qa_backend_kind') != 'native':
+            shutil.copyfile(backend, run / 'd3d9.dll')
+            captured_dxvk = dxvk_runtime((capture / 'WowClient64_d3d9.log').read_text(encoding='utf-8'))
+            if source.get('qa_dxvk', captured_dxvk) != captured_dxvk:
+                raise ValueError('DXVK profile differs from the closed capture receipt')
+            (run / 'dxvk.conf').write_text(''.join(f'{key} = {value}\n' for key, value in captured_dxvk['options'].items()), encoding='ascii')
+        (run / 'preview').mkdir()
+        calls = marked['preview_calls']
+        terminal = (1 << 32) - 2
+        if marked['last_boundary_call'] >= terminal:
+            raise ValueError('QA trace exceeds the replay snapshot call range')
+        selection_arg = ','.join(map(str, [*calls.values(), terminal]))
+        options = ['--query-handling=run', '--snapshot', selection_arg, '--call-nos=true', '--snapshot-prefix', 'preview/present-']
+        if not args.qa_visible:
+            options.append('--headless')
+        result['host_exit_code'] = run_logged([run / host.name, *options, trace], run, env, 'retrace', args.timeout)
+        if source.get('qa_backend_kind') != 'native':
+            replayed_dxvk = dxvk_runtime((run / 'WowClient64_d3d9.log').read_text(encoding='utf-8'))
+            if replayed_dxvk != captured_dxvk:
+                raise ValueError('DXVK replay used a different effective profile or device')
+            result['dxvk'] = replayed_dxvk
+        previews = {frame: f'preview/present-{call:010d}.png' for frame, call in calls.items()}
+        warnings = log_lines(run / 'retrace.stderr')
+        if any(re.match(r'^\d+: warning: (?:unknown object|failed with)', line) for line in warnings):
+            raise ValueError('Backend retrace lost a D3D9 resource or failed a recorded call; see retrace.stderr')
+        if result['host_exit_code'] or any(not (run / path).is_file() or not (run / path).stat().st_size for path in previews.values()):
+            raise ValueError('Backend retrace did not produce all QA preview frames')
+        result['previews'] = previews
+        result['status'] = 'PASS'
+    except (OSError, ValueError, subprocess.SubprocessError) as error:
+        result['error'] = str(error)
+    write_json(run / 'validation.json', result)
+    print(f'{result["status"]}: {run / "validation.json"}')
+    return 0 if result['status'] == 'PASS' else 1
+
+
 def replay(args):
     capture, run = args.capture.resolve(), args.output.resolve()
-    root = args.stage.resolve() if getattr(args, 'stage', None) else capture.parent
-    if not capture.is_relative_to(root) or capture.is_relative_to(root / 'client'):
+    source = json.loads((capture / 'validation.json').read_text(encoding='utf-8'))
+    if source.get('qa_transport') == 'd3d9-backend':
+        return replay_backend_qa(args, capture, run, source)
+    if source.get('qa_transport') == 'vulkan-gfxr':
+        from qa_vulkan import replay as replay_vulkan
+        return replay_vulkan(args, capture, run, source)
+    if source.get('qa_transport') == 'windows-apitrace':
+        from qa_api_replay import replay as replay_api
+        return replay_api(args, capture, run, source)
+    qa = source.get('qa_scene')
+    local_client = getattr(args, 'qa_client', None)
+    local_backend = getattr(args, 'qa_backend', None)
+    qa_visible = getattr(args, 'qa_visible', False)
+    if qa_visible and not qa:
+        raise ValueError('--qa-visible requires a QA scene capture')
+    if (local_client or local_backend) and (not qa or not local_client or not local_backend or args.stage):
+        raise ValueError('Use --qa-client and --qa-backend together for an extracted QA package')
+    root = capture if local_client else args.stage.resolve() if getattr(args, 'stage', None) else capture.parent
+    if (not qa and not capture.is_relative_to(root)) or capture.is_relative_to(root / 'client'):
         raise ValueError('Replay capture must belong to the private stage outside client/')
     baseline = json.loads((root / 'baseline.json').read_text(encoding='utf-8'))
-    source = json.loads((capture / 'validation.json').read_text(encoding='utf-8'))
     window_resize = source.get('window_resize')
     trace = capture / 'wow.trace'
     profile = getattr(args, 'profile_frames', None)
@@ -1874,7 +2088,7 @@ def replay(args):
     profile_fixed_work = getattr(args, 'profile_fixed_work', False)
     if profile_fixed_work and requested is None:
         raise ValueError('Fixed profiling work requires --profile-frames')
-    output_mode = 'sdr' if profile_sdr else 'hdr'
+    output_mode = 'sdr' if profile_sdr or qa else 'hdr'
     fixed_visual_clock = getattr(args, 'fixed_visual_clock', None)
     if fixed_visual_clock is None:
         fixed_visual_clock = requested is None and 'visual_clock' in source
@@ -1961,18 +2175,34 @@ def replay(args):
     if (source['mode'] != 'capture' or source.get('status') != 'PASS' or len(source['sidecars']) != 1 or
             source['baseline_sha256'] != digest(root / 'baseline.json') or source['trace']['sha256'] != digest(trace)):
         raise ValueError('Replay requires one complete closed capture from this exact private stage')
-    if 'capture_shader_assets_sha256' in source:
+    sidecar = Path(source['sidecars'][0])
+    if qa:
+        if (not baseline.get('qa_scene') or not re.fullmatch(r'snapshots/capture-[0-9-]+', sidecar.as_posix()) or
+                not (capture / sidecar).resolve().is_relative_to(capture / 'snapshots')):
+            raise ValueError('QA package has an invalid snapshot directory')
+        sidecar = capture / sidecar
+        capture_log = capture / LOG
+        if digest(capture_log) != source['log_sha256'] or qa_selection(log_lines(capture_log)) != {
+                key: qa[key] for key in ('first_present', 'last_present', 'duration_ms')}:
+            raise ValueError('QA Present selection differs from the closed renderer log')
+        preview = qa['preview_presents']
+        if (not 2 <= len(preview) <= 3 or preview != sorted(set(preview)) or
+                any(type(frame) is not int or not qa['first_present'] <= frame <= qa['last_present'] for frame in preview)):
+            raise ValueError('QA preview frames lie outside the marked interval')
+    if not qa and 'capture_shader_assets_sha256' in source:
         asset_hash = source['capture_shader_assets_sha256']
         if (asset_hash != source['runtime_inputs']['northlight-assets.bin'] or
                 asset_hash != digest(capture / 'downstream/northlight-assets.bin')):
             raise ValueError('The captured live shader bundle changed or differs from runtime evidence')
+    if not getattr(args, 'host', None):
+        raise ValueError('The x86 imported-scene replay requires --host')
     host, stand, assets = args.host.resolve(), args.stand_dll.resolve(), args.stand_assets.resolve()
     if host.name.lower() != 'northlight-native-retrace.exe':
         raise ValueError('Choose the dedicated Northlight retrace executable')
     pe32(host)
     pe32(stand)
     tools = tool_runtime(args.tool_root)
-    if run.is_relative_to(capture) or run.is_relative_to(root / 'client'):
+    if run.is_relative_to(capture) or run.is_relative_to(local_client.resolve() if local_client else root / 'client'):
         raise ValueError('Replay output must be separate from its live capture and client')
     run.mkdir(parents=True, exist_ok=False)
     env = child_environment(run)
@@ -1996,16 +2226,23 @@ def replay(args):
         staged = stand_root / 'northlight-stand.dll'
         shutil.copyfile(stand, staged)
         shutil.copyfile(assets, stand_root / 'northlight-assets.bin')
-        client = root / 'client'
+        client = local_client.resolve() if local_client else root / 'client'
         for relative, expected in baseline['input_sha256'].items():
             if not relative.startswith('world-cache/') and relative not in (
                     'backend_d3d9.dll', 'northlight-quality.ini', 'northlight-renderer.ini', 'forever-atmosphere.bin',
                     'northlight-emission.bin', 'fogdata.bin', 'shadow-range-profiles.ini', 'celestial-profiles.ini',
                     'world-cache.instances.json'):
                 continue
+            if Path(relative).is_absolute() or '\\' in relative or ':' in relative or '..' in Path(relative).parts:
+                raise ValueError('Invalid relative replay input path')
             destination = stand_root / relative
             destination.parent.mkdir(parents=True, exist_ok=True)
-            origin = root / relative if relative == 'northlight-renderer.ini' else client / relative
+            if local_client and relative == 'backend_d3d9.dll':
+                origin = local_backend.resolve()
+            elif relative == 'northlight-renderer.ini' or (local_client and relative == 'northlight-quality.ini'):
+                origin = root / relative
+            else:
+                origin = client / relative
             if shared_asset(Path(relative)):
                 link_asset(origin, destination)
             else:
@@ -2013,6 +2250,9 @@ def replay(args):
             if digest(destination) != expected:
                 raise ValueError(f'Frozen replay input differs: {relative}')
         renderer_ini = stand_root / 'northlight-renderer.ini'
+        if qa:
+            renderer_ini.write_text(renderer_profile(renderer_ini.read_text(encoding='utf-8-sig'))
+                                    .replace('ExperimentalHDR=1', 'ExperimentalHDR=0'), encoding='utf-8')
         if profile_sdr:
             renderer_ini.write_bytes(sdr_stand_profile(renderer_ini.read_bytes()))
         report['stand_renderer_ini_sha256'] = digest(renderer_ini)
@@ -2060,7 +2300,7 @@ def replay(args):
             shutil.copyfile(path, run / path.name)
         plan = run / 'plan'
         command = [sys.executable, fp.SCRIPTS / 'compile_native_replay_plan.py', '--trace', trace,
-                   '--snapshot-dir', source['sidecars'][0], '--client', client / 'Wow.exe', '--stand-dll', staged,
+                   '--snapshot-dir', sidecar, '--client', client / 'Wow.exe', '--stand-dll', staged,
                    '--tool-root', Path(tools['root']), '--output', plan]
         if (capture / 'capture-wrapper.dll').is_file():
             command.extend(['--capture-wrapper', capture / 'capture-wrapper.dll'])
@@ -2069,6 +2309,10 @@ def replay(args):
         world_checkpoints = []
         menu_cycle = source.get('menu_cycle') if requested is None else None
         images = run / 'frame-parity'
+        if qa:
+            command.extend(['--qa-capture-report', capture / 'validation.json'])
+            for frame in preview:
+                command.extend(['--present-frame', str(frame)])
         if baseline.get('frame_parity'):
             capture_log = capture / LOG
             log_hash = source.get('log_sha256')
@@ -2127,6 +2371,23 @@ def replay(args):
             raise ValueError('Compiler did not certify the genuine trace join')
         report['trace_join_validated'] = True
         report['trace_summary'] = joined['summary']
+        replay_options = ['--query-handling=run']
+        if not qa_visible:
+            replay_options.append('--headless')
+        if qa:
+            if qa['last_present'] >= joined['summary']['presents']:
+                raise ValueError('QA interval ends beyond the closed trace')
+            preview_calls = joined['summary']['selected_presents']
+            (run / 'preview').mkdir()
+            # apitrace stops at the last requested snapshot. Keep replaying
+            # through device retirement with a call number past the trace.
+            terminal = (1 << 32) - 2
+            if joined['summary']['final_release'] >= terminal:
+                raise ValueError('QA trace exceeds the replay snapshot call range')
+            calls = [preview_calls[str(frame)] for frame in preview] + [terminal]
+            replay_options.extend(['--snapshot', ','.join(map(str, calls)), '--call-nos=true',
+                                   '--snapshot-prefix', 'preview/present-'])
+            report['qa_scene'] = {**qa, 'preview_trace_calls': preview_calls}
         if window_resize:
             if (joined['summary'].get('selected_present_epoch'), joined['summary'].get('selected_epoch_first_present')) != (
                     window_resize['selected_epoch'], window_resize['epoch_first_present']):
@@ -2244,7 +2505,7 @@ def replay(args):
                 raise ValueError('Capture work requires a certified World Present from this capture')
             env['NORTHLIGHT_RETRACE_CAPTURE_WORK_FRAME'] = str(work_frame)
         started = time.perf_counter()
-        report['host_exit_code'] = run_logged([exe, '--headless', '--query-handling=run', trace], run, env,
+        report['host_exit_code'] = run_logged([exe, *replay_options, trace], run, env,
                                               'retrace', args.timeout)
         if requested is not None:
             report['host_seconds'] = time.perf_counter() - started
@@ -2400,7 +2661,12 @@ def replay(args):
         report['stand_camera'] = observation['camera']
         if report['host_exit_code'] or not report['host_result']:
             raise ValueError('The Northlight bridge did not finish genuine transport; see retrace.stderr')
-        if not report['stand_world_observed'] or not report['stand_static_mesh_ready']:
+        if qa:
+            previews = {str(frame): Path(f'preview/present-{preview_calls[str(frame)]:010d}.png') for frame in preview}
+            if any(not (run / path).is_file() or not (run / path).stat().st_size for path in previews.values()):
+                raise ValueError('Replay did not produce all requested QA preview images')
+            report['qa_scene']['previews'] = {frame: path.as_posix() for frame, path in previews.items()}
+        elif not report['stand_world_observed'] or not report['stand_static_mesh_ready']:
             raise ValueError('Northrend GI and static mesh readiness were not observed on the stand')
         if output_mode == 'hdr' and observation.get('hdr_active') is False:
             report['stand_sdr_output'] = observation.get('sdr_output')
@@ -2411,8 +2677,8 @@ def replay(args):
         if report['stand_output'] != {key: baseline[key] for key in ('resolution', 'msaa')}:
             raise ValueError('Replay used a different output size or MSAA mode')
         source_camera = source['observation']['camera']
-        if not observation['camera'] or any(math.dist(source_camera[key], observation['camera'][key]) > tolerance
-                                           for key, tolerance in (('eye', .25), ('forward', .002))):
+        if not qa and (not observation['camera'] or any(math.dist(source_camera[key], observation['camera'][key]) > tolerance
+                                                       for key, tolerance in (('eye', .25), ('forward', .002)))):
             raise ValueError('Replay camera differs from the captured stationary scene')
         if requested is not None:
             if not parity.stream_without_skips(stand_log):
@@ -2932,9 +3198,9 @@ def end_to_end(args):
     return 0 if report['status'] == 'PASS' else 1
 
 
-def replay_tool_options(parser):
-    for name in ('tool-root', 'host'):
-        parser.add_argument('--' + name, type=Path, required=True)
+def replay_tool_options(parser, *, optional_host=False):
+    parser.add_argument('--tool-root', type=Path, required=True)
+    parser.add_argument('--host', type=Path, required=not optional_host)
     parser.add_argument('--stand-dll', type=Path, default=fp.RENDERER / 'frd9-stand-replay.dll')
     parser.add_argument('--stand-assets', type=Path, default=fp.RENDERER / 'frd9-stand-replay.assets.bin')
     parser.add_argument('--timeout', type=int, default=120)
@@ -2957,6 +3223,19 @@ def indexed_draw_selector(value):
 def main():
     parser = argparse.ArgumentParser(__doc__)
     commands = parser.add_subparsers(required=True)
+    from qa_vulkan import record as record_vulkan
+    vulkan = commands.add_parser('record-vulkan', help='Capture a Vulkan scene from launch')
+    for name in ('client', 'tool-root', 'output'):
+        vulkan.add_argument('--' + name, type=Path, required=True)
+    vulkan.add_argument('--shaders', type=Path, help='Vulkan shader directory for the chosen client')
+    vulkan.set_defaults(action=record_vulkan)
+    from qa_api_replay import RENDERERS, record as record_api
+    graphics = commands.add_parser('record-api', help='Capture an x64 D3D9Ex, D3D11 or OpenGL scene')
+    graphics.add_argument('--renderer', choices=RENDERERS, required=True)
+    for name in ('client', 'tool-root', 'presentmon', 'output'):
+        graphics.add_argument('--' + name, type=Path, required=True)
+    graphics.add_argument('--timeout', type=int, default=300, help='Timeout for checking the closed API trace')
+    graphics.set_defaults(action=record_api)
     prepare = commands.add_parser('stage')
     prepare.add_argument('--client', type=Path, default=fp.client_root(required=False))
     prepare.add_argument('--dll', type=Path, default=fp.RENDERER / 'frd9.dll')
@@ -2968,6 +3247,9 @@ def main():
     prepare.add_argument('--resolution', choices=('1280x720', '1920x1080', '3840x2160'), default='3840x2160')
     prepare.add_argument('--msaa', type=int, choices=(1, 2), default=2)
     prepare.add_argument('--frame-parity', action='store_true', help='Freeze the 2x MSAA live/replay pixel comparison profile')
+    prepare.add_argument('--qa-scene', action='store_true', help='Stage the SDR QA capture profile')
+    prepare.add_argument('--qa-backend-kind', choices=('dxvk', 'dxvk2', 'native'), default='dxvk',
+                         help='D3D9 runtime for x64 QA captures')
     prepare.add_argument('--resume', action='store_true', help='Verify and reuse files from an unfinished stage')
     prepare.set_defaults(action=stage)
     run = commands.add_parser('run')
@@ -3000,6 +3282,8 @@ def main():
                      help='Also require warm samples with verified WMO and ADT draw bounds')
     run.add_argument('--manual', action='store_true')
     run.add_argument('--capture-wrapper', type=Path, help='Capture with the private apitrace wrapper and a unique downstream module name')
+    run.add_argument('--qa-scene', action='store_true', help='Record from launch until the in-game QA button marks the last 15 seconds')
+    run.add_argument('--qa-realm', help='Use this QA realm host or host:port with manual login')
     run.add_argument('--draw-probe', type=indexed_draw_selector, metavar='MIN,VERTICES,START,COUNT',
                      help='Save native RGB inputs and outputs of the first matching triangle list after parity arms')
     run.add_argument('--resize-before-parity', action='store_true',
@@ -3020,6 +3304,9 @@ def main():
     for name in ('capture', 'output'):
         retrace.add_argument('--' + name, type=Path, required=True)
     retrace.add_argument('--stage', type=Path, help='Required when capture is nested under the private stage')
+    retrace.add_argument('--qa-client', type=Path, help='Matching game files and world cache for an extracted QA package')
+    retrace.add_argument('--qa-backend', type=Path, help='Local DXVK x86 DLL matching the QA package')
+    retrace.add_argument('--qa-visible', action='store_true', help='Show the QA replay in a window')
     retrace.add_argument('--profile-frames', metavar='FIRST:LAST:STEP', help='Collect stand CPU/GPU timestamps without image readback')
     retrace.add_argument('--profile-fixed-work', action='store_true',
                          help='Use count-limited pose bounds and stable caster order for stand profiling')
@@ -3101,7 +3388,7 @@ def main():
                          help='Audit material, normals and world capture on one certified renderer frame')
     retrace.add_argument('--point-shadow-audit', action='store_true',
                          help='Collect caster batch census with profiling, or cube faces with image capture')
-    replay_tool_options(retrace)
+    replay_tool_options(retrace, optional_host=True)
     artifact_options(retrace)
     retrace.set_defaults(action=replay)
     compare = commands.add_parser('compare-replays', help='Compare two existing replay outputs for the exact same trace')

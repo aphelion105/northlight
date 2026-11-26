@@ -486,8 +486,21 @@ def compile_plan(args):
             raise ValueError('Private wrapper must use the dedicated real-game D3D9 target override')
         inputs[str(wrapper)] = digest(wrapper)
     expected_wrapper = wrapper or Path(tools['root']) / 'lib/wrappers/d3d9.dll'
+    portable_report = getattr(args, 'qa_capture_report', None)
+    if portable_report is not None:
+        portable_report = portable_report.resolve()
+        receipt = load_json(portable_report)
+        inputs[str(portable_report)] = digest(portable_report)
+        package = portable_report.parent
+        if (authored or not receipt.get('qa_scene') or receipt.get('mode') != 'capture' or receipt.get('status') != 'PASS' or
+                receipt.get('trace', {}).get('sha256') != inputs[str(trace)] or trace != package / 'wow.trace' or
+                not root.is_relative_to(package / 'snapshots') or receipt.get('sidecars') != [root.relative_to(package).as_posix()] or
+                receipt.get('wrapper_sha256') != host.get('wrapper_sha256') or
+                receipt.get('runtime_inputs', {}).get('d3d9.dll') != host.get('renderer_sha256') or
+                receipt.get('runtime_inputs', {}).get('Wow.exe') != host.get('client_sha256')):
+            raise ValueError('Relocated QA inputs differ from the closed capture receipt')
     if (host.get('wrapper_sha256') != digest(expected_wrapper) or
-            Path(host.get('trace_path', '')).resolve() != trace):
+            (portable_report is None and Path(host.get('trace_path', '')).resolve() != trace)):
         raise ValueError('Capture must identify the exact outer wrapper and trace')
     if authored:
         producer = Path(host.get('producer_exe_path', '')).resolve()
@@ -498,7 +511,8 @@ def compile_plan(args):
                 Path(host.get('imported_client_pe_path', '')).resolve() != client):
             raise ValueError('Authored producer and imported data-only PE identities differ')
         pe32(producer); inputs[str(producer)] = digest(producer)
-    elif host.get('client_sha256') != inputs[str(client)] or Path(host.get('client_path', '')).resolve() != client:
+    elif (host.get('client_sha256') != inputs[str(client)] or
+          (portable_report is None and Path(host.get('client_path', '')).resolve() != client)):
         raise ValueError('A real capture must identify the exact original client PE')
     code_proof, code_summary = client_code_inputs(root, host, authored, inputs)
     if not 64 <= client.stat().st_size <= 64 << 20 or not 0 < trace.stat().st_size <= 16 << 30:
@@ -572,6 +586,7 @@ def main():
     for option in ('trace', 'snapshot-dir', 'client', 'stand-dll', 'tool-root', 'output'):
         parser.add_argument('--' + option, type=Path, required=True)
     parser.add_argument('--capture-wrapper', type=Path, help='Explicit private apitrace wrapper used by a real game capture')
+    parser.add_argument('--qa-capture-report', type=Path, help='Verify relocated inputs against the closed QA package receipt')
     parser.add_argument('--present-frame', type=int, action='append', default=[],
                         help='Certify a zero-based Present ordinal and its World snapshot for image parity')
     parser.add_argument('--checkpoint-frame', type=int, action='append', default=[],
