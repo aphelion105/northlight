@@ -225,6 +225,16 @@ def park_window(user, hwnd):
     user.SetWindowPos(window, wintypes.HWND(1), 0, 0, 0, 0, 0x4013)  # HWND_BOTTOM, async, no activation or resize
 
 
+def check_window(report, observations, size, *, foreground):
+    report['focus_samples'] = len(observations)
+    report['foreground_samples'] = sum(focused for focused, _ in observations)
+    report['observed_sizes'] = sorted({extent for _, extent in observations})
+    expected_focus = len(observations) if foreground else 0
+    if (len(observations) < 20 or report['foreground_samples'] != expected_focus or
+            report['observed_sizes'] != [size]):
+        raise ValueError(f'The timing window needs stable {report["focus_mode"]} focus and the requested client size')
+
+
 def measure(args, scene, output, client, report):
     game, launch_flag, window_class = CASES[args.case]
     world, count = SCENES[scene]
@@ -283,7 +293,8 @@ def measure(args, scene, output, client, report):
             report['private_desktop'] = desktop.name
         else:
             desktop = None
-            startup = subprocess.STARTUPINFO(dwFlags=subprocess.STARTF_USESHOWWINDOW, wShowWindow=4)
+            startup = subprocess.STARTUPINFO(dwFlags=subprocess.STARTF_USESHOWWINDOW,
+                                             wShowWindow=5 if args.desktop == 'foreground' else 4)
             with console.open('xb') as log:
                 process = subprocess.Popen(argv, cwd=client, env=env, stdout=log, stderr=subprocess.STDOUT,
                                            creationflags=subprocess.CREATE_NO_WINDOW, startupinfo=startup)
@@ -294,16 +305,19 @@ def measure(args, scene, output, client, report):
         actions, focus, events = {}, [], []
         report['login_actions'] = actions
         expected_size = tuple(map(int, args.resolution.split('x')))
-        parked = None
+        placed = None
         while process.poll() is None and time.monotonic() - start < args.timeout:
             if desktop:
                 desktop.confirm_inactive()
             hwnd = next(iter(live.process_windows(process.pid, window_class)), None)
             events = live.log_lines(server_log)
             if hwnd:
-                if not desktop and hwnd != parked and any(line.startswith('PLAYER_SPAWN ') for line in events):
-                    park_window(user, hwnd)
-                    parked = hwnd
+                if not desktop and hwnd != placed and any(line.startswith('PLAYER_SPAWN ') for line in events):
+                    if args.desktop == 'foreground':
+                        live.focus_private_window(hwnd)
+                    else:
+                        park_window(user, hwnd)
+                    placed = hwnd
                 focus.append((time.monotonic_ns(), user.GetForegroundWindow() == hwnd,
                               live.window_extent(hwnd, client=True)))
                 live.advance_login(hwnd, events, actions, start, time.monotonic(), slow_login=True)
@@ -316,12 +330,7 @@ def measure(args, scene, output, client, report):
         timing, frames = read_timing(events, scene)
         ticks = timing['phase_tick_ns']
         observed = [(focused, size) for tick, focused, size in focus if ticks['start'] <= tick <= ticks['done']]
-        report['focus_samples'] = len(observed)
-        report['foreground_samples'] = sum(focused for focused, _ in observed)
-        sizes = sorted({size for _, size in observed})
-        report['observed_sizes'] = sizes
-        if len(observed) < 20 or report['foreground_samples'] or sizes != [expected_size]:
-            raise ValueError('The timing window needs stable background focus and the requested client size')
+        check_window(report, observed, expected_size, foreground=args.desktop == 'foreground')
         report.update(timing)
         with (output / 'frame-times.csv').open('x', encoding='ascii', newline='') as file:
             rows = csv.writer(file)
@@ -334,7 +343,8 @@ def attempt(args, scene):
     output.mkdir(parents=True)
     client = output / 'client'
     report = {'status': 'FAIL', 'case': args.case, 'scene': scene, 'resolution': args.resolution,
-              'msaa': 1, 'desktop': args.desktop}
+              'msaa': 1, 'desktop': args.desktop,
+              'focus_mode': 'foreground' if args.desktop == 'foreground' else 'background'}
     try:
         stage(args, scene, client, report)
         measure(args, scene, output, client, report)
@@ -372,8 +382,8 @@ def main():
                         help='Override the versioned benchmark graphics preset')
     parser.add_argument('--output', type=Path, required=True, help='New output directory')
     parser.add_argument('--resolution', choices=('1280x720', '1920x1080', '3840x2160'), default='3840x2160')
-    parser.add_argument('--desktop', choices=('private', 'interactive'), default='private',
-                        help='Inactive private desktop or a background window on the current desktop')
+    parser.add_argument('--desktop', choices=('private', 'interactive', 'foreground'), default='private',
+                        help='Inactive desktop, interactive background, or interactive foreground timing')
     parser.add_argument('--timeout', type=int, default=180, help='Maximum client time per scene in seconds')
     parser.add_argument('--keep-client', action='store_true', help='Retain private clients for investigation')
     args = parser.parse_args()

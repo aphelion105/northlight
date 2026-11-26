@@ -59,6 +59,17 @@ class GameplayBenchmarkTests(unittest.TestCase):
         self.assertEqual(timing['low_0_1_fps'], 40.)
         self.assertEqual(timing['worst_ms'], 28.)
 
+    def test_both_focus_modes_reject_changes_during_timing(self):
+        size = (3840, 2160)
+        for foreground in (False, True):
+            observations = [(foreground, size)] * 20
+            report = {'focus_mode': 'foreground' if foreground else 'background'}
+            bench.check_window(report, observations, size, foreground=foreground)
+            self.assertEqual(report['foreground_samples'], 20 if foreground else 0)
+            observations[-1] = (not foreground, size)
+            with self.assertRaisesRegex(ValueError, 'stable'):
+                bench.check_window(report, observations, size, foreground=foreground)
+
     def test_gameplay_messages_do_not_change_ratchet_pan_markers(self):
         say = struct.pack('<II', 1, 0)
         self.assertEqual(fixture.gameplay_message(say + b'NorthlightBench:arm\0'), 'arm')

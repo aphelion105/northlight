@@ -32,8 +32,10 @@ uses the same scene settings in every case. Runs default to 3840×2160 and
 `1280x720` on a smaller display, or `--graphics` to provide another preset.
 The default `--desktop private` runs on an inactive Windows desktop. Use
 `--desktop interactive` for a background window on the current desktop if the
-driver cannot initialize on an inactive desktop. Keep that window out of
-the foreground during the sample. Use the same desktop mode across repeats.
+driver cannot initialize on an inactive desktop. Use `--desktop foreground`
+for a focused run when the client brings its window forward during the
+Ratchet sweeps. Keep the same focus and desktop mode across repeats. The runner
+rejects any run that switches focus during the sample.
 
 | Case | Runtime arguments and expected backend |
 | --- | --- |
@@ -71,7 +73,7 @@ roster packet hash, phase order, frame count, elapsed time, background focus
 samples, client size, and backend evidence before marking the run `PASS`.
 
 - `summary.json` lists each scene and its verdict. A failed scene makes the command exit nonzero.
-- `<case>/<scene>/result.json` gives the roster hash, runtime and graphics hashes, observed backend, and FPS results. Ratchet also reports each sweep separately.
+- `<case>/<scene>/result.json` gives the roster hash, runtime and graphics hashes, observed backend, focus mode, and FPS results. Ratchet also reports each sweep separately.
 - `frame-times.csv` contains the raw game-frame intervals in milliseconds. `avg_fps` is the frame count divided by elapsed seconds. `low_0_1_fps` is 1000 divided by the mean frame time of the slowest `ceil(frames / 1000)` frames. `worst_ms` records the longest measured interval.
 - `server.log`, the launch profile, and available renderer and driver logs are retained for failed runs too.
 
