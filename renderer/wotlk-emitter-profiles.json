@@ -12,6 +12,13 @@
     ]
   },
   "native_anchors": {
+    "world\\expansion01\\doodads\\hellfirepeninsula\\lamppost\\ancient_drainei_lamppost.m2": {
+      "model_sha256": "042db1ba762afd6d3af1ef207b1a4310bb3f9e810bcb6a06b613a5b406bb91ed",
+      "skin_sha256": "cb7424d4f2cb96b6bd95d5ca3eb8c2ddd76adda01a9607b9b5d0f4a005885b31",
+      "source": 0,
+      "position": [0.72992239, 0.05983199, 1.29999848],
+      "basis": "At the outward edge of the pink lower crystal. The native point sat inside the opaque housing and darkened nearby surfaces. This position opens the lens side and retains the shadow below the housing in both tested placements."
+    },
     "world\\generic\\orc\\passive doodads\\firepits\\largefirepit01.m2": {
       "model_sha256": "106968b38aebdd3946d7aac5dc91f029d637d2542c0f3f5ff5afe86090af7d22",
       "skin_sha256": "09a9c0ddafa4826751866feba9353a3b07e3e27ce49b5ed463298ccb0c7bafb7",
