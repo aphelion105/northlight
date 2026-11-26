@@ -2,7 +2,7 @@
 # northlight-test: requires=zig
 """0.3.198 (rain): NorthlightWeatherDetect::Detector (src/sky/weather_detect.h), the real header compiled natively,
 and the real per-draw comparison extracted from renderer.cpp's drawHook over a mock mirror.
-Signatures (format, aspect 1:16 / 1:2, widths 8/16/32), address reuse (a re-created address with another signature stops being a
+Signatures (format, aspect 1:16 / 1:2, widths 8/16/32, snow mip levels), address reuse (a re-created address with another signature stops being a
 candidate, generation bumps, hot cleared), volume/cube forget, reset, per-kind table slots (rain 2, snow 4; never-drawn first, lookalike flood), hot
 rotation on every frame without draws, the tall-texture log, and the hook: stage 0 unknown / UI phase (applied) / no hot = no count, a match
 accumulates primitives and draws. Windows x86 O0/O2; native ASan/UBSan elsewhere. No device or game."""
@@ -121,6 +121,7 @@ struct Hook{
     IDirect3DTexture9* rainDepth=nullptr;IDirect3DPixelShader9 *rainMrtPS=nullptr,*rainScrubPS=nullptr;bool rainMrtBound=false,rainDepthOk=false,rainCapsChecked=false,rainCapsOk=false,rainSkipLogged=false;unsigned rainMrtRuns=0,rainMaskSkips=0;DWORD rainMrtPrev[5]={};bool rainMrtPrevKnown[5]={};
     std::unordered_map<IDirect3DVertexShader9*,unsigned> vsMajor;
     HRESULT rainMaskResolveHr=0;IDirect3DTexture9 depthTexObj;IDirect3DTexture9* depthTex=&depthTexObj;D3DFORMAT depthSnapshotFormat=(D3DFORMAT)MAKEFOURCC('D','F','2','4');Surface* worldDepth=nullptr;int stateBlocks=0;
+    DWORD depthSnapshotUsage()const{return D3DUSAGE_DEPTHSTENCIL;} /* the fixture uses DF24 */
     unsigned snapshots=0,effectStates=0,quads=0;bool snapshotOk=true;IDirect3DTexture9* snapshotTarget=nullptr;bool snapshotFatal=true;DrawRec quadRec{};IDirect3DTexture9* quadTex0=nullptr;IDirect3DTexture9* quadTex1=nullptr;bool quadFails=false;
     bool resolveDepthInto(IDirect3DTexture9* target,bool fatal){++snapshots;snapshotTarget=target;snapshotFatal=fatal;ext->stage0=mirrorState.textures[0];ext->mirror=&mirrorState;mirrorState.textureKnown[0]=false;return snapshotOk;} /* its state-block Apply forgets the mirror's stage 0 */
     void effectState(){++effectStates;}
@@ -150,26 +151,27 @@ struct Hook{
     void bind(unsigned stage,int i,bool known=true){mirrorState.textures[stage]=const_cast<void*>(P(i));mirrorState.textureKnown[stage]=known;}
 };
 int main(){
-    {   // classification: A8R8G8B8 (21) only, rain 1:16, snow 1:2, widths 8/16/32 only
-        assert(classify(32,512,A)==Kind::Rain&&classify(16,256,A)==Kind::Rain&&classify(8,128,A)==Kind::Rain);
-        assert(classify(32,64,A)==Kind::Snow&&classify(16,32,A)==Kind::Snow&&classify(8,16,A)==Kind::Snow);
-        assert(classify(32,128,A)==Kind::None&&classify(16,64,A)==Kind::None&&classify(32,256,A)==Kind::None&&classify(32,32,A)==Kind::None&&classify(32,1024,A)==Kind::None); /* 1:4, 1:8, 1:1, old 1:32 */
-        assert(classify(32,512,X8)==Kind::None&&classify(32,512,A1)==Kind::None&&classify(32,512,A4)==Kind::None&&classify(32,64,X8)==Kind::None&&classify(32,64,A1)==Kind::None&&classify(32,64,A4)==Kind::None&&classify(16,32,A4)==Kind::None);
-        assert(classify(32,512,DXT5)==Kind::None&&classify(32,512,R5G6B5)==Kind::None&&classify(32,64,DXT5)==Kind::None&&classify(32,512,0)==Kind::None&&classify(32,512,20)==Kind::None&&classify(32,512,27)==Kind::None);
+    {   // classification: A8R8G8B8 (21), rain 1:16, mipmapped snow 1:2, widths 8/16/32
+        assert(classify(32,512,1,A)==Kind::Rain&&classify(16,256,1,A)==Kind::Rain&&classify(8,128,1,A)==Kind::Rain);
+        assert(classify(32,64,7,A)==Kind::Snow&&classify(16,32,6,A)==Kind::Snow&&classify(8,16,5,A)==Kind::Snow);
+        assert(classify(32,64,0,A)==Kind::Snow&&classify(32,64,1,A)==Kind::None);
+        assert(classify(32,128,1,A)==Kind::None&&classify(16,64,1,A)==Kind::None&&classify(32,256,1,A)==Kind::None&&classify(32,32,1,A)==Kind::None&&classify(32,1024,1,A)==Kind::None); /* 1:4, 1:8, 1:1, old 1:32 */
+        assert(classify(32,512,1,X8)==Kind::None&&classify(32,512,1,A1)==Kind::None&&classify(32,512,1,A4)==Kind::None&&classify(32,64,7,X8)==Kind::None&&classify(32,64,7,A1)==Kind::None&&classify(32,64,7,A4)==Kind::None&&classify(16,32,6,A4)==Kind::None);
+        assert(classify(32,512,1,DXT5)==Kind::None&&classify(32,512,1,R5G6B5)==Kind::None&&classify(32,64,7,DXT5)==Kind::None&&classify(32,512,1,0)==Kind::None&&classify(32,512,1,20)==Kind::None&&classify(32,512,1,27)==Kind::None);
         assert(shapeOf(32,512)==Kind::Rain&&shapeOf(64,1024)==Kind::Rain&&shapeOf(1,16)==Kind::Rain&&shapeOf(32,64)==Kind::Snow&&shapeOf(64,128)==Kind::None&&shapeOf(32,128)==Kind::None&&shapeOf(0,0)==Kind::None);
-        assert(classify(64,128,A)==Kind::None&&classify(33,66,A)==Kind::None&&classify(0,0,A)==Kind::None&&classify(32,0,A)==Kind::None);
-        assert(classify(4,8,A)==Kind::None&&classify(24,48,A)==Kind::None&&classify(4,64,A)==Kind::None&&classify(64,1024,A)==Kind::None);
+        assert(classify(64,128,8,A)==Kind::None&&classify(33,66,7,A)==Kind::None&&classify(0,0,1,A)==Kind::None&&classify(32,0,1,A)==Kind::None);
+        assert(classify(4,8,4,A)==Kind::None&&classify(24,48,6,A)==Kind::None&&classify(4,64,1,A)==Kind::None&&classify(64,1024,1,A)==Kind::None);
     }
     Detector d;d.sink=&sink;
     {   // candidates, generation, hot
         d.noteCreate(P(0),32,512,1,A);assert(d.count()==1&&d.hot==P(0)&&d.hotKind==Kind::Rain&&d.generation==1&&count("WEATHER candidate kind=rain 32x512")==1);
-        d.noteCreate(P(1),32,64,1,A);assert(d.count()==2&&d.hot==P(0)&&d.generation==2&&count("WEATHER candidate kind=snow 32x64")==1);
+        d.noteCreate(P(1),32,64,7,A);assert(d.count()==2&&d.hot==P(0)&&d.generation==2&&count("WEATHER candidate kind=snow 32x64")==1);
         d.noteCreate(P(2),256,256,1,A);d.noteCreate(P(3),32,512,1,DXT5);d.noteCreate(nullptr,32,512,1,A);d.noteCreate(P(6),32,128,1,A);assert(d.count()==2&&d.generation==2);
     }
     {   // address reuse: P(0) re-created with another signature stops being a candidate; hot cleared
         d.noteCreate(P(0),256,256,1,A);assert(d.count()==1&&d.hot==nullptr&&d.hotKind==Kind::None&&d.generation==3&&!d.isCandidate(P(0))&&d.isCandidate(P(1)));
         d.rotate();assert(d.hot==P(1)&&d.hotKind==Kind::Snow);
-        d.noteCreate(P(1),32,64,1,A);assert(d.count()==1&&d.isCandidate(P(1))&&d.hot==P(1)&&d.generation==5); /* removed (hot cleared), re-added: nothing was hot, so it is hot again */
+        d.noteCreate(P(1),32,64,7,A);assert(d.count()==1&&d.isCandidate(P(1))&&d.hot==P(1)&&d.generation==5); /* removed (hot cleared), re-added: nothing was hot, so it is hot again */
     }
     {   // volume / cube: forget
         d.forget(P(1));assert(d.count()==0&&d.hot==nullptr);const unsigned g=d.generation;d.forget(P(1));d.forget(nullptr);assert(d.generation==g);
@@ -179,30 +181,37 @@ int main(){
         d.noteCreate(P(5),32,512,1,A);d.reset();assert(d.count()==0&&d.hot==nullptr&&d.hotKind==Kind::None);d.rotate();assert(d.hot==nullptr);
     }
     {   // lookalike flood: ARGB textures of other aspects (1:4, 1:8, 1:1, DXT) never evict the rain or snow textures
-        Detector o;o.noteCreate(P(10),32,512,1,A);o.noteCreate(P(11),32,512,1,A);o.noteCreate(P(12),32,64,1,A);
+        Detector o;o.noteCreate(P(10),32,512,1,A);o.noteCreate(P(11),32,512,1,A);o.noteCreate(P(12),32,64,7,A);
         const unsigned g=o.generation;
         for(int i=0;i<200;++i){o.noteCreate(P(13+i%40),32,128,1,A);o.noteCreate(P(13+i%40),16,64,1,A);o.noteCreate(P(13+i%40),32,32,1,A);o.noteCreate(P(13+i%40),32,512,1,DXT5);o.noteCreate(P(13+i%40),64,1024,1,A);}
         assert(o.count()==3&&o.overflows==0&&o.generation==g&&o.isCandidate(P(10))&&o.isCandidate(P(11))&&o.isCandidate(P(12)));
     }
-    {   // 1:2 ARGB lookalikes (common) flood the snow slots only: rain is never evicted, the snow table stays at kSnowSlots
-        Detector o;o.noteCreate(P(10),32,512,1,A);o.noteCreate(P(11),32,512,1,A);
-        for(int i=0;i<100;++i)o.noteCreate(P(13+i%40),i&1?16:32,i&1?32:64,1,A);
-        unsigned rain=0,snow=0;for(unsigned i=0;i<o.count();++i)(o.candidate(i).kind==Kind::Rain?rain:snow)++;
-        assert(rain==2&&snow==kSnowSlots&&o.isCandidate(P(10))&&o.isCandidate(P(11))&&o.overflows==100-kSnowSlots);
+    {   // Single-level ARGB scenery must not evict a snowflake loaded before snowfall.
+        lines.clear();Detector o;o.sink=&sink;
+        o.noteCreate(P(10),32,512,1,A);
+        o.noteCreate(P(11),32,64,7,A);
+        unsigned char scenery[382]={};
+        for(const auto& texture:scenery)o.noteCreate(&texture,32,64,1,A);
+        assert(o.count()==2&&o.overflows==0&&o.generation==2&&o.isCandidate(P(11)));
+        assert(count("WEATHER candidate kind=snow")==1);
+        assert(count("WEATHER shape kind=snow w=32 h=64 fmt=21 levels=1 matched=0")==kShapeLogs-1);
+        o.endFrame(false);assert(o.hot==P(11)&&o.hotKind==Kind::Snow);
+        o.endFrame(true);assert(o.candidate(1).drawn);
+        o.noteCreate(P(11),32,64,1,A);assert(o.count()==1&&!o.isCandidate(P(11))&&o.hot==nullptr);
     }
     {   // per-kind slots: a rain candidate replaces only rain, snow only snow; never-drawn first, else the oldest
         Detector o;o.noteCreate(P(10),32,512,1,A);o.noteCreate(P(11),32,512,1,A);
-        for(int i=0;i<4;++i)o.noteCreate(P(12+i),32,64,1,A); /* snow P12..P15 */
+        for(int i=0;i<4;++i)o.noteCreate(P(12+i),32,64,7,A); /* snow P12..P15 */
         assert(o.count()==6&&o.overflows==0);
         // snow flood: all snow entries never drew, so the oldest goes each time; the rain pair stays
-        o.noteCreate(P(16),32,64,1,A);assert(o.overflows==1&&!o.isCandidate(P(12))&&o.isCandidate(P(13))&&o.isCandidate(P(16))&&o.isCandidate(P(10))&&o.isCandidate(P(11)));
+        o.noteCreate(P(16),32,64,7,A);assert(o.overflows==1&&!o.isCandidate(P(12))&&o.isCandidate(P(13))&&o.isCandidate(P(16))&&o.isCandidate(P(10))&&o.isCandidate(P(11)));
         // the oldest snow entry (P13) drew: a lookalike evicts the next never-drawn P14 instead
         while(o.hot!=P(13))o.rotate();o.endFrame(true);
-        o.noteCreate(P(17),32,64,1,A);assert(o.overflows==2&&o.isCandidate(P(13))&&!o.isCandidate(P(14))&&o.isCandidate(P(17))&&o.isCandidate(P(10))&&o.isCandidate(P(11)));
+        o.noteCreate(P(17),32,64,7,A);assert(o.overflows==2&&o.isCandidate(P(13))&&!o.isCandidate(P(14))&&o.isCandidate(P(17))&&o.isCandidate(P(10))&&o.isCandidate(P(11)));
         // all snow drew: the oldest of the kind goes
         for(unsigned k=0;k<o.count();++k)if(o.candidate(k).kind==Kind::Snow){while(o.hot!=o.candidate(k).raw)o.rotate();o.endFrame(true);}
         const void* oldest=nullptr;for(unsigned k=0;k<o.count();++k)if(o.candidate(k).kind==Kind::Snow){oldest=o.candidate(k).raw;break;}
-        o.noteCreate(P(18),32,64,1,A);assert(!o.isCandidate(oldest)&&o.isCandidate(P(18)));
+        o.noteCreate(P(18),32,64,7,A);assert(!o.isCandidate(oldest)&&o.isCandidate(P(18)));
         // rain: P10 drew, P11 did not: a new rain candidate replaces P11
         while(o.hot!=P(10))o.rotate();o.endFrame(true);
         o.noteCreate(P(19),32,512,1,A);assert(o.isCandidate(P(10))&&!o.isCandidate(P(11))&&o.isCandidate(P(19))&&o.count()==6);
@@ -210,14 +219,14 @@ int main(){
         Detector q;q.noteCreate(P(20),32,512,1,A);q.noteCreate(P(21),32,512,1,A);assert(q.hot==P(20));q.noteCreate(P(22),32,512,1,A);assert(!q.isCandidate(P(20))&&q.hot==P(22)&&q.count()==2);
     }
     {   // rotation: every candidate is hot within <= 4 frames, whether or not the tracker is active (endFrame(false) is all that matters)
-        Detector o;for(int i=0;i<4;++i)o.noteCreate(P(30+i),32,i&1?64:512,1,A);bool seen[4]={};
+        Detector o;for(int i=0;i<4;++i)o.noteCreate(P(30+i),32,i&1?64:512,i&1?7:1,A);bool seen[4]={};
         for(int f=0;f<4;++f){for(int i=0;i<4;++i)if(o.hot==P(30+i))seen[i]=true;o.endFrame(false);}
         assert(seen[0]&&seen[1]&&seen[2]&&seen[3]);o.endFrame(false);assert(o.hot==P(31)&&o.hotKind==Kind::Snow);
         o.setOff(true);assert(o.hot==nullptr);o.endFrame(false);assert(o.hot==nullptr);o.noteCreate(P(40),32,512,1,A);assert(o.hot==nullptr);
         o.setOff(false);o.endFrame(false);assert(o.hot!=nullptr);
     }
     {   // hot stays while it draws, leaves the frame it draws nothing
-        Detector o;o.noteCreate(P(50),32,512,1,A);o.noteCreate(P(51),32,512,1,A);o.noteCreate(P(52),32,64,1,A);assert(o.hot==P(50));
+        Detector o;o.noteCreate(P(50),32,512,1,A);o.noteCreate(P(51),32,512,1,A);o.noteCreate(P(52),32,64,7,A);assert(o.hot==P(50));
         for(int f=0;f<10;++f){o.endFrame(true);assert(o.hot==P(50)&&o.hotKind==Kind::Rain);}
         o.endFrame(false);assert(o.hot==P(51));
         o.endFrame(false);assert(o.hot==P(52)&&o.hotKind==Kind::Snow);
@@ -226,8 +235,8 @@ int main(){
     }
     {   // Re-created raw addresses remain unique; counted draws mark exactly the hot slot.
         for(unsigned target=0;target<6;++target){
-            Detector o;for(unsigned i=0;i<6;++i)o.noteCreate(P(100+i),32,i<2?512:64,1,A);
-            o.noteCreate(P(102),32,64,1,A); // replace an existing raw address
+            Detector o;for(unsigned i=0;i<6;++i)o.noteCreate(P(100+i),32,i<2?512:64,i<2?1:7,A);
+            o.noteCreate(P(102),32,64,7,A); // replace an existing raw address
             assert(o.count()==6);unsigned occurrences=0;for(unsigned i=0;i<o.count();++i)occurrences+=o.candidate(i).raw==P(102);assert(occurrences==1);
             const void* hot=o.candidate(target).raw;while(o.hot!=hot)o.rotate();o.endFrame(true);
             for(unsigned i=0;i<o.count();++i)assert(o.candidate(i).drawn==(o.candidate(i).raw==hot));
@@ -254,12 +263,12 @@ int main(){
         assert(count("WEATHER tall ")==kTallLogs&&count("WEATHER shape kind=rain")==1);
     }
     {   // A4R4G4B4 / X8R8G8B8 / A1R5G5B5 lookalikes of the snow and rain shapes never enter the table nor churn it
-        Detector o;o.noteCreate(P(10),32,64,1,A);
+        Detector o;o.noteCreate(P(10),32,64,7,A);
         for(int i=0;i<300;++i){o.noteCreate(P(11+i%40),32,64,1,A4);o.noteCreate(P(11+i%40),16,32,1,A1);o.noteCreate(P(11+i%40),32,512,1,X8);}
         assert(o.count()==1&&o.overflows==0&&o.isCandidate(P(10))&&o.generation==1);
     }
     {   // the draw hook
-        Hook h;h.weatherDetect.noteCreate(P(50),32,512,1,A);h.weatherDetect.noteCreate(P(51),32,64,1,A);
+        Hook h;h.weatherDetect.noteCreate(P(50),32,512,1,A);h.weatherDetect.noteCreate(P(51),32,64,7,A);
         h.draw(100);assert(h.weatherSample.draws==0); /* nothing bound, textureKnown false */
         h.bind(0,50,false);h.draw(100);assert(h.weatherSample.draws==0);
         h.bind(0,50);h.draw(100);h.draw(40);assert(h.weatherSample.draws==2&&h.weatherSample.primitives==140);
@@ -271,7 +280,7 @@ int main(){
     }
     {   // 0.3.202 (rain mask MRT): the mask is written by the rain draw itself through render target 1. A mask-eligible Hook: effect size 100x50, game target and viewport set, RainBlend on,
         // the game's stage setup (stage 0 MODULATE texture x diffuse, nothing on stage 1), no vertex or pixel shader, the bound depth is the world depth
-        auto mk=[](Hook& h){h.weatherDetect.noteCreate(P(50),32,512,1,A);h.weatherDetect.noteCreate(P(51),32,64,1,A);h.width=100;h.height=50;h.ext->gameRT.desc.Width=100;h.ext->gameRT.desc.Height=50;h.worldDepth=&h.ext->gameDS;
+        auto mk=[](Hook& h){h.weatherDetect.noteCreate(P(50),32,512,1,A);h.weatherDetect.noteCreate(P(51),32,64,7,A);h.width=100;h.height=50;h.ext->gameRT.desc.Width=100;h.ext->gameRT.desc.Height=50;h.worldDepth=&h.ext->gameDS;
             h.ext->vp.X=3;h.ext->vp.Y=4;h.ext->vp.Width=90;h.ext->vp.Height=40;h.ext->sr.left=5;h.ext->sr.top=6;h.ext->sr.right=70;h.ext->sr.bottom=30;
             h.ext->rs[D3DRS_COLORWRITEENABLE]=15;h.ext->rs[D3DRS_ALPHABLENDENABLE]=1;h.ext->rs[D3DRS_SRCBLEND]=D3DBLEND_DESTCOLOR;h.ext->rs[D3DRS_DESTBLEND]=D3DBLEND_SRCCOLOR;h.ext->rs[D3DRS_BLENDOP]=D3DBLENDOP_ADD;h.ext->rs[D3DRS_ZWRITEENABLE]=0;
             h.ext->rs[D3DRS_COLORWRITEENABLE1]=15;h.ext->rs[D3DRS_SEPARATEALPHABLENDENABLE]=0;h.ext->rs[D3DRS_SRCBLENDALPHA]=D3DBLEND_SRCALPHA;h.ext->rs[D3DRS_DESTBLENDALPHA]=D3DBLEND_ZERO;h.ext->rs[D3DRS_BLENDOPALPHA]=D3DBLENDOP_ADD;h.ext->rs[D3DRS_SCISSORTESTENABLE]=1;
@@ -378,7 +387,7 @@ int main(){
         h.ext->rs[D3DRS_ALPHABLENDENABLE]=0;h.draw(10);assert(h.blendAtDraw[0]==1&&h.ext->rs[D3DRS_ALPHABLENDENABLE]==0); /* blend off before: on during, off after */
         h.ext->sets.clear();h.world->on=false;h.draw(10);assert(h.ext->sets.empty()&&h.blendAtDraw[1]==D3DBLEND_DESTCOLOR); /* setting off / Weather=0 */
         h.world->on=true;h.claimedSkip=true;const unsigned n=h.drawn;h.draw(10);assert(h.drawn==n&&h.ext->sets.empty()); /* claimed: the game's draw does not run, nothing touched */
-        h.claimedSkip=false;h.weatherDetect.noteCreate(P(51),32,64,1,A);h.weatherDetect.reset();h.weatherDetect.noteCreate(P(51),32,64,1,A);h.bind(0,51);h.draw(10);assert(h.weatherDetect.hotKind==Kind::Snow&&h.ext->sets.empty()&&h.blendAtDraw[1]==D3DBLEND_DESTCOLOR); /* snow untouched */
+        h.claimedSkip=false;h.weatherDetect.noteCreate(P(51),32,64,7,A);h.weatherDetect.reset();h.weatherDetect.noteCreate(P(51),32,64,7,A);h.bind(0,51);h.draw(10);assert(h.weatherDetect.hotKind==Kind::Snow&&h.ext->sets.empty()&&h.blendAtDraw[1]==D3DBLEND_DESTCOLOR); /* snow untouched */
         h.bind(0,3);h.draw(10);assert(h.ext->sets.empty()); /* not the hot texture */
         Hook nw;nw.weatherDetect.noteCreate(P(50),32,512,1,A);game(nw);nw.bind(0,50);nw.world=nullptr;nw.draw(10);assert(nw.ext->sets.empty()); /* no world */
     }
