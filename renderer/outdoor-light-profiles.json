@@ -1454,7 +1454,7 @@
       "position": [
         0.129,
         -0.004,
-        1.847
+        2.227
       ],
       "rgb": [
         0.35,
@@ -1464,7 +1464,7 @@
       "intensity": 1.1,
       "start": 1.0,
       "end": 12,
-      "position_basis": "installed luminous skin-batch bounds center: world\\generic\\human\\passive doodads\\candelabras\\glowwhite32.blp",
+      "position_basis": "Scholomance controls verify that raising the point to the flame lights the exposed floor tiles while the bowl retains its shadow.",
       "casts_shadows": true
     },
     "world\\generic\\human\\passive doodads\\braziers\\humanbraziercorrupt.m2": {

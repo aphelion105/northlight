@@ -3512,7 +3512,7 @@
       "position": [
         -0.1,
         0.377,
-        4.349
+        3.849
       ],
       "rgb": [
         0.37,
@@ -3523,7 +3523,7 @@
       "start": 1.0,
       "end": 10.0,
       "family": "wotlk_lantern",
-      "position_basis": "v264 unlit additive skin batch: world\\generic\\human\\passive doodads\\lamps\\glowgreen32.blp",
+      "position_basis": "Scholomance controls verify that a light point below the glazing reaches the ground while the lantern frame and post keep their shadows.",
       "asset_sha256": "12e9cc58667dbd98a186ce7467b9bf8e1d05b33b4f8b3edb57659091c23d8f15",
       "variants": {
         "0b99217505432df0d391d13abdb891ac13830004013d30f903c92640cef3620b": {
@@ -3550,7 +3550,7 @@
       "position": [
         -0.059,
         -0.046,
-        4.367
+        3.867
       ],
       "rgb": [
         0.37,
@@ -3561,7 +3561,7 @@
       "start": 1.0,
       "end": 10.0,
       "family": "wotlk_lantern",
-      "position_basis": "v264 unlit additive skin batch: world\\generic\\human\\passive doodads\\lamps\\glowgreen32.blp",
+      "position_basis": "Scholomance controls verify that a light point below the glazing reaches the road and the wooden facade while the lantern keeps its shadow.",
       "asset_sha256": "4cb9d2c0765608eab1e0668bd91fcd610bb993486c926007a894b15db58b4085",
       "variants": {
         "3cb64a64dc928402137a1257e2c0209e31e9ca0bdd9675c5f1d827fdec645b76": {
@@ -4786,7 +4786,7 @@
       "position": [
         0.0018082228489220142,
         0.0035014683380723,
-        1.7893112897872925
+        2.1793112897872926
       ],
       "rgb": [
         1.0,
@@ -4797,7 +4797,7 @@
       "start": 1.0,
       "end": 14.0,
       "family": "wotlk_fire",
-      "position_basis": "v264 additive flame: world\\generic\\human\\activedoodads\\doors\\flame0001.blp",
+      "position_basis": "Scholomance controls verify that raising the point to the flame lights the stone wall and tiles while the brazier retains its shadow.",
       "asset_sha256": "5a67e822092540f37c5c3ea835cd678531155a32027f65cec91083e6e2ae05e9",
       "variants": {
         "d4a6716b84692a7b9c0ff18a2749b08c54c2461d78a264f4c687d4da709a1565": {
@@ -5276,15 +5276,15 @@
         4.411
       ],
       "rgb": [
+        0.57,
         1.0,
-        0.3558441484953631,
-        0.0016450216238814042
+        0.18
       ],
-      "intensity": 0.7,
+      "intensity": 0.58,
       "start": 1.0,
       "end": 5.0,
       "family": "wotlk_candle",
-      "position_basis": "v264 unlit additive skin batch: world\\generic\\human\\passive doodads\\candelabras\\glowwhite32.blp",
+      "position_basis": "Scholomance RGB controls verify yellow-green spill on the adjacent wood from the green candles.",
       "asset_sha256": "ded909d82dcef14aec50c2143bb7eb3f3097b14e1abaa8beeda83b1256bc655f",
       "variants": {
         "ec79944a114f83ac647400eae378ddb02e7230c31e36a92deda57516dd824028": {
@@ -5314,15 +5314,15 @@
         4.466
       ],
       "rgb": [
+        0.57,
         1.0,
-        0.3558441484953631,
-        0.0016450216238814042
+        0.18
       ],
-      "intensity": 0.7,
+      "intensity": 0.58,
       "start": 1.0,
       "end": 5.0,
       "family": "wotlk_candle",
-      "position_basis": "v264 unlit additive skin batch: world\\generic\\human\\passive doodads\\candelabras\\glowwhite32.blp",
+      "position_basis": "Scholomance RGB controls verify yellow-green spill on the nearby floor from the green candles.",
       "asset_sha256": "39f0adea5b7d2c7966331c340fef211f0de1f9a77e540d6df9ee5f72df73f6d5",
       "variants": {
         "dddce6cec93f446998fff10e8bf6b15e7d27bed9b2b2a23b81d2a3d467ebb575": {
