@@ -3,9 +3,9 @@
 // texture is created through the wrapped Device (stream mode: the replay thread's Device::CreateTexture), so
 // the creation signature is all the detection needs: the art layer's procedural rain/snow textures are
 // palettized strips with 8-bit alpha (RainDrop01/RainDropRed01 32x512 = 1:16, SnowFlake01 32x64 = 1:2; texture-quality
-// settings may halve the dimensions, the aspect stays), which the client creates as A8R8G8B8 (game test: fmt=21, 10 levels).
-// Only A8R8G8B8 matches: A4R4G4B4 32x64 textures are common and matched the snow shape (it churned the snow slots).
-// Rain 1:16 is rare among decoded game textures; 1:2 A8R8G8B8 is common, hence the larger snow table. `WEATHER shape`
+// settings may halve the dimensions, the aspect stays), which the client creates as A8R8G8B8.
+// The shipped snowflake has seven mip levels and the 3.3.5a Texture Resolution control selects base mip 0 or 1.
+// Many unrelated textures share its aspect and format but request one level. `WEATHER shape`
 // lines log every create of the rain or snow aspect in any format (capped per kind), so a miss shows the real format and size.
 // The draw hook compares the bound stage-0 texture (the mirror's raw
 // pointer) with `hot` - one pointer comparison, no peek, lock, Get* or hash lookup.
@@ -38,11 +38,11 @@ inline Kind shapeOf(std::uint32_t w,std::uint32_t h){
     return Kind::None;
 }
 
-inline Kind classify(std::uint32_t w,std::uint32_t h,std::uint32_t fmt){
+inline Kind classify(std::uint32_t w,std::uint32_t h,std::uint32_t levels,std::uint32_t fmt){
     if(fmt!=kFmtA8R8G8B8||!w||w>kMaxWidth)return Kind::None;
     if(w!=8&&w!=16&&w!=32)return Kind::None;
     if(h==16*w)return Kind::Rain;
-    if(h==2*w)return Kind::Snow;
+    if(h==2*w&&levels!=1)return Kind::Snow; /* CreateTexture levels=0 requests the full mip chain. */
     return Kind::None;
 }
 
@@ -81,7 +81,7 @@ public:
             ++mistSeen;
             return;
         }
-        const Kind kind=classify(w,h,fmt),shape=shapeOf(w,h);
+        const Kind kind=classify(w,h,levels,fmt),shape=shapeOf(w,h);
         if(shape!=Kind::None){
             std::uint32_t& seen=shape==Kind::Rain?rainShapeSeen:snowShapeSeen;
             if(seen<kShapeLogs)say("WEATHER shape kind=%s w=%u h=%u fmt=%u levels=%u matched=%d",NorthlightWeather::kindName(shape),w,h,fmt,levels,kind!=Kind::None);
