@@ -178,9 +178,7 @@ inline bool eligible(const NorthlightLocalLights::Light& l){
     // Keep explicit exclusions, but do not discard a nearby torch merely
     // because its influence is smaller than five yards. Cubes use a .1 near plane.
     if((l.flags&(NorthlightLocalLights::CandlePulse|NorthlightLocalLights::RequiresNative))||l.attenuationEnd<=.11f)return false;
-    // Legacy baked WMO lamps remain supported. Unclassified model/particle/equipment
-    // observations never become shadow sources just because they happen to be bright.
-    return (l.flags&NorthlightLocalLights::CastShadow)||l.kind==1;
+    return (l.flags&NorthlightLocalLights::CastShadow)!=0;
 }
 inline bool visible(const NorthlightLocalLights::Light& l,const NorthlightLocalLightScissor::View* view){
     if(!NorthlightLocalLightScissor::Enabled||!view||!view->valid)return true;

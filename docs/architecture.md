@@ -985,6 +985,13 @@ geometry remains admitted. Normal/global-light dependencies still reject prelit
 classification, and known self-lit M2 receivers retain their separate mask.
 The sampled `NAMEMASK` record includes prelit and unlit draw counts.
 
+The world light cache applies reviewed WMO point omissions and native M2 range
+overrides to exact map placements with matching asset hashes. Model-level range
+caps cover the primary asset and its pinned variants. The reviewed Drak'Tharon
+bonfire combines the adjacent glow and flame doodads into one shadowed light.
+Its intensity pulses while its position stays fixed, so the animation can reuse
+the point-shadow cube.
+
 The world environment validates coherent sky samples in their own origin frame.
 A source witnessed near the camera may continue during a continuous same-map
 walk into an interior whose sky origin stops updating. Colours and celestial

@@ -19,6 +19,14 @@ def emitter(x=0., *, rgb=(1., .5, .2), intensity=.8, start=1., end=8., **extra):
 
 
 class FixturePolicy(unittest.TestCase):
+    def test_opaque_panels_keep_both_shadowed_sources(self):
+        path = r'world\expansion02\doodads\generic\irondwarf\id_lantern.m2'
+        profile = profiles.load()[path]
+        pin = profiles.pinned(profile)[profile['asset_sha256']]
+        self.assertTrue(pin['casts_shadows'])
+        self.assertEqual([e['position'] for e in profiles.fixture_emitters(pin)],
+                         [[-.151, 0, .145], [.155, 0, .145]])
+
     def test_actual_catalog_matches_independent_fixture_reference(self):
         catalog = profiles.load()
         before = copy.deepcopy(catalog)
@@ -41,7 +49,9 @@ class FixturePolicy(unittest.TestCase):
             for key in ('intensity', 'start', 'end', 'casts_shadows'):
                 self.assertEqual(result[0][key], ref[key])
             merged += 1
-        self.assertEqual((merged, total_before, total_after), (4, 43, 27))
+        self.assertEqual(merged, len(REFERENCES))
+        self.assertEqual(total_before - total_after,
+                         sum(ref['original_count'] - 1 for ref in REFERENCES.values()))
         self.assertEqual(catalog, before)
 
     def test_diameter_boundary_and_nontransitive_chain(self):

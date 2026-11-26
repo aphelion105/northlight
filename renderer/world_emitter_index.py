@@ -136,9 +136,9 @@ class Index:
         digest = hashlib.sha256(blob).hexdigest()
         if digest != value['asset_sha256']:
             raise ValueError('World emitter MPQ source hash changed: '+path)
-        # An installed index can predate a reviewed fixture. Refresh the same
-        # model/placement owner when its exact asset supersedes a measured fit.
-        if value.get('basis')=='measured' and path in self.catalog and digest in pinned(self.catalog[path]):
+        # The installed index can contain older parameters for the same asset.
+        # Reapply the current exact profile without changing placement identity.
+        if path in self.catalog and digest in pinned(self.catalog[path]):
             reviewed=profile(self.assets,path,blob,self.catalog)
             if reviewed is not None:
                 self.models[path]=value=reviewed

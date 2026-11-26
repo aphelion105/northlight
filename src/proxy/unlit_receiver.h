@@ -16,6 +16,13 @@ inline constexpr unsigned long RoomRef[]={AuthoredBit,AuthoredBit|PrelitBit,Auth
                                          AuthoredBit|PrelitBit|Bit,PrelitBit|Bit};
 inline constexpr float RoomAmbientShare[]={0.f,1.f/3.f,2.f/3.f,1.f,.25f,.8f};
 inline constexpr unsigned RoomLevelCount=sizeof(RoomRef)/sizeof(RoomRef[0]);
+// Rigid and skinned M2s can both carry a native room light bank.
+inline constexpr bool modelRoomBank(bool menuScene,unsigned family){
+    return !menuScene&&family==3;
+}
+inline constexpr unsigned receiverMaskKind(bool prelit,bool authored,unsigned roomLevel){
+    return prelit||(authored&&roomLevel==3)?4u:authored?5u+roomLevel:3u;
+}
 inline unsigned long roomStencilMask(unsigned levels){
     unsigned long mask=0;
     for(unsigned level=0;level<RoomLevelCount;++level)if(levels&(1u<<level))mask|=RoomRef[level];
@@ -84,16 +91,33 @@ inline bool nativeLightingShader(const uint32_t* words,size_t count,bool model=f
 // Those native colours are already in the framebuffer; outdoor subtraction
 // cannot recover them. Compare only RGB, never the packed neighbouring W lane.
 inline bool lightingOverride(const float* native,const float* ambient,const float* direct,bool model=false){
-    bool different=false;
-    for(unsigned i=0;i<3;++i){
-        for(unsigned row=0;row<2;++row){
-            // M2 uses c10=direct,c11=ambient; WMO uses the opposite order.
-            const float a=native[(row^unsigned(model))*4+i],b=(row?direct:ambient)[i];
-            if(!std::isfinite(a)||!std::isfinite(b)||a<0||a>8||b<0||b>8)return false;
-            different|=std::fabs(a-b)>.02f;
+    // M2 uses c10=direct,c11=ambient; WMO uses the opposite order.
+    const float* rows[]={native+4*unsigned(model),native+4*unsigned(!model)};
+    const float* scene[]={ambient,direct};
+    float differences[2]={};
+    for(unsigned row=0;row<2;++row)for(unsigned i=0;i<3;++i){
+        const float a=rows[row][i],b=scene[row][i];
+        if(!std::isfinite(a)||!std::isfinite(b)||a<0||a>8||b<0||b>8)return false;
+        differences[row]=std::max(differences[row],std::fabs(a-b));
+    }
+    if(std::max(differences[0],differences[1])<=.02f)return false;
+    if(model){
+        // Outdoor M2s can scale one light term without replacing its RGB tint.
+        // Require the other term to be present and unchanged at byte precision.
+        constexpr float colorStep=1.f/255.f;
+        const unsigned scaled=differences[0]>differences[1]?0:1;
+        const unsigned anchor=1-scaled;
+        const auto peak=[](const float* rgb){return *std::max_element(rgb,rgb+3);};
+        if(differences[anchor]<=colorStep&&peak(scene[anchor])>.02f&&
+           peak(scene[scaled])>.02f&&peak(rows[scaled])>.02f){
+            const float scale=peak(rows[scaled])/peak(scene[scaled]);
+            const float tolerance=colorStep*(1.f+scale);
+            if(std::fabs(rows[scaled][0]-scene[scaled][0]*scale)<=tolerance&&
+               std::fabs(rows[scaled][1]-scene[scaled][1]*scale)<=tolerance&&
+               std::fabs(rows[scaled][2]-scene[scaled][2]*scale)<=tolerance)return false;
         }
     }
-    return different;
+    return true;
 }
 // D24X4S4 and D15S1 cannot represent bit 6.
 inline bool stencilFormat(unsigned long format,unsigned long intz){return format==75||format==81||format==intz;}

@@ -20,10 +20,12 @@ float3 horizonHaze(float3 color,float2 uv,float viewZ,bool sky,bool hdrMode,floa
     // Distant forward scattering toward a low sun: Henyey-Greenstein g=.6 in
     // azimuth, amplitude sunWeight*cos(sun elevation) from the host, capped.
     // Lift of the fog colour itself, tinted by the glow hue (c35.yzw): black night fog cannot glow.
-    float lobe=length(HorizonSun.zw);
+    float lobeSquared=dot(HorizonSun.zw,HorizonSun.zw);
     float lift=0;
-    [branch]if(lobe>0){
-    float azimuth=dot(world.xy,HorizonSun.zw)*rsqrt(max(dot(world.xy,world.xy),1e-12))/max(lobe,1e-6);
+    [branch]if(lobeSquared>0){
+    float inverseLobe=rsqrt(lobeSquared);
+    float lobe=lobeSquared*inverseLobe;
+    float azimuth=dot(world.xy,HorizonSun.zw)*rsqrt(max(dot(world.xy,world.xy),1e-12))*min(inverseLobe,1e6);
     lift=min(lobe*.64*pow(1.36-1.2*azimuth,-1.5),.25);
     }
     float3 haze=(hdrMode?worldHdrDecode(HorizonHaze.rgb):HorizonHaze.rgb)*mad(lift,ShadowRange.yzw,1);
@@ -73,8 +75,9 @@ float4 worldCompositeInputs(float2 uv,float2 pixel,bool surfaceLighting,bool hdr
         // no longer shows as blocks that crawl while the camera moves.
         float2 dimensions=ScreenSize.zw;
         float2 grid=uv*dimensions-.5,base=floor(grid),fraction=grid-base;
-        float center=viewDistance(d);
+        float center=viewZ;
         float centreLuma=dot(original.rgb,float3(.299,.587,.114)),depthBits=1.4427/max(.15,center*.01);
+        float fogDepthScale=1/max(.2,viewZ*.02);
         [branch]if(relight||!baseLighting){
         [loop]for(int tap=0;tap<4;++tap){
             float row=floor(tap*.5);
@@ -83,12 +86,13 @@ float4 worldCompositeInputs(float2 uv,float2 pixel,bool surfaceLighting,bool hdr
             float2 q=(cell+.5)/dimensions,tapUV=halfDepthTexelUV(cell);
             // Same canonical depth expression as WorldNormals/TemporalLight; AO needs no lighting history.
             float sampleZ=depthFromScene?viewDistance(normalizedDepth(tapUV)):tex2Dlod(CurrentDistance,float4(q,0,0)).r;
-            float2 blend=lerp(1-fraction,fraction,bit);
+            float2 blend=1-abs(fraction-bit);
+            float tentWeight=blend.x*blend.y;
             if(relight){
             float delta=abs(sampleZ-center);
             float tapLuma=dot(tex2Dlod(Scene,float4(tapUV,0,0)).rgb,float3(.299,.587,.114));
-            float guide=16*abs(centreLuma-tapLuma)/(centreLuma+tapLuma+.02),bits=delta*depthBits;
-            float weight=blend.x*blend.y*exp2(-bits-guide);
+            float guide=abs(centreLuma-tapLuma)*rcp(mad(centreLuma+tapLuma,.0625,.00125)),bits=delta*depthBits;
+            float weight=tentWeight*exp2(-bits-guide);
             // The fallback ranks depth at a quarter: at a wall foot a top-row ground pixel is several depth tolerances from the
             // ground texels, and the full depth weight would pick a wall texel again (the light line; measured in test_colour_tent_2d).
             float score=mad(bits,.25,guide);
@@ -110,7 +114,7 @@ float4 worldCompositeInputs(float2 uv,float2 pixel,bool surfaceLighting,bool hdr
             float fogDelta=abs(receiverZ-viewZ);
             float4 fogSample=float4(0,0,0,1);
             [branch]if(!baseLighting&&CompositeWork.x<.5)fogSample=tex2Dlod(fogInput,float4(q,0,0));
-            float fogWeight=blend.x*blend.y*exp(-fogDelta/max(.2,viewZ*.02));
+            float fogWeight=tentWeight*exp(-fogDelta*fogDepthScale);
             fogSum=mad(fogSample,fogWeight,fogSum);fogTotal+=fogWeight;
             if(fogDelta<fogClosest){fogClosest=fogDelta;fogFallbackUV=q;}
             }
@@ -118,7 +122,7 @@ float4 worldCompositeInputs(float2 uv,float2 pixel,bool surfaceLighting,bool hdr
         }
     // Retain only fallback coordinates across the loop; fetch colours only on fallback.
     float4 fogFallback=float4(0,0,0,1);
-    [branch]if(!(fogTotal>.00001)&&fogClosest<1e20&&!baseLighting&&CompositeWork.x<.5)fogFallback=tex2Dlod(fogInput,float4(fogFallbackUV,0,0));
+    [branch]if(fogTotal<=.00001&&fogClosest<1e20&&!baseLighting&&CompositeWork.x<.5)fogFallback=tex2Dlod(fogInput,float4(fogFallbackUV,0,0));
     float4 fog=baseLighting?float4(0,0,0,1):fogTotal>.00001?fogSum*(1/fogTotal):fogFallback;
     float4 fallbackLight=0;float3 fallbackBase=0;float fallbackAO=1;
     [branch]if(relight&&total<.02&&closest<1e20){
@@ -170,7 +174,7 @@ float4 worldCompositeInputs(float2 uv,float2 pixel,bool surfaceLighting,bool hdr
         // The framebuffer already contains atmospheric fog. Relight only the
         // transported surface term: do not infer material albedo from fog RGB.
         float3 oldLight=max(baseline*inverseWeight,.15);
-        float3 transported=max(original.rgb-fogPart,0);
+        float3 transported=hdrMode?max(original.rgb-fogPart,0):surfaceForLighting;
         // A room-bank receiver has no regional directional light in its native
         // base. Including that light in the divisor suppresses lamp contrast.
         float3 ambientBase=min(oldLight,max(AmbientLight.rgb,.15));
@@ -180,6 +184,15 @@ float4 worldCompositeInputs(float2 uv,float2 pixel,bool surfaceLighting,bool hdr
         // probes attenuate that layer and add bounce independently of daylight.
         // As for local lamps, native transported RGB supplies a bounded material
         // estimate; this is not an extraction of the original diffuse texture.
+        if(prelit&&!hdrMode){
+            // The prelit buffer adds light on top of already lit SDR colours.
+            // Leave low contributions linear and compress highlights together
+            // before any one channel hits the display limit.
+            float3 room=max(1-original.rgb,.00001);
+            float3 available=room/max(2*albedoT*bounce,room);
+            float shoulder=min(available.r,min(available.g,available.b));
+            bounce*=shoulder*(2-shoulder);
+        }
         color=mad(albedoT,bounce,original.rgb);
         // A proven room light bank includes authored fill, not just outdoor
         // ambient. Preserve it: probe occlusion cannot identify its components.

@@ -23,6 +23,11 @@ int main(){
         }
         auto candle=lamp(4);candle.attenuationEnd=32;
         candle.flags|=NorthlightLocalLights::CandlePulse;lights.push_back(candle);
+        auto unshadowedWmo=lamp(6);
+        unshadowedWmo.kind=1;
+        unshadowedWmo.flags=NorthlightLocalLights::Baked;
+        assert(NorthlightLocalLights::valid(unshadowedWmo)&&!eligible(unshadowedWmo));
+        lights.push_back(unshadowedWmo);
         // Old caches may still request candle shadows; illumination survives.
         assert(selectMany(lights.data(),lights.size(),camera,16).count==3);
         const auto direct=NorthlightLocalLightSelection::select(lights,camera);

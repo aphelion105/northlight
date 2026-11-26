@@ -21,6 +21,8 @@ installed art layer). Steps, each on the previous step's archive, as the HD chai
 8. weather_textures  procedural rain streak (1:16), red rain and snow flake (1:2) BLPs
    (build_weather_textures), replacing the client's; generated, no client bytes. Plus the client's
    weather mist puffs resampled to 1:4 (the renderer's signature to skip them in rain)
+9. model lighting  reduce baked placement tints in Botanica, Sethekk Halls and Utgarde Pinnacle and restore
+   light reception for the Nexus white bush.
 
 Reviewed world-model emitters are supplied by world-cache/lights. Do not also inject
 them into patch-Z: the client's native lighting would add the same source a second time.
@@ -69,6 +71,28 @@ SKYBOX = DBC_NAME.format('LightSkybox')
 OWNER_FILE = 'northlight\\art-layer.json'
 OWNER_FORMAT = 'northlight-art-layer/1'
 INPUTS_FILE = 'northlight-art-inputs.ini'
+ATRIUM_WMO = 'world\\wmo\\dungeon\\ol_tempestkeep\\tk_atrium.wmo'
+ATRIUM_WMO_SHA256 = 'faa0ce096ab2e85e4a38e629d248f019fd647822397d0de8d20c47605f4f6e57'
+ATRIUM_FLOWER_TINT_OFFSET = 33232  # MODD[515] BGRA, silvermoonflower02
+SETHEKK_WMO = 'world\\wmo\\dungeon\\ol_auchindoun\\demon_wing.wmo'
+SETHEKK_WMO_SHA256 = '38a99ee06be4e309d275ebb6a7daa38e824fc6c6fbc9c01223d3868db1715117'
+SETHEKK_MODD_OFFSET = 9880
+SETHEKK_GREEN_RUG_TINTS = {
+    569: (255, 181, 117, 255),
+    584: (255, 199, 94, 255),
+    1213: (255, 191, 111, 255),
+    1303: (255, 218, 95, 255),
+}
+PINNACLE_WMO = 'world\\wmo\\dungeon\\valgarde\\valgarde_80gw.wmo'
+PINNACLE_WMO_SHA256 = '856ad0b26d60fbb3fc670cfcb720a36f7530f17c977600fde14289386a8a3043'
+PINNACLE_MODD_OFFSET = 22256
+PINNACLE_SMALL_RUG_TINTS = {
+    54: ((130, 193, 234, 255), (39, 58, 70, 255)),
+    55: ((130, 200, 243, 255), (39, 60, 73, 255)),
+}
+NEXUS_WHITE_BUSH = 'world\\expansion02\\doodads\\nexus\\nexus_white_bush_a.m2'
+NEXUS_WHITE_BUSH_SHA256 = '58818c446bbb78ef50d5d267b86a3e8b92a81525c062d323d43aa5cc969e2c48'
+NEXUS_WHITE_BUSH_MATERIAL = 1248  # M2 render flags and alpha-test blend mode
 
 
 @contextlib.contextmanager
@@ -136,6 +160,63 @@ def unchanged_files(payload, assets):
         if original == data:
             unchanged.append(name)
     return sorted(unchanged)
+
+
+def patch_reviewed_asset(assets, step, expected_sha256, edits):
+    """Apply four-byte edits only against the reviewed asset revision."""
+    asset = step['asset']
+    try:
+        original = assets.read(asset)
+    except (FileNotFoundError, ReadError):
+        step['skipped'] = 'Source asset unavailable'
+        return {}, step
+    digest = hashlib.sha256(original).hexdigest()
+    step['source_sha256'] = digest
+    if digest != expected_sha256:
+        step['skipped'] = 'Unreviewed asset revision'
+        return {}, step
+    patched = bytearray(original)
+    for offset, before, after in edits:
+        if original[offset:offset + 4] != bytes(before):
+            raise ValueError(f'Unexpected reviewed bytes at {offset} in {asset}')
+        patched[offset:offset + 4] = bytes(after)
+    return {asset: bytes(patched)}, step
+
+
+def atrium_flower_tint(assets):
+    before = (209, 113, 114, 255)
+    after = (4, 2, 2, 255)
+    step = {'step': 'atrium_flower_tint', 'asset': ATRIUM_WMO, 'placement': 515}
+    payload, step = patch_reviewed_asset(assets, step, ATRIUM_WMO_SHA256, [(ATRIUM_FLOWER_TINT_OFFSET, before, after)])
+    if payload:
+        step.update(before_bgra=list(before), after_bgra=list(after))
+    return payload, step
+
+
+def sethekk_green_rug_tint(assets):
+    after = (46, 36, 16, 255)
+    step = {'step': 'sethekk_green_rug_tint', 'asset': SETHEKK_WMO,
+            'placements': [{'index': index, 'before_bgra': list(before), 'after_bgra': list(after)}
+                           for index, before in SETHEKK_GREEN_RUG_TINTS.items()]}
+    edits = [(SETHEKK_MODD_OFFSET + index * 40 + 36, before, after)
+             for index, before in SETHEKK_GREEN_RUG_TINTS.items()]
+    return patch_reviewed_asset(assets, step, SETHEKK_WMO_SHA256, edits)
+
+
+def pinnacle_small_rug_tint(assets):
+    step = {'step': 'pinnacle_small_rug_tint', 'asset': PINNACLE_WMO,
+            'placements': [{'index': index, 'before_bgra': list(before), 'after_bgra': list(after)}
+                           for index, (before, after) in PINNACLE_SMALL_RUG_TINTS.items()]}
+    edits = [(PINNACLE_MODD_OFFSET + index * 40 + 36, before, after)
+             for index, (before, after) in PINNACLE_SMALL_RUG_TINTS.items()]
+    return patch_reviewed_asset(assets, step, PINNACLE_WMO_SHA256, edits)
+
+
+def nexus_white_bush_material(assets):
+    step = {'step': 'nexus_white_bush_material', 'asset': NEXUS_WHITE_BUSH}
+    # Clear Unlit while retaining the alpha-test blend mode used by the foliage.
+    edit = (NEXUS_WHITE_BUSH_MATERIAL, (1, 0, 1, 0), (0, 0, 1, 0))
+    return patch_reviewed_asset(assets, step, NEXUS_WHITE_BUSH_SHA256, [edit])
 
 
 def write_archive(path, payload):
@@ -237,6 +318,10 @@ def build(client, output, world_cache, locale=None, letter='z', archives='all', 
         textures.update(build_weather_textures.mist_textures(assets.read, decode_blp))   # 0.3.199 (rain mist)
         payload.update(textures)
         report['steps'].append({'step': 'weather_textures', 'files': sorted(textures)})
+        for art_edit in (atrium_flower_tint, sethekk_green_rug_tint, pinnacle_small_rug_tint, nexus_white_bush_material):
+            edit_payload, edit_step = art_edit(assets)
+            payload.update(edit_payload)
+            report['steps'].append(edit_step)
         report['steps'].append({'step': 'world_model_lights', 'skipped': 'Rendered from world-cache/lights'})
         last = None   # the payload is no longer a step's archive
         unchanged = unchanged_files(payload, assets)

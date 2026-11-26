@@ -164,7 +164,7 @@ def extract_m2(b,stats):
         except Unsupported as exc:stats['unsupported_'+str(exc)]+=1
     return result
 
-def instance_lights(lights,record,path):
+def instance_lights(lights,record,path,*,max_world_end=None):
     key,uid,kind,*floats=record
     matrix=tuple(tuple(floats[6+i*3+j] for j in range(3)) for i in range(3))
     translation=floats[15:18]
@@ -182,7 +182,11 @@ def instance_lights(lights,record,path):
     for position,color,start,end,index,source,flags in lights:
         p=matvec(matrix,position);p=tuple(p[i]+translation[i] for i in range(3))
         if source==2:color,start,end=native_transport(color)
-        else:start*=scale;end*=scale
+        else:
+            start*=scale;end*=scale
+            if source==3 and max_world_end is not None and end>max_world_end:
+                start*=max_world_end/end
+                end=max_world_end
         if not valid_light(p,color,start,end):raise Unsupported('world_light_value_range')
         identity=hashlib.sha256(key+struct.pack('<QII',uid,kind,index)).digest()
         source_id=int.from_bytes(identity[:8],'little')
@@ -191,6 +195,7 @@ def instance_lights(lights,record,path):
 
 def m2_sources(path,blob,native,emitter_index):
     """Shared source identity for light records and their opaque lamp shells."""
+    from light_attachments import REQUIRES_NATIVE
     import world_emitter_index
     profile=emitter_index.catalog.get(path)
     if not native and profile and profile['family']=='blue_moonwell':
@@ -200,11 +205,45 @@ def m2_sources(path,blob,native,emitter_index):
     authored=emitter_index.get(path,blob) if not unpack('<I',blob,264)[0] else None
     sources=world_emitter_index.records(authored) if authored is not None else outdoor_light_profiles.fallback(emitter_index.catalog,path,blob,native)
     from world_emitter_coverage import emission_kind
-    # Native M2 lights carry no emitter class. Retain their authored energy and
-    # animation; the shared candle classification only removes shadow intent.
+    # A live-native witness requires both flags in the FGL reader.
+    # Ordinary candles retain their intensity and omit the point shadow.
     if emission_kind(path,'')=='candle':
-        sources=[(*s[:-1],s[-1]&~2) for s in sources]
+        sources=[s if s[-1]&REQUIRES_NATIVE else (*s[:-1],s[-1]&~world_emitter_index.CAST_SHADOW) for s in sources]
     return sources
+
+
+def reviewed_placement_sources(sources, map_name, path, uid, sha, omissions, stats):
+    omitted=omissions.get((map_name,path,uid,sha))
+    if not omitted:
+        return sources
+    kept=[source for source in sources if source[5]!=1 or source[4] not in omitted]
+    stats['reviewed_wmo_points_omitted']+=len(sources)-len(kept)
+    return kept
+
+
+def reviewed_native_range(lights, reviewed, sha, stats):
+    if not reviewed or sha!=reviewed[0]:
+        return lights
+    end=reviewed[1]
+    adjusted=[]
+    for light in lights:
+        # Only the reviewed unshadowed native M2 candles are eligible.
+        # Preserve native-attachment and shadow flags for all other records.
+        if light[9:]==(2,0) and light[6]<end<light[7]:
+            light=(*light[:7],end,*light[8:])
+            stats['reviewed_native_ranges_applied']+=1
+        adjusted.append(light)
+    if adjusted==lights:
+        stats['reviewed_native_ranges_no_match']+=1
+    return adjusted
+
+
+def reviewed_world_range(profile, sha):
+    if not profile:
+        return None
+    if sha==profile['asset_sha256'] or sha in profile.get('variants',{}):
+        return profile.get('max_world_end')
+    return None
 
 
 def build(cache,output,maps,assets=None,manifest='manifest.json'):
@@ -213,8 +252,10 @@ def build(cache,output,maps,assets=None,manifest='manifest.json'):
     import light_attachments
     from world_fixture_emission import native_fixture_offsets
     catalog=outdoor_light_profiles.load()
+    native_ranges=outdoor_light_profiles.native_placement_ranges()
+    wmo_omissions=outdoor_light_profiles.wmo_point_omissions()
     started=time.time();assets=assets or Assets();stats=collections.Counter();extracted={};provenance={};errors=[];reports=[]
-    placement_cache={};placement_provenance={};unsupported_assets={};attachment_templates={};native_templates={}
+    placement_cache={};placement_provenance={};unsupported_assets={};attachment_templates={};native_templates={};world_end_limits={}
     emitter_index=world_emitter_index.Index(assets)
     def read_placement_wmo(path):
         if path not in placement_cache:
@@ -284,17 +325,26 @@ def build(cache,output,maps,assets=None,manifest='manifest.json'):
                         rejected={k:v for k,v in (stats-before).items() if k.startswith('unsupported_')}
                         if rejected:unsupported_assets[path]=rejected
                         if extracted[path]:
+                            asset_sha=hashlib.sha256(blob).hexdigest()
+                            reviewed_profile=catalog.get(path)
+                            limit=reviewed_world_range(reviewed_profile,asset_sha)
+                            if limit is not None:
+                                world_end_limits[path]=limit
                             provenance[path]={'archive':assets.origin(path),
-                                'asset_sha256':hashlib.sha256(blob).hexdigest(),'light_records':[x[4] for x in extracted[path]],
+                                'asset_sha256':asset_sha,'light_records':[x[4] for x in extracted[path]],
                                 'kind':('WMO MOLT and/or enclosed lamp' if path.endswith('.wmo') else ('Authored model emitter' if extracted[path][0][5]==3 else 'M2 constant default tracks'))}
                     except (ValueError,FileNotFoundError,IndexError,KeyError,struct.error) as exc:
                         extracted[path]=[];errors.append({'asset':path,'error':str(exc)})
                 try:
-                    placed=instance_lights(extracted[path],r,path);records.extend(placed)
+                    sha=provenance.get(path,{}).get('asset_sha256')
+                    sources=reviewed_placement_sources(extracted[path],mapname,path,uid,sha,wmo_omissions,stats)
+                    placed=instance_lights(sources,r,path,max_world_end=world_end_limits.get(path))
+                    placed=reviewed_native_range(placed,native_ranges.get((mapname,path,uid)),sha,stats)
+                    records.extend(placed)
                     attachments.extend(light_attachments.placed(attachment_templates.get(path,[]),r,
-                        [(source[4],light) for source,light in zip(extracted[path],placed)]))
+                        [(source[4],light) for source,light in zip(sources,placed)]))
                     attachments.extend(light_attachments.placed_native(native_templates.get(path,[]),r,
-                        [(source[4],light) for source,light in zip(extracted[path],placed)]))
+                        [(source[4],light) for source,light in zip(sources,placed)]))
                     for light in placed:
                         owners[light[8]]=(kind,uid)
                         if light[9]==3:profile_counts[path]+=1
@@ -328,6 +378,7 @@ def build(cache,output,maps,assets=None,manifest='manifest.json'):
                     adt_count+=1
                 except (ValueError,FileNotFoundError,IndexError,KeyError,struct.error) as exc:
                     errors.append({'placement_adt':path,'error':str(exc)})
+            records=outdoor_light_profiles.merge_drak_bonfire(mapname,records,owners,provenance)
             records,suppressed=outdoor_light_profiles.deduplicate_parent_lights(records,owners)
             records.sort(key=lambda r:r[8])
             if len({r[8] for r in records})!=len(records):raise ValueError("Duplicate light source identity")
