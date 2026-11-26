@@ -10,6 +10,7 @@ import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
 import benchmark_gameplay as bench
+import gameplay_runtime as runtime
 import northrend_fixture_server as fixture
 
 
@@ -94,6 +95,58 @@ class GameplayBenchmarkTests(unittest.TestCase):
             log.write_text(factory + 'D3D9 device wrapped.\nHDR experimental requested=1 active=1 mode=scRGB\n'
                            'HDR native DXGI Present frame=2 color=scRGB transfer=D3D9On12 GPU\n', encoding='ascii')
             self.assertTrue(bench.backend_evidence(args, output)['renderer_active'])
+
+    def test_stock_runtime_log_records_bits_and_backend(self):
+        with TemporaryDirectory() as temporary:
+            output = Path(temporary)
+            report = {'runtime': {'case': 'stock-x86', 'client_executable': 'Wow.exe', 'client_bits': 32,
+                                  'window_class': 'GxWindowClassD3d', 'd3d9on12_loaded': False}}
+            bench.write_runtime(output, report)
+            text = (output / 'client-runtime.log').read_text(encoding='utf-8')
+            for marker in ('client_bits=32', 'renderer=D3D9', 'dxvk=off', 'd3d9on12=off', 'northlight=off'):
+                self.assertIn(marker + '\n', text)
+
+    def test_dxvk_report_uses_live_quality_and_component_switches(self):
+        lines = ['BACKEND selected=backend_d3d9.dll runtime=v3.1.1 rules=dxvk BackendPath=backend_d3d9.dll fallback=0',
+                 'QUALITY preset=Quality Effects=1(default) GI=1(file) WorldShadows=1(default) ContactAO=1(default)',
+                 'D3D9 device wrapped.', 'Effects components tick=30 master=1 GI=OFF shadows=ON fog=ON',
+                 'SETTINGS applied device=1 key=ContactAO previous=1 value=0 boundary=after-frame-cleanup']
+        observed = {'case': 'x64-dxvk', 'client_bits': 64, 'window_class': 'GxWindowClassD3d', 'd3d9on12_loaded': False}
+        result = runtime.evidence(observed, lines, [], [], [], [])
+        self.assertEqual(result['dxvk_version'], 'v3.1.1')
+        self.assertEqual(result['northlight'], 'effects-enabled')
+        self.assertIs(result['effects']['GI'], False)
+        self.assertIs(result['effects']['WorldShadows'], True)
+        self.assertIs(result['effects']['ContactAO'], False)
+        self.assertIs(result['effects']['Weather'], None)
+
+    def test_dxvk_version_ignores_later_driver_messages_and_system_fallback(self):
+        driver = ['info:  DXVK: v3.1.1', 'info:  DXVK: Using 32 compiler threads']
+        observed = {'case': 'x64-dxvk', 'window_class': 'GxWindowClassD3d'}
+        result = runtime.evidence(observed, [], [], [], driver, [])
+        self.assertEqual((result['dxvk'], result['dxvk_version']), ('active', 'v3.1.1'))
+        selected = ['BACKEND selected=System32/d3d9.dll runtime=non-DXVK rules=native BackendPath=(default) fallback=1']
+        result = runtime.evidence(observed, selected, [], [], driver, [])
+        self.assertEqual((result['dxvk'], result['dxvk_version']), ('off', None))
+
+    def test_d3d9on12_requires_transfer_evidence_to_report_active(self):
+        observed = {'window_class': 'GxWindowClassD3d9Ex', 'd3d9on12_loaded': True}
+        lines = ['X64 D3D9 passthrough: required effect capabilities unavailable']
+        result = runtime.evidence(observed, lines, [], [], [], [])
+        self.assertEqual((result['renderer'], result['d3d9on12'], result['northlight']), ('D3D9Ex', 'loaded', 'passthrough'))
+        lines = ['HDR experimental requested=1 active=1 stream=0',
+                 'HDR native DXGI Present frame=2 color=scRGB transfer=D3D9On12 GPU']
+        result = runtime.evidence(observed, lines, [], [], [], [])
+        self.assertEqual((result['presentation'], result['d3d9on12']), ('HDR scRGB', 'active'))
+
+    def test_vulkan_report_prefers_in_game_status_and_preserves_unavailability(self):
+        observed = {'window_class': 'GxWindowClassVulkan'}
+        gx = ['11/26 10:42:15.103  Northlight Vulkan bloom: active']
+        result = runtime.evidence(observed, [], gx, [], [], ['BENCH_EFFECTS active:disabled'])
+        self.assertEqual(result['effects'], {'ContactAO': 'active', 'LocalColorBounce': 'active', 'Bloom': 'disabled'})
+        result = runtime.evidence(observed, [], [], [], [], ['BENCH_EFFECTS unavailable:unavailable'])
+        self.assertEqual(result['northlight'], 'unavailable')
+        self.assertEqual(result['d3d9on12'], 'unknown')
 
 
 if __name__ == '__main__':

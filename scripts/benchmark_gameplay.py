@@ -5,6 +5,7 @@ from contextlib import ExitStack
 import csv
 import ctypes
 from ctypes import wintypes
+import json
 import math
 import os
 from pathlib import Path
@@ -17,6 +18,7 @@ import time
 
 import run_northrend_baseline as live
 import northrend_fixture_server as fixture
+import gameplay_runtime
 
 SCENES = {
     'crowd8': ('crowd', fixture.SMALL_BENCHMARK_CROWD),
@@ -125,9 +127,12 @@ def stage(args, scene, client, report):
         files[Path('backend_d3d9.dll')] = args.backend
     if Path(game) not in files:
         raise ValueError(f'Missing {game} in the input client')
-    for name in (game, 'd3d9.dll', 'backend_d3d9.dll'):
+    pe_client = 'Wow.exe' if game == 'Wow.exe' else 'WowClient64.exe'
+    live.stage_pe(files[Path(game)], pe_client)
+    report['runtime']['client_bits'] = 32 if pe_client == 'Wow.exe' else 64
+    for name in ('d3d9.dll', 'backend_d3d9.dll'):
         if Path(name) in files:
-            live.stage_pe(files[Path(name)], 'Wow.exe' if game == 'Wow.exe' else 'WowClient64.exe')
+            live.stage_pe(files[Path(name)], pe_client)
 
     inputs = report['runtime_sha256'] = {}
     for relative, source in files.items():
@@ -168,7 +173,8 @@ def stage(args, scene, client, report):
         path = addon / f'{ADDON}.{suffix}'
         shutil.copyfile(FIXTURES / path.name, path)
         inputs[path.name] = live.digest(path)
-    (addon / 'Scene.lua').write_text(f'NorthlightBenchmarkRotate = {str(scene == "ratchet").lower()}\n', encoding='ascii')
+    (addon / 'Scene.lua').write_text(f'NorthlightBenchmarkRotate = {str(scene == "ratchet").lower()}\n'
+                                   f'NorthlightBenchmarkVulkan = {str(args.case == "native-vulkan").lower()}\n', encoding='ascii')
 
 
 def backend_evidence(args, output):
@@ -312,6 +318,7 @@ def measure(args, scene, output, client, report):
             hwnd = next(iter(live.process_windows(process.pid, window_class)), None)
             events = live.log_lines(server_log)
             if hwnd:
+                report['runtime']['window_class'] = window_class
                 if not desktop and hwnd != placed and any(line.startswith('PLAYER_SPAWN ') for line in events):
                     if args.desktop == 'foreground':
                         live.focus_private_window(hwnd)
@@ -327,6 +334,7 @@ def measure(args, scene, output, client, report):
         else:
             last_event = events[-1] if events else 'none'
             raise ValueError(f'Client exited or did not finish timing within {args.timeout}s (last event: {last_event})')
+        report['runtime']['d3d9on12_loaded'] = gameplay_runtime.d3d9on12_loaded(process.pid)
         timing, frames = read_timing(events, scene)
         ticks = timing['phase_tick_ns']
         observed = [(focused, size) for tick, focused, size in focus if ticks['start'] <= tick <= ticks['done']]
@@ -338,13 +346,29 @@ def measure(args, scene, output, client, report):
             rows.writerows(enumerate(frames, 1))
 
 
+def write_runtime(output, report):
+    dxvk_log = [line for name in LOGS[-2:] for line in live.log_lines(output / name)]
+    runtime = gameplay_runtime.evidence(report['runtime'], live.log_lines(output / live.LOG),
+                                        live.log_lines(output / 'gx.log'), live.log_lines(output / 'vulkan.log'),
+                                        dxvk_log, live.log_lines(output / 'server.log'))
+    report['runtime'] = runtime
+    with (output / 'client-runtime.log').open('x', encoding='utf-8') as log:
+        for key, value in runtime.items():
+            if key not in ('effects', 'quality_settings'):
+                print(f'{key}={value if isinstance(value, str) else json.dumps(value)}', file=log)
+        for key, value in runtime['effects'].items():
+            state = {True: 'enabled', False: 'disabled', None: 'unknown'}.get(value, value)
+            print(f'effect.{key}={state}', file=log)
+
+
 def attempt(args, scene):
     output = args.output / args.case / scene
     output.mkdir(parents=True)
     client = output / 'client'
     report = {'status': 'FAIL', 'case': args.case, 'scene': scene, 'resolution': args.resolution,
               'msaa': 1, 'desktop': args.desktop,
-              'focus_mode': 'foreground' if args.desktop == 'foreground' else 'background'}
+              'focus_mode': 'foreground' if args.desktop == 'foreground' else 'background',
+              'runtime': {'case': args.case, 'client_executable': CASES[args.case][0], 'client_bits': None}}
     try:
         stage(args, scene, client, report)
         measure(args, scene, output, client, report)
@@ -362,6 +386,7 @@ def attempt(args, scene):
             report['status'] = 'PASS'
         except (OSError, ValueError) as error:
             report['error'] = str(error)
+    write_runtime(output, report)
     live.write_json(output / 'result.json', report)
     print(f'{report["status"]}: {output / "result.json"}' +
           (f' ({report["error"]})' if 'error' in report else ''), flush=True)

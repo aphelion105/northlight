@@ -1,5 +1,10 @@
 local benchmark = CreateFrame("Frame")
 local armedAt
+local function effectStatus(name)
+    local ok, value = pcall(GetCVar, name)
+    if not ok or type(value) ~= "string" or value == "" then return "unavailable" end
+    return (value:gsub("[:%c]", " "))
+end
 benchmark:RegisterEvent("PLAYER_ENTERING_WORLD")
 benchmark:RegisterEvent("CHAT_MSG_SYSTEM")
 benchmark:SetScript("OnEvent", function(self, event, message)
@@ -47,6 +52,9 @@ benchmark:SetScript("OnEvent", function(self, event, message)
         if elapsed < 10000 then return end
         if rotate then MoveViewRightStop() end
         send("done")
+        if NorthlightBenchmarkVulkan then
+            send("effects:" .. effectStatus("northlightVulkanContactInfo") .. ":" .. effectStatus("northlightVulkanBloomInfo"))
+        end
         send(("header:%d:%d:%.3f"):format(#samples, turned or 0, elapsed))
         local first = 1
         self:SetScript("OnUpdate", function(self)

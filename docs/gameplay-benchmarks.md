@@ -69,13 +69,22 @@ The add-on waits 20 seconds after entering the world. The fixture arms it
 once the client has requested the entire roster. The next ten seconds of
 game-frame intervals come from `OnUpdate` and `debugprofilestop`. The add-on
 sends its timing batches after the window closes. The runner checks the exact
-roster packet hash, phase order, frame count, elapsed time, background focus
+roster packet hash, phase order, frame count, elapsed time, window focus
 samples, client size, and backend evidence before marking the run `PASS`.
 
 - `summary.json` lists each scene and its verdict. A failed scene makes the command exit nonzero.
 - `<case>/<scene>/result.json` gives the roster hash, runtime and graphics hashes, observed backend, focus mode, and FPS results. Ratchet also reports each sweep separately.
+- `client-runtime.log` records the verified client executable bitness, observed D3D9, D3D9Ex or Vulkan path, DXVK version, D3D9On12 status, output mode, and Northlight effects. The same data appears under `runtime` in the JSON reports.
 - `frame-times.csv` contains the raw game-frame intervals in milliseconds. `avg_fps` is the frame count divided by elapsed seconds. `low_0_1_fps` is 1000 divided by the mean frame time of the slowest `ceil(frames / 1000)` frames. `worst_ms` records the longest measured interval.
 - `server.log`, the launch profile, and available renderer and driver logs are retained for failed runs too.
+
+The D3D9 report uses the renderer's quality log, applied settings, and effect
+toggles. It reports which effects are enabled for the scene. The Vulkan report
+uses the contact AO and bloom status after the measurement, with the engine log
+as fallback. A client that lacks those controls reports `unavailable`.
+`d3d9on12=active` requires a logged GPU transfer through D3D9On12. `loaded`
+means the process had the system DLL loaded when sampled after timing.
+`unknown` means the runtime evidence was unavailable.
 
 `PASS` qualifies the measurement. Compare repeated measurements on the same
 hardware, with the same archives, camera, resolution, graphics and focus mode.

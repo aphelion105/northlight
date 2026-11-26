@@ -487,6 +487,8 @@ def world(sock, session, scene, crowd_size=DEFAULT_CROWD_SIZE, return_to_menu=No
                         arm_benchmark()
                     elif benchmark_armed and message in ('start', 'right', 'done'):
                         print(f'BENCH phase={message} tick_ns={time.monotonic_ns()}', flush=True)
+                    elif benchmark_armed and message.startswith('effects:'):
+                        print(f'BENCH_EFFECTS {message.removeprefix("effects:")}', flush=True)
                     elif benchmark_armed and (message.startswith(('header:', 'data:')) or message == 'complete'):
                         print(f'BENCH_PAYLOAD {message}', flush=True)
                 elif scene == RATCHET_PAN and (phase := ratchet_camera_marker(body)):
