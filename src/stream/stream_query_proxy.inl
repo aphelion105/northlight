@@ -14,7 +14,7 @@ struct StreamQuery final:IDirect3DQuery9,ProxyBase {
     std::atomic<BOOL> eventValue{FALSE};
     bool eventWaitExpired=false; // replay-thread only, reset at each replayed END
     EventSpinHistory eventSpinHistory; // replay-thread only
-    std::uint32_t eventEpoch=0;std::uint64_t eventPendingSince=0,eventEndSequence=0;bool eventCallerLogged=false; // game thread only
+    std::uint32_t eventEpoch=0;std::uint64_t eventPendingSince=0,eventEndSequence=0;bool eventCallerLogged=false,eventStagePending=false; // game thread only
     std::uint32_t eventThreadProbeGen=0,eventThreadProbeEpoch=0; // one diagnostic attempt per exact generation
     void observeBackendThreads(std::uint32_t issued,std::uint32_t epoch,HRESULT hr,EventPendingKind kind){
         if(!core->timing||core->queryEpoch.load()!=epoch||gen.load()!=issued)return;
@@ -55,7 +55,7 @@ struct StreamQuery final:IDirect3DQuery9,ProxyBase {
         *args={this,flags};
         if(type!=8)core->frameHazards|=StreamCore::kHazardQuery;
         if(flags&D3::kIssueEnd){
-            eventEpoch=core->queryEpoch.load();eventPendingSince=0;
+            eventEpoch=core->queryEpoch.load();eventPendingSince=0;eventStagePending=false;
             // Reserve can pump calls. The sequence becomes exact after reserve.
             eventEndSequence=type==8?q.recordedSeq()+1:0;
             gen.fetch_add(1);
@@ -251,7 +251,11 @@ struct StreamQuery final:IDirect3DQuery9,ProxyBase {
             if(!ran)return D3DERR_INVALIDCALL;
             // A DXVK pending payload identifies observed progress, including
             // queue submission and scheduling after the command is recorded.
-            if(firstEventPoll&&replayEnd>=firstEventPoll&&replayEnd-firstEventPoll>=8000000&&core->queryThreadLog){
+            if(firstEventPoll&&replayEnd>=firstEventPoll&&core->queryThreadLog&&
+               gen.load()==issued&&core->queryEpoch.load()==epoch&&
+               (eventStagePending||replayEnd-firstEventPoll>=8000000)){
+                // Keep the completion of a logged wait even if its last poll trip was short.
+                eventStagePending=hr==S_FALSE;
                 const auto sinceFirst=[&](std::uint64_t at){return at?double(at-firstEventPoll)/1e6:-1.;};
                 char line[512];
                 std::snprintf(line,sizeof line,

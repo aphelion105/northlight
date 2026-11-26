@@ -8,6 +8,7 @@
 #include <cstring>
 #include <map>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <vector>
 #include "m2_shader_families.h"
@@ -90,12 +91,21 @@ namespace NorthlightBackend {
 }
 struct Normals {
  void setCaptureProfiling(bool){}
+ bool hybridRequested()const{return false;}
+ bool beginHybridMrt(void*){return false;}
  Env* e;template<class Draw,class Desc>void capture(IDirect3DVertexShader9* vs,Draw draw,bool up,const Desc*,const void*,D3DFORMAT,const void*,UINT,const unsigned* mesh,IDirect3DVertexDeclaration9* decl,const unsigned* pose,unsigned* published=nullptr,IDirect3DVertexDeclaration9** publishedDeclaration=nullptr,bool terrain=false,const unsigned* bank=nullptr){
   assert(vs==shader());assert(mesh&&pose&&(*mesh==0||(*mesh==17&&*pose==23&&decl)));e->action(Normal,{up,*mesh,*pose,bool(decl)});if(e->cfg.componentDraw)draw();
  }
 };
 struct Base {
- LONGLONG cpuNormalCapture=0;
+ LONGLONG cpuNormalCapture=0,cpuCapture=0,cpuPrep=0;
+ struct HybridNormalDraw {
+  struct {IDirect3DVertexShader9* p=nullptr;} shader;
+  NorthlightAutoDisplacement::CaptureSource handoff;
+  bool submitted=false,written=false;
+ };
+ HybridNormalDraw* hybridNormalDraw=nullptr;
+ DWORD drawRenderState(D3DRENDERSTATETYPE)const{return 0;}
  bool sampledDrawTimers()const{return env.cfg.diagnostics;}
  bool auroraDrawProven=true;std::array<float,3> auroraDrawScale{1,2,3};float auroraDrawIntensity=2;
  Env env;Ext extStorage{&env};Ext* ext=&extStorage;World worldStorage{&env};World* world=&worldStorage;Bump bumpStorage{&env};BumpHandle autoBump{&bumpStorage};Normals normalStorage{&env};Normals* modelNormals=&normalStorage;
@@ -111,7 +121,7 @@ struct Base {
  struct SkyLayers{Env* e;void invalidate(){e->event(Invalidate);}}skyLayers{&env};
  struct Scene{Env* e;struct Native{Env* e;bool currentFrame(unsigned)const{return e->cfg.sceneCurrent;}}native{e};void setFrame(unsigned f){e->event(SetFrame,{f});}}sceneStorage{&env};Scene* gpuScene=&sceneStorage;
  std::map<IDirect3DVertexShader9*,uint64_t>vsHashes;NorthlightSpellLayer::DrawArgs spellArgs;
- struct VsClass{bool terrain;unsigned family;};
+ struct VsClass{bool terrain;unsigned family;bool skinned=false;};
  VsClass classifyVs(IDirect3DVertexShader9* vs)const{
   const auto found=vsHashes.find(vs);
   return {world&&world->terrainShader(vs),found==vsHashes.end()?0u:m2ShaderFamily(found->second)};

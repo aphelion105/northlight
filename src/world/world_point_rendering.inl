@@ -670,7 +670,7 @@
         const auto uploadsBefore=shadowReplayIndices.uploaded();
         if(!active)return;
         NorthlightShadowRefreshBudget refreshBudget(quality.shadowRefreshCpuMs,directionalTime);
-        unsigned held=0,movingHeld=0;
+        unsigned held=0,movingHeld=0,coldCubes=0;
         const bool coldTimed=NorthlightQuality::renderProfile(quality);const int64_t coldStarted=coldTimed?QpcClock::now():0;
         if(pointSelectionMap!=active->map){pointSelection.reset();pointTargets.keeps().trim();pointSelectionMap=active->map;}
         const auto picks=pointSelection.update(lights.sources.data(),lights.count,context.camera,NorthlightQuality::localShadowLimit(quality),visualTime(),&localScissorView,float(quality.pointShadowDistance));
@@ -702,7 +702,12 @@
         for(pointIndex=0;pointIndex<pointTargets.slots().size();++pointIndex){const auto& pick=picks[pointIndex];if(pick.index<0)continue;
             ++selected;
             restorePointSlot(lights.sources[pick.index]);pointSlot().selectionGain=pick.gain;
+            const bool cold=staggerColdCaptures&&!pointSlot().schedule.usable;
+            // Spread first renders across frames. Restored cubes and the refresh
+            // of already usable cubes follow the ordinary scheduling rules.
+            if(cold&&coldCubes>=2){pointSelection.defer(pointIndex);continue;}
             renderPointShadow(lights.sources[pick.index],fresh,withReplays,&refreshBudget,rendererFrame);pointReady|=pointSlot().ready;
+            if(cold&&pointSlot().ready)++coldCubes;
             held+=pointSlot().budgetHeld;
             movingHeld+=pointSlot().budgetHeld&&!NorthlightPointShadow::sameCube(pointSlot().schedule.light,pointSlot().selected);
             totalDraws+=pointDraws;totalCulled+=pointCulled;

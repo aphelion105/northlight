@@ -470,6 +470,8 @@ private:
     // Model capture skip (quality_settings.h skipModelCapture), decided at the frame's first model draw.
     // captureDemand: a skipped frame had to keep a map/cube past its schedule; the next frame captures.
     enum CaptureMode:unsigned char {CaptureUndecided,CaptureFresh,CaptureSkipped};CaptureMode captureMode=CaptureUndecided;
+    bool staggerColdCaptures=false,previousCaptureView=false;
+    float previousCaptureForward[3]={};
     bool captureDemand=false,lastCaptureSkipped=false;unsigned lastCapturePhaseReads=0;int lastRenderDebug=0;size_t pointReplayCount=0;
     unsigned nearReuses=0,farReuses=0,captureSkippedFrames=0,captureDeferrals=0; /* 600-frame log window */
     DWORD animationEpoch=GetTickCount();
@@ -1939,6 +1941,8 @@ public:
         captureWmoProjectionBorrows=captureWmoPacketBorrows=captureWmoPacketRegisters=0;
 #endif
         rejSmall=rejGate=rejCut=rejBudget=rejOther=0;
+        previousCaptureView=staggerColdCaptures&&rendererFrame&&valid&&!menuDomain;
+        if(previousCaptureView)std::copy_n(context.inverseView+8,3,previousCaptureForward);
         valid=false;traceContext=0;traceFog=0;legacyFogKnown=false;shadowFrameReady=false;legacyFog=NorthlightLegacyFog::Constants{};
         // Bound retained vector capacities across changing scenes. Reuse storage,
         // never old geometry: each subsequent draw still re-reads every byte.
@@ -2148,6 +2152,7 @@ public:
     }
     void setHdrBaseCompositeEnabled(bool enabled){composite.permitBase(enabled);}
     void setTemporalZeroWeightEnabled(bool enabled){history.permitZeroWeight(enabled);}
+    void setStaggerColdCaptures(bool enabled){staggerColdCaptures=enabled;}
     void setModelNormals(IDirect3DTexture9* texture){modelNormals=texture;}
     static constexpr float MoonTerrainSpecularDistance=128.f;
     float sunSurfaceSpecularGain(float wetness=0)const{
@@ -3385,6 +3390,20 @@ public:
         if(!pipelineActive)return true;
         if(menuDomain){captureMode=CaptureFresh;return false;}
         if(captureMode==CaptureUndecided){bool skip=false;
+            if(previousCaptureView&&!lastCaptureSkipped&&!lastRenderDebug&&!particleLights.hasFlash()){
+                const auto* f=context.inverseView+8;
+                const float dot=f[0]*previousCaptureForward[0]+f[1]*previousCaptureForward[1]+f[2]*previousCaptureForward[2];
+                if(std::isfinite(dot)&&dot<.7071068f){
+                    // Keep the existing shadow maps for the camera cut. The next frame
+                    // captures the new casters. Materials and receiver normals run now.
+                    captureMode=CaptureSkipped;
+                    captureDemand=true;
+                    actorCaptureDecided=true;
+                    actorCaptureDue=false;
+                    ++captureSkippedFrames;
+                    return true;
+                }
+            }
             // Unavailable geometry cannot consume directional or point replays.
             // Keep the existing GI cadence, pending-demand and diagnostic exceptions.
             const bool shadows=shadowCaptureDemand();
