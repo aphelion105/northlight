@@ -42,11 +42,10 @@ public:
 #endif
                 if(!FAILED(hr)){
                     NorthlightLockMeter::readBack(b,slot->size);
-                    if(all){std::memcpy(slot->data.data(),all,slot->size);ok=true;}
+                    if(all){const auto* bytes=static_cast<const unsigned char*>(all);slot->data.assign(bytes,bytes+slot->size);ok=true;}
                     if(FAILED(b->Unlock()))ok=false;
                 }
-                endFill(*slot,ok);
-                if(ok){
+                if(endFill(*slot,ok)){
 #ifdef NORTHLIGHT_REPLAY_STAND
                     audit(Path::Copy,off,size);
 #endif

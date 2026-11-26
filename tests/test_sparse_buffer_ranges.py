@@ -53,8 +53,19 @@ for label,root,gen in [('before',baseline,baseline/'gen'),('after',fp.REPO,out)]
     exe=out/(label+'.exe')
     subprocess.run([str(fp.zig()),'c++',*(['-target','x86-windows-gnu'] if os.name=='nt' else []),'-std=c++17','-O2','-UNDEBUG','-DNL_STUB',f'-DNORTHLIGHT_EXPECT_SPARSE={int(label=="after")}','-pthread','-I',str(gen),*includes,str(root/'tests'/'sparse_buffer_ranges.cpp'),'-o',str(exe)],check=True,env=fp.zig_env())
     report[label+'_exe_sha256']=hashlib.sha256(exe.read_bytes()).hexdigest()
-result=subprocess.run([str(out/'after.exe'),'proofs'],capture_output=True,text=True,timeout=180)
-(out/'proofs.log').write_text(result.stdout+result.stderr);result.check_returncode();assert 'SPARSE_PROOFS_PASS' in result.stdout
+proof_exes=[out/'after.exe']
+if os.name=='nt':
+    exe=out/'after-x64.exe'
+    subprocess.run([str(fp.zig()),'c++','-target','x86_64-windows-gnu','-std=c++17','-O2','-UNDEBUG',
+                    '-DNL_STUB','-DNORTHLIGHT_EXPECT_SPARSE=1','-pthread','-I',str(out),*fp.test_include_flags(),
+                    str(fp.TESTS/'sparse_buffer_ranges.cpp'),'-o',str(exe)],check=True,env=fp.zig_env())
+    proof_exes.append(exe)
+report['proofs']=[]
+for exe in proof_exes:
+    result=subprocess.run([str(exe),'proofs'],capture_output=True,text=True,timeout=180)
+    log=out/(exe.stem+'-proofs.log');log.write_text(result.stdout+result.stderr);result.check_returncode()
+    assert 'SPARSE_PROOFS_PASS' in result.stdout and 'SCATTERED_SLOT_REWRITES_PASS' in result.stdout
+    report['proofs'].append(dict(log=log.name,exe_sha256=hashlib.sha256(exe.read_bytes()).hexdigest()))
 # The whole command-stream suite is test_command_stream's (requires=cxx): its wake bounds assume millisecond
 # sleeps, and a Windows sleep_for(3ms) takes ~15.6 ms.
 if os.name!='nt':

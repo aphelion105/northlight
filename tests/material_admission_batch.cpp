@@ -17,6 +17,28 @@ void MaterialCaptureStateTestAccess::admissionBatch(){
   if(test==4){assert(!ok);assert(saved.states[8].value==0);}else{assert(ok&&saved.states[0].value==1&&saved.states[4].value==15);for(unsigned i=0;i<14;++i)if(i!=0&&i!=4)assert(saved.states[i].value==d.state.render[unsigned(saved.states[i].key)]);}}
   if(!run){if(test==0||test==7)assert(d.calls==0&&mirror.answered-answerBefore==12);if(test==1||test==2||test==3)assert(d.calls==12);if(test==4||test==5||test==6)assert(d.calls==1);}
  }
+ if(!run){
+  struct Samplers:PacketDevice {
+   unsigned calls=0;D3DSAMPLERSTATETYPE fail=D3DSAMP_FORCE_DWORD;
+   HRESULT STDMETHODCALLTYPE GetSamplerState(DWORD stage,D3DSAMPLERSTATETYPE key,DWORD* out)override{
+    ++calls;if(key==fail)return E_FAIL;*out=stage*100+unsigned(key);return D3D_OK;
+   }
+  } d;
+  DeviceMirror mirror;ExtensionDevice ext(&d,&mirror);
+  using Replay=NorthlightAutoBump::ReplayState;
+  Replay saved(&ext,nullptr,{});
+  for(DWORD stage:{2u,3u}){
+   DWORD expected[8],values[8];
+   assert(saved.readSamplers(nullptr,stage,expected));
+   const auto native=d.calls;const auto answered=mirror.answered;
+   assert(saved.readSamplers(&ext,stage,values)&&!std::memcmp(values,expected,sizeof values));
+   assert(d.calls==native&&mirror.answered-answered==8);
+   mirror.samplerKnown[stage][D3DSAMP_MIPFILTER]=false;d.fail=D3DSAMP_MIPFILTER;
+   assert(!saved.readSamplers(&ext,stage,values)&&d.calls==native+1);
+   d.fail=D3DSAMP_FORCE_DWORD;
+   assert(saved.readSamplers(&ext,stage,values)&&!std::memcmp(values,expected,sizeof values));
+  }
+ }
  if(!run)for(unsigned mode=0;mode<2;++mode)for(unsigned test=0;test<7;++test){
   struct Capture:CaptureBackend{unsigned targetQueries=0;unsigned mode=0;HRESULT STDMETHODCALLTYPE GetRenderTarget(DWORD index,IDirect3DSurface9** out)override{if(!index)++targetQueries;return CaptureBackend::GetRenderTarget(index,out);}
    HRESULT STDMETHODCALLTYPE GetRenderState(D3DRENDERSTATETYPE key,DWORD* out)override{if(mode==3&&key==D3DRS_FOGENABLE)return E_FAIL;if(mode==1&&key==D3DRS_ALPHATESTENABLE){*out=1;return D3D_OK;}if(mode==2&&key==D3DRS_ALPHABLENDENABLE){*out=1;return D3D_OK;}return CaptureBackend::GetRenderState(key,out);}}d;

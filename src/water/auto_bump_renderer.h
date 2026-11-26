@@ -162,13 +162,28 @@ class NorthlightAutoBump {
             {D3DRS_COLORWRITEENABLE2,0,15},{D3DRS_COLORWRITEENABLE3,0,15}};
         bool changed=false,userMemory=false,auxiliary=false,sharedTargets=false,privateEqual=false;DWORD stencilEnabled=FALSE;
         ReplayState(IDirect3DDevice9* device,IDirect3DVertexShader9* vs,const D3DVIEWPORT9& vp,NorthlightMaterialProfile* p=nullptr):d(device),profile(p),vertex(vs),viewport(vp){}
-        bool save(bool up,bool twoLayers=false){
+        bool readSamplers(ExtensionDevice* source,DWORD stage,DWORD (&values)[8]){
+            constexpr unsigned mask=[] {
+                unsigned requested=0;
+                for(auto key:samplerKeys)requested|=1u<<(unsigned(key)-1);
+                return requested;
+            }();
+            DWORD snapshot[D3DSAMP_DMAPOFFSET];
+            if(source&&source->knownSamplerStates(stage,mask,snapshot)){
+                for(unsigned i=0;i<std::size(samplerKeys);++i)values[i]=snapshot[unsigned(samplerKeys[i])-1];
+                return true;
+            }
+            for(unsigned i=0;i<std::size(samplerKeys);++i)
+                if(FAILED(d->GetSamplerState(stage,samplerKeys[i],&values[i])))return false;
+            return true;
+        }
+        bool save(bool up,bool twoLayers,ExtensionDevice* source){
             composite=twoLayers;
-            if(composite){if(FAILED(d->GetTexture(3,&texture3)))return false;for(unsigned i=0;i<8;++i)if(FAILED(d->GetSamplerState(3,samplerKeys[i],&samplerValues3[i])))return false;}
+            if(composite&&(FAILED(d->GetTexture(3,&texture3))||!readSamplers(source,3,samplerValues3)))return false;
             if(!pixel||!target||
                FAILED(d->GetPixelShaderConstantF(constantBase,constant,constantCount))||FAILED(d->GetTexture(normalStage,&texture2)))return false;
             if(FAILED(d->GetScissorRect(&scissor))||FAILED(d->GetRenderState(D3DRS_SCISSORTESTENABLE,&scissorEnabled)))return false;
-            for(unsigned i=0;i<8;++i)if(FAILED(d->GetSamplerState(normalStage,samplerKeys[i],&samplerValues[i])))return false;
+            if(!readSamplers(source,normalStage,samplerValues))return false;
             if(up){if(FAILED(d->GetStreamSource(0,&stream,&offset,&stride))||FAILED(d->GetIndices(&indices)))return false;userMemory=true;}
             return true;
         }
@@ -1138,7 +1153,7 @@ public:
             else if(saved.states[5].value){const unsigned indices[]={2,3,6,9,10,11,12,13};known=readReplayStates(saved,indices);}
             else{const unsigned indices[]={2,3,6,7,8,9,10,11,12,13};known=readReplayStates(saved,indices);}
             if(!known){displacement.beginDraw();if(source)source->clear();return false;}
-            return saved.save(userMemory&&!sharing,material==6&&domain!=4);};
+            return saved.save(userMemory&&!sharing,material==6&&domain!=4,drawStateSource);};
         saved.viewport=viewport;
         // The private depth starts empty, so native EQUAL cannot match its prepass.
         // Final composition still validates captured depth against the scene.

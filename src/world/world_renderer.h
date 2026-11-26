@@ -3220,7 +3220,11 @@ public:
                 if(terrainFailures++<12)logf("TERRAIN snapshot rejected: %s hr=%08lx vertexUsage=%lx indexUsage=%lx type=%u stride=%u",NorthlightTerrainCapture::rejectName(why.reason),(unsigned long)why.hr,(unsigned long)why.vertexUsage,(unsigned long)why.indexUsage,why.positionType,why.stride);return;}
             if(const auto* native=NorthlightAdtBounds::current)
                 nativeAdtCoverage.record(*native,why.low,why.high,&logf);
-            if(positions){std::copy(why.low,why.low+3,positions->low);std::copy(why.high,why.high+3,positions->high);positions->known=true;}
+            if(positions){
+                std::copy(why.low,why.low+3,positions->low);std::copy(why.high,why.high+3,positions->high);
+                positions->stream0Float3=why.positionStream==0&&why.positionType==D3DDECLTYPE_FLOAT3;
+                positions->known=true;
+            }
             appendTerrain(snapshot);return;
         }
         captureModel(type,base,min,vertexTotal,start,count,indexed,current,sample,nullptr,D3DFMT_INDEX16,nullptr,0,captured,capturedDeclaration,pose,bank);
@@ -3396,7 +3400,15 @@ public:
     // device mirror. Null: not a palette program, or the rows cannot be read.
     const NorthlightActorDeformation::Program* paletteRows(IDirect3DVertexShader9* shader,float* rows){
         auto program=actorPrograms.find(shader);
-        if(program==actorPrograms.end()||program->second->paletteBase<0||program->second->paletteBase+2>=256||FAILED(d->GetVertexShaderConstantF(UINT(program->second->paletteBase),rows,3)))return nullptr;
+        if(program==actorPrograms.end()||program->second->paletteBase<0||program->second->paletteBase+2>=256)return nullptr;
+        const UINT first=UINT(program->second->paletteBase);
+#ifndef _WIN64
+        const auto* mirror=constantEpochSource.mirror;
+        if(const auto* known=mirror?mirror->borrowKnownVertexFloats(first,3):nullptr){
+            std::memcpy(rows,known,3*sizeof(*known));return program->second.get();
+        }
+#endif
+        if(FAILED(d->GetVertexShaderConstantF(first,rows,3)))return nullptr;
         return program->second.get();
     }
     // Palette root (bone 0 origin, world) of the draw about to be issued: paletteRows() through
@@ -3571,8 +3583,15 @@ public:
         phase.next(CaptureProjection);fate.reason=NorthlightShadowFate::Projection;
         float projectionScratch[16];const unsigned kind=metadata.projectionKind,first=kind==1?4:2;
         const auto* packetBank=bank;
-        const auto* wmoMirror=metadata.wmo&&indexed&&!userIndices&&!userVertices?constantEpochSource.mirror:nullptr;
-        const auto* projectionMirror=wmoMirror;
+#if defined(_WIN64) || defined(NORTHLIGHT_REPLAY_STAND)
+        const bool wmoBuffered=metadata.wmo&&indexed&&!userIndices&&!userVertices;
+#endif
+        const auto* modelMirror=constantEpochSource.mirror;
+#ifdef _WIN64
+        // The broader mirror path increased AMD64 frame-time spikes in Ratchet.
+        if(!wmoBuffered)modelMirror=nullptr;
+#endif
+        const auto* projectionMirror=modelMirror;
 #ifdef NORTHLIGHT_REPLAY_STAND
         static const bool legacyProjectionBank=[]{
             const char* value=std::getenv("NORTHLIGHT_RETRACE_LEGACY_SHADOW_PROJECTION_BANK");
@@ -3588,7 +3607,7 @@ public:
 #endif
         const auto* projectionRows=!q&&projectionMirror?projectionMirror->borrowKnownVertexFloats(first,4):nullptr;
 #ifdef NORTHLIGHT_REPLAY_STAND
-        if(projectionRows)++captureWmoProjectionBorrows;
+        if(projectionRows&&wmoBuffered)++captureWmoProjectionBorrows;
 #endif
         if(!q&&!projectionRows){
 #ifdef NORTHLIGHT_REPLAY_STAND
@@ -3647,7 +3666,7 @@ public:
         p->constantUsage=usage;
         const auto f=usage.floats,b=usage.booleans,i=usage.integers;
         const Replay* previous=replays.empty()?nullptr:replays.back().get();
-        const auto* packetMirror=wmoMirror;
+        const auto* packetMirror=modelMirror;
 #ifdef NORTHLIGHT_REPLAY_STAND
         static const bool legacyPacketBank=[]{
             const char* value=std::getenv("NORTHLIGHT_RETRACE_LEGACY_SHADOW_PACKET_BANK");
@@ -3676,7 +3695,7 @@ public:
                 if(const auto* rows=packetMirror->borrowKnownVertexFloats(first,count)){
                     std::memcpy(out,rows,std::size_t(count)*sizeof(*rows));
 #ifdef NORTHLIGHT_REPLAY_STAND
-                    ++captureWmoPacketBorrows;captureWmoPacketRegisters+=count;
+                    if(wmoBuffered){++captureWmoPacketBorrows;captureWmoPacketRegisters+=count;}
 #endif
                     return true;
                 }

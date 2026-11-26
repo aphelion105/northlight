@@ -24,6 +24,6 @@ using GuardRead=ReadLease(*)(void*,void*,bool,std::uint64_t);
 // Stack-scoped proof shared by consumers of one unchanged draw invocation.
 struct PositionBounds {
     const void* owner=nullptr;const void* shader=nullptr;
-    float low[3]={},high[3]={};bool known=false;
+    float low[3]={},high[3]={};bool known=false,stream0Float3=false;
 };
 }

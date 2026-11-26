@@ -141,7 +141,7 @@ int main(){
  IDirect3DVertexShader9 vs;
  {CaptureDevice d;fill(d);World w(d);NorthlightCaptureMetadata::PositionBounds out;out.known=true;
   const auto capture=[&]{w.capture(D3DPT_TRIANGLELIST,-3,7,3,1,1,true,&vs,false,true,&out);};
-  capture();assert(out.known&&out.low[2]==3&&out.high[2]==5&&w.accepted);
+  capture();assert(out.known&&out.stream0Float3&&out.low[2]==3&&out.high[2]==5&&w.accepted);
   assert(d.viewGets==1&&d.projectionGets==1);
   CameraMirror live;std::memcpy(live.rows,d.view,64);std::memcpy(live.rows+4,d.view,64);w.constantEpochSource.mirror=&live;
   capture();assert(out.known&&out.low[2]==3&&out.high[2]==5&&d.viewGets==1&&d.projectionGets==1);

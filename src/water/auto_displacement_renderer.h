@@ -758,9 +758,11 @@ public:
         auto shader=materials.find(original);if(shader==materials.end())return false;
         const auto& program=shader->second.view;
         const bool skin=shader->second.skinned;
-        // calculate() must refuse an exhausted ready budget. Avoid fetching the
-        // same constants/declaration/source again merely to reach that refusal.
-        if(skin&&(args.vertices||!program.skinned||(!coarseOnly&&!poseEnvelopes.canReady())))return false;
+        const bool envelopeClosed=skin&&!coarseOnly&&!poseEnvelopes.canReady();
+        // The stock single-bone proof has its own budget. Keep it available
+        // after the envelope closes, using only a proven resident draw source.
+        if(skin&&(args.vertices||!program.skinned))return false;
+        if(envelopeClosed&&(shader->second.rangeKind!=NorthlightModelNormalRange::Single||!mirror||!args.draw.indexed))return false;
         if(coarseOnly){
             // Programs with neither a coarse envelope nor the stock single-
             // bone far proof have no consumer for these palette/source reads.
@@ -787,14 +789,16 @@ public:
         const unsigned input=skin?16:shader->second.rangeRegister==17?rangeInput(program):shader->second.rangeRegister;if(!skin&&input==16)return false;
         const bool shapeFirst=coarseOnly&&skin&&shader->second.rangeKind!=NorthlightModelNormalRange::Single;
         const auto readPalette=[&]{P::Scope read(profile,P::Constants);return readConstantBank(shader->second.first,shader->second.count,skin,rangeConstants,rangeConstantStamp,rangeConstantFirst,rangeConstantCount);};
-        if(!shapeFirst&&!readPalette())return false;
+        if(!shapeFirst&&!envelopeClosed&&!readPalette())return false;
+        // Terrain capture already validated the default POSITION element of
+        // this indexed draw. Only its stream-0 FLOAT3 box matches this path.
+        if(!skin&&!args.vertices&&captured&&captured->known&&captured->stream0Float3&&captured->owner==&args&&captured->shader==original&&
+           captured->low[0]<=captured->high[0]&&captured->low[1]<=captured->high[1]&&captured->low[2]<=captured->high[2]&&
+           nearestViewDepth(program,input,captured->low,captured->high,rangeConstants,nearest,shader->second.terrainDepthEligible,farthest,lod)){++capturedBoundsHits;return true;}
         NorthlightDrawSnapshot::Ref<IDirect3DVertexDeclaration9> decl;if(FAILED(d->GetVertexDeclaration(decl.out()))||!decl.p)return false;
         const D3DVERTEXELEMENT9* elements=nullptr;UINT count=0;if(!declarations.get(decl.p,elements,count))return false;
         const auto position=std::find_if(elements,elements+count,[](const D3DVERTEXELEMENT9& e){return e.Stream==0&&e.Usage==D3DDECLUSAGE_POSITION&&e.UsageIndex==0&&e.Type==D3DDECLTYPE_FLOAT3;});
         if(position==elements+count)return false;
-        if(!skin&&!args.vertices&&position->Method==D3DDECLMETHOD_DEFAULT&&captured&&captured->known&&captured->owner==&args&&captured->shader==original&&
-           captured->low[0]<=captured->high[0]&&captured->low[1]<=captured->high[1]&&captured->low[2]<=captured->high[2]&&
-           nearestViewDepth(program,input,captured->low,captured->high,rangeConstants,nearest,shader->second.terrainDepthEligible,farthest,lod)){++capturedBoundsHits;return true;}
         // All rigid material modes need only a conservative position box for
         // distance admission. Full snapshots still belong to replay consumers.
         if(!skin&&!args.vertices&&position->Method==D3DDECLMETHOD_DEFAULT){
@@ -810,23 +814,28 @@ public:
             auto& capture=geometrySource?snapshots:skin?skinRangeSnapshots:rangeSnapshots;
             if(skin&&sourceHint)reuseIndexedSource(capture,original,decl.p,args.draw,sourceHint,mirror,source);
             if(skin&&!source)readResidentM2(capture,original,decl.p,args.draw,mirror,source);
+            if(envelopeClosed&&!source)return false;
             if(!source&&!capture.read(d,decl.p,args.draw,local,nullptr,false,&source,false,geometrySource))return false;
         }
         if(!source)source=snapshots.retain(std::move(local));
+        if(envelopeClosed&&d->GetNPatchMode()!=0)return false;
         // Skin admission reads the complete declaration layout. Reuse that
         // immutable snapshot in the same draw's deferred material packet.
         // Rigid range snapshots contain positions only and cannot be replayed.
-        if(skin&&captureSource){
+        const auto publishSource=[&]{
             captureSource->setGeometry(source,decl.p);captureSource->pose={};captureSource->bank={};captureSource->missingCoarseShape=nullptr;
-            if(!shapeFirst)publishConstants(*captureSource,rangeConstants,rangeConstantStamp);
-        }
+            if(!shapeFirst&&!envelopeClosed)publishConstants(*captureSource,rangeConstants,rangeConstantStamp);
+        };
+        if(skin&&captureSource&&!envelopeClosed)publishSource();
         read.work(source->vertexCount,source->byteSize());read.next(P::BoundsPose);
         if(skin){
+            NorthlightConstantEpoch::Stamp residentStamp;residentStamp.requestHeld=true;
             const auto publish=[&](const NorthlightReplayBounds::Bounds* bounds){
                 if(!captureSource||!trustedConstants)return;
                 if(bounds&&bounds->low[2]<=48.01f&&bounds->high[2]>=-48.01f)return;
                 NorthlightConstantEpoch::Stamp current;current.requestHeld=true;
-                if(!constantReader||!constantReader(constantContext,current)||!NorthlightConstantEpoch::exact(rangeConstantStamp,current))return;
+                const auto& previous=envelopeClosed?residentStamp:rangeConstantStamp;
+                if(!constantReader||!constantReader(constantContext,current)||!NorthlightConstantEpoch::exact(previous,current))return;
                 if(!bounds)captureSource->pose.publishFar(current,source.get(),original,decl.p);
                 else if(shader->second.rangeKind==NorthlightModelNormalRange::Envelope&&rangeConstantFirst<=2&&rangeConstantFirst+rangeConstantCount>=6)
                     captureSource->pose.publish(*bounds,rangeConstants,current,source.get(),original,decl.p);
@@ -837,7 +846,15 @@ public:
             // configured ranges still keep the draw and its per-pixel checks.
             if(shader->second.rangeKind==NorthlightModelNormalRange::Single){
                 double closest;
-                if(modelRangeProof.outside(source,elements,count,rangeConstants,shader->second.rangeKind,singleBoneLimit,&closest)){
+                if(envelopeClosed&&captureSource&&trustedConstants&&constantReader)constantReader(constantContext,residentStamp);
+                const bool outside=envelopeClosed
+                    ?modelRangeProof.outsideView(source,elements,count,[&](unsigned first,unsigned rows,float*)->const float*{
+                        const auto* known=mirror->borrowKnownVertexFloats(first,rows);
+                        return known?known[0]:nullptr;
+                    },NorthlightModelNormalRange::Single,singleBoneLimit,&closest)
+                    :modelRangeProof.outside(source,elements,count,rangeConstants,NorthlightModelNormalRange::Single,singleBoneLimit,&closest);
+                if(outside){
+                    if(envelopeClosed&&captureSource)publishSource();
                     constexpr double farLimit=NorthlightModelNormalRange::FarDepth;
                     nearest=singleBoneLimit<farLimit?std::nextafter(float(singleBoneLimit),INFINITY):float(farLimit);
                     if(farthest)*farthest=INFINITY;
@@ -845,8 +862,9 @@ public:
                     if(closest>farLimit)publish(nullptr);
                     return true;
                 }
-                if(captureSource&&captureSource->bank.bank)captureSource->unprovenSingleRange=original;
+                if(!envelopeClosed&&captureSource&&captureSource->bank.bank)captureSource->unprovenSingleRange=original;
             }
+            if(envelopeClosed)return false;
             if(coarseOnly&&(!shader->second.envelopeSkin||(!shapeFirst&&std::fabs(rangeConstants[4*31+11])<=2*modelRange)))return false;
             P::Scope envelope(profile,P::PoseEnvelope);
             NorthlightReplayBounds::Bounds result;

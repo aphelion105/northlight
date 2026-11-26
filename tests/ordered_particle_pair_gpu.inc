@@ -112,8 +112,9 @@ static void orderedParticlePair(PaletteDevice& d){
     NorthlightReplayCopies::Slot* slot=nullptr;
     assert(!NorthlightReplayCopies::read(raw,0,sizeof indices,slot)&&slot);
     assert(NorthlightReplayCopies::beginFill(*slot,sizeof indices));
-    std::memcpy(slot->data.data(),indices,sizeof indices);
-    NorthlightReplayCopies::endFill(*slot,true);
+    const auto* bytes=reinterpret_cast<const unsigned char*>(indices);
+    slot->data.assign(bytes,bytes+sizeof indices);
+    assert(NorthlightReplayCopies::endFill(*slot,true));
     NorthlightReplayCopies::unpin(*slot);
     DeviceMirror mirror;
     ExtensionDevice ext(&d,&mirror);

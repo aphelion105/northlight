@@ -280,7 +280,9 @@ inline bool beginFillLocked(Store& s,Slot& c,UINT requested){
     if(!large)while(s.used+c.size>s.cap)if(!detail::evictOne(s))return refused(s.refusals.budget);
     try{
         if(s.spare.capacity()>=c.size&&s.spare.capacity()-c.size<=std::size_t(c.size)/8)c.data.swap(s.spare);   // evicted a moment ago: same allocation, no malloc/free pair
-        c.data.assign(c.size,0);s.list.push_back(&c);
+        // The mapped buffer supplies every byte. Reserve without touching
+        // the pages under the store mutex.
+        c.data.clear();c.data.reserve(c.size);s.list.push_back(&c);
     }catch(...){std::vector<unsigned char>().swap(c.data);return refused(s.refusals.allocation);}
     c.listAt=unsigned(s.list.size()-1);c.state.store(Slot::Filling);c.used=++s.clock;pinRef(c);c.dropAtUnpin=false;c.requestedSpan=0;
     if(large){c.large=true;s.largeUsed+=c.size;m.copyLargeGrants.fetch_add(1,std::memory_order_relaxed);}else s.used+=c.size;
@@ -299,13 +301,14 @@ inline const unsigned char* readOrBeginFill(const void* key,UINT off,UINT size,S
     return nullptr;
 }
 // The fill is done (data written by the caller while the slot was Filling and pinned). ok keeps the pin (the caller reads, then unpin()s).
-inline void endFill(Slot& c,bool ok){
+inline bool endFill(Slot& c,bool ok){
     void* const owner=c.owner;void(*const ref)(void*,bool)=c.ref;
     {Store& s=store();std::lock_guard<std::mutex> g(s.m);auto& m=NorthlightLockMeter::state();
-     if(ok&&c.state.load()==Slot::Filling){c.complete=true;c.state.store(Slot::Valid);m.copyFills.fetch_add(1,std::memory_order_relaxed);m.copyFillBytes.fetch_add(c.size,std::memory_order_relaxed);return;}
+     if(ok&&c.data.size()==c.size&&c.state.load()==Slot::Filling){c.complete=true;c.state.store(Slot::Valid);m.copyFills.fetch_add(1,std::memory_order_relaxed);m.copyFillBytes.fetch_add(c.size,std::memory_order_relaxed);return true;}
      detail::drop(s,c,detail::Why::Silent);if(c.pins)--c.pins;
      if(!c.pins)std::vector<unsigned char>().swap(c.data);}
     if(owner)ref(owner,false);   // the fill's pin; c may be freed from here on
+    return false;
 }
 // The memory guard's decision (replay thread, once per frame): halves the cap and evicts down to it; unpinned copies only.
 inline void setPressure(bool on){

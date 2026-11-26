@@ -527,6 +527,12 @@ static void copiesTests(){
   {C::Slot* sl=nullptr;bool fill=false;auto& st=C::store();std::unique_lock<std::mutex> hold(st.m);std::atomic<bool> done{false};
    std::thread t([&]{C::Slot* x=nullptr;bool f=false;const unsigned char* r=C::readOrBeginFill(small.raw,0,64,x,f);assert(r&&x&&!f);C::unpin(*x);done.store(true);});
    std::this_thread::sleep_for(std::chrono::milliseconds(20));assert(!done.load());hold.unlock();t.join();assert(done.load());(void)sl;(void)fill;}
+  // Reserved but unwritten storage cannot become a live copy or leak a pin.
+  VB incomplete=makeVB(owner,4096);C::Slot* si=slotOf(incomplete);
+  assert(C::beginFill(*si,4096)&&si->data.empty()&&si->data.capacity()==4096);
+  assert(!C::endFill(*si,true)&&si->state.load()==C::Slot::None&&!si->pins);
+  assert(readSame(incomplete,0,4096)&&incomplete.raw->readLocks==1);
+  freeVB(incomplete);
   // spare memory is not kept after the call
   assert(C::store().spare.capacity()==0&&!C::store().recycling);
   freeVB(small);freeVB(near);for(auto& b:v)freeVB(b);assert(m.copyResidentBytes.load()==0);}

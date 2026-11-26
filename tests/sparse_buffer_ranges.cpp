@@ -1,6 +1,6 @@
 #ifdef _WIN32
 // Keep the platform's C++ runtime, then select the portable fake-device wait
-// path, as in pipeline_bindings_cpu.cpp. This is not a Windows message-pump test.
+// path, as in pipeline_bindings_cpu.cpp. The D3D stub replaces Win32 client APIs.
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -19,6 +19,7 @@
 #include <unordered_map>
 #include <vector>
 #undef _WIN32
+#undef _WIN64
 #endif
 #define main command_stream_original_main
 #include "test_command_stream.cpp"
@@ -70,7 +71,7 @@ static void sparseProofs(){
     // A subset selecting the other overlapping copy must also see the rewrite.
     cache.read(result,128,64);for(unsigned i=0;i<64;++i)CHECK(result[i]==(i<32?0x29:0x71));
     cache.clear();cache.discard();
-    constexpr unsigned spans=RangeShadowSpans,gap=3u<<20;
+    constexpr unsigned spans=RangeShadowItemBytes/RangeShadowMinAllocation,gap=3u<<20;
     for(unsigned i=0;i<spans;++i)cache.remember(i*gap,64,source,RangeShadowBudgetBytes-cache.capacity());
     CHECK(cache.canRead(32,64));
     cache.remember(spans*gap,64,source,RangeShadowBudgetBytes-cache.capacity());
@@ -115,12 +116,40 @@ static void sparseProofs(){
     CHECK(!cache.canRead(0,64));
     std::puts("SPARSE_PROOFS_PASS");
 }
+
+static void scatteredSlotRewrites(){
+    gTrace.clear();Rig rig(true);auto& stats=rig.core().q.stats;
+    constexpr UINT length=53u<<20,slots=400,spacing=128u<<10,size=8120;
+    IDirect3DVertexBuffer9* vb=nullptr;void* data=nullptr;
+    CHECK(rig.dev->CreateVertexBuffer(length,D3::kUsageDynamic,0,(D3DPOOL)0,&vb,nullptr)==D3D_OK);
+    for(UINT slot=0;slot<slots;++slot){
+        CHECK(vb->Lock(slot*spacing,size,&data,D3::kLockNoOverwrite)==D3D_OK);
+        std::memset(data,slot%199+1,size);CHECK(vb->Unlock()==D3D_OK);
+    }
+    rig.sync();const auto before=get(stats.syncCalls);
+    for(UINT slot=0;slot<slots;++slot){
+        CHECK(vb->Lock(slot*spacing,size,&data,D3::kLockNoOverwrite)==D3D_OK);
+        auto* bytes=static_cast<unsigned char*>(data);
+        CHECK(bytes[0]==slot%199+1&&bytes[size-1]==slot%199+1);
+        bytes[0]=0xfa;CHECK(vb->Unlock()==D3D_OK);
+    }
+    CHECK(get(stats.syncCalls)==before&&stats.rangeShadowBytes.load()==slots*8192);
+    for(UINT slot:{0u,255u,256u,399u}){
+        CHECK(vb->Lock(slot*spacing,size,&data,D3::kLockReadOnly)==D3D_OK);
+        const auto* bytes=static_cast<const unsigned char*>(data);
+        CHECK(bytes[0]==0xfa&&bytes[size-1]==slot%199+1);CHECK(vb->Unlock()==D3D_OK);
+    }
+    CHECK(vb->Lock(0,size,&data,D3::kLockDiscard)==D3D_OK);std::memset(data,0x72,size);CHECK(vb->Unlock()==D3D_OK);
+    CHECK(stats.rangeShadowBytes.load()==8192);
+    vb->Release();rig.sync();CHECK(stats.rangeShadowBytes.load()==0);rig.finish();checkClean();gTrace.clear();
+    std::puts("SCATTERED_SLOT_REWRITES_PASS slots=400 syncs=0 retainedBytes=3276800");
+}
 #endif
 
 int main(int argc,char** argv){
 #if NORTHLIGHT_EXPECT_SPARSE
     if(argc>1&&std::strcmp(argv[1],"full")==0)return command_stream_original_main(1,argv);
-    if(argc>1){bufferRangeShadowModel();oversizedBufferRangeShadows();oversizedBufferPumpedWrite();sparseProofs();return 0;}
+    if(argc>1){bufferRangeShadowModel();oversizedBufferRangeShadows();oversizedBufferPumpedWrite();sparseProofs();scatteredSlotRewrites();return 0;}
 #endif
     sparseWrites();return 0;
 }
