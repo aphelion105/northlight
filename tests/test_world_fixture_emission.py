@@ -70,6 +70,39 @@ class WorldFixtureEmission(unittest.TestCase):
             assets.files[path[:-3]+'00.skin']+=b'x'
             self.assertFalse(_reviewed_anchor(assets,path,blob,sources))
 
+    def test_reviewed_variant_reuses_or_overrides_the_pin_for_its_exact_model(self):
+        from unittest.mock import patch
+        from world_fixture_emission import _reviewed_anchor
+        assets,blob,_,_,_,sources=fixture()
+        path=r'world\anonymous.m2'
+        skin=assets.files[path[:-3]+'00.skin']=b'test skin'
+        digest=lambda b:hashlib.sha256(b).hexdigest()
+        variant=blob+b'variant';moved=blob+b'moved'
+        pin={'model_sha256':digest(b'reviewed mesh'),'skin_sha256':digest(skin),'source':0,
+             'position':[.5,0,4.],'basis':'test bulb',
+             'variants':{digest(variant):{'basis':'same glow batch center'},
+                         digest(moved):{'position':[0,0,5.],'basis':'moved bulb'}}}
+        with patch('world_fixture_emission._native_anchors',return_value={path:pin}):
+            # A listed variant with the pinned skin reuses the reviewed origin.
+            origin=_reviewed_anchor(assets,path,variant,sources)[0]
+            self.assertEqual(origin['offset'],(.5,0.,1.))
+            self.assertEqual(origin['basis'],'same glow batch center')
+            self.assertEqual(_reviewed_anchor(assets,path,moved,sources)[0]['offset'],(0.,0.,2.))
+            # Unlisted models and changed skins still keep the native origin.
+            self.assertFalse(_reviewed_anchor(assets,path,blob,sources))
+            assets.files[path[:-3]+'00.skin']+=b'x'
+            self.assertFalse(_reviewed_anchor(assets,path,variant,sources))
+
+    def test_installed_lantern_variant_glow_batch_matches_the_reviewed_origin(self):
+        # Every pinned variant must keep its glow batch at the reviewed origin
+        # unless it gives its own position (checked against the client when present).
+        import json
+        catalog=json.loads((Path(__file__).resolve().parents[1]/'renderer'/'wotlk-emitter-profiles.json').read_text())
+        lantern=catalog['native_anchors']['world\\generic\\human\\passive doodads\\hanginglanterns\\generalhanginglantern01.m2']
+        variant=lantern['variants']['858fc61d42958c6156f64f28fe184b085fab355784e067c53f10e1a6dc779681']
+        self.assertNotIn('position',variant);self.assertTrue(variant['basis'])
+        self.assertNotIn('skin_sha256',variant)
+
     def test_local_physics_is_rotated_and_does_not_bypass_fixed_axis_wrapper(self):
         assets,blob,p,bone,_,sources=fixture((90,));before=bytes(blob)
         record=native_fixture_offsets(assets,'world\\renamed.m2',blob,sources)[0]

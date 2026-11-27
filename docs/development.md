@@ -101,6 +101,9 @@ For hardware GPU BVH/GI experiments, visible differences and device lifetime,
 see [GPU BVH feasibility](gpu-bvh-prototype-20261117.md).
 For the later disappearing effects and overdarkened interiors, see
 [effect continuity and room fill](effect-continuity-and-room-fill-20261116.md).
+For inn props darkened by probe occlusion while the walls kept their room fill,
+and lantern sources left under the floor by an unpinned model variant, see
+[inn props](inn-rigid-m2-room-fill-20261127.md).
 For compact diagnostic sessions, lossless archive conversion and the current
 buffer ownership audit, see [compact captures](compact-captures.md).
 For the shared world/actor visibility filter and the remaining fine-cascade work,
