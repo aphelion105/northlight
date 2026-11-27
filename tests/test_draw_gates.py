@@ -200,8 +200,10 @@ checks['enabled: frame-boundary pipeline refresh combines F10 and enabled effect
 checks['failed=false only in Reset (latched there) and the retry in finishFrameImpl']=(len(re.findall(r'\bfailed\s*=\s*false',code))==3  # + the member initialiser
     and 'failed=false;latchDrawGates();' in reset and 'failed=false;logf("Effects retry requested after frame cleanup");' in finish
     and finish.index('failed=false;logf("Effects retry')<finish.index('latchDrawGates();'))
-checks['F9/F12/setEffects only in finishFrameImpl, before the latch']=(code.count('effectKeys.poll(')==1 and sorted(writes('worldDebug'))==['(worldDebug+1)%(SsaoView+1)','0'] and code.count('->setEffects(')==1
-    and all(x in finish and finish.index(x)<finish.index('latchDrawGates();') for x in ('effectKeys.poll(','worldDebug=(worldDebug+1)%(SsaoView+1);','world->setEffects(settings);'))
+checks['D3D F9/F12/setEffects only in finishFrameImpl, before the latch']=(
+    len(re.findall(r'(?<![.\w])effectKeys\.poll\(',code))==1 and
+    sorted(writes('worldDebug'))==['0','NorthlightEffectSwitches::nextWorldView(worldDebug)'] and code.count('->setEffects(')==1
+    and all(x in finish and finish.index(x)<finish.index('latchDrawGates();') for x in ('effectKeys.poll(','worldDebug=NorthlightEffectSwitches::nextWorldView(worldDebug);','world->setEffects(settings);'))
     and finish.rstrip().endswith('latchDrawGates(); /* 0.3.187: the next frame\'s draw gates, after every input above */\n    }'))
 checks['renderers created in the constructor (latched there), released only at destroy']=(
     all(code.count(x+'=std::make_unique<')==1 and x+'=std::make_unique<' in ctor for x in ('world','celestialDiscs','shadowBlobs'))

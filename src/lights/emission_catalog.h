@@ -4,11 +4,40 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <string_view>
 #include <tuple>
 #include <vector>
 
 namespace NorthlightEmission {
 inline constexpr unsigned Glow=1,Lightning=2,SkyLightning=4;
+// Native sky models expose their asset paths. Keep their lexical admission in
+// step with the stock sky classification used to build the proxy catalog.
+inline bool skyModelPath(const char* path){
+    if(!path)return false;
+    constexpr std::string_view prefix="environments\\stars\\";
+    for(char match:prefix){
+        char c=*path;
+        if(!c)return false;
+        ++path;
+        if(c>='A'&&c<='Z')c=char(c-'A'+'a');
+        if(c=='/')c='\\';
+        if(c!=match)return false;
+    }
+    return *path!=0;
+}
+inline bool skyFlashTexture(const char* path){
+    if(!path||!*path)return false;
+    const std::string_view name(path);
+    const auto find=[&](std::string_view part, std::string_view::const_iterator start){
+        return std::search(start,name.end(),part.begin(),part.end(),[](char c,char match){
+            return (c>='A'&&c<='Z'?char(c-'A'+'a'):c)==match;
+        });
+    };
+    for(std::string_view token:{"lightning","thunderbolt","thunderstrike","thunderflash","stormflash","electricarc"})
+        if(find(token,name.begin())!=name.end())return true;
+    const auto meteor=find("meteor",name.begin());
+    return meteor!=name.end()&&find("flash",meteor+6)!=name.end();
+}
 struct Entry {
     std::uint64_t hash;std::uint32_t width,height,format,kind;
     auto key()const{return std::make_tuple(hash,width,height,format);}

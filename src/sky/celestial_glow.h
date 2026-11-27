@@ -7,6 +7,7 @@
 #include <cmath>
 #include <cstdint>
 #include "celestial_halo_visibility.h"
+#include "celestial_disc.h"
 
 namespace NorthlightCelestialGlow {
 // Terrain-mask extent (prepare gate, mask matrix, c46.y) and glare support
@@ -151,6 +152,36 @@ inline float outsideRadii(bool inFront,float x,float y,float radiusPixels,float 
     const float dx=std::max(std::max(-x,x-width),0.f),dy=std::max(std::max(-y,y-height),0.f);
     return std::sqrt(dx*dx+dy*dy)/radiusPixels;
 }
+// Disc centre outside the screen, in projected disc radii (0 on screen).
+inline float centreOutside(const NorthlightCelestialDisc::Disc& disc,const float* inverseView,const float* projection,unsigned width,unsigned height){
+    float centre[2],rim[2];bool front=true;
+    for(unsigned tap=0;tap<2;++tap){
+        float v[3]={};for(unsigned row=0;row<3;++row)for(unsigned k=0;k<3;++k)v[row]+=(disc.direction[k]+(tap?disc.tangentRadius*disc.right[k]:0.f))*inverseView[row*4+k];
+        const float forward=v[2]*projection[2];if(forward<=.000001f){front=false;break;}
+        float* out=tap?rim:centre;out[0]=(v[0]*projection[0]/forward*.5f+.5f)*width;out[1]=(.5f-v[1]*projection[1]/forward*.5f)*height;
+    }
+    if(!front)return 1e9f;
+    return NorthlightCelestialGlow::outsideRadii(true,centre[0],centre[1],std::hypot(rim[0]-centre[0],rim[1]-centre[1]),float(width),float(height));
+}
+// Source-visibility taps c13..c44: xy scene UV (-1 off screen), zw terrain-mask UV.
+// Off-screen slots are refilled from on-screen taps; returns the on-screen fraction.
+inline float sourceTaps(const NorthlightCelestialDisc::Disc& disc,const float* inverseView,const float* projection,unsigned width,unsigned height,
+                        float maskRadius,bool ring,float (*c)[4]){
+    for(unsigned sample=0;sample<NorthlightCelestialHalo::Samples;++sample){
+        float ray[3],v[3]={},ox,oy;
+        if(ring)NorthlightCelestialGlow::ringOffset(sample,ox,oy);else NorthlightCelestialHalo::offset(sample,ox,oy);
+        c[13+sample][0]=c[13+sample][1]=-1;
+        c[13+sample][2]=.5f+.5f*ox/maskRadius;c[13+sample][3]=.5f-.5f*oy/maskRadius;
+        for(unsigned k=0;k<3;++k)ray[k]=disc.direction[k]+disc.tangentRadius*(disc.right[k]*ox+disc.up[k]*oy);
+        for(unsigned row=0;row<3;++row)for(unsigned k=0;k<3;++k)v[row]+=ray[k]*inverseView[row*4+k];
+        const float forward=v[2]*projection[2];if(forward<=.000001f)continue;
+        const float x=(v[0]*projection[0]/forward*.5f+.5f)*width,y=(.5f-v[1]*projection[1]/forward*.5f)*height;
+        if(x<0||x>=width||y<0||y>=height)continue;
+        c[13+sample][0]=x/width;c[13+sample][1]=y/height;
+    }
+    return NorthlightCelestialGlow::normalizeOnScreen(c+13,NorthlightCelestialHalo::Samples);
+}
+
 // The fade filtered like the halo visibility (fall 60 ms, rise 140 ms, FPS
 // independent; a skipped frame or stale state starts at the target).
 struct Fade {

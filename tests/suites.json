@@ -31,6 +31,7 @@
       "test_capture_files.py",
       "test_native_replay_plan.py",
       "test_northrend_fixture.py",
+      "test_qa_scene.py",
       "test_gameplay_benchmark.py",
       "test_northrend_frame_parity.py",
       "test_release_live_contract.py"
@@ -61,6 +62,7 @@
       "test_draw_gates.py",
       "test_draw_orchestration.py",
       "test_draw_submission_route.py",
+      "test_particle_lights.py",
       "test_tideglass_x64_inputs.py",
       "test_actor_shadow_map.py",
       "test_ao_submit_profile.py",

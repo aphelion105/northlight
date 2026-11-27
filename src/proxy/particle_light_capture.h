@@ -323,7 +323,7 @@ public:
             return true;
         };
         const unsigned samples=std::min(args.primCount,NorthlightParticleLights::TrianglesPerDraw);
-        const float bary[4][3]={{1.f/3,1.f/3,1.f/3},{.6f,.2f,.2f},{.2f,.6f,.2f},{.2f,.2f,.6f}};
+        const auto& bary=NorthlightParticleLights::EmissionTriangleWeights;
         std::array<Point,3*NorthlightParticleLights::TrianglesPerDraw> boltPoints;
         std::array<bool,NorthlightParticleLights::TrianglesPerDraw> boltLoaded{};
         float flashLo[3]={INFINITY,INFINITY,INFINITY},flashHi[3]={-INFINITY,-INFINITY,-INFINITY};

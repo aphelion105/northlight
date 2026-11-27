@@ -29,6 +29,7 @@ body = r'''
 #include "quality_settings.h"
 #include <cassert>
 #include <cstdio>
+#include <cstring>
 #include <initializer_list>
 struct Fixture {
     NorthlightEffectSwitches::Settings effects,requestedEffects;
@@ -44,6 +45,12 @@ struct Fixture {
 };
 int main(){
     using namespace NorthlightEffectSwitches;
+    constexpr const char* sequence[]={"scene","shadows","GI","fog volume","normals","SSAO"};
+    auto view=SceneView;
+    for(unsigned step=0;step<2*WorldViewCount;++step){
+        assert(std::strcmp(worldViewName(view),sequence[step%WorldViewCount])==0);
+        view=nextWorldView(view);
+    }
     for(unsigned quality=0;quality<8;++quality)for(unsigned keys=0;keys<8;++keys)for(bool active:{false,true}){
         Fixture f;f.pipelineActive=active;f.quality.gi=quality&1;f.quality.worldShadows=quality&2;f.quality.worldFog=quality&4;
         Settings requested{bool(keys&1),bool(keys&2),bool(keys&4)};f.setEffects(requested);

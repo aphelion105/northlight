@@ -107,7 +107,7 @@ int main(){
         menu.instance.q.rainDropSize=125;menu.instance.q.snowFlakeSize=150;
         menu.surfaceWeather();assert(menu.draw.particles==0&&menu.draw.lenses==0);
         menu.instance.exposed=true;menu.surfaceWeather();assert(menu.draw.particles==1&&menu.draw.lenses==0&&menu.draw.particleAmount>0);
-        assert(menu.draw.snow==(kind==NorthlightWeather::Kind::Snow)&&menu.draw.particleSize==(menu.draw.snow?1.5f:1.25f));
+        assert(menu.draw.snow==(kind==NorthlightWeather::Kind::Snow)&&menu.draw.particleSize==(menu.draw.snow?.5f:.25f));
         menu.menuScene=false;menu.surfaceWeather();assert(menu.draw.particles==1);
         menu.menuScene=true;menu.instance.q.weather=0;menu.surfaceWeather();assert(menu.draw.particles==1);
     }

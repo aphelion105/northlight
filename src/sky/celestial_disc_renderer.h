@@ -169,35 +169,6 @@ private:
         }
         return true;
     }
-    // Disc centre outside the screen, in projected disc radii (0 on screen).
-    static float centreOutside(const NorthlightCelestialDisc::Disc& disc,const float* inverseView,const float* projection,UINT width,UINT height){
-        float centre[2],rim[2];bool front=true;
-        for(unsigned tap=0;tap<2;++tap){
-            float v[3]={};for(unsigned row=0;row<3;++row)for(unsigned k=0;k<3;++k)v[row]+=(disc.direction[k]+(tap?disc.tangentRadius*disc.right[k]:0.f))*inverseView[row*4+k];
-            const float forward=v[2]*projection[2];if(forward<=.000001f){front=false;break;}
-            float* out=tap?rim:centre;out[0]=(v[0]*projection[0]/forward*.5f+.5f)*width;out[1]=(.5f-v[1]*projection[1]/forward*.5f)*height;
-        }
-        if(!front)return 1e9f;
-        return NorthlightCelestialGlow::outsideRadii(true,centre[0],centre[1],std::hypot(rim[0]-centre[0],rim[1]-centre[1]),float(width),float(height));
-    }
-    // Source-visibility taps c13..c44: xy scene UV (-1 off screen), zw terrain-mask UV.
-    // Off-screen slots are refilled from on-screen taps; returns the on-screen fraction.
-    static float sourceTaps(const NorthlightCelestialDisc::Disc& disc,const float* inverseView,const float* projection,UINT width,UINT height,
-                            float maskRadius,bool ring,float (*c)[4]){
-        for(unsigned sample=0;sample<NorthlightCelestialHalo::Samples;++sample){
-            float ray[3],v[3]={},ox,oy;
-            if(ring)NorthlightCelestialGlow::ringOffset(sample,ox,oy);else NorthlightCelestialHalo::offset(sample,ox,oy);
-            c[13+sample][0]=c[13+sample][1]=-1;
-            c[13+sample][2]=.5f+.5f*ox/maskRadius;c[13+sample][3]=.5f-.5f*oy/maskRadius;
-            for(unsigned k=0;k<3;++k)ray[k]=disc.direction[k]+disc.tangentRadius*(disc.right[k]*ox+disc.up[k]*oy);
-            for(unsigned row=0;row<3;++row)for(unsigned k=0;k<3;++k)v[row]+=ray[k]*inverseView[row*4+k];
-            const float forward=v[2]*projection[2];if(forward<=.000001f)continue;
-            const float x=(v[0]*projection[0]/forward*.5f+.5f)*width,y=(.5f-v[1]*projection[1]/forward*.5f)*height;
-            if(x<0||x>=width||y<0||y>=height)continue;
-            c[13+sample][0]=x/width;c[13+sample][1]=y/height;
-        }
-        return NorthlightCelestialGlow::normalizeOnScreen(c+13,NorthlightCelestialHalo::Samples);
-    }
 public:
     // Catalog-proven sun/moon geometry in an HD skybox is artwork, not a cloud.
     // Keep native artwork when replacement resources or the previous context failed.
@@ -376,14 +347,14 @@ public:
         // Glare: taps and the screen-edge fade first, so a skipped glare costs no D3D call.
         float onScreen=0,fade=1;bool hold=false;
         if(glare&&occlude){
-            onScreen=sourceTaps(disc,inverseView,projection,width,height,i?MoonMaskRadius:SunMaskRadius,false,c);
+            onScreen=NorthlightCelestialGlow::sourceTaps(disc,inverseView,projection,width,height,i?MoonMaskRadius:SunMaskRadius,false,c);
             // With no tap on screen the last measured visibility is held while
             // the fade runs out; if none was measured in the previous frame,
             // visibility is unknown: draw nothing and fade in from 0 later.
             hold=!(onScreen>0);
             const bool live=haloWritten[i]&&haloFrame[i]+1==frames;
             if(hold&&!live){edge[i].zero(GetTickCount(),frames);return true;}
-            fade=edge[i].update(GetTickCount(),frames,NorthlightCelestialGlow::edgeFade(centreOutside(disc,inverseView,projection,width,height)));
+            fade=edge[i].update(GetTickCount(),frames,NorthlightCelestialGlow::edgeFade(NorthlightCelestialGlow::centreOutside(disc,inverseView,projection,width,height)));
             if(fade<1.f/512)return true;
         }
         SavedState saved(d);if(!saved.ok||!resources())return false;
@@ -570,7 +541,7 @@ public:
         const auto& g=sunGlare;
         if(failed||!g.valid)return false;
         float c[NorthlightCelestialVeil::Registers][4];std::memcpy(c,g.constants,sizeof c);
-        if(!(sourceTaps(g.disc,g.inverseView,g.projection,g.width,g.height,SunMaskRadius,true,c)>0))return false;
+        if(!(NorthlightCelestialGlow::sourceTaps(g.disc,g.inverseView,g.projection,g.width,g.height,SunMaskRadius,true,c)>0))return false;
         SavedState saved(d);if(!saved.ok||!haloResources()||!ringResources())return false;
         // A skipped frame, resize, teleport or clock jump resets it, like the halo.
         auto history=ringHistory;history.advance(GetTickCount(),frames,g.width,g.height,g.inverseView+12,haloDay,c[45]);

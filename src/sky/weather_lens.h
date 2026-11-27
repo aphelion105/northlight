@@ -142,9 +142,18 @@ struct State {
         const float frostRate=targetFrost>frost?.8f:.5f+heat*3.f;
         frost+=(targetFrost-frost)*(1-std::exp(-dt*frostRate));
     }
+    template<class Emit> void visibleParticles(Emit&& emit)const{
+        for(unsigned i=0;i<count;++i){const auto& p=drops[i];
+            const float opacity=std::min(1.f,p.age*4)*std::clamp((p.life-p.age)*1.5f,0.f,1.f);
+            emit(p,p.visualRadius>0?p.visualX:p.x,p.visualRadius>0?p.visualY:p.y,p.visualRadius>0?p.visualRadius:p.radius(),p.visualRadius>0?p.visualSnow:p.snow/std::max(p.mass(),1e-12f),opacity);
+        }
+        for(unsigned i=0;i<fadeCount;++i){const auto& f=mergeFades[i];const float t=std::clamp(f.age/.35f,0.f,1.f),ease=t*t*(3-2*t);
+            const float opacity=std::min(1.f,f.drop.age*4)*std::clamp((f.drop.life-f.drop.age)*1.5f,0.f,1.f);
+            emit(f.drop,f.drop.visualX+(f.targetX-f.drop.visualX)*ease,f.drop.visualY+(f.targetY-f.drop.visualY)*ease,f.drop.visualRadius,f.drop.visualSnow,(1-ease)*opacity);}
+    }
     unsigned vertices(Vertex* output,unsigned height,bool rivulets=true)const{
         unsigned used=0;
-        auto emit=[&](const Drop& p,float x,float y,float r,float fraction,float opacity){
+        visibleParticles([&](const Drop& p,float x,float y,float r,float fraction,float opacity){
             r=std::clamp(r,.001f,.05f);
             const float tail=rivulets?p.tail():0;
             const float bend=p.bend(tail),angle=p.angle(),tx=-std::sin(angle)*tail,ty=-std::cos(angle)*tail;
@@ -155,14 +164,7 @@ struct State {
             const float deltaX[2]={left-x,right-x},deltaY[2]={top-y,bottom-y};
             const unsigned corners[6][2]={{0,0},{1,0},{0,1},{0,1},{1,0},{1,1}};
             for(const auto& c:corners)output[used++]={screenX[c[0]],screenY[c[1]],0,1,texU[c[0]],ys[c[1]],deltaX[c[0]],deltaY[c[1]],r,tail,bend,fraction,opacity,p.seed,p.shape,angle};
-        };
-        for(unsigned i=0;i<count;++i){const auto& p=drops[i];
-            const float opacity=std::min(1.f,p.age*4)*std::clamp((p.life-p.age)*1.5f,0.f,1.f);
-            emit(p,p.visualRadius>0?p.visualX:p.x,p.visualRadius>0?p.visualY:p.y,p.visualRadius>0?p.visualRadius:p.radius(),p.visualRadius>0?p.visualSnow:p.snow/std::max(p.mass(),1e-12f),opacity);
-        }
-        for(unsigned i=0;i<fadeCount;++i){const auto& f=mergeFades[i];const float t=std::clamp(f.age/.35f,0.f,1.f),ease=t*t*(3-2*t);
-            const float opacity=std::min(1.f,f.drop.age*4)*std::clamp((f.drop.life-f.drop.age)*1.5f,0.f,1.f);
-            emit(f.drop,f.drop.visualX+(f.targetX-f.drop.visualX)*ease,f.drop.visualY+(f.targetY-f.drop.visualY)*ease,f.drop.visualRadius,f.drop.visualSnow,(1-ease)*opacity);}
+        });
         return used;
     }
 };

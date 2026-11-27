@@ -1,9 +1,52 @@
 #include "particle_lights.h"
+#include "emission_catalog.h"
 #include "particle_uploads.h"
 #include <cassert>
 #include <iostream>
 using namespace NorthlightParticleLights;
 int main(){
+    {
+        assert(NorthlightEmission::skyModelPath("Environments/Stars/IcecrownStormySky.m2"));
+        assert(!NorthlightEmission::skyModelPath("World/Expansion01/IcecrownStormySky.m2"));
+        assert(NorthlightEmission::skyFlashTexture("World/NetherstormLightning.blp"));
+        assert(NorthlightEmission::skyFlashTexture("Environments/Stars/CoA_Black_MeteorFlash.blp"));
+        assert(!NorthlightEmission::skyFlashTexture("Environments/Stars/MeteorTail.blp"));
+        assert(!NorthlightEmission::skyFlashTexture("Environments/Stars/Icecrown_CloudsA02_Mask01.blp"));
+        const float inverse[16]={0,1,0,0, -1,0,0,0, 0,0,1,0, 42,91,23,1};
+        const float eye[3]={10,20,30};
+        Frame proxy,native;
+        proxy.observeSky({{1,0,1},{.2f,.4f,.75f}});
+        native.observeSky({{0,1,1},{.2f,.4f,.75f}});
+        proxy.projectSky(inverse,eye);
+        native.projectSky(nullptr,eye);
+        NorthlightLocalLightSelection::Tracker proxyTracker,nativeTracker;
+        const std::vector<Light> noFixtures;
+        proxy.publish(nullptr,0,noFixtures,eye,proxyTracker);
+        native.publish(nullptr,0,noFixtures,eye,nativeTracker);
+        assert(proxy.outputCount==1&&native.outputCount==1);
+        const auto& light=native.output[0];
+        assert(light.attenuationEnd==2000&&light.flags&NorthlightLocalLights::Flash);
+        for(unsigned k=0;k<3;++k)assert(std::fabs(light.position[k]-proxy.output[0].position[k])<1e-5f);
+        assert(std::fabs(light.position[0]-10.f)<1e-5f&&std::fabs(light.position[1]-370.f)<1e-4f&&
+               std::fabs(light.position[2]-380.f)<1e-4f);
+        native.nextFrame();
+        native.projectSky(nullptr,eye);
+        native.publish(nullptr,0,noFixtures,eye,nativeTracker);
+        assert(!native.outputCount);
+    }
+    {
+        const std::array<float,4> tint{.5f,.25f,.75f,.5f};
+        const std::array<float,4> base{.4f,.2f,.8f,.25f};
+        const std::array<float,4> env{.1f,.9f,.2f,.5f};
+        const auto check = [&](ModelEmission kind, const std::array<float,4>& expected){
+            const auto actual = reflectionEmission(kind,tint,base,env);
+            for(unsigned c=0;c<4;++c)assert(std::fabs(actual[c]-expected[c])<1e-6f);
+        };
+        check(ModelEmission::MaskedReflection,{.08f,.08f,.33f,.5f});
+        check(ModelEmission::AddReflection,{.25f,.5f,.7f,.5f});
+        check(ModelEmission::CutoutAddReflection,{.21875f,.134375f,.65625f,.5f});
+        check(ModelEmission::RetailGlow,{.1f,.05f,.2f,.5f});
+    }
     {
         float camera[3]={};Frame mesh;NorthlightLocalLightSelection::Tracker selected;std::vector<Light> fixed;
         Sample herb{{0,0,2},{.2f,.4f,.8f}};

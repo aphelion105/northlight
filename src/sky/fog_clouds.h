@@ -221,7 +221,7 @@ struct Wind {
         const double f=std::isfinite(fog)?std::clamp(double(fog),0.0,1.0):0.0;
         const double sp=kWindDry+(kWindRain-kWindDry)*f,a=0.35+0.436*std::sin(2*3.14159265358979323846*clock/600.0); /* slow +-25 degree veer over ~10 min */
         const double sa=a+0.35,ss=sp*1.6;
-#if defined(_WIN32) && defined(__SSE2__) && (defined(__clang__) || defined(__GNUC__))
+#if defined(_WIN32) && defined(__SSE2__) && !defined(_MSC_VER) && (defined(__clang__) || defined(__GNUC__))
         double ca,sa0,caSmall,saSmall;__builtin_sincos(a,&sa0,&ca);__builtin_sincos(sa,&saSmall,&caSmall);
         speed=float(sp);dir[0]=float(ca);dir[1]=float(sa0);
         large[0]+=sp*ca*d;large[1]+=sp*sa0*d;

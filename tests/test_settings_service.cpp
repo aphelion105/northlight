@@ -133,6 +133,14 @@ int main(int argc,char** argv){
          found=true;assert(f.apply=="F"&&f.low=="0"&&f.high=="4"&&f.factory=="1");}assert(found);
      fails([&]{applyChanges(docs,fields,"C\tdefault\tsun_fog_density\t4.1\n");});}
     {
+        std::string changes;
+        for(const char* key:CelestialMaterialKeys)changes+="C\tdefault\t"+std::string(key)+"\t0.25\n";
+        const auto edited=applyChanges(docs,fields,changes);
+        const auto config=configOf(edited,"",true);
+        for(const char* key:CelestialMaterialKeys)assert(profileValue(config.celestial.fallback,key)=="0.25");
+        fails([&]{applyChanges(docs,fields,"C\tdefault\tlocal_surface_specular\t1.1\n");});
+    }
+    {
         const auto initial=factoryDocuments();
         const auto config=configOf(initial,"");
         const auto ordinary=schema(initial,initial,config,"");

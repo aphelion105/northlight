@@ -13,6 +13,7 @@
 #include "imgui.h"
 #include "settings_service.h"
 #include "diagnostic_capture_request.h"
+#include "qa_scene_capture.h"
 #include "settings_draft.h"
 #include "memory_profile_snapshot.h"
 #include "performance_hardware.h"
@@ -75,6 +76,7 @@ const std::map<std::string,const char*> Labels={
     {"GIDistance","GI distance (yards)"},{"GIChunkRadius","GI geometry chunk radius"},{"GIProbeAhead","GI look-ahead (yards)"},{"GIRays","GI rays per probe"},{"GIBounces","GI light bounces"},{"GIThreads","GI solver threads"},{"GIFastBVH","Fast geometry tracing"},{"GIProbeMoveStep","GI update movement step"},{"GIDynamicProbes","Dynamic GI probes"},
     {"SpellLayer","Separate spell effects"},{"SpellLayerClasses","Spell blend types (mask)"},{"SpellFog","Fog on spell effects"},{"NameMask","Protect unit names"},{"DepthFuncAware","Respect draw depth tests"},{"terrain_radius","Terrain shadow reach (yards)"},
     {"Diagnostics","Diagnostic logging"},{"RenderProfile","Render profiling"},{"DiagReplayProbe","Shadow replay probe"},{"ShadowFateDiagnostics","Shadow lifetime diagnostics"},{"SpellTrace","Spell trace frames"},{"NameMaskDebug","Show name protection mask"},{"MemMap","Address space diagnostics"},
+    {"local_surface_specular","Lamplight highlights"},
 };
 // Shorter row labels where the group title already gives the context.
 const std::map<std::string,const char*> ShortLabels={
@@ -85,6 +87,8 @@ const std::map<std::string,const char*> ShortLabels={
 const std::map<std::string,const char*> CelestialLabels={
     {"disc","Disc tint"},{"disc_gain","Disc brightness"},{"light","Light tint"},{"light_mix","Light tint mix"},{"light_strength","Light strength"},{"fog_gain","Fog illumination"},
     {"fog_height_scale","Fog height"},{"fog_density","Air density"},{"horizon_haze","Horizon haze"},{"glow_strength","Glow strength"},{"glow","Glow tint"},{"glow_mix","Glow tint mix"},
+    {"surface_specular","Sunlight highlights"},{"wet_stone_specular","Wet stone highlights"},{"terrain_ice","Ice response"},
+    {"terrain_snow","Snow response"},{"terrain_specular","Moonlight on terrain"},{"foliage_transmission","Leaf transmission"},
 };
 const std::map<std::string,std::vector<const char*>> Help={
     {"CelestialEffects",{"Replaces the sun, moon, glare and sky background independently of AO, shadows and other effects. Off preserves the native sky and skips Northlight sky capture and composition. HDR output remains separate."}},
@@ -232,7 +236,7 @@ const std::map<std::string,std::vector<const char*>> Help={
     {"ShadowFateDiagnostics",{"Logs why captured shadow geometry is kept or discarded during budget selection. Useful for missing character shadows; leave off for normal play to avoid extra diagnostic work."}},
     {"SpellTrace",{"Number of frames of detailed spell-draw logging to collect. 0 disables the trace. Use a short trace while reproducing a spell issue; verbose logging adds CPU and disk work."}},
     {"NameMaskDebug",{"Displays the protected unit-name area in magenta. Diagnostic visualization only; turn off for normal play."}},
-    {"MemMap",{"Logs snapshots of the game's 32-bit virtual address space to investigate allocation failures. This measures address space, not just physical RAM, and does not increase available memory. Adds diagnostic overhead."}},
+    {"MemMap",{"Logs snapshots of the game's virtual address space to investigate allocation failures. Adds diagnostic overhead."}},
     {"HDRPaperWhite",{"Brightness of ordinary white world surfaces, in nits. Raise it for a brighter HDR baseline; peak highlights and UI brightness have separate controls. Saved for the current display."}},
     {"HDRUIWhite",{"Brightness of HUD elements and text in HDR, in nits. Independent of world exposure and contrast. Saved for the current display."}},
     {"HDRAutoMinEV",{"Lowest exposure the automatic meter may choose before compensation. A lower value lets bright scenes darken further. Only used in Auto exposure mode."}},
@@ -262,9 +266,10 @@ const std::vector<Section> QualitySections={
         {"ao","Ambient occlusion","ContactAO","AOMethod AOQuality AOStrength AORadius",""},
         {"ambient","Environment",nullptr,"NightBrightness",""},
         {"local","Local illumination","LocalLights","LocalLightLimit PointShadows PointShadowLimit EquipmentLights","PointShadowDistance PointShadowRefreshMs PointShadowFacesPerFrame PointShadowAdaptiveRefresh"}},true},
-    {"materials","Materials & parallax","AutoBump AutoBumpTerrain AutoBumpWalls AutoBumpGrass AutoBumpModels AutoNormalFilter AutoBumpStrength AutoBumpDistance AutoParallaxDepth AutoParallaxDistance AutoParallaxSteps AutoParallaxShadows AutoParallaxShadowStrength AutoParallaxShadowSteps AutoCavity AutoCavityStrength AutoMaterialOcclusionDistance AutoDisplacementStrength AutoDisplacementDistance AutoDisplacementDetail AutoHeightBalance AutoModelDisplacementStrength AutoModelDisplacementDistance AutoModelDisplacementDetail",{
-        {"bump","Material modes","AutoBump","AutoBumpTerrain AutoBumpWalls AutoBumpGrass AutoBumpModels AutoNormalFilter AutoBumpStrength AutoBumpDistance",""},
-        {"geometry","Terrain and object displacement",nullptr,"AutoDisplacementStrength AutoDisplacementDistance AutoDisplacementDetail AutoHeightBalance",""},
+    {"materials","Materials & parallax","AutoBump AutoBumpTerrain AutoBumpWalls AutoBumpGrass AutoBumpModels AutoBumpModelMinPixels AutoNormalFilter AutoBumpStrength AutoBumpDistance AutoParallaxDepth AutoParallaxDistance AutoParallaxSteps AutoParallaxShadows AutoParallaxShadowStrength AutoParallaxShadowSteps AutoCavity AutoCavityStrength AutoMaterialOcclusionDistance AutoDisplacementStrength AutoDisplacementDistance AutoDisplacementDetail AutoHeightPolarity AutoHeightDetails AutoHeightBalance AutoModelDisplacementStrength AutoModelDisplacementDistance AutoModelDisplacementDetail",{
+        {"bump","Material modes","AutoBump","AutoBumpTerrain AutoBumpWalls AutoBumpGrass AutoBumpModels AutoNormalFilter AutoBumpStrength AutoBumpDistance","AutoBumpModelMinPixels"},
+        {"height","Height shaping",nullptr,"AutoHeightPolarity AutoHeightDetails AutoHeightBalance",""},
+        {"geometry","Terrain and object displacement",nullptr,"AutoDisplacementStrength AutoDisplacementDistance AutoDisplacementDetail",""},
         {"models","Model displacement",nullptr,"AutoModelDisplacementStrength AutoModelDisplacementDistance AutoModelDisplacementDetail",""},
         {"occlusionrange","Near material shading",nullptr,"AutoMaterialOcclusionDistance",""},
         {"parallax","POM",nullptr,"AutoParallaxDepth AutoParallaxDistance AutoParallaxSteps",""},
@@ -302,6 +307,8 @@ const std::vector<Group> HdrGroups={
 const std::vector<Group> CelestialGroups={
     {"sun","Sun",nullptr,"sun_disc sun_disc_gain sun_light sun_light_strength","sun_light_mix sun_fog_gain sun_fog_height_scale sun_fog_density sun_horizon_haze sun_glow_strength sun_glow sun_glow_mix"},
     {"moon","Moon",nullptr,"moon_disc moon_disc_gain moon_light moon_light_strength","moon_light_mix moon_fog_gain moon_fog_height_scale moon_fog_density moon_horizon_haze moon_glow_strength moon_glow moon_glow_mix"},
+    {"material-response","Material lighting",nullptr,"sun_surface_specular sun_wet_stone_specular moon_terrain_specular local_surface_specular",
+        "sun_terrain_ice sun_terrain_snow sun_foliage_transmission moon_foliage_transmission"},
 };
 std::vector<std::string> words(const char* text);
 // The old menu's preset page.
@@ -762,6 +769,15 @@ struct SettingsPanel::State {
         ImGui::SameLine();if(ImGui::Button("Capture fog"))request(Fog);
         if(ImGui::Button("Capture weather"))request(Weather);
         ImGui::TextWrapped("Saves a compact capture in northlight-diagnostics. ZIP the entire session folder, including .capture-blobs. Repeated data is stored once. Capture frames are excluded from FPS statistics.");
+        using QaState=NorthlightQaScene::State;
+        const auto qa=NorthlightQaScene::state.load();
+        if(qa==QaState::Disabled)return;
+        ImGui::Separator();
+        ImGui::BeginDisabled(qa!=QaState::Recording);
+        if(ImGui::Button("Save last 15 seconds"))NorthlightQaScene::requestSave();
+        if(ImGui::IsItemHovered())ImGui::SetTooltip("Ctrl+Alt+F12");
+        ImGui::EndDisabled();
+        if(qa==QaState::Saved)ImGui::TextUnformatted("Scene marked. The QA launcher will close the game and finish the package.");
     }
     void frameGraph(bool compact){
         const auto& t=timing;const float font=ImGui::GetFontSize(),height=(compact?76.f:112.f)*scale;

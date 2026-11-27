@@ -485,8 +485,9 @@ bool loadPointTransmission(const std::vector<std::string>& tiles,const std::stri
 // sum to 1 within a few ulps, so it is >= minTexel/255*(1-8*2^-24). The 1e-5
 // margin keeps the skip strictly inside that bound; NaN alpha never culls.
 static bool alphaNeverCut(const WorldMaterial& m){
-    if(m.texels().empty())return true; /* materialSample returns alpha 1 >= cutoff (validated <= 1) */
     if(m.alphaCutoff==0.f)return true; // Every texel alpha is nonnegative.
+    if(m.probeCombiner)return false;
+    if(m.texels().empty())return true; /* materialSample returns alpha 1 >= cutoff (validated <= 1) */
     const auto texels=m.texels();const uint8_t low=NorthlightMaterialBytes::minimumAlpha(texels.data(),texels.size());
     return double(low)/255.0*(1.0-1e-5)>=double(m.alphaCutoff);
 }
@@ -497,7 +498,16 @@ static bool validateBVHScene(WorldScene& s,std::string& error){
     for(const auto& v:s.vertices)if(!finite(v.position)||!finite(v.normal)||!std::isfinite(v.u)||!std::isfinite(v.v)){
         error="Scene contains nonfinite vertex data";return false;
     }
+    if(!s.secondUv.empty()&&s.secondUv.size()!=s.vertices.size()){error="Scene contains incomplete secondary UVs";return false;}
+    for(const auto& uv:s.secondUv)if(!std::isfinite(uv[0])||!std::isfinite(uv[1])){error="Scene contains nonfinite secondary UVs";return false;}
     for(auto& m:s.materials){
+        if(m.probeCombiner){
+            const auto& second=m.probeCombiner->second;
+            if(second.pixels&&(s.secondUv.empty()||!second.width||!second.height||second.width>512||second.height>512||
+                second.addressU<1||second.addressU>3||second.addressV<1||second.addressV>3)){
+                error="Scene contains invalid secondary probe texture";return false;
+            }
+        }
         if(!finite(m.albedo)||!std::isfinite(m.alphaCutoff)||m.alphaCutoff<0||m.alphaCutoff>1||m.width>4096||m.height>4096||m.addressU<1||m.addressU>3||m.addressV<1||m.addressV>3||
            uint64_t(m.width)*m.height*4!=m.texels().size()||((m.width==0)!=(m.height==0))){error="Scene contains invalid material";return false;}
         m.albedo=reflectance(m.albedo);
@@ -756,8 +766,7 @@ unsigned addressTexel(int index,uint32_t size,uint32_t mode){
     if(mode==1){const unsigned shifted=unsigned(index+int(size));return (size&(size-1))==0?shifted&(size-1):shifted%size;}
     return unsigned(std::max(0,std::min(int(size)-1,index)));
 }
-template<bool Color=true> Sample materialSample(const WorldMaterial& m,float u,float v){
-    if(m.texels().empty())return {m.albedo,1.f};
+template<bool Color,typename Texture> Sample sampleTexture(const Texture& m,float u,float v){
     // Address normalized coordinates before integer conversion. Mirror/clamp
     // repeat the edge texel at bilinear footprints; wrap crosses the seam.
     float x=addressCoordinate(u,m.addressU)*m.width-.5f,y=addressCoordinate(v,m.addressV)*m.height-.5f;
@@ -770,7 +779,45 @@ template<bool Color=true> Sample materialSample(const WorldMaterial& m,float u,f
         if constexpr(Color)result.color=result.color+Vec3((*lut)[p[0]],(*lut)[p[1]],(*lut)[p[2]])*w;
         result.alpha+=float(p[3])/255.f*w;
     }
-    result.color=result.color*m.albedo;return result;
+    return result;
+}
+
+template<bool Color> Sample materialSample(const WorldMaterial& material,float u,float v,
+                                           const WorldScene& scene,const WorldTriangle& tri,float b,float c){
+    const auto first=material.texels().empty()?Sample{{1,1,1},1.f}:sampleTexture<Color>(material,u,v);
+    const auto* combiner=material.probeCombiner.get();
+    if(!combiner)return {first.color*material.albedo,first.alpha};
+
+    Sample second{{1,1,1},1.f};
+    const auto& texture=combiner->second;
+    if(texture.pixels&&(Color||combiner->alpha!=ProbeAlpha::First)){
+        const float a=1-b-c;
+        const auto& ua=scene.secondUv[tri.v0];
+        const auto& ub=scene.secondUv[tri.v1];
+        const auto& uc=scene.secondUv[tri.v2];
+        second=sampleTexture<Color>(texture,a*ua[0]+b*ub[0]+c*uc[0],a*ua[1]+b*ub[1]+c*uc[1]);
+    }
+    Sample result=first;
+    switch(combiner->alpha){
+        case ProbeAlpha::First: break;
+        case ProbeAlpha::Second: result.alpha=second.alpha;break;
+        case ProbeAlpha::Product: result.alpha=first.alpha*second.alpha;break;
+        case ProbeAlpha::Sum: result.alpha=first.alpha+second.alpha;break;
+        case ProbeAlpha::AddThenMultiply: result.alpha=(first.alpha+1.f)*second.alpha;break;
+    }
+    result.alpha*=combiner->alphaScale;
+    if constexpr(Color){
+        switch(combiner->color){
+            case ProbeColor::First: break;
+            case ProbeColor::Multiply: result.color=first.color*second.color;break;
+            case ProbeColor::Add: result.color=first.color+second.color;break;
+            case ProbeColor::AddThenMultiply: result.color=(first.color+Vec3(1,1,1))*second.color;break;
+            case ProbeColor::Vertex: result.color={1,1,1};break;
+            case ProbeColor::MaskedDiffuse: result.color=first.color*first.alpha;break;
+        }
+        result.color=reflectance(result.color*float(combiner->colorScale)*material.albedo);
+    }
+    return result;
 }
 }
 
@@ -782,7 +829,7 @@ template<bool PlaneOnly> void BVH::shadeHit(RayHit& hit,Vec3 origin,Vec3 directi
         hit.position=origin+direction*distance;hit.triangle=ti;
         if constexpr(!PlaneOnly){
         float w=1-u-v;const auto&m=material(t.material);
-        Sample sample=materialSample<true>(m,w*a.u+u*b.u+v*c.u,w*a.v+u*b.v+v*c.v);
+        Sample sample=materialSample<true>(m,w*a.u+u*b.u+v*c.u,w*a.v+u*b.v+v*c.v,scene_,t,u,v);
         Vec3 normal=normalized(a.normal*w+b.normal*u+c.normal*v);
         Vec3 outward=dot(normal,normal)>.5f?normal:gn;
         bool backFace=dot(outward,direction)>0;
@@ -822,7 +869,7 @@ RayHit BVH::traceImpl(Vec3 origin,Vec3 direction,float minT,float maxT,bool norm
             // whose sample can never fall below the cutoff (see build()).
             if(!TraceOpaqueSkip||!opaque_[t.material]){
                 float w=1-u-v;const auto&m=material(t.material);
-                if(materialSample<false>(m,w*a.u+u*b.u+v*c.u,w*a.v+u*b.v+v*c.v).alpha<m.alphaCutoff)continue;
+                if(materialSample<false>(m,w*a.u+u*b.u+v*c.u,w*a.v+u*b.v+v*c.v,scene_,t,u,v).alpha<m.alphaCutoff)continue;
             }
             hit.hit=true;if constexpr(AnyHit)return true;
             // Shading depends only on the accepted triangle and barycentrics;

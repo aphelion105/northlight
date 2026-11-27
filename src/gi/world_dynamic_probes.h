@@ -122,7 +122,7 @@ class DynamicProbeLayer {
         return std::max({std::fabs(a.anchorLow.x-low.x),std::fabs(a.anchorLow.y-low.y),std::fabs(a.anchorLow.z-low.z),
                          std::fabs(a.anchorHigh.x-high.x),std::fabs(a.anchorHigh.y-high.y),std::fabs(a.anchorHigh.z-high.z)});
     }
-    void rebuild(const WorldScene* actors) {
+    void rebuild(const WorldScene* actors,const std::vector<uint32_t>& materialKeys) {
         bounds_.swap(previousBounds_);bounds_.clear();
         if(!actors)return;
         bounds_.resize(actors->materials.size());
@@ -144,11 +144,12 @@ class DynamicProbeLayer {
         // within half a unit of a previous capture's anchor (idle animation,
         // a cloak, a weapon) inherits that anchor, so its identity does not
         // flap at integer boundaries. A real move re-anchors once.
-        for(auto& b:bounds_)if(b.valid) {
+        for(size_t i=0;i<bounds_.size();++i)if(auto& b=bounds_[i];b.valid) {
             b.anchorLow=b.low;b.anchorHigh=b.high;float best=DynamicAnchorHysteresis;
             for(const auto& old:previousBounds_){float d=span(old,b.low,b.high);if(d<=best){best=d;b.anchorLow=old.anchorLow;b.anchorHigh=old.anchorHigh;}}
             b.hash=mix(cell(b.anchorLow.x)*73856093u^cell(b.anchorLow.y)*19349663u^cell(b.anchorLow.z)*83492791u^
-                       cell(b.anchorHigh.x)*2654435761u^cell(b.anchorHigh.y)*2246822519u^cell(b.anchorHigh.z)*3266489917u);
+                       cell(b.anchorHigh.x)*2654435761u^cell(b.anchorHigh.y)*2246822519u^cell(b.anchorHigh.z)*3266489917u^
+                       (i<materialKeys.size()?mix(materialKeys[i]):0u));
         }
         bounds_.erase(std::remove_if(bounds_.begin(),bounds_.end(),[](const Bounds& b){return !b.valid;}),bounds_.end());
     }
@@ -176,13 +177,13 @@ class DynamicProbeLayer {
     }
 public:
     // Static world/light generation changed: every correction is stale.
-    void reset(const WorldScene* actors) {
-        solved_.clear();paths_.clear();pathBytes_=0;generation_=0;bounds_.clear();previousBounds_.clear();rebuild(actors);
+    void reset(const WorldScene* actors,const std::vector<uint32_t>& materialKeys={}) {
+        solved_.clear();paths_.clear();pathBytes_=0;generation_=0;bounds_.clear();previousBounds_.clear();rebuild(actors,materialKeys);
     }
     // Only the observed actor packet changed. Corrections whose nearby actor
     // bounds are unchanged stay valid; the others are refreshed by budget.
-    void observe(const WorldScene* actors) {
-        rebuild(actors);++generation_;
+    void observe(const WorldScene* actors,const std::vector<uint32_t>& materialKeys={}) {
+        rebuild(actors,materialKeys);++generation_;
         // Bound retention: drop corrections neither solved nor reused for 16
         // captures (a too-old stale correction is not reused, so it ages out).
         for(auto it=solved_.begin();it!=solved_.end();)

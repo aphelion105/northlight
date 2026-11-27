@@ -51,7 +51,7 @@ size during the sample and reports the observed values.
 | `x86-dxvk`, `x64-dxvk` | `--runtime` points to an unpacked proxy payload containing `d3d9.dll` and matching `northlight-assets.bin`. `--backend` points to the matching DXVK D3D9 DLL. The runner requires SDR effects and CommandStream with frame skipping off. |
 | `native-d3d9ex` | `--runtime` points to the source-linked `WowClientNorthlight64.exe` and matching assets. The receipt records whether the SDR effects device wrapped D3D9Ex or fell back to passthrough. |
 | `native-d3d9ex-hdr` | Same source-linked runtime with Windows HDR enabled on the GPU display. The log must confirm scRGB presentation through D3D9On12 GPU transfer. |
-| `native-vulkan` | Same source-linked runtime plus `--vulkan-shaders` pointing to the client-compatible shader directory with `manifest.txt`. Defaults to `VulkanShaders` under the runtime. The runner requires an SDR Vulkan swapchain and a successful Present. |
+| `native-vulkan` | Same source-linked runtime plus `--vulkan-shaders` pointing to the client-compatible shader directory with `manifest.txt`. Defaults to `VulkanShaders` under the runtime. The runner requires an SDR Vulkan swapchain, a successful Present, and CommandStream with frame skipping off. |
 
 Keep the runtime profiles and optional Tideglass files beside their DLLs.
 The runner loads them from `--runtime` when supplied. See the
@@ -71,6 +71,14 @@ to narrow a run. Use `--dxvk-adapter` to select and verify a DXVK device and
 `--keep-client` to retain the private copies for investigation. Give each
 repeat a fresh output directory. Without Windows Developer Mode the runner
 hard-links the client archives, so the output must be on the client's drive. Run one benchmark at a time on the GPU.
+
+Add `--render-profile` to a Northlight D3D9 run (`x86-dxvk`, `x64-dxvk`,
+`native-d3d9ex`, or `native-d3d9ex-hdr`) to collect per-pass timings for every
+selected scene. The runner enables `Diagnostics` and `RenderProfile` in the
+private quality file and disables the extra `DiagReplayProbe` replay. A profiled
+run requires confirmation in `northlight-renderer.log`. Keep the flag consistent
+across FPS comparisons because profiling adds measurement overhead. RenderProfile
+is off by default and is unavailable in stock and Vulkan cases.
 
 Add `--render-profile` to a Northlight D3D9 run (`x86-dxvk`, `x64-dxvk`,
 `native-d3d9ex`, or `native-d3d9ex-hdr`) to collect per-pass timings for every
@@ -102,7 +110,7 @@ so the settings panel shortcut is unavailable in the staged client.
 
 The D3D9 report uses the renderer's quality log, applied settings, and effect
 toggles. It reports which effects are enabled for the scene. The Vulkan report
-uses the contact AO and bloom status after the measurement, with the engine log
+uses the contact AO, horizon haze and bloom status after the measurement, with the engine log
 as fallback. A client that lacks those controls reports `unavailable`.
 `d3d9on12=active` requires a logged GPU transfer through D3D9On12. `loaded`
 means the process had the system DLL loaded when sampled after timing.

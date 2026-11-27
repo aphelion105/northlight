@@ -1188,7 +1188,7 @@ public:
         if(wantGPUHeight)gpuHeight=heightTexture(static_cast<IDirect3DTexture9*>(tex.p),domain==4);
         if(wantGPUHeight&&!gpuHeight){firstHeight=height(static_cast<IDirect3DTexture9*>(tex.p),domain==4,true);if(!firstHeight){++heightRejected;return false;}}
         const Height& first=*firstHeight;
-        timing.next(P::Subdivide);
+        timing.next(P::GeometryPrepare);
         const auto* color=domain==2?&patched->second.color:nullptr;
         // GPU-height geometry is independent of the height pixels. Skinned
         // relief additionally depends on their exact peak; UV/factor/layout
@@ -1205,17 +1205,26 @@ public:
             makeRoom(source,entry->bytes,entry->vb,entry->geometryBytes);++subdivisionReuses;
         }else{
             const bool preferMidpoints=domain!=4&&detail>1&&factor==2;
-            ++buildsThisFrame;Mesh output;if(!NorthlightDisplacementGeometry::build(*source,elements,count,uv,first,factor,domain==1,u==D3DTADDRESS_CLAMP,v==D3DTADDRESS_CLAMP,output,second,second?&uv1:nullptr,second?&weights:nullptr,shader->second.influences,gpuHeight!=nullptr,color,preferMidpoints)){++meshRejected;return false;}
-            timing.work(output.primitiveCount,output.byteSize());if(profile)profile->count(P::GeometryBuilt);timing.next(P::GeometryUpload);
+            ++buildsThisFrame;
+            Mesh output;
+            {
+                P::Scope subdivide(profile,P::Subdivide);
+                if(!NorthlightDisplacementGeometry::build(*source,elements,count,uv,first,factor,domain==1,u==D3DTADDRESS_CLAMP,v==D3DTADDRESS_CLAMP,output,second,second?&uv1:nullptr,second?&weights:nullptr,shader->second.influences,gpuHeight!=nullptr,color,preferMidpoints)){++meshRejected;return false;}
+                subdivide.work(output.primitiveCount,output.byteSize());
+            }
+            if(profile)profile->count(P::GeometryBuilt);
             if(builds<8){float peak=0;for(unsigned i=0;i<output.vertexCount;++i){float delta[3];std::memcpy(delta,output.streams[0].bytes.data()+size_t(i)*output.streams[0].stride+stream.stride,12);peak=std::max(peak,std::sqrt(delta[0]*delta[0]+delta[1]*delta[1]+delta[2]*delta[2])*strength);}logf("DISPLACEMENT build domain=%u vertices=%u triangles=%u maxOffset=%.5f VScontrol=%u",domain,output.vertexCount,output.primitiveCount,peak,shaders.find(original)->second.binding.constant);}
             const auto indexBytes=NorthlightDisplacementGeometry::indexElementBytes(output);
             entry->geometryBytes=output.byteSize()-output.indices.size()*(sizeof(uint32_t)-indexBytes);entry->bytes=entry->geometryBytes+(gpuHeight?size_t(first.width)*first.height*sizeof(float):0);
             MEMORYSTATUSEX memory{};memory.dwLength=sizeof memory;if(!GlobalMemoryStatusEx(&memory)||memory.ullAvailVirtual<entry->bytes+source->byteSize()+(160u<<20)){++refused;return false;}
             refreshBudget(memory);if(entry->bytes+source->byteSize()>cacheBudget){++refused;return false;}
             makeRoom(source,entry->bytes);
+            timing.next(P::GeometryUpload);
             const auto vbBytes=UINT(output.streams[0].bytes.size()),ibBytes=UINT(output.indices.size()*indexBytes);void* data=nullptr;
             if(FAILED(d->CreateVertexBuffer(vbBytes,D3DUSAGE_WRITEONLY,0,D3DPOOL_DEFAULT,&entry->vb,nullptr))||FAILED(entry->vb->Lock(0,vbBytes,&data,NorthlightUpload::FreshBufferLock)))return false;std::memcpy(data,output.streams[0].bytes.data(),vbBytes);if(FAILED(entry->vb->Unlock()))return false;
+            timing.work(0,vbBytes);
             if(FAILED(d->CreateIndexBuffer(ibBytes,D3DUSAGE_WRITEONLY,indexBytes==sizeof(uint16_t)?D3DFMT_INDEX16:D3DFMT_INDEX32,D3DPOOL_DEFAULT,&entry->ib,nullptr))||FAILED(entry->ib->Lock(0,ibBytes,&data,NorthlightUpload::FreshBufferLock)))return false;NorthlightDisplacementGeometry::copyIndices(output,data);if(FAILED(entry->ib->Unlock()))return false;
+            timing.work(output.primitiveCount,ibBytes);
             D3DVERTEXELEMENT9 outputElements[MAXD3DDECLLENGTH+1];std::copy(elements,elements+count,outputElements);
             outputElements[count-1]={0,WORD(stream.stride),D3DDECLTYPE_FLOAT3,D3DDECLMETHOD_DEFAULT,D3DDECLUSAGE_TEXCOORD,7};unsigned end=count;
             if(gpuHeight)outputElements[end++]={0,WORD(stream.stride+12),D3DDECLTYPE_FLOAT2,D3DDECLMETHOD_DEFAULT,D3DDECLUSAGE_TEXCOORD,6};

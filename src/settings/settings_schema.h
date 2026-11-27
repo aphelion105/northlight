@@ -92,6 +92,8 @@ inline std::pair<std::string,uint32_t> region(const std::string& section){
 }
 inline std::string regionName(const std::string& s){auto r=region(s);return r.first+":"+std::to_string(r.second);}
 inline const std::array<const char*,12> CelestialNames={"disc","disc_gain","light","light_mix","light_strength","fog_gain","fog_height_scale","horizon_haze","glow_strength","glow","glow_mix","fog_density"};
+inline constexpr const char* CelestialMaterialKeys[]={"sun_surface_specular","sun_wet_stone_specular","sun_terrain_ice",
+    "sun_terrain_snow","moon_terrain_specular","local_surface_specular","sun_foliage_transmission","moon_foliage_transmission"};
 inline std::string profileValue(NorthlightCelestialProfiles::Profile p,const std::string& key){unsigned n=0;float lo=0,hi=0;auto* v=NorthlightCelestialProfiles::keyTarget(p,key,n,lo,hi);std::string s;for(unsigned i=0;i<n;++i)s+=(i?",":"")+number(v[i]);return s;}
 inline const NorthlightCelestialProfiles::Profile& profile(const NorthlightCelestialProfiles::Table& t,const std::string& s){if(lower(s)=="default")return t.fallback;auto r=region(s);return t.at(r.first,r.second);}
 using Values=std::map<std::string,std::map<std::string,std::string>>;
@@ -160,10 +162,20 @@ inline std::vector<Field> schema(const Documents& docs,const Documents& initial,
             }else sections.insert(regionName(s.first));
         }
         for(const auto& section:sections){
-            if(file==2){for(auto body:{"sun_","moon_"})for(auto name:CelestialNames){Field f;f.file=2;f.section=section;f.key=std::string(body)+name;f.apply="F";unsigned n=0;float lo=0,hi=0;NorthlightCelestialProfiles::Profile dummy;
-                NorthlightCelestialProfiles::keyTarget(dummy,f.key,n,lo,hi);f.kind=n==3?"rgb":"slider";f.low=number(lo);f.high=number(hi);f.step="0.01";
-                f.saved=profileValue(profile(saved.celestial,section),f.key);f.active=profileValue(profile(active.celestial,section),f.key);f.factory=profileValue(profile(defaults.celestial,section),f.key);f.inherited=profileValue(section=="default"?NorthlightCelestialProfiles::Profile{}:saved.celestial.fallback,f.key);add(f);
-            }
+            if(file==2){
+                const auto addCelestial=[&](std::string key){
+                    Field f;f.file=2;f.section=section;f.key=std::move(key);f.apply="F";
+                    unsigned n=0;float lo=0,hi=0;NorthlightCelestialProfiles::Profile dummy;
+                    NorthlightCelestialProfiles::keyTarget(dummy,f.key,n,lo,hi);
+                    f.kind=n==3?"rgb":"slider";f.low=number(lo);f.high=number(hi);f.step="0.01";
+                    f.saved=profileValue(profile(saved.celestial,section),f.key);
+                    f.active=profileValue(profile(active.celestial,section),f.key);
+                    f.factory=profileValue(profile(defaults.celestial,section),f.key);
+                    f.inherited=profileValue(section=="default"?NorthlightCelestialProfiles::Profile{}:saved.celestial.fallback,f.key);
+                    add(std::move(f));
+                };
+                for(const char* body:{"sun_","moon_"})for(const auto* key:CelestialNames)addCelestial(std::string(body)+key);
+                for(const auto* key:CelestialMaterialKeys)addCelestial(key);
                 for(const auto& key:NorthlightAppearancePresets::keys()){
                     Field f;f.file=2;f.section=section;f.key=key;f.apply="F";
                     unsigned n=0;float lo=0,hi=0;NorthlightCelestialProfiles::Profile dummy;

@@ -21,12 +21,7 @@ struct Rows {
         const auto row=records[id-minimum];
         struct {unsigned id;std::byte gap[16];unsigned soundBank;} data{};
         if(!row||!read(row,data)||data.id!=id)return WaterHostLiquidUnknown;
-        switch(data.soundBank){
-            case 0:case 1:return WaterHostLiquidWater;
-            case 2:return WaterHostLiquidMagma;
-            case 3:return WaterHostLiquidSlime;
-            default:return WaterHostLiquidUnknown;
-        }
+        return liquidKind(data.soundBank);
     }
 };
 

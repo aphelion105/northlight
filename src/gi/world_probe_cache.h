@@ -58,7 +58,12 @@ template<int32_t N> inline size_t fixedProbeAtlasIndex(ProbeGridKey key){
     const auto wrap=[](int32_t cell){const int32_t r=cell%N;return size_t(r<0?r+N:r);};
     return wrap(key.x)+wrap(key.y)*N+wrap(key.z)*N*N;
 }
-inline __attribute__((always_inline)) size_t probeAtlasIndex(ProbeGridKey key) {
+#if defined(_MSC_VER) && !defined(__clang__)
+__forceinline
+#else
+inline __attribute__((always_inline))
+#endif
+size_t probeAtlasIndex(ProbeGridKey key) {
     // Signed remainder must be corrected for negative world coordinates. This
     // also handles INT_MIN without negation or signed multiplication overflow.
     const int32_t n=int32_t(probeLayout().atlas);
@@ -179,7 +184,9 @@ public:
     std::vector<ProbeAtlasEntry> atlas()const {
         std::vector<ProbeAtlasEntry> result(probeLayout().atlasSize());
         const auto fill=[&](auto size){constexpr int32_t n=decltype(size)::value;for(const auto& entry:entries_) {
-            const auto index=[&](){if constexpr(n)return fixedProbeAtlasIndex<n>(entry.key);else return probeAtlasIndex(entry.key);}();
+            size_t index;
+            if constexpr(n!=0)index=fixedProbeAtlasIndex<n>(entry.key);
+            else index=probeAtlasIndex(entry.key);
             auto& slot=result[index];
             if(slot.occupied)continue;
             slot.key=entry.key;slot.probe=entry.value;slot.occupied=true;

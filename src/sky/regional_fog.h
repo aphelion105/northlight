@@ -18,6 +18,9 @@
 #if defined(__SSE2__)
 #include <emmintrin.h>
 #endif
+#if defined(_MSC_VER) && !defined(__clang__)
+#include <intrin.h>
+#endif
 namespace NorthlightRegionalFog {
 constexpr unsigned N=64;
 constexpr float Spacing=8.f;
@@ -162,7 +165,13 @@ inline float wetness(const Region& region,float x,float y,float ground,float& su
         float dx=std::max({float(w.x-ChunkSize)-x,0.f,x-w.x}),dy=std::max({float(w.y-ChunkSize)-y,0.f,y-w.y});
         if(dx*dx+dy*dy>=best)continue;
         for(uint64_t bits=w.mask;bits;bits&=bits-1){
+#if defined(_MSC_VER) && !defined(__clang__) && defined(_M_X64)
+            unsigned long index;
+            _BitScanForward64(&index,bits);
+            const unsigned cell=unsigned(index),row=cell/8,col=cell%8;
+#else
             const unsigned cell=unsigned(__builtin_ctzll(bits)),row=cell/8,col=cell%8;
+#endif
             float highX=float(w.x-row*Unit),lowX=float(w.x-(row+1)*Unit),highY=float(w.y-col*Unit),lowY=float(w.y-(col+1)*Unit);
             float a=std::max({lowX-x,0.f,x-highX}),b=std::max({lowY-y,0.f,y-highY});float distance=a*a+b*b;
             if(distance<best){best=distance;if(distance==0){surface=std::max(ground,w.height);return 1;}}
@@ -233,7 +242,12 @@ inline Texel policy(uint32_t zone,float ground,float wet,float basin,bool indoor
 inline bool cityZone(uint32_t zone){return zone==1519||zone==1637;}
 // Match the geometry sampler's bilinear alpha test. A cutout in a city roof
 // must not raise the fog floor into empty space. Runtime FGS3 defaults wrap.
-__attribute__((noinline)) inline bool cityOpaqueTexturedAt(const NorthlightGI::WorldMaterial& m,float u,float v){
+#if defined(_MSC_VER) && !defined(__clang__)
+__declspec(noinline)
+#else
+__attribute__((noinline))
+#endif
+inline bool cityOpaqueTexturedAt(const NorthlightGI::WorldMaterial& m,float u,float v){
     if(!m.width||!m.height||m.texels().size()!=size_t(m.width)*m.height*4||!std::isfinite(u)||!std::isfinite(v))return false;
     auto coord=[](float p,uint32_t mode){if(mode==3)return std::clamp(p,0.f,1.f);auto floorFast=[](float x){if(x>=-32768.f&&x<=32768.f){int i=int(x);return float(i-(x<float(i)));}return std::floor(x);};if(mode==2){float q=p-2*floorFast(p*.5f);return q<=1?q:2-q;}return p-floorFast(p);};
     auto texel=[](int i,unsigned size,uint32_t mode){return mode==1?unsigned((i+int(size))%int(size)):unsigned(std::clamp(i,0,int(size)-1));};

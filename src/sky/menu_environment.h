@@ -2,7 +2,7 @@
 #include "menu_scene.h"
 #include "forever_atmosphere.h"
 #include "celestial_context.h"
-#include "weather_state.h"
+#include "menu_weather.h"
 
 namespace NorthlightMenu {
 struct Environment {
@@ -14,8 +14,9 @@ inline Environment environment(const Snapshot& scene,const float* ambient,const 
     char name[sizeof scene.name]{};
     for(unsigned i=0;i<sizeof name-1&&scene.name[i];++i)name[i]=scene.name[i]>='A'&&scene.name[i]<='Z'?scene.name[i]+('a'-'A'):scene.name[i];
     const bool night=std::strstr(name,"scourge")||std::strstr(name,"nightelf")||std::strstr(name,"deathknight");
-    const bool snow=std::strstr(name,"dwarf")||std::strstr(name,"gnome")||std::strstr(name,"lichking")||std::strstr(name,"icecrown");
     Environment out;auto& c=out.celestial;auto& f=out.atmosphere;
+    out.weather=backdropWeather(name);
+    const bool snow=out.weather.kind==NorthlightWeather::Kind::Snow;
     // Menu backdrops have an authored mood, not a server clock. Changing a
     // character cannot inherit the last world's hour, weather or underwater state.
     c.dayFraction=night?.02f:.55f;c.sun.nativeAngularRadius=.025f;c.moon.nativeAngularRadius=.035f;
@@ -38,7 +39,6 @@ inline Environment environment(const Snapshot& scene,const float* ambient,const 
         l.p[20]=.8f;l.p[21]=.23f;l.p[22]=.8f;l.p[23]=.2f;
         for(unsigned k=0;k<3;++k){l.color[0][k]=l.color[3][k]=hue[k];l.color[1][k]=hue[k]*.16f;l.color[2][k]=hue[k]*.07f;}
     }
-    if(snow){out.weather.kind=NorthlightWeather::Kind::Snow;out.weather.intensity=.3f;out.weather.blend=1;}
     return out;
 }
 }

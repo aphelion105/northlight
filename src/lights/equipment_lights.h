@@ -7,6 +7,9 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#if defined(_MSC_VER) && !defined(__clang__)
+#include <intrin.h>
+#endif
 
 namespace NorthlightEquipmentLights {
 inline constexpr unsigned Capacity=NorthlightLocalLightSelection::Capacity,MemoBanks=64,MaxReadsPerFrame=64,BackgroundReads=32;
@@ -156,7 +159,16 @@ struct Tracker {
         // Each bit names one resident ring slot. Hash collisions and equal
         // fingerprints are resolved without changing the FIFO eviction order.
         for(std::uint64_t pending=matches;pending;pending&=pending-1){
+#if defined(_MSC_VER) && !defined(__clang__)
+            unsigned long index=0;
+            if(!_BitScanForward(&index,static_cast<unsigned long>(pending))){
+                _BitScanForward(&index,static_cast<unsigned long>(pending>>32));
+                index+=32;
+            }
+            const unsigned i=unsigned(index);
+#else
             const unsigned i=unsigned(__builtin_ctzll(pending));
+#endif
             if(frameFingerprints[i]!=fingerprint)continue;
             const auto& entry=frameBanks[i];
             if(entry.count==points&&

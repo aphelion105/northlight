@@ -45,6 +45,19 @@ int main(){
      logs.clear();p.reset();p.beginFrame(6127,true);nanos=0;
      {P::Scope scope(&p,P::Admission,17);nanos=100;const auto before=clockReads;scope.next(P::CaptureSetup);assert(clockReads==before+1);nanos=300;scope.work(7,28);}
      p.endFrame();findLog("stage=admission domain=4 mode=1 calls=1 exclusiveMs=0.000100");findLog("stage=captureSetup domain=4 mode=1 calls=1 exclusiveMs=0.000200 inclusiveMs=0.000200 items=7 bytes=28");
+     logs.clear();p.beginFrame(6254,true);nanos=0;
+     {
+         P::Scope reused(&p,P::GeometryPrepare,19);nanos=100;
+     }
+     {
+         P::Scope cold(&p,P::GeometryPrepare,19);nanos=200;
+         {P::Scope subdivide(&p,P::Subdivide);nanos=500;subdivide.work(4,172);}
+         nanos=600;cold.next(P::GeometryUpload);cold.work(0,124);cold.work(4,24);nanos=800;
+     }
+     p.endFrame();
+     findLog("stage=geometryPrepare domain=4 mode=3 calls=2 exclusiveMs=0.000300");
+     findLog("stage=subdivide domain=4 mode=3 calls=1 exclusiveMs=0.000300 inclusiveMs=0.000300 items=4 bytes=172");
+     findLog("stage=geometryUpload domain=4 mode=3 calls=1 exclusiveMs=0.000200 inclusiveMs=0.000200 items=4 bytes=148");
     }assert(!d.live);
     std::puts("MATERIAL_PROFILE_PASS disabled_zero_work exclusive_nested_cpu domains_modes nonblocking_gpu saturation coverage failure_reset");
 }

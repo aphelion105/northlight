@@ -1072,7 +1072,8 @@ private:
     // so foliage shadows and light shafts do not change with the view. The
     // pivot distance is recovered from the intersection of successive centre
     // rays while the camera rotates; walking keeps the last distance.
-    V pivotEye,pivotForward;bool pivotValid=false;float pivotDistance=12.f;unsigned pivotUpdates=0;
+    NorthlightShadowPivot::OrbitEstimate<V> pivotOrbit;
+    float pivotDistance=12.f;
     // 0.3.190 (shadow_pivot.h): the distance follows a zoom/collision snap and the captured self. pivotSelfCaptured:
     // the latest selection (render thread, selectShadowReplays) captured the self (radiusSelf==1), at frame pivotSelfFrame.
     NorthlightShadowPivot::State pivotCorrection;bool pivotSelfCaptured=false;unsigned pivotSelfFrame=0;
@@ -1080,36 +1081,13 @@ private:
     // jump leaves every pivot-relative shadow band where it was (cascade_anchor.h).
     NorthlightCascadeAnchor::Anchor cascadeAnchor;std::string cascadeAnchorMap;
     void resetShadowPivot(){
-        pivotValid=false;pivotDistance=12.f;pivotCorrection.reset();pivotSelfCaptured=false;cascadeAnchor.reset();
+        pivotOrbit.reset();pivotDistance=12.f;pivotCorrection.reset();pivotSelfCaptured=false;cascadeAnchor.reset();
     }
     V shadowPivot(){
         const V eye=vec(context.camera);
         V forward=V(context.inverseView[8],context.inverseView[9],context.inverseView[10])*projection[2];
         const float length=std::sqrt(NorthlightGI::dot(forward,forward));if(!(length>1e-6f))return eye;forward=forward*(1.f/length);
-        if(!pivotValid){pivotEye=eye;pivotForward=forward;pivotValid=true;}
-        else{
-            const float b=NorthlightGI::dot(pivotForward,forward);
-            // Two rays only 2 degrees apart locate their crossing to within
-            // gap/sin(2 deg), i.e. tens of units, and the estimate swung
-            // between 12 and 26 u while orbiting. Wait for a 12 degree turn
-            // (error under 3 u for a .6 u miss), then filter slowly.
-            if(b<.978f){
-                const V w0=pivotEye-eye;const float d=NorthlightGI::dot(pivotForward,w0),e=NorthlightGI::dot(forward,w0),denom=1-b*b;
-                const float sRef=(b*e-d)/denom,t=(e-b*d)/denom;
-                const V onRef=pivotEye+pivotForward*sRef,onNow=eye+forward*t,gap=onRef-onNow;
-                if(t>1&&t<80&&NorthlightGI::dot(gap,gap)<.36f){
-                    const float step=std::max(-2.f,std::min(2.f,(t-pivotDistance)*.25f));
-                    pivotDistance+=step;++pivotUpdates;
-                }
-                pivotEye=eye;pivotForward=forward;
-            }else{
-                // Walking moves the pivot point itself; an orbit with the right
-                // distance does not. Resetting on eye motion alone discarded the
-                // reference every 2 u, before a 12 degree turn could accumulate.
-                const V refPivot=pivotEye+pivotForward*pivotDistance,nowPivot=eye+forward*pivotDistance,moved=nowPivot-refPivot;
-                if(NorthlightGI::dot(moved,moved)>16){pivotEye=eye;pivotForward=forward;}
-            }
-        }
+        pivotOrbit.update(eye,forward,pivotDistance);
         // 0.3.190: zoom, collision snap and the captured self move the distance along the ray (ShadowPivotCorrection=0: untouched).
         const bool selfFresh=pivotSelfCaptured&&frames-pivotSelfFrame<=4&&actorShadowHistory.selfHold()>0;
         pivotDistance=NorthlightShadowPivot::correct(quality.shadowPivotCorrection!=0,pivotCorrection,&eye.x,&forward.x,pivotDistance,selfFresh?actorShadowHistory.selfAt():nullptr);
@@ -3137,7 +3115,7 @@ public:
                  context.inverseView[8]*projection[2],context.inverseView[9]*projection[2],context.inverseView[10]*projection[2],pivotDistance,geometryLead);
          }else if(coverageHold)holdMax=std::max(holdMax,distance);}
         DWORD now=GetTickCount();if(NorthlightDiagnostics::enabled()&&now-diagnosticTick>=250){diagnosticTick=now;
-            logf("WORLD camera tick=%lu rendered=%u eye=(%.2f %.2f %.2f) forward=(%.4f %.4f %.4f) sun=(%.5f %.5f %.5f) GI=%llu pivotDistance=%.1f pivotUpdates=%u coverMax=%.1f lead=%.1f anchorOffset=%.1f pivotSource=%s snapCorrections=%u selfDistance=%.1f radiusSelf=%d nearBlendAtSelf=%.2f",(unsigned long)now,frames,context.camera[0],context.camera[1],context.camera[2],context.inverseView[8]*projection[2],context.inverseView[9]*projection[2],context.inverseView[10]*projection[2],context.lightDirection[0],context.lightDirection[1],context.lightDirection[2],(unsigned long long)(active?active->serial:0),pivotDistance,pivotUpdates,coverMax,geometryLead,geometryAnchorOffset,
+            logf("WORLD camera tick=%lu rendered=%u eye=(%.2f %.2f %.2f) forward=(%.4f %.4f %.4f) sun=(%.5f %.5f %.5f) GI=%llu pivotDistance=%.1f pivotUpdates=%u coverMax=%.1f lead=%.1f anchorOffset=%.1f pivotSource=%s snapCorrections=%u selfDistance=%.1f radiusSelf=%d nearBlendAtSelf=%.2f",(unsigned long)now,frames,context.camera[0],context.camera[1],context.camera[2],context.inverseView[8]*projection[2],context.inverseView[9]*projection[2],context.inverseView[10]*projection[2],context.lightDirection[0],context.lightDirection[1],context.lightDirection[2],(unsigned long long)(active?active->serial:0),pivotDistance,pivotOrbit.updates,coverMax,geometryLead,geometryAnchorOffset,
                 NorthlightShadowPivot::name(pivotCorrection.source),pivotCorrection.snapCorrections,pivotCorrection.selfDistance,int(pivotCorrection.hasSelf),pivotCorrection.nearBlendAtSelf(sourceMatrices[0][0])); /* 0.3.190: the near matrix the shader gets (source 0) */
             coverMax=0;
         }

@@ -16,12 +16,12 @@ ini=(ROOT/'renderer/windows-package/northlight-quality.ini').read_text();readme=
 pivot=w[w.index('    V shadowPivot(){'):w.index('    std::unordered_map<IDirect3DVertexShader9*,WmoShaderSignature> wmoShaders;')]
 checks={}
 checks['applied after the orbit estimator, written back to pivotDistance']=(pivot.count('NorthlightShadowPivot::correct(')==1
-    and pivot.index('pivotDistance+=step;')<pivot.index('NorthlightShadowPivot::correct(')<pivot.index('return eye+forward*pivotDistance;')
+    and pivot.index('pivotOrbit.update(eye,forward,pivotDistance);')<pivot.index('NorthlightShadowPivot::correct(')<pivot.index('return eye+forward*pivotDistance;')
     and 'pivotDistance=NorthlightShadowPivot::correct(quality.shadowPivotCorrection!=0,pivotCorrection,&eye.x,&forward.x,pivotDistance,' in pivot)
 checks['self read only while captured in a recent selection (not selfHold alone)']=('const bool selfFresh=pivotSelfCaptured&&frames-pivotSelfFrame<=4&&actorShadowHistory.selfHold()>0;' in pivot
     and 'selfFresh?actorShadowHistory.selfAt():nullptr' in pivot
     and 'if(stableRan){pivotSelfCaptured=stable.radiusSelf==1;pivotSelfFrame=frames;}' in e)
-checks['reset() clears the correction wherever pivotValid is reset']=w.count('pivotValid=false;pivotDistance=12.f;pivotCorrection.reset();pivotSelfCaptured=false;')==1 and w.count('pivotValid=false;')==2
+checks['reset() clears both the orbit and the correction']=w.count('pivotOrbit.reset();pivotDistance=12.f;pivotCorrection.reset();pivotSelfCaptured=false;')==1
 checks['shadowPivot() callers unchanged: one per frame (static request or origin)']=w.count('shadowPivot();')==2 and w.count('V shadowPivot(){')==1 and 'staticFramePivot=shadowPivot();staticPivotReady=true;' in w and 'const V pivot=staticPivotReady?staticFramePivot:shadowPivot();' in w
 checks['WORLD camera line extended, on the existing periodic line only']=(w.count('pivotSource=%s snapCorrections=%u selfDistance=%.1f radiusSelf=%d nearBlendAtSelf=%.2f')==1
     and 'NorthlightDiagnostics::enabled()&&now-diagnosticTick>=250' in w[:w.index('pivotSource=%s')][-600:]

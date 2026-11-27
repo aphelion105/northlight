@@ -9,10 +9,36 @@
 #include <cstring>
 using namespace NorthlightShadowPivot;
 struct Cam {float eye[3],f[3];};
+struct OrbitVector {
+    float x = 0, y = 0;
+    OrbitVector operator+(OrbitVector other) const { return {x + other.x, y + other.y}; }
+    OrbitVector operator-(OrbitVector other) const { return {x - other.x, y - other.y}; }
+    OrbitVector operator*(float scale) const { return {x * scale, y * scale}; }
+};
+static float dot(OrbitVector a, OrbitVector b) { return a.x * b.x + a.y * b.y; }
 static void forwardOf(float yawDeg,float pitchDeg,float* f){const float y=yawDeg*3.14159265f/180,p=pitchDeg*3.14159265f/180;f[0]=std::cos(p)*std::cos(y);f[1]=std::cos(p)*std::sin(y);f[2]=std::sin(p);}
 static bool same(float a,float b){return std::memcmp(&a,&b,sizeof a)==0;}
 static float dist3(const float* a,const float* b){float q=0;for(unsigned k=0;k<3;++k)q+=(a[k]-b[k])*(a[k]-b[k]);return std::sqrt(q);}
 int main(){
+    {
+        OrbitEstimate<OrbitVector> orbit;
+        float distance = 12.0f;
+        for (unsigned step = 0; step != 64; ++step) {
+            const float angle = 0.1f * float(step);
+            const OrbitVector forward{std::cos(angle), std::sin(angle)};
+            orbit.update(forward * -20.0f, forward, distance);
+            if (step < 3) assert(distance == 12.0f);
+        }
+        assert(orbit.updates > 0 && std::abs(distance - 20.0f) < 0.05f);
+        const auto beforeTranslation = distance;
+        for (unsigned step = 0; step != 40; ++step)
+            orbit.update({float(step) - 20.0f, 0.0f}, {1.0f, 0.0f}, distance);
+        assert(distance == beforeTranslation);
+        orbit.reset();
+        distance = 12.0f;
+        orbit.update({-10.0f, 0.0f}, {1.0f, 0.0f}, distance);
+        assert(orbit.valid && distance == 12.0f);
+    }
     float f[3];forwardOf(30,-12,f);
     const float player[3]={-8886.2f,572.2f,100.4f};
     auto eyeAt=[&](float t,float* e){for(unsigned k=0;k<3;++k)e[k]=player[k]-f[k]*t;}; /* t yd behind the player on the view ray */

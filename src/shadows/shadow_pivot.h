@@ -32,6 +32,42 @@ constexpr float ForwardDot=.9995f,SnapAlong=1.f,SnapAcrossRatio=.35f,SnapAcrossM
 constexpr float SelfDeadband=1.f,SelfJump=8.f,SelfGain=.3f,SelfStep=1.5f;
 enum Source : unsigned {Orbit=0,Snap=1,Self=2};
 inline const char* name(Source s){return s==Snap?"snap":s==Self?"self":"orbit";}
+
+template<class Vector>
+struct OrbitEstimate {
+    Vector eye{}, forward{};
+    bool valid = false;
+    unsigned updates = 0;
+
+    void reset() { valid = false; }
+
+    void update(const Vector& currentEye, const Vector& currentForward, float& distance) {
+        if (valid) {
+            const float alignment = dot(forward, currentForward);
+            // Wait for a 12-degree turn. Shallow ray intersections amplify camera noise.
+            if (alignment < .978f) {
+                const Vector offset = eye - currentEye;
+                const float d = dot(forward, offset), e = dot(currentForward, offset);
+                const float denominator = 1.f - alignment * alignment;
+                const float referenceT = (alignment * e - d) / denominator;
+                const float t = (e - alignment * d) / denominator;
+                const Vector gap = (eye + forward * referenceT) - (currentEye + currentForward * t);
+                if (t > 1.f && t < 80.f && dot(gap, gap) < .36f) {
+                    distance += std::clamp((t - distance) * .25f, -2.f, 2.f);
+                    ++updates;
+                }
+            } else {
+                // Moving the estimated pivot indicates translation.
+                const Vector moved = (currentEye + currentForward * distance) - (eye + forward * distance);
+                if (!(dot(moved, moved) > 16.f)) return;
+            }
+        }
+        eye = currentEye;
+        forward = currentForward;
+        valid = true;
+    }
+};
+
 struct State {
     float eye[3]={},forward[3]={},prevAlong=0;bool valid=false;
     unsigned snapCorrections=0;Source source=Orbit;

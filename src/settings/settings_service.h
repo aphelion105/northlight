@@ -137,7 +137,10 @@ public:
     }
     void setHdrStatus(bool active,unsigned code,const std::string& reason=""){std::lock_guard<std::mutex> lock(mutex);hdr={};hdr.active=active;hdr.code=code;hdr.reason=reason;}
     void setHdrStatus(HdrStatus status){std::lock_guard<std::mutex> lock(mutex);hdr=std::move(status);}
-    void selectHdrProfile(const std::string& profile){std::lock_guard<std::mutex> lock(mutex);if(profile!=hdrProfile&&(!profileJob||*profileJob!=profile)){profileJob=profile;wake.notify_one();}}
+    void selectHdrProfile(const std::string& profile){
+        std::lock_guard<std::mutex> lock(mutex);
+        if(profile!=(profileJob?*profileJob:hdrProfile)){profileJob=profile;wake.notify_one();}
+    }
     HdrStatus hdrStatus()const{std::lock_guard<std::mutex> lock(mutex);return hdr;}
     std::string revision()const{std::lock_guard<std::mutex> lock(mutex);return activeRevision;}
     // false while any job is queued or running; the overlay retries next frame.

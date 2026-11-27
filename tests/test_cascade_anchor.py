@@ -32,7 +32,7 @@ pivot_reset=w[w.index('    void resetShadowPivot(){'):w.index('    V shadowPivot
 device_reset=w[w.index('    void reset(bool preserveCaptureSources='):w.index('    // 0.3.176 (U0/S0)')]
 scene_domain=w[w.index('    void beginSceneDomain('):w.index('    void updateWorldContext(')]
 checks['Reset and scene domain changes restart the camera estimator and cascade window']=(
-    'pivotValid=false;pivotDistance=12.f;pivotCorrection.reset();pivotSelfCaptured=false;cascadeAnchor.reset();' in pivot_reset
+    'pivotOrbit.reset();pivotDistance=12.f;pivotCorrection.reset();pivotSelfCaptured=false;cascadeAnchor.reset();' in pivot_reset
     and 'resetShadowPivot();' in device_reset and 'const bool changedDomain=menu?menuIdentity!=map:menuDomain;' in scene_domain
     and scene_domain.index('if(changedDomain){')<scene_domain.index('resetShadowPivot();')<scene_domain.index('menuIdentity=menu?map:"";')
     and '#include "cascade_anchor.h"' in w)

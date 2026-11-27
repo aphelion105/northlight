@@ -5,6 +5,14 @@
 #include <cmath>
 
 namespace NorthlightTideglassX64 {
+inline WaterHostLiquidKind liquidKind(int bank){
+    switch(bank){
+        case 0:case 1:return WaterHostLiquidWater;
+        case 2:return WaterHostLiquidMagma;
+        case 3:return WaterHostLiquidSlime;
+        default:return WaterHostLiquidUnknown;
+    }
+}
 struct Ship {
     std::uintptr_t identity=0;
     float position[3]={},speed=0;
@@ -37,20 +45,24 @@ class Wakes {
     struct Track {
         Ship ship{};
         float heading[2]={};
-        unsigned seen=0;
+        unsigned seen=0,lastSailing=0;
+        float sailingSpeed=0;
         struct Point {float x,y,speed;unsigned tick;};
         std::array<Point,kWaterBoatTrailPoints-1> trail{};
         unsigned count=0;
     };
-    std::array<Track,kWaterMaxBoats> tracks{};
+    std::array<Track,16> tracks{};
     static float distance(float x,float y){return x*x+y*y;}
 public:
     void reset(){tracks={};}
     void sample(const Inputs& inputs, unsigned now, WaterFrameValues& output){
+        constexpr unsigned settleTime=45000;
+        constexpr float speedThreshold=.6f;
         for(auto& track:tracks){
-            if(track.ship.identity&&now-track.seen>4000)track={};
+            if(track.ship.identity&&now-track.seen>4000&&
+               (!track.sailingSpeed||now-track.lastSailing>settleTime))track={};
         }
-        for(unsigned i=0;i<inputs.shipCount&&output.boatCount<kWaterMaxBoats;++i){
+        for(unsigned i=0;i<inputs.shipCount;++i){
             const auto& ship=inputs.ships[i];
             if(!ship.identity||!std::isfinite(ship.speed)||ship.speed<0||ship.speed>200||
                !std::all_of(ship.position,ship.position+3,[](float v){return std::isfinite(v)&&std::fabs(v)<100000.f;}))continue;
@@ -61,8 +73,9 @@ public:
             if(track==tracks.end())continue;
             const float dx=ship.position[0]-track->ship.position[0],dy=ship.position[1]-track->ship.position[1];
             const float movement=distance(dx,dy);
-            if(!track->ship.identity||movement>80.f*80.f||std::fabs(ship.position[2]-track->ship.position[2])>20.f)*track={};
-            else if(movement>.000001f&&ship.speed>=.6f){
+            if(!track->ship.identity||now-track->seen>4000||movement>80.f*80.f||
+               std::fabs(ship.position[2]-track->ship.position[2])>20.f)*track={};
+            else if(movement>.000001f&&ship.speed>=speedThreshold){
                 const float length=std::sqrt(movement);
                 track->heading[0]=dx/length;track->heading[1]=dy/length;
                 if(!track->count||distance(ship.position[0]-track->trail[0].x,ship.position[1]-track->trail[0].y)>=64.f){
@@ -72,17 +85,33 @@ public:
                 }
             }
             track->ship=ship;track->seen=now;
-            if(ship.speed<.6f||distance(track->heading[0],track->heading[1])<.5f)continue;
-            auto& boat=output.boats[output.boatCount++];
-            std::copy_n(ship.position,3,boat.position);std::copy_n(track->heading,2,boat.direction);
-            boat.speed=ship.speed;
-            boat.trail[boat.trailCount++]={ship.position[0],ship.position[1],0,ship.speed};
-            for(unsigned j=0;j<track->count;++j){
-                const auto& point=track->trail[j];
-                if(now-point.tick>30000)break;
-                boat.trail[boat.trailCount++]={point.x,point.y,float(now-point.tick)*.001f,point.speed};
+            if(ship.speed>=speedThreshold&&distance(track->heading[0],track->heading[1])>=.5f){
+                track->lastSailing=now;
+                track->sailingSpeed=ship.speed;
             }
         }
+        // The bow wake ages with the trail even when the hull is stopped or leaves the visible set.
+        auto emit=[&](const Track& track, bool sailing){
+            if(output.boatCount==kWaterMaxBoats||!track.sailingSpeed||now-track.lastSailing>settleTime)return;
+            const auto& ship=track.ship;
+            if(distance(ship.position[0]-output.cameraPosition[0],ship.position[1]-output.cameraPosition[1])>600.f*600.f)return;
+            const float since=float(now-track.lastSailing)*.001f;
+            const float fade=track.seen==now?4.f:1.f;
+            auto& boat=output.boats[output.boatCount++];
+            std::copy_n(ship.position,3,boat.position);
+            std::copy_n(track.heading,2,boat.direction);
+            boat.speed=sailing?ship.speed:track.sailingSpeed*std::max(0.f,1.f-since/fade);
+            boat.trail[boat.trailCount++]={ship.position[0],ship.position[1],since,track.sailingSpeed};
+            for(unsigned j=0;j<track.count;++j){
+                const auto& point=track.trail[j];
+                if(track.lastSailing-point.tick>30000)break;
+                boat.trail[boat.trailCount++]={point.x,point.y,float(now-point.tick)*.001f,point.speed};
+            }
+        };
+        for(const auto& track:tracks)
+            if(track.seen==now&&track.ship.speed>=speedThreshold)emit(track,true);
+        for(const auto& track:tracks)
+            if(track.seen!=now||track.ship.speed<speedThreshold)emit(track,false);
     }
 };
 }

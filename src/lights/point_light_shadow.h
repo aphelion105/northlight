@@ -2,6 +2,7 @@
 // Portable point-shadow selection and D3D cube projection. No device APIs.
 #include "local_shadow_signature.h"
 #include "point_shadow_clip.h"
+#include "point_shadow_refresh.h"
 #include "local_light_scissor.h"
 #include <algorithm>
 #include <array>
@@ -50,12 +51,6 @@ struct RefreshSchedule {
         updatedAt=now;light=current;generation=meshGeneration;complete=usable=true;
     }
 };
-// Hold at most one due update for a stationary cube covering a quarter of
-// the screen or less. Alternating slots split the work across render frames;
-// the wall-clock bound prevents this policy adding long holds during stalls.
-inline bool holdSmallCube(bool previouslyHeld,uint32_t age,uint32_t frame,unsigned slot,long area,uint64_t fullArea){
-    return !previouslyHeld&&age<200&&frame&&area>0&&uint64_t(area)*4<=fullArea&&((frame+slot)&1u);
-}
 inline bool holdSmallMovingCube(bool previouslyHeld,uint32_t age,uint32_t frame,unsigned slot,long area,uint64_t fullArea,
                                uint32_t period,bool overloadedCrowd=false){
     // Compatible emitter motion is checked before either path. Under crowd

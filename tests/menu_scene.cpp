@@ -60,6 +60,9 @@ int main(int argc,char** argv){
     const float ambient[3]={.1f,.2f,.3f},direct[3]={.6f,.5f,.4f};auto night=environment(captured,ambient,direct);
     assert(night.atmosphere.valid&&night.atmosphere.skyValid&&night.celestial.dayFraction<.1f);
     std::strcpy(copy.name,"UI_Dwarf");auto snow=environment(copy,ambient,direct);assert(snow.weather.kind==NorthlightWeather::Kind::Snow&&snow.weather.intensity>0);
+    assert(backdropWeather("UI_MainMenu_LichKing.m2").kind==NorthlightWeather::Kind::Snow);
+    assert(backdropWeather("UI_ChArAcTeRcReAtE_GnOmE.m2").intensity==snow.weather.intensity);
+    assert(backdropWeather("UI_CharacterCreate_Human.m2").kind==NorthlightWeather::Kind::None);
     assert(night.weather.kind==NorthlightWeather::Kind::None&&night.atmosphere.ambient[1]==ambient[1]);
     assert(NorthlightWorldDrawDomain::menuModelDraw(1,4,0,1,true));
     assert(!NorthlightWorldDrawDomain::menuModelDraw(1,4,0,.94f,true));assert(!NorthlightWorldDrawDomain::menuModelDraw(1,4,0,1,false));

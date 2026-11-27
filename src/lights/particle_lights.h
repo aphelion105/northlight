@@ -16,10 +16,38 @@ static_assert(Tracks+NativeCapacity<=256,"candidate indices fit in one byte");
 // takes one of the DrawLimit sampling slots: distant particle systems drawn first
 // (city torches, fountains) used to fill the slots and leave the player's weapon dark.
 inline constexpr unsigned ProbeLimit=128;inline constexpr float MaxDistance=48.f;
+inline constexpr unsigned FlashProbeLimit=64;
+inline constexpr float SkyMinEnergy=.000012f;
+inline constexpr float EmissionTriangleWeights[4][3]={
+    {1.f/3,1.f/3,1.f/3},{.6f,.2f,.2f},{.2f,.6f,.2f},{.2f,.2f,.6f}};
 // A source keeps its id while its samples stay within 2 yards, and its position
 // follows them over ~FollowSeconds. Its light shows only this frame's samples:
 // no fade-in (it swallowed one-frame flashes) and no release tail.
 inline constexpr float FollowSeconds=.05f,MinEnergy=.003f;
+enum class ModelEmission : uint8_t { ProvenProduct, MaskedReflection, AddReflection, CutoutAddReflection, RetailGlow };
+inline std::array<float,4> reflectionEmission(ModelEmission mode,const std::array<float,4>& tint,
+                                               const std::array<float,4>& base,const std::array<float,4>& reflection){
+    std::array<float,4> color{0,0,0,tint[3]};
+    for(unsigned c=0;c<3;++c){
+        switch(mode){
+            case ModelEmission::MaskedReflection:
+                color[c]=tint[c]*base[c]*(base[3]+2.f*reflection[c]*(1.f-base[3]));
+                break;
+            case ModelEmission::AddReflection:
+                color[c]=tint[c]*base[c]+reflection[c]*reflection[3];
+                break;
+            case ModelEmission::CutoutAddReflection:
+                color[c]=tint[c]*(base[c]+reflection[c]*reflection[3]*(1.f-base[3]));
+                break;
+            case ModelEmission::RetailGlow:
+                color[c]=base[c]*base[3];
+                break;
+            case ModelEmission::ProvenProduct:
+                break;
+        }
+    }
+    return color;
+}
 struct Sample {float position[3]{},rgb[3]{};float brightest=0;float flashRadius=0;}; // strongest merged sample
 struct Cluster {Sample sample;unsigned count=0;};
 inline float peak(const float* rgb){return std::max({rgb[0],rgb[1],rgb[2]});}
@@ -81,10 +109,10 @@ public:
     void missTexture(const TextureMiss& miss){if(wantsTextureMiss(miss.key))textureMisses[textureMissCount++]=miss;}
     void reset(){count_=previousCount_=trackCount_=outputCount=immediateCount=0;nextFrame();}
     void nextFrame(){count_=skyCount_=0;draws=backgroundDraws=accepted=deferred=triangles=points=dropped=probes=distant=flashDraws=flashProbes=0;shaderMiss=textureMiss=bufferMiss=stateMiss=geometryMiss=0;stateWhy={};}
-    bool takeFlashProbe(){if(flashProbes==64){++dropped;return false;}++flashProbes;return true;}
+    bool takeFlashProbe(){if(flashProbes==FlashProbeLimit){++dropped;return false;}++flashProbes;return true;}
     void observeSky(const Sample& sample){
         for(unsigned k=0;k<3;++k)if(!std::isfinite(sample.position[k])||!std::isfinite(sample.rgb[k])||sample.rgb[k]<0||sample.rgb[k]>16)return;
-        if(peak(sample.rgb)<.000012f)return;
+        if(peak(sample.rgb)<SkyMinEnergy)return;
         unsigned at=skyCount_;
         if(at==sky_.size()){at=0;for(unsigned i=1;i<skyCount_;++i)if(brightness(sky_[i])<brightness(sky_[at]))at=i;
             if(brightness(sample)<=brightness(sky_[at]))return;}
@@ -93,7 +121,11 @@ public:
     }
     void projectSky(const float* inverseView,const float* camera){
         for(unsigned i=0;i<skyCount_;++i){auto s=sky_[i];float direction[3]{},norm=0;
-            for(unsigned j=0;j<3;++j){for(unsigned k=0;k<3;++k)direction[j]+=s.position[k]*inverseView[k*4+j];norm+=direction[j]*direction[j];}
+            for(unsigned j=0;j<3;++j){
+                if(inverseView)for(unsigned k=0;k<3;++k)direction[j]+=s.position[k]*inverseView[k*4+j];
+                else direction[j]=s.position[j]; // The source already supplied a world direction.
+                norm+=direction[j]*direction[j];
+            }
             if(!std::isfinite(norm)||norm<1e-6f)continue;
             for(auto& d:direction)d/=std::sqrt(norm);
             // Skybox units are artistic, not yards. Place its measured direction

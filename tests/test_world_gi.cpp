@@ -8,6 +8,8 @@
 #include <string>
 #include <utility>
 
+#undef near // MinGW's legacy Windows pointer qualifier.
+
 using namespace NorthlightGI;
 
 static void quad(WorldScene& s,Vec3 a,Vec3 b,Vec3 c,Vec3 d,uint32_t material,float u=.5f,float v=.5f){
@@ -49,6 +51,69 @@ static void testAlpha(){
     BVH opaque=build(std::move(s));h=opaque.trace({0,0,0},{0,0,1});
     assert(h.hit&&near(h.distance,1));assert(h.albedo.y>.99f&&h.albedo.x<.001f);
     std::puts("PASS texture alpha holes, wrapped UVs and material color");
+}
+static void testActorCombiner(){
+    WorldScene scene;WorldMaterial primary;
+    primary.albedo={1,1,1};primary.width=primary.height=1;
+    primary.rgba={0,255,255,128};primary.alphaCutoff=.5f;
+    const std::shared_ptr<const uint8_t> pixels(
+        new uint8_t[]{0,255,0,0, 0,0,255,255},std::default_delete<uint8_t[]>{});
+    auto combiner=std::make_shared<ProbeMaterialCombiner>();
+    combiner->second={pixels,2,1,3,1};
+    combiner->alpha=ProbeAlpha::Product;
+    combiner->color=ProbeColor::Multiply;
+    primary.probeCombiner=combiner;
+    scene.materials={primary,{}};
+    quad(scene,{-1,-1,1},{1,-1,1},{1,1,1},{-1,1,1},0);
+    quad(scene,{-1,-1,3},{1,-1,3},{1,1,3},{-1,1,3},1);
+    scene.secondUv={{0,.5f},{1,.5f},{1,.5f},{0,.5f},{},{},{},{}};
+    const Vec3 direction{0,0,1};
+    {
+        const auto tree=build(scene);
+        assert(near(tree.trace({0,0,0},direction).distance,3));
+        assert(!tree.occluded({0,0,0},direction,2));
+        const auto blue=tree.trace({.8f,0,0},direction);
+        assert(blue.hit&&near(blue.distance,1)&&blue.albedo.z>.99f&&blue.albedo.y<.001f);
+    }
+    combiner->alphaScale=2;
+    {
+        const auto tree=build(scene);
+        const auto middle=tree.trace({0,0,0},direction);
+        assert(middle.hit&&near(middle.distance,1));
+        assert(near(middle.albedo.y,.5f)&&near(middle.albedo.z,.5f));
+        assert(!tree.occluded({-.8f,0,0},direction,2));
+    }
+    combiner->alphaScale=1;
+    combiner->alpha=ProbeAlpha::Second;
+    scene.materials[0].rgba[3]=0;
+    {
+        const auto tree=build(scene);
+        assert(tree.occluded({.8f,0,0},direction,2));
+        assert(!tree.occluded({-.8f,0,0},direction,2));
+    }
+    combiner->alpha=ProbeAlpha::AddThenMultiply;
+    scene.materials[0].rgba[3]=128;
+    scene.materials[0].alphaCutoff=.85f;
+    combiner->color=ProbeColor::Add;
+    {
+        const auto tree=build(scene);
+        const auto blend=tree.trace({.1f,0,0},direction);
+        assert(blend.hit&&near(blend.distance,1));
+        assert(near(blend.albedo.y,1)&&near(blend.albedo.z,1));
+    }
+    combiner->second={};
+    combiner->color=ProbeColor::MaskedDiffuse;
+    scene.materials[0].alphaCutoff=0;
+    {
+        const auto tree=build(scene);
+        const auto reflective=tree.trace({0,0,0},direction);
+        assert(reflective.hit&&near(reflective.distance,1));
+        assert(near(reflective.albedo.y,128.f/255.f)&&near(reflective.albedo.z,128.f/255.f));
+        assert(tree.occluded({0,0,0},direction,2));
+    }
+    scene.secondUv.pop_back();
+    BVH invalid;std::string error;assert(!invalid.build(std::move(scene),error));
+    std::puts("PASS layered actor coverage, independent UV interpolation, combiner color and invalid UV rejection");
 }
 static void testSamplerModes(){
     auto sample=[](unsigned uMode,unsigned vMode,float u,float v,bool cutout=false){
@@ -349,4 +414,4 @@ static void testSizeHint(){
     std::filesystem::remove(tile);std::filesystem::remove(model);std::filesystem::remove(root);
     std::puts("PASS FGS3 size hint: identical geometry, single reserve on overlap, key/IoU gating, denied hint falls back");
 }
-int main(int argc,char** argv){testLocalAndMoving();testOcclusion();testAlpha();testSamplerModes();testTracerInvariants();testSun();testBounce();testSkyAndMoments();testProbeValidity();testLoader();testCrop();testInstances();testSizeHint();if(argc>1)testRealScene(argv[1]);if(argc>3)testRealInstanced(argv[2],argv[3],argv[1]);std::puts("All world GI tests passed");}
+int main(int argc,char** argv){testLocalAndMoving();testOcclusion();testAlpha();testActorCombiner();testSamplerModes();testTracerInvariants();testSun();testBounce();testSkyAndMoments();testProbeValidity();testLoader();testCrop();testInstances();testSizeHint();if(argc>1)testRealScene(argv[1]);if(argc>3)testRealInstanced(argv[2],argv[3],argv[1]);std::puts("All world GI tests passed");}

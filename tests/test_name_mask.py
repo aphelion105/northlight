@@ -168,7 +168,7 @@ checks['draw states: a mirror-known render state is read in place under the gate
     'return drawRenderState(type);' in impl and 'NorthlightDrawPreparation::lazyState(readState,type)' in impl
     and 'if(!known){value=read(type);known=true;}' in fp.src('draw_world_state.h').read_text()
     and 'if(unsigned(t)<DeviceMirror::RenderStates&&mirrorState.active()&&mirrorState.renderStateKnown[t]){v=mirrorState.renderStates[t];return true;}' in r
-    and 'return SUCCEEDED(ext->GetRenderState(t,&v));' in r and 'DWORD drawRenderState(D3DRENDERSTATETYPE t){DWORD v=0;readDrawRenderState(t,v);return v;}' in r and indexed.index('Guard mirrorLock(mirrorState.gate);')<indexed.index('auto draw=')<indexed.index('return drawHook(') and 'ext->DrawIndexedPrimitive(' in indexed)
+    and 'return SUCCEEDED(ext->GetRenderState(t,&v));' in r and 'DWORD drawRenderState(D3DRENDERSTATETYPE t){DWORD v=0;readDrawRenderState(t,v);return v;}' in r and indexed.index('Guard mirrorLock(mirrorState.gate);')<indexed.index('auto draw=')<indexed.index('drawHook(') and 'ext->DrawIndexedPrimitive(' in indexed)
 checks['hash UI boundary draws and everything after applied are never marked (prepareDrawImpl returns once applied; the decision sits after beforeDraw)']=(
     impl.index('if(applied){')<impl.index('beforeDraw(vs);')<impl.index('nameMaskDecide('))
 mc=r[r.index('bool nameMaskClear(){'):r.index('// The run of name draws')]
@@ -206,7 +206,7 @@ checks['draw: unmark states around the game draw; a name draws with the run set 
     and 'if(!kind)return rainBlendDraw(rain,claimed,draw);' in md and 'if(claimed||!nameMask.armed())return rainBlendDraw(rain,claimed,draw);' in md)
 hook=r[r.index('template<class Capture,class Draw> HRESULT drawHook('):];hook=hook[:hook.index('\n    }\n')+7]
 checks['drawHook: both preparation paths reach one nameMaskDraw with the original native chain']=hook.count('nameMaskDraw(rainBlend,claimed||mist,nativeDraw)')==1 and hook.count('prepareDrawImpl(capture,count);')==2 and hook.rindex('prepareDrawImpl(capture,count);')<hook.index('nameMaskDraw(rainBlend,claimed||mist,nativeDraw)') and 'auto nativeDraw=[&]{' in hook and hook.count('return aoActorNativeDraw(draw);')==1 and 'rainBlendDraw' not in hook
-checks['draw lambdas retain all four device entry points']=len(re.findall(r'return drawHook\(t,count,\[&\]\(IDirect3DVertexShader9\* vs\)\{.*?\},draw,&nativeSky,&skyCaptured\);\}',r,re.S))==4 and all(x in r for x in ('ext->DrawPrimitive(','ext->DrawIndexedPrimitive(','ext->DrawPrimitiveUP(','ext->DrawIndexedPrimitiveUP('))
+checks['draw lambdas retain all four device entry points']=len(re.findall(r'drawHook\(t,count,\[&\]\(IDirect3DVertexShader9\* vs\)\{[^}]*\},draw,&nativeSky,&skyCaptured(?:,&geometry)?\);',r))==4 and all(x in r for x in ('ext->DrawPrimitive(','ext->DrawIndexedPrimitive(','ext->DrawPrimitiveUP(','ext->DrawIndexedPrimitiveUP('))
 clr=r[r.index('HRESULT STDMETHODCALLTYPE Clear('):];clr=clr[:clr.index('\n    }')+6]
 checks['Clear hook: the stencil flag joins the game\'s full Clear(Z) of the world depth (no rects, scissor off) while the frame has no marks; with marks it is dropped; the mask bit in the game\'s value disables']=(
     'boundDepthIs(maskDsId)' in clr and 'n==0&&SUCCEEDED(ext->GetRenderState(D3DRS_SCISSORTESTENABLE,&scissor))&&!scissor&&SUCCEEDED(ext->GetViewport(&viewport))&&nameMaskFullViewport(viewport)' in clr and 'flags|=D3DCLEAR_STENCIL;stencil=0;' in clr and 'flags&=~DWORD(D3DCLEAR_STENCIL)' in clr
@@ -235,7 +235,7 @@ checks['debug view: the last effect pass before applied=true when the frame has 
     and 'IDirect3DSurface9* outputTarget=linearHdr?hdrPresentBack:saved.targets[0];' in r
     and 'D3DRS_STENCILFUNC,D3DCMP_EQUAL' in r and 'D3DRS_STENCILWRITEMASK,0' in r)
 checks['depth upgrade: the key read from the ini at CreateDevice, D24S8 checked with CheckDeviceFormat and CheckDepthStencilMatch before the auto depth and CreateDepthStencilSurface change, Reset too, the stream applies it on the game thread']=(
-    'const bool stream=NorthlightStream::commandStreamRequested(rootPath,&framesAhead,&frameSkip,&nameMaskWanted,&occlusionLocal,&contactAOWanted);' in r and r.index('commandStreamRequested(rootPath,&framesAhead,&frameSkip,&nameMaskWanted,&occlusionLocal,&contactAOWanted)')<r.index('upgradeAutoDepth(real,adapter,type,pp,nameMaskWanted||contactAOWanted,"CreateDevice");')
+    'const bool streamRequested=NorthlightStream::commandStreamRequested(rootPath,&framesAhead,&frameSkip,&nameMaskWanted,&occlusionLocal,&contactAOWanted);' in r and r.index('commandStreamRequested(rootPath,&framesAhead,&frameSkip,&nameMaskWanted,&occlusionLocal,&contactAOWanted)')<r.index('upgradeAutoDepth(real,adapter,type,pp,nameMaskWanted||contactAOWanted,"CreateDevice");')
     and 'nameMaskRequested' not in r and 'if(nameMask)*nameMask=s.nameMask!=0;' in sh and 'if(contactAO)*contactAO=s.contactAO!=0;' in sh and 'return commandStreamFromText(text,has,framesAhead,frameSkip,nameMask,occlusionLocal,contactAO);' in sh
     and 'if(nameMask.setting){const D3DFORMAT upgraded' not in r and 'D3DUSAGE_DEPTHSTENCIL,D3DRTYPE_SURFACE,D3DFMT_D24S8' in r and 'CheckDepthStencilMatch(' in r
     and 'upgradeAutoDepth(parent,cp.AdapterOrdinal,cp.DeviceType,pp,world->nameMask()||world->contactAO(),"Reset");' in r and 'if(pp&&world)' in r

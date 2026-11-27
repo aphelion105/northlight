@@ -41,6 +41,21 @@ struct TexelView {
     bool operator==(TexelView other)const{return count==other.count&&(!count||pointer==other.pointer||!std::memcmp(pointer,other.pointer,count));}
     bool operator!=(TexelView other)const{return !(*this==other);}
 };
+enum class ProbeAlpha : uint8_t { First, Second, Product, Sum, AddThenMultiply };
+enum class ProbeColor : uint8_t { First, Multiply, Add, AddThenMultiply, Vertex, MaskedDiffuse };
+
+struct ProbeMaterialTexture {
+    std::shared_ptr<const uint8_t> pixels;
+    uint32_t width = 0, height = 0, addressU = 1, addressV = 1;
+    TexelView texels() const { return {pixels.get(), size_t(width) * height * 4}; }
+};
+struct ProbeMaterialCombiner {
+    ProbeMaterialTexture second;
+    ProbeAlpha alpha = ProbeAlpha::First;
+    ProbeColor color = ProbeColor::First;
+    uint8_t alphaScale = 1, colorScale = 1;
+};
+
 struct WorldMaterial {
     // Linear diffuse reflectance multiplied by decoded sRGB texture color.
     Vec3 albedo = Vec3(.5f, .5f, .5f);
@@ -63,6 +78,7 @@ struct WorldMaterial {
     bool pointOnly = false; // Runtime auxiliary transmission geometry; never part of the GI BVH.
     uint32_t lampLocalId = 0; // FGS2 lamp fixture tag, zero for ordinary materials.
     uint64_t lampSourceId = 0; // Exact FGL source for this FGS3 instance, or zero when unknown.
+    std::shared_ptr<const ProbeMaterialCombiner> probeCombiner; // Dynamic actors only.
 };
 inline void decodeLampMaterial(WorldMaterial& m){
     // Positive exact tags encoded as negative cutoffs: WMO fixtures below
@@ -95,6 +111,7 @@ struct WorldScene {
     AdaptiveGeometryArray<WorldVertex> vertices;
     AdaptiveGeometryArray<WorldTriangle> triangles;
     std::vector<WorldMaterial> materials;
+    std::vector<std::array<float, 2>> secondUv; // Dynamic actor vertex indices; empty for static scenes.
     std::vector<WorldPlacementCoverage> completePlacements;
     std::vector<SourcePieceRange> sourcePieces; // Lightweight loader provenance; no raw source ownership.
     // Dynamic storage only: the containing BVH/cache already counts the object.
@@ -102,12 +119,24 @@ struct WorldScene {
         using namespace NorthlightMemoryFootprint;
         vertices.accountMemory(memory,Vertices);triangles.accountMemory(memory,Triangles);memory.vector(Metadata,materials);
         for(const auto& material:materials){if(material.sharedTexels){if(memory.visit(material.sharedTexels.get())){memory.add(Texels,material.texelCapacity());memory.add(Metadata,64);}}else memory.vector(Texels,material.rgba);}
+        memory.vector(Vertices,secondUv);
+        for(const auto& m:materials)if(m.probeCombiner&&memory.visit(m.probeCombiner.get())){
+            memory.add(Metadata,sizeof(ProbeMaterialCombiner)+64);
+            const auto& second=m.probeCombiner->second;
+            if(second.pixels&&memory.visit(second.pixels.get())){memory.add(Texels,second.texels().size());memory.add(Metadata,64);}
+        }
         memory.vector(Metadata,completePlacements);for(const auto& p:completePlacements)memory.string(p.modelKey);
         memory.vector(Metadata,sourcePieces);for(const auto& p:sourcePieces){memory.string(p.placement.modelKey);memory.vector(Metadata,p.materialMap);}
     }
     size_t retainedBytes()const {
         size_t n=sizeof(*this)+vertices.capacity()*sizeof(WorldVertex)+vertices.overhead()+triangles.capacity()*sizeof(WorldTriangle)+triangles.overhead()+materials.capacity()*sizeof(WorldMaterial)+completePlacements.capacity()*sizeof(WorldPlacementCoverage);
         for(size_t i=0;i<materials.size();++i){const auto& m=materials[i];bool seen=false;if(m.sharedTexels)for(size_t j=0;j<i;++j)if(materials[j].sharedTexels==m.sharedTexels){seen=true;break;}if(!seen)n+=m.texelCapacity()+(m.sharedTexels?64:0);}
+        n+=secondUv.capacity()*sizeof(secondUv[0]);
+        for(const auto& m:materials)if(m.probeCombiner){
+            n+=sizeof(ProbeMaterialCombiner)+64;
+            const auto& second=m.probeCombiner->second;
+            if(second.pixels)n+=second.texels().size()+64;
+        }
         for(const auto& p:completePlacements)n+=p.modelKey.capacity();
         n+=sourcePieces.capacity()*sizeof(SourcePieceRange);
         for(const auto& p:sourcePieces)n+=p.placement.modelKey.capacity()+p.materialMap.capacity()*sizeof(uint32_t);

@@ -117,6 +117,7 @@ public:
     explicit Event(bool manualReset=false):h_(CreateEventW(nullptr,manualReset?TRUE:FALSE,FALSE,nullptr)){}
     ~Event(){if(h_)CloseHandle(h_);}
     Event(const Event&)=delete;Event& operator=(const Event&)=delete;
+    bool valid()const{return h_!=nullptr;}
     void set(){if(h_)SetEvent(h_);}
     void reset(){if(h_)ResetEvent(h_);}
     WaitResult wait(std::uint32_t ms=kWaitInfinite){
