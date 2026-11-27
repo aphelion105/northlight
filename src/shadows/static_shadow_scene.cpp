@@ -207,7 +207,7 @@ namespace {
 bool loadCompact(const std::string& path,const std::string& key,size_t cap,Model& model,std::string& error){
     Reader r;if(!r.open(path,cap)){error="Cannot open bounded FGS2 model";return false;}
     char magic[4];uint32_t version,nv,nt,nm;
-    if(!r.bytes(magic,4)||std::memcmp(magic,"FGS2",4)||!r.u32(version)||version!=2||!r.u32(nv)||!r.u32(nt)||!r.u32(nm)||nv>2000000||nt>3000000||nm>65536||uint64_t(nv)*32+uint64_t(nt)*16+uint64_t(nm)*28>r.remaining){error="Invalid FGS2 header/count";return false;}
+    if(!r.bytes(magic,4)||std::memcmp(magic,"FGS2",4)||!r.u32(version)||(version!=2&&version!=3)||!r.u32(nv)||!r.u32(nt)||!r.u32(nm)||nv>2000000||nt>3000000||nm>65536||uint64_t(nv)*32+uint64_t(nt)*16+uint64_t(nm)*(version==3?40:28)>r.remaining){error="Invalid FGS2 header/count";return false;}
     model.key=key;model.index16=nv<=65536;model.vertices.resize(nv);
     // fread per scalar was a major cold-model cost (millions of stdio locks
     // for a city WMO). Decode bounded blocks without an input-sized buffer.
@@ -236,6 +236,10 @@ bool loadCompact(const std::string& path,const std::string& key,size_t cap,Model
         NorthlightGI::decodeLampMaterial(m);
         if(m.alphaCutoff<0||m.alphaCutoff>1){error="Invalid FGS2 material";return false;}
         m.rgba.resize(bytes);if(!r.bytes(m.rgba.data(),bytes)){error="Truncated FGS2 texture";return false;}}
+    if(version==3)for(uint32_t i=0;i<nm;++i){
+        Vec3 rgb;
+        if(!r.vec(rgb)||std::min({rgb.x,rgb.y,rgb.z})<0||std::max({rgb.x,rgb.y,rgb.z})>1){error="Invalid FGS2 room diffuse";return false;}
+    }
     if(r.remaining){error="Trailing FGS2 data";return false;}
     for(auto& material:model.materials)discardOpaqueTexture(material);
     uint64_t revision=hashBytes(HashSeed,model.vertices.data(),model.vertices.size()*sizeof(Vertex));revision=hashBytes(revision,model.indices.data(),model.indices.size()*sizeof(uint32_t));
@@ -370,7 +374,7 @@ struct Streamer::State {
             if(!preflight.open(path,limits.maxDecodeBytes)){++stats.failures;failedModels.insert(queued.second);--stats.pendingModels;continue;}
             size_t fileBytes=preflight.remaining;
             char magic[4];uint32_t version,nv,nt,nm;
-            if(!preflight.bytes(magic,4)||std::memcmp(magic,"FGS2",4)||!preflight.u32(version)||version!=2||!preflight.u32(nv)||!preflight.u32(nt)||!preflight.u32(nm)||uint64_t(nv)*32+uint64_t(nt)*16>preflight.remaining){++stats.failures;failedModels.insert(queued.second);--stats.pendingModels;continue;}
+            if(!preflight.bytes(magic,4)||std::memcmp(magic,"FGS2",4)||!preflight.u32(version)||(version!=2&&version!=3)||!preflight.u32(nv)||!preflight.u32(nt)||!preflight.u32(nm)||uint64_t(nv)*32+uint64_t(nt)*16>preflight.remaining){++stats.failures;failedModels.insert(queued.second);--stats.pendingModels;continue;}
             size_t textureBytes=preflight.remaining-size_t(nv)*32-size_t(nt)*16;
             size_t packedEstimate=size_t(nv)*20+size_t(nt)*(nv<=65536?6:12)+textureBytes*2+size_t(nm)*256;
             // At most two index copies while grouping; original GI scene absent.

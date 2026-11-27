@@ -452,41 +452,54 @@
  375:       endrep
  377:       mul r1.xyz, r14, c21.z
  378:       dp3 r0.z, r1, c22
- 379:       mul r0.w, r14.w, c66.x
- 380:       add_sat r1.w, r3.w, c23.y
- 381:       add r1.w, r1.w, c7.x
- 382:       max r3.xyz, c18, r0.y
- 383:       dp3 r0.y, r3, c22
- 384:       rcp r2.y, r0.y
- 385:       add r0.y, r0.y, c21.w
- 386:       cmp r0.y, r0.y, r2.y, c22.w
- 387:       mul r0.y, r0.y, r0.z
- 388:       add r0.x, -r0.x, c66.y
- 389:       max r2.y, r0.x, c7.y
- 390:       mul r1.xyz, r1, r2.y
- 391:       add r1.xyz, -r3, r1
- 392:       mul r1.xyz, r1, c20.y
- 393:       max r4.xyz, r1, -r3
- 394:       mul r1.xyz, r1.w, r3
- 395:       mul r1.xyz, r1, c20.y
- 396:       max r5.xyz, r1, -r3
- 397:       add r1.xyz, r4, -r5
- 398:       mul r1.xyz, r1, r14.w
- 399:       add r1.xyz, r1, r5
- 400:       mul r3.xyz, r4.w, r1
- 401:       cmp r3.xyz, r1, r3, c7.y
- 402:       min r4.xyz, r1, c7.y
- 403:       add r1.xyz, r3, r4
- 404:       add r3.xyz, r1, c18
- 405:       max r4.xyz, r3, c7.y
- 406:       mul r3.xyz, r4, c18.w
- 407:       add r2.xzw, r1.xyyz, r3.xyyz
- 408:       add_sat r1.w, -r0.y, -c7.x
- 409:       max r1.xyz, r2.xzww, c7.y
- 410:       mul oC1, r0.w, r1
- 411:     endif
- 412:     mov oC0.xyz, r2.xzww
- 413:     mov oC0.w, c7.y
+ 379:       add_sat r0.w, r3.w, c23.y
+ 380:       add r0.w, r0.w, c7.x
+ 381:       max r3.xyz, c18, r0.y
+ 382:       dp3 r0.y, r3, c22
+ 383:       rcp r1.w, r0.y
+ 384:       add r0.y, r0.y, c21.w
+ 385:       cmp r0.y, r0.y, r1.w, c22.w
+ 386:       mul r0.y, r0.y, r0.z
+ 387:       add r0.z, -r0.x, c66.y
+ 388:       max r1.w, r0.z, c7.y
+ 389:       mul r1.xyz, r1.w, r1
+ 390:       add r4.xyz, -r3, r1
+ 391:       mul r4.xyz, r4, c20.y
+ 392:       max r5.xyz, r4, -r3
+ 393:       mul r4.xyz, r0.w, r3
+ 394:       mul r4.xyz, r4, c20.y
+ 395:       max r6.xyz, r4, -r3
+ 396:       add r3.xyz, r5, -r6
+ 397:       mul r3.xyz, r3, r14.w
+ 398:       add r3.xyz, r3, r6
+ 399:       mul r4.xyz, r4.w, r3
+ 400:       cmp r4.xyz, r3, r4, c7.y
+ 401:       min r5.xyz, r3, c7.y
+ 402:       add r3.xyz, r4, r5
+ 403:       add r4.xyz, r3, c18
+ 404:       max r5.xyz, r4, c7.y
+ 405:       mul r4.xyz, r5, c18.w
+ 406:       add r3.xyz, r3, r4
+ 407:       mul r0.z, r14.w, c66.x
+ 408:       mov r2.y, c11.y
+ 409:       add r0.w, -r2.y, c24.z
+ 410:       if_eq c24.z, r2.y
+ 413:         add r0.x, -r0.x, c18.w
+ 414:         max r1.w, r0.x, c7.y
+ 415:         mul r0.x, r14.w, c20.y
+ 416:         mul r0.x, r1.w, r0.x
+ 417:         mul r1.xyz, r0.x, r1
+ 418:       else
+ 419:         mov r1.xyz, c7.y
+ 420:       endif
+ 421:       add_sat r4.w, -r0.y, -c7.x
+ 422:       max r4.xyz, r3, c7.y
+ 423:       mul r4, r0.z, r4
+ 424:       cmp oC1, -r0_abs.w, c7.y, r4
+ 425:       cmp r2.xzw, -r0_abs.w, r1.xyyz, r3.xyyz
+ 426:     endif
+ 427:     mov oC0.xyz, r2.xzww
+ 428:     mov oC0.w, c7.y
 
-// approximately 446 instruction slots used (32 texture, 414 arithmetic)
+// approximately 461 instruction slots used (32 texture, 429 arithmetic)
  

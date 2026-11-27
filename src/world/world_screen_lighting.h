@@ -36,6 +36,7 @@ public:
         IDirect3DTexture9* material;
         const float (&bumpControl)[4];
         const float (&materialLight)[4][4];
+        bool probeLamps=false;
     };
     struct Audit {
         const std::string* directory;
@@ -170,7 +171,7 @@ public:
         if(unshadowedLighting&&giRequested)
             createOptional(d,kWorldLightingUnshadowedGIShader,unshadowedGi_,unshadowedGiRefused_);
         // The fused fallback has no packed cascade reads.
-        const bool mergedGI=unshadowedLighting&&giRequested&&unshadowedGi_&&in.probes.gridActive<.5f;
+        const bool mergedGI=unshadowedLighting&&giRequested&&unshadowedGi_&&in.probes.gridActive<.5f&&!in.probeLamps;
         std::optional<NorthlightLightingCapture::Capture> giAudit;
         if(audit.directory)giAudit.emplace(d,*audit.directory,in.rendererFrame,audit.worldFrame,
             in.rendererFrame,in.width,in.height,"frame-parity-gi-inputs");
@@ -248,7 +249,7 @@ public:
                 (unsigned long long)audit.worldSerial,(unsigned long long)audit.atlasSerial);
         }
         if(giRequested&&!mergedGI){
-            d->SetRenderState(D3DRS_ALPHABLENDENABLE,TRUE);
+            d->SetRenderState(D3DRS_ALPHABLENDENABLE,!in.probeLamps);
             d->SetRenderState(D3DRS_COLORWRITEENABLE,7);
             d->SetPixelShader(gi_);
             // RGB carries added bounce; alpha carries resident-probe occlusion.

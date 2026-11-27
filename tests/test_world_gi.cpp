@@ -223,11 +223,12 @@ static void testProbeValidity(){
 static void u32(FILE* f,uint32_t n){unsigned char b[4]={uint8_t(n),uint8_t(n>>8),uint8_t(n>>16),uint8_t(n>>24)};assert(std::fwrite(b,1,4,f)==4);}
 static void f32(FILE* f,float v){uint32_t i;std::memcpy(&i,&v,4);u32(f,i);}
 static void vec(FILE* f,Vec3 v){f32(f,v.x);f32(f,v.y);f32(f,v.z);}
-static void writeScene(const char* path,const WorldScene& s){
-    FILE*f=std::fopen(path,"wb");assert(f);std::fwrite("FGS2",1,4,f);u32(f,2);u32(f,uint32_t(s.vertices.size()));u32(f,uint32_t(s.triangles.size()));u32(f,uint32_t(s.materials.size()));
+static void writeScene(const char* path,const WorldScene& s,bool roomDiffuse=false){
+    FILE*f=std::fopen(path,"wb");assert(f);std::fwrite("FGS2",1,4,f);u32(f,roomDiffuse?3:2);u32(f,uint32_t(s.vertices.size()));u32(f,uint32_t(s.triangles.size()));u32(f,uint32_t(s.materials.size()));
     for(const auto&v:s.vertices){vec(f,v.position);vec(f,v.normal);f32(f,v.u);f32(f,v.v);}
     for(const auto&t:s.triangles){u32(f,t.v0);u32(f,t.v1);u32(f,t.v2);u32(f,t.material);}
     for(const auto&m:s.materials){vec(f,m.albedo);u32(f,m.width);u32(f,m.height);f32(f,m.alphaCutoff);u32(f,uint32_t(m.rgba.size()));std::fwrite(m.rgba.data(),1,m.rgba.size(),f);}
+    if(roomDiffuse)for(const auto& m:s.materials)vec(f,m.roomDiffuse);
     std::fclose(f);
 }
 // Unique per run under the system temp dir, so parallel runs never share a file.
@@ -244,6 +245,28 @@ static void testLoader(){
     assert(!loadScene(path,scene,error));std::remove(path);
     WorldScene invalid;invalid.triangles.push_back({0,1,2,0});BVH b;assert(!b.build(std::move(invalid),error));
     std::puts("PASS bounded FGS2 parsing, trailing-data rejection and invalid indices");
+}
+static void testRoomDiffuse(){
+    WorldScene room;WorldMaterial material;material.albedo={.5f,.5f,.5f};material.roomDiffuse={.2f,.1f,.05f};room.materials.push_back(material);
+    quad(room,{-30,-30,0},{30,-30,0},{30,30,0},{-30,30,0},0);
+    const std::string path=scratchPath("northlight-gi-room-fill").string()+".fgs";
+    writeScene(path.c_str(),room,true);
+    WorldScene s;std::string error;assert(loadScene(path.c_str(),s,error));std::remove(path.c_str());
+    auto b=build(std::move(s));
+    Lighting light;light.sunIrradiance={};light.skyRadiance={};light.maxDistance=20;light.maxBounces=1;
+    const auto front=solveProbe(b,{0,0,1},light,4096,73);
+    const auto back=solveProbe(b,{0,0,-1},light,4096,73);
+    const Vec3 e=evaluateIrradiance(front,{0,0,-1});
+    // The finite trace distance rejects grazing rays whose downward cosine is below 1/20.
+    const float grazing=1/light.maxDistance;
+    const float hemisphere=.1f*3.14159265f*(1-.5f*grazing*(1+grazing));
+    assert(front.valid&&near(e.x,hemisphere,.002f)&&near(e.y,e.x*.5f));
+    ProbeResponse response;
+    const auto prepared=prepareLighting(light);
+    solveProbeResponse(b,{0,0,1},prepared,4096,73,response);
+    assert(near(evaluateIrradiance(relightProbe(response,prepared),{0,0,-1}).x,e.x));
+    for(const auto& c:back.sh)assert(c.x==0&&c.y==0&&c.z==0);
+    std::puts("PASS authored room diffuse reaches the probe from the interior side of an FGS2 v3 surface");
 }
 static void testCrop(){
     WorldScene s;s.materials.push_back({});s.materials.push_back({});
@@ -414,4 +437,4 @@ static void testSizeHint(){
     std::filesystem::remove(tile);std::filesystem::remove(model);std::filesystem::remove(root);
     std::puts("PASS FGS3 size hint: identical geometry, single reserve on overlap, key/IoU gating, denied hint falls back");
 }
-int main(int argc,char** argv){testLocalAndMoving();testOcclusion();testAlpha();testActorCombiner();testSamplerModes();testTracerInvariants();testSun();testBounce();testSkyAndMoments();testProbeValidity();testLoader();testCrop();testInstances();testSizeHint();if(argc>1)testRealScene(argv[1]);if(argc>3)testRealInstanced(argv[2],argv[3],argv[1]);std::puts("All world GI tests passed");}
+int main(int argc,char** argv){testLocalAndMoving();testOcclusion();testAlpha();testActorCombiner();testSamplerModes();testTracerInvariants();testSun();testBounce();testSkyAndMoments();testProbeValidity();testLoader();testRoomDiffuse();testCrop();testInstances();testSizeHint();if(argc>1)testRealScene(argv[1]);if(argc>3)testRealInstanced(argv[2],argv[3],argv[1]);std::puts("All world GI tests passed");}

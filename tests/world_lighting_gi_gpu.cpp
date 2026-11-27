@@ -174,11 +174,11 @@ int main(int argc,char** argv){
   // Two projected planes meet at a diagonal. Only neighbouring samples on
   // the fold may blend, and the correction must follow the local baseline.
   const auto fold=[](float x,float y){return x-.6f*y-32.f;};
+  float visibility=0;
   const auto foldLight=[&](unsigned x,unsigned y){
    const float light=fold(float(x),float(y))<0?-.3f:-.2f;
-   return std::array<float,4>{light,light,light,0};
+   return std::array<float,4>{light,light,light,visibility};
   };
-  bind(8,W,H,foldLight);bind(9,W,H,foldLight);
   bind(12,W,H,[&](unsigned x,unsigned y){
    const float baseline=fold(float(x),float(y))<0?.4f:.8f;
    return std::array<float,4>{baseline,baseline,baseline,1};
@@ -190,7 +190,11 @@ int main(int argc,char** argv){
     const float depth=.975f+std::max(edge,0.f)*.00009f+(gap&&edge>=0?.004f:0.f);
     return std::array<float,4>{depth,0,0,0};
    });
-   for(bool water:{false,true}){
+   for(bool water:{false,true})for(unsigned mode:{0u,1u,2u,4u}){
+    // mode 1 here selects an ordinary lit receiver with full directional alpha.
+    // The isolated GI views must still smooth that same crease.
+    visibility=mode?1.f:0.f;c[24][2]=mode==1?0.f:float(mode);
+    bind(8,W,H,foldLight);bind(9,W,H,foldLight);
     c[30][0]=water;c[20][1]=1;c[30][1]=c[30][2]=1;
     solid(11,{4,1,0,0});
     ok(d->SetPixelShaderConstantF(0,c[0],128));
@@ -205,15 +209,15 @@ int main(int argc,char** argv){
       const float edge=fold(float(x),float(y));
       const auto i=(y*W+x)*4;
       const float delta=half(values[i])-foldLight(x,y)[0];
-      assert(values[i+3]==0);
-      if(gap||water||std::fabs(edge)>1)assert(std::fabs(delta)<.001f);
+      assert(half(values[i+3])==visibility);
+      if(gap||water||mode==1||std::fabs(edge)>1)assert(std::fabs(delta)<.001f);
       else if(std::fabs(delta)>.01f){assert(edge<0?delta>0:delta<0);++softened;}
      }
-     if(!gap&&!water)assert(softened>H);
+     if(!gap&&!water&&mode!=1)assert(softened>H);
     }
    }
   }
-  printf("GI_CREASE_PASS diagonal=1 silhouette=1 water=1 alphaExact=1 variantsExact=1\n");
+  printf("GI_CREASE_PASS diagonal=1 silhouette=1 water=1 alphaExact=1 variantsExact=1 isolatedGI=1\n");
   printf("GI_DARK_ROOM_PASS cases=%u fullAmbientRemoval=1 mixedDirectional=1 receiverHistory=1 lampsPreserved=1\n",darkRoomCases);
  }
  assert(timing||darkPixels);printf("FUSED_GI_PASS cases=%u maxAbs=%.9f baselineAlphaExact=1 prelitCases=%u darkPixels=%u mix0_50_100=1 ordinaryUnaffected=1\n",cases,maximum,prelitCases,darkPixels);return 0;

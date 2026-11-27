@@ -86,7 +86,7 @@ def prepare(args):
         if relative.suffix == '.fgs':
             with target.open('rb') as stream:
                 header = stream.read(20)
-            if len(header) != 20 or header[:8] != b'FGS2\x02\0\0\0':
+            if len(header) != 20 or struct.unpack_from('<4sI', header) not in ((b'FGS2', 2), (b'FGS2', 3)):
                 raise ValueError(f'Unsupported or truncated static model: {source}')
         elif relative.suffix == '.fgl':
             with target.open('rb') as stream:

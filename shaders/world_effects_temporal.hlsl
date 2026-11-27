@@ -146,9 +146,12 @@ TemporalOutput temporalLight(float2 uv,bool merged,sampler2D historyDepth,sample
     float4 current=merged?tex2Dlod(LightingBuffer,float4(q,0,0)):tex2Dlod(SmoothedLighting,float4(q,0,0));
     float2 duv=halfDepthTexelUV(base);float d=normalizedDepth(duv);float z=viewDistance(d);
     float directFilter=directionalFilterWeight(current.a);
+    // The GI-only views discard directional RGB but retain its alpha. That
+    // alpha must not disable the crease filter for the displayed probe light.
+    float creaseFilter=abs(PassInfo.z-3)==1?1:1-directFilter;
     float3 indirect=0;
-    [branch]if(directFilter<1&&d<.99999&&all(base>0)&&all(base<half-1)){
-        indirect=(1-directFilter)*indirectEdgeDelta(current,q,half,duv,d,z,merged);
+    [branch]if(creaseFilter>0&&d<.99999&&all(base>0)&&all(base<half-1)){
+        indirect=creaseFilter*indirectEdgeDelta(current,q,half,duv,d,z,merged);
     }
     [branch]if(merged&&RemovalInfo.y>0&&d<.99999)current.rgb=smoothRemoval(current,q,base,half,z,skipZeroTaps);
     current.rgb+=indirect;

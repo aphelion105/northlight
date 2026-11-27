@@ -126,6 +126,10 @@ float3 worldGIValue(float3 p,float4 smoothNormal,uniform bool localOnly,out floa
     float3 ambient=max(AmbientLight.rgb,0);
     float3 measured=probe.rgb/3.14159265;
     float3 radiance=measured*max(1+GIResponse.y,0);
+    [branch]if(!localOnly&&PassInfo.z==4){
+        prelitGI=0;
+        return radiance*(probe.a*GridInfo.y*max(1+AmbientLight.w,0));
+    }
     // Clamp before residency fade: strong GI cannot remove more than ambient,
     // and a missing/arriving probe never changes the native fallback.
     // The CPU environment emits from the upper world hemisphere only. Outside

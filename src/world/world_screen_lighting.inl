@@ -10,6 +10,7 @@
         IDirect3DTexture9 *probeBinding,*fogBinding;
         const char* geometryReason;
         const std::string& map;
+        bool probeLamps=false;
     };
 
     // The current visibility and normals are bound. Write the raw light and
@@ -31,7 +32,7 @@
             in.w,in.h,in.rendererFrame,in.firstSource,sourceWeights,in.applyDirectionalShadows,
             visibility.softResolved,in.prelitDaylight,directionalVisibility.lighting(visibility.sharedResolved),directionalVisibility.texture(),
             {in.probes,in.probeGridActive,probeAtlas.localVisibility(),probeAtlas.previous(),in.probeBinding,in.fogBinding},
-            materialDetail,bumpControl,materialLight
+            materialDetail,bumpControl,materialLight,in.probeLamps
         };
         NorthlightWorldScreenLighting::Audit audit{lightHistoryAudit,lightingCapture,frames,
             active?active->serial:0,uploadedSerial,0,0,nullptr,nullptr,nullptr};

@@ -92,10 +92,10 @@ static bool readScene(const char* path,WorldScene& output,std::string& error,con
     if(fileSize<20 || fileSize>512L*1024L*1024L || std::fseek(r.file,0,SEEK_SET)!=0){error="Invalid FGS2 file size (limit 512 MiB)";return false;}
     r.remaining=uint64_t(fileSize);
     char magic[4];uint32_t version=0,nv=0,nt=0,nm=0;
-    if(!r.bytes(magic,4)||std::memcmp(magic,"FGS2",4)||!r.u32(version)||version!=2||!r.u32(nv)||!r.u32(nt)||!r.u32(nm)){
+    if(!r.bytes(magic,4)||std::memcmp(magic,"FGS2",4)||!r.u32(version)||(version!=2&&version!=3)||!r.u32(nv)||!r.u32(nt)||!r.u32(nm)){
         error="Invalid FGS2 header/version";return false;
     }
-    if(nv>8000000||nt>12000000||nm>65536||uint64_t(nv)*32+uint64_t(nt)*16+uint64_t(nm)*28>r.remaining){
+    if(nv>8000000||nt>12000000||nm>65536||uint64_t(nv)*32+uint64_t(nt)*16+uint64_t(nm)*(version==3?40:28)>r.remaining){
         error="FGS2 count limit or truncated data";return false;
     }
     WorldScene s;
@@ -156,6 +156,10 @@ static bool readScene(const char* path,WorldScene& output,std::string& error,con
             }else{m.rgba.resize(bytes);if(!r.bytes(m.rgba.data(),bytes)){error="Truncated FGS2 texture";return false;}}
         }catch(...){error="Cannot allocate FGS2 texture";return false;}
         m.albedo=reflectance(m.albedo);
+    }
+    if(version==3)for(auto& m:s.materials){
+        Vec3& rgb=m.roomDiffuse;
+        if(!r.vec(rgb)||std::min({rgb.x,rgb.y,rgb.z})<0||std::max({rgb.x,rgb.y,rgb.z})>1){error="Invalid FGS2 room diffuse";return false;}
     }
     if(r.remaining){error="Unexpected trailing FGS2 data";return false;}
     s.vertices.detachAdmission();s.triangles.detachAdmission();output=std::move(s);return true;
@@ -293,7 +297,7 @@ bool appendInstance(const WorldScene& model,const Instance& instance,Vec3 low,Ve
             if(!reserve(result.materials,result.materials.size()+1)||(admit&&!admit(copyTextures?m.texels().size():0))){error="Geometry allocation deferred";return false;}
             materialRemap[t.material]=uint32_t(result.materials.size());
             if(copyTextures)result.materials.push_back(m);
-            else{WorldMaterial metadata;metadata.albedo=m.albedo;metadata.alphaCutoff=m.alphaCutoff;metadata.addressU=m.addressU;metadata.addressV=m.addressV;result.materials.push_back(std::move(metadata));}
+            else{WorldMaterial metadata;metadata.albedo=m.albedo;metadata.roomDiffuse=m.roomDiffuse;metadata.alphaCutoff=m.alphaCutoff;metadata.addressU=m.addressU;metadata.addressV=m.addressV;result.materials.push_back(std::move(metadata));}
             result.materials.back().terrain=instance.terrain;result.materials.back().wmo=instance.wmo;textureBytes+=copyTextures?m.texels().size():0;
             auto& ownerMaterial=result.materials.back();ownerMaterial.pointOnly=m.pointOnly;ownerMaterial.lampLocalId=m.lampLocalId;ownerMaterial.lampSourceId=m.lampSourceId;
             if(modelKey&&m.lampLocalId)ownerMaterial.lampSourceId=lampIdentity(*modelKey,instance,m.lampLocalId);
@@ -840,6 +844,7 @@ template<bool PlaneOnly> void BVH::shadeHit(RayHit& hit,Vec3 origin,Vec3 directi
         // hemispheres. Use the valid geometric normal at such silhouettes.
         if(dot(normal,direction)>-.001f)normal=gn;
         hit.backFace=backFace;hit.normal=normal;hit.albedo=sample.color;
+        hit.roomDiffuse=backFace?Vec3():m.roomDiffuse;
         }else if(dot(gn,direction)>0)gn=-gn;
         hit.geometricNormal=gn;
     }
@@ -1265,7 +1270,7 @@ bool LocalSceneCache::build(const std::vector<std::string>& files,const std::str
                         const auto* retained=identical==UINT32_MAX?retainedMaterial(m):nullptr;
                         if(!reserve(next.materials,next.materials.size()+1)||!allowed(retained?0:bytes))return false;
                         WorldMaterial dest;
-                        dest.albedo=m.albedo;dest.width=m.width;dest.height=m.height;dest.alphaCutoff=m.alphaCutoff;
+                        dest.albedo=m.albedo;dest.roomDiffuse=m.roomDiffuse;dest.width=m.width;dest.height=m.height;dest.alphaCutoff=m.alphaCutoff;
                         dest.addressU=m.addressU;dest.addressV=m.addressV;dest.pointOnly=m.pointOnly;dest.lampLocalId=m.lampLocalId;
                         if(identical!=UINT32_MAX){dest.sharedTexels=next.materials[identical].sharedTexels;dest.sharedTexelBytes=pixels.size();}
                         else if(!pixels.empty()){
@@ -1405,6 +1410,9 @@ Vec3 transport(const BVH& bvh,Vec3 origin,Vec3 direction,const Lighting& l,const
             }
             break;
         }
+        const Vec3 room=throughput*h.albedo*h.roomDiffuse;
+        radiance=radiance+room;
+        if constexpr(Response)response[3]=response[3]+room;
         if(bounce==l.maxBounces)break;
         Vec3 offset=h.position+h.geometricNormal*l.rayBias;
         auto illuminate=[&](Vec3 direction,Vec3 irradiance,float distance,unsigned source){

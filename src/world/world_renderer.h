@@ -3988,6 +3988,14 @@ public:
         replayBoundsBegin();
         if(!pipelineActive)return debug?emptyDiagnosticView(targetSurface,w,h,debug):false;
         const bool hdrMode=hdrBase&&debug==0;
+        bool probeLamps=false;
+#if NORTHLIGHT_DEV_TUNING
+        static const bool probeLampsRequested=[] {
+            const char* mode=std::getenv("NORTHLIGHT_PROBE_LAMPS_VIEW");
+            return mode&&std::strcmp(mode,"1")==0;
+        }();
+        probeLamps=probeLampsRequested&&!hdrMode&&debug==0&&effects.gi;
+#endif
         shadowsComposited=false;composited=false;lastRenderDebug=debug;gpuDiagnosticFrame=false;fogGeometryReady=false;
         if((debug==1&&!directionalShadows)||(debug==2&&!effects.gi)||(debug==3&&!effects.fog))return emptyDiagnosticView(targetSurface,w,h,debug);
         if(debug!=1)gpuDiagnosticArmed=true;
@@ -4102,7 +4110,8 @@ public:
                  logf("WORLD HDR material combinedAvailable=%u deviceSlots=%lu requiredSlots=%u",available,slots,required);
              },
              [&](const char* message){deferLogf("%s",message);})){skipReason="hdr-shader";return false;}
-        const auto layers=composite.selectLayers(hdrMode,debug==0);
+        auto layers=composite.selectLayers(hdrMode,debug==0);
+        if(probeLamps)layers.prelit=layers.authored=false;
         const bool normalDiagnosticCapture=debug==0&&gpuNormalDiagnosticRequested;
         if(nativeDiagnosticCapture){nativeDiagnosticCapture->finish(normalDiagnosticCapture&&active&&nativeDiagnosticMap==active->map);nativeDiagnosticCapture.reset();}
         const unsigned shadowDiagnosticCapture=debug==1&&gpuDiagnosticArmed&&gpuDiagnosticCaptures<4?gpuDiagnosticCaptures+1:0;
@@ -4123,7 +4132,7 @@ public:
         const bool solarMaterial=(sunSurfaceSpecular>0||foliageGain!=0)&&composite.prepareSolar(d,hdrMode,
             [&](const char* message){deferLogf("%s",message);});
         if(!solarMaterial)sunSurfaceSpecular=0;
-        const auto material=composite.selectMaterial(materialWanted,hdrMode,hdrCombineAllowed&&moonTerrainSpecular==0,
+        const auto material=composite.selectMaterial(materialWanted&&!probeLamps,hdrMode,hdrCombineAllowed&&moonTerrainSpecular==0,
             diagnosticCapture!=0,solarMaterial);
         const bool fullMaterial=material.full,combinedMaterial=material.combined;
         const auto wantedFormat=hdrMode?D3DFMT_A16B16G16R16F:fmt;
@@ -4282,6 +4291,7 @@ public:
         if(spellAsync)replayJobs_.kick(spellDone,spellJob);else spellJob();
         const ScreenFrameInputs screenInputs{w,h,farZ,minZ,maxZ,debug,firstSource,sourceActive,requirements.probes,hdrMode,frameMap};
         prepareFrameShaderBank(screenInputs,wx,cf,volumePalette,frameConstants);
+        if(probeLamps)c[24][2]=4.f;
         const auto& haze=frameConstants.haze;
         const auto& uploadedFog=frameConstants.uploadedFog;
         lightingMark(2);
@@ -4368,7 +4378,7 @@ public:
                                          [&](int source){setSource(source,false);},visibility))return false;
         const CelestialLightingInput celestialInputs{
             w,h,rendererFrame,firstSource,sourceActive,geometryReady,applyDirectionalShadows,requirements.probes,c[20][3],
-            prelitDaylightCurrent,fullMaterial,moonTerrainSpecular,sunSurfaceSpecular,textures[8],textures[13],geometrySkip,frameMap
+            prelitDaylightCurrent,fullMaterial,moonTerrainSpecular,sunSurfaceSpecular,textures[8],textures[13],geometrySkip,frameMap,probeLamps
         };
         if(!renderCelestialLighting(celestialInputs,visibility,profile,lightingCapture?&*lightingCapture:nullptr,setSource,lightHistoryAudit))return false;
         const NorthlightWorldLightHistory::LightingInput temporalInputs{
@@ -4445,7 +4455,7 @@ public:
             fogResult.image.texture?fogResult.image.texture:screenFallbacks.ao(),screenLighting.raw().texture,effectCoverage,materialOcclusion,
             materialDetail,worldNormals.texture(),screenLighting.prelit().texture,textures[3],textures[7],profile,materialProfile,
             localCapture,NorthlightWorldLocalLighting::LocalDirectInputs,regionalFog.texture(),
-            {stoneWetness,framePalette.sunTerrainIce,framePalette.sunTerrainSnow,foliageGain}
+            {stoneWetness,framePalette.sunTerrainIce,framePalette.sunTerrainSnow,foliageGain},probeLamps
         };
         const auto composition=composite.draw(d,compositeInputs,rainMask,
              [&](HRESULT hr,const char* name){return check(hr,name);},[&]{

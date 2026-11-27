@@ -61,7 +61,7 @@ def main():
                         model=root/'models'/(key.hex()+'.fgs')
                         with model.open('rb') as stream:
                             magic,version,nv,nt,nm=struct.unpack('<4s4I',stream.read(20))
-                        assert magic==b'FGS2' and version==2 and nv and nt and nm,model
+                        assert magic==b'FGS2' and version in (2,3) and nv and nt and nm,model
                         assert model.stat().st_size>=20+32*nv+16*nt+28*nm,model
                         models[key]=model.stat().st_size
                 checked+=1;instance_count+=count

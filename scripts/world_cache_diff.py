@@ -87,7 +87,7 @@ def instances(path):
 def fgs2(path):
     data = path.read_bytes()
     magic, version, nv, nt, nm = struct.unpack_from('<4s4I', data)
-    if magic != b'FGS2' or version != 2:
+    if magic != b'FGS2' or version not in (2, 3):
         raise ValueError(f'invalid FGS2 {path}')
     vertices = data[20:20 + 32 * nv]
     triangles = data[20 + 32 * nv:20 + 32 * nv + 16 * nt]

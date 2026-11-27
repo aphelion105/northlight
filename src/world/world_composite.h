@@ -53,6 +53,7 @@ public:
         unsigned directInputs;
         IDirect3DTexture9* restoreRegionalFog=nullptr;
         float materialResponse[4]={};
+        bool probeLamps=false;
     };
     struct Result {bool ok,base,aoBase,rainAbsent,nativeSurfaceShared;};
 
@@ -174,7 +175,7 @@ public:
 
     void reset(){
         releaseScratch();
-        drop(finalPS_);drop(materialPS_);drop(unlitPS_);drop(prelitPS_);
+        drop(finalPS_);drop(materialPS_);drop(unlitPS_);drop(prelitPS_);drop(probeLampsPS_);
         drop(hdrFinalPS_);drop(hdrUnlitPS_);drop(hdrMaterialPS_);drop(hdrCombinedPS_);
         drop(hdrBasePS_);drop(hdrAOBasePS_);drop(hdrPrelitPS_);
         for(auto*& shader:solarMaterialPS_)drop(shader);
@@ -212,7 +213,10 @@ public:
         d->SetRenderTarget(0,separateMaterial?colorSurface_:in.target);
         d->SetTexture(8,in.lighting?in.temporalLight:in.neutralZero);
         d->SetTexture(9,in.fogColor);
-        d->SetPixelShader(aoBaseComposite?hdrAOBasePS_:baseComposite?hdrBasePS_:in.hdr?hdrFinalPS_:finalPS_);
+        if(in.probeLamps&&!probeLampsPS_&&
+           !check(d->CreatePixelShader(kWorldProbeLampsShader,&probeLampsPS_),"probe and lamp composite shader"))
+            return {false,baseComposite,aoBaseComposite,rainAbsent,nativeSurfaceShared};
+        d->SetPixelShader(in.probeLamps?probeLampsPS_:aoBaseComposite?hdrAOBasePS_:baseComposite?hdrBasePS_:in.hdr?hdrFinalPS_:finalPS_);
         if(in.material.combined){bindMaterial(d,in);d->SetPixelShader(hdrCombinedPS_);}
         NorthlightEffectCoverage::Capture::bind(d,in.effectCoverage,in.effectEmission);
         if(in.lightingCapture)in.lightingCapture->inputs(3,(1u<<7)|(1u<<13),(1u<<7)|(1u<<13));
@@ -292,7 +296,7 @@ private:
     IDirect3DTexture9* color_=nullptr;
     IDirect3DSurface9* colorSurface_=nullptr;
     D3DFORMAT colorFormat_=D3DFMT_UNKNOWN;
-    IDirect3DPixelShader9 *finalPS_=nullptr,*materialPS_=nullptr,*unlitPS_=nullptr,*prelitPS_=nullptr;
+    IDirect3DPixelShader9 *finalPS_=nullptr,*materialPS_=nullptr,*unlitPS_=nullptr,*prelitPS_=nullptr,*probeLampsPS_=nullptr;
     IDirect3DPixelShader9 *hdrFinalPS_=nullptr,*hdrUnlitPS_=nullptr,*hdrMaterialPS_=nullptr,*hdrCombinedPS_=nullptr;
     IDirect3DPixelShader9 *hdrBasePS_=nullptr,*hdrAOBasePS_=nullptr,*hdrPrelitPS_=nullptr;
     IDirect3DPixelShader9* solarMaterialPS_[2]={};

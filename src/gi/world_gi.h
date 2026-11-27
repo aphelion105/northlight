@@ -59,6 +59,7 @@ struct ProbeMaterialCombiner {
 struct WorldMaterial {
     // Linear diffuse reflectance multiplied by decoded sRGB texture color.
     Vec3 albedo = Vec3(.5f, .5f, .5f);
+    Vec3 roomDiffuse; // Linear authored WMO fill per unit diffuse reflectance.
     uint32_t width = 0, height = 0;
     std::vector<uint8_t> rgba;
     // Pressure builds share only completed, byte-identical immutable texels.
@@ -219,7 +220,7 @@ struct RayHit {
     // Original outward shading-normal side, before double-sided face forwarding.
     bool backFace = false;
     float distance = 0;
-    Vec3 position, normal, geometricNormal, albedo;
+    Vec3 position, normal, geometricNormal, albedo, roomDiffuse;
     uint32_t triangle = UINT32_MAX;
 };
 

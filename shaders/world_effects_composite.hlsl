@@ -48,7 +48,7 @@ float3 boundedAlbedo(float3 surface,float3 lighting,float transmission) {
     float3 albedo=surface/max(lighting,.15);
     return albedo*(transmission/max(max(albedo.r,max(albedo.g,albedo.b)),max(transmission,.00001)));
 }
-float4 worldCompositeInputs(float2 uv,float2 pixel,bool surfaceLighting,bool hdrMode,sampler2D fogInput,out float3 effect,out float4 receiver,out float3 sourceColor,bool prelit=false,bool baseLighting=false,bool depthFromScene=true,bool noLighting=false) {
+float4 worldCompositeInputs(float2 uv,float2 pixel,bool surfaceLighting,bool hdrMode,sampler2D fogInput,out float3 effect,out float4 receiver,out float3 sourceColor,bool prelit=false,bool baseLighting=false,bool depthFromScene=true,bool noLighting=false,bool probeLamps=false) {
     // Fetches before any flow control use texld (1 slot; tex2Dlod costs 3-4): Scene and Depth have one level and no mip filter, so texld reads what tex2Dlod(.,0) does.
     float4 original=tex2D(Scene,uv);sourceColor=original.rgb;
     effect=0;
@@ -174,6 +174,13 @@ float4 worldCompositeInputs(float2 uv,float2 pixel,bool surfaceLighting,bool hdr
         // The framebuffer already contains atmospheric fog. Relight only the
         // transported surface term: do not infer material albedo from fog RGB.
         float3 oldLight=max(baseline*inverseWeight,.15);
+        if(probeLamps){
+            // The baseline describes outdoor light. Inside a WMO its RGB is
+            // unsuitable for white-balancing the captured surface.
+            float referenceLuma=dot(worldHdrDecode(oldLight),float3(.2126,.7152,.0722));
+            float3 albedo=boundedAlbedo(worldHdrDecode(sourceColor),referenceLuma.xxx,1);
+            return float4(worldHdrEncode(albedo*(bounce+local*inverseWeight)),original.a);
+        }
         float3 transported=hdrMode?max(original.rgb-fogPart,0):surfaceForLighting;
         // A room-bank receiver has no regional directional light in its native
         // base. Including that light in the divisor suppresses lamp contrast.
@@ -271,6 +278,10 @@ float4 worldCompositeInputs(float2 uv,float2 pixel,bool surfaceLighting,bool hdr
 
 float4 worldComposite(float2 uv,float2 pixel,bool surfaceLighting,bool hdrMode,sampler2D fogInput,out float3 effect,bool prelit=false,bool baseLighting=false,bool depthFromScene=true,bool noLighting=false) {float4 receiver;float3 source;return worldCompositeInputs(uv,pixel,surfaceLighting,hdrMode,fogInput,effect,receiver,source,prelit,baseLighting,depthFromScene,noLighting);}
 float4 WorldComposite(float2 uv:TEXCOORD0,float2 pixel:VPOS):COLOR0 {float3 effect;return worldComposite(uv,pixel,true,false,FogBuffer,effect);}
+float4 WorldProbeLamps(float2 uv:TEXCOORD0,float2 pixel:VPOS):COLOR0 {
+    float3 effect,source;float4 receiver;
+    return worldCompositeInputs(uv,pixel,true,false,FogBuffer,effect,receiver,source,false,false,true,false,true);
+}
 // Self-lit M2 receivers keep their native radiance under the same atmosphere.
 // Selected with the existing depth-stencil; no additional image or geometry replay.
 float4 WorldUnlitComposite(float2 uv:TEXCOORD0,float2 pixel:VPOS):COLOR0 {float3 effect;return worldComposite(uv,pixel,false,false,FogBuffer,effect);}

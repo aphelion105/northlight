@@ -58,7 +58,7 @@ def fixture_inputs(root):
             assert model.is_file(),('Missing referenced model',model)
     for path in models.glob('*.fgs'):
         with path.open('rb') as stream:header=stream.read(20)
-        assert len(header)==20 and header[:8]==b'FGS2\x02\0\0\0',('Unsupported/truncated model',path)
+        assert len(header)==20 and struct.unpack_from('<4sI',header) in ((b'FGS2',2),(b'FGS2',3)),('Unsupported/truncated model',path)
     return {'root':str(root),'manifest_sha256':digest(manifest),'outputs':data['outputs'],'limitations':data['limitations']}
 
 def source_inputs(paths):

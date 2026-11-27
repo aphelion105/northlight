@@ -333,9 +333,9 @@ class Builder:
         self.resolve_fixture_emission=resolve_fixture_emission
         self.assets=assets;self.meshes={};self.mesh_names={};self.textures={};self.cutout_textures={};self.flat_colors={};self.skipped_groups=[];self.skip_bad_groups=False;self.reset()
     def reset(self):
-        self.vertices=[];self.triangles=[];self.materials=[];self.material_ids={};self.tile_stats=collections.Counter();self.tile_errors=0
-    def material(self,path='',blend=0,flat=False,point_glass=False):
-        key=(path,blend,flat,point_glass)
+        self.vertices=[];self.triangles=[];self.materials=[];self.material_ids={};self.room_diffuse=[];self.tile_stats=collections.Counter();self.tile_errors=0
+    def material(self,path='',blend=0,flat=False,point_glass=False,room_diffuse=(0.,0.,0.)):
+        key=(path,blend,flat,point_glass,room_diffuse)
         if key in self.material_ids:return self.material_ids[key]
         if path not in self.textures:
             try:self.textures[path]=decode_blp(self.assets.read(path)) if path else (0,0,b'')
@@ -369,6 +369,7 @@ class Builder:
                 code+=0x400000
             cutoff=-float(code)
         self.materials.append((color,w,h,cutoff,rgba))
+        self.room_diffuse.append(room_diffuse)
         return result
     def add_mesh(self,mesh,matrix,translation,category,instance_id=0):
         if not any(value for row in matrix for value in row):
@@ -500,6 +501,9 @@ class Builder:
     def wmo(self,path):
         if path in self.meshes:return self.meshes[path]
         rootBlob=self.assets.read(path);root=dict(chunks(rootBlob));groups=unpack('<I',root['MOHD'],4)[0]
+        # Use the authored room colour as a diffuse source for probe transport.
+        # MOCV also includes baked lamp light, which the GI tracer already samples.
+        room_diffuse=tuple(SRGB8_TO_LINEAR[root['MOHD'][i]] for i in (30,29,28))
         import wmo_lamp_emission
         lampMaterials=wmo_lamp_emission.candidates(rootBlob)
         mt=root.get('MOTX',b'');materials=[]
@@ -518,6 +522,9 @@ class Builder:
             if overrun:self.assets.clamped.add(name)
             sub={}
             for tag,payload in chunks(g['MOGP'],68):sub.setdefault(tag,payload)
+            group_flags=unpack('<I',g['MOGP'],8)[0]
+            # SMOGroup::INTERIOR, without EXTERIOR or DoNotUseLocalLighting.
+            room=room_diffuse if group_flags&0x2000 and not group_flags&0x48 else None
             modr=sub.get('MODR',b'');refs.update(x[0] for x in array(modr,0,len(modr)//2,'<H'))   # the group's doodad refs
             pos=array(sub['MOVT'],0,len(sub['MOVT'])//12,'<3f')
             normals=array(sub['MONR'],0,len(sub['MONR'])//12,'<3f')
@@ -541,9 +548,13 @@ class Builder:
                     emitted.add(i);t=inds[i:i+3]
                     if max(t)>=len(pos):raise ValueError('WMO vertex range')
                     use=material
-                    if i in glass:
-                        identity=(material,glass[i])
-                        if identity not in tagged:tagged[identity]=len(materials);materials.append((*materials[material],glass[i]))
+                    if i in glass or room and any(room):
+                        fixture=glass.get(i,0)
+                        identity=(material,fixture,room)
+                        if identity not in tagged:
+                            tagged[identity]=len(materials)
+                            tagged_material=(*materials[material],fixture)
+                            materials.append((*tagged_material,room) if room else tagged_material)
                         use=tagged[identity]
                     triangles.append((base+t[0],base+t[1],base+t[2],use))
         mesh=(vertices,triangles,materials,root,refs);self.meshes[path]=mesh;self.mesh_names[id(vertices)]=path;return mesh
@@ -640,8 +651,9 @@ class Builder:
     def write_scene(self,destination):
         destination.parent.mkdir(parents=True,exist_ok=True)
         temp=destination.with_suffix(f'.{os.getpid()}.tmp')
+        has_room_diffuse=any(any(rgb) for rgb in self.room_diffuse)
         with temp.open('wb') as f:
-            f.write(struct.pack('<4s4I',b'FGS2',2,len(self.vertices),len(self.triangles),len(self.materials)))
+            f.write(struct.pack('<4s4I',b'FGS2',3 if has_room_diffuse else 2,len(self.vertices),len(self.triangles),len(self.materials)))
             for vertex in self.vertices:
                 if not all(math.isfinite(v) for v in vertex):raise ValueError('Nonfinite vertex')
                 f.write(struct.pack('<8f',*vertex))
@@ -650,6 +662,8 @@ class Builder:
                 f.write(struct.pack('<4I',*triangle))
             for color,w,h,cutoff,rgba in self.materials:
                 f.write(struct.pack('<3fIIfI',*color,w,h,cutoff,len(rgba)));f.write(rgba)
+            if has_room_diffuse:
+                for rgb in self.room_diffuse:f.write(struct.pack('<3f',*rgb))
         retry(temp.replace,destination)
 
 
