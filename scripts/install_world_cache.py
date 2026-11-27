@@ -90,7 +90,9 @@ FORMAT = 'northlight-world-cache-install/1'
 # the affected revision when generated data changes; source hashes below are
 # build provenance and support reading pre-versioned manifests only.
 # Fog v2 includes indoor exclusion bounds for the added expansion regions.
-CACHE_VERSIONS = {'scene': 2, 'lights': 2, 'fog': 2, 'celestial': 1, 'instances': 1, 'validation': 1}
+# Scene v3 resolves reviewed native-anchor model variants (hanging lantern
+# flame); lights follow the scene revision.
+CACHE_VERSIONS = {'scene': 3, 'lights': 2, 'fog': 2, 'celestial': 1, 'instances': 1, 'validation': 1}
 # Source provenance and legacy digest dependencies. New cache compatibility is
 # controlled by CACHE_VERSIONS, never by a DLL or source-file hash.
 STEP_SOURCES = {
