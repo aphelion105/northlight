@@ -80,6 +80,12 @@ run requires confirmation in `northlight-renderer.log`. Keep the flag consistent
 across FPS comparisons because profiling adds measurement overhead. RenderProfile
 is off by default and is unavailable in stock and Vulkan cases.
 
+Use `--effects 0` with a Northlight D3D9 case to bypass scene effects while
+keeping the renderer loaded. Use `--effects 1` to enable the scene effects
+configured in the quality profile. Both values require a wrapped D3D9 device
+and confirmation in `northlight-renderer.log` before the run can pass. Omit
+the flag to use the supplied quality profile's effects setting.
+
 ## Read the results
 
 The add-on waits 20 seconds after entering the world. The fixture arms it

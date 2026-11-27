@@ -35,6 +35,7 @@ CASES = {
     'native-d3d9ex-hdr': ('WowClientNorthlight64.exe', '-d3d9ex', 'GxWindowClassD3d9Ex'),
     'native-vulkan': ('WowClientNorthlight64.exe', '-vulkan', 'GxWindowClassVulkan'),
 }
+NORTHLIGHT_D3D9_CASES = frozenset({'x86-dxvk', 'x64-dxvk', 'native-d3d9ex', 'native-d3d9ex-hdr'})
 ADDON = 'NorthlightGameplayBenchmark'
 FIXTURES = Path(__file__).with_name('fixtures') / 'gameplay-benchmark'
 RUNTIME_FILES = ('northlight-assets.bin', 'northlight-quality.ini', 'celestial-profiles.ini',
@@ -157,6 +158,8 @@ def stage(args, scene, client, report):
         template = quality if quality.is_file() else live.fp.RENDERER / 'windows-package' / quality.name
         profile = template.read_text(encoding='utf-8-sig')
         settings = {'CommandStream': int(proxy), 'StreamFrameSkip': 0, 'RenderProfile': int(args.render_profile)}
+        if args.effects is not None:
+            settings['Effects'] = args.effects
         if args.render_profile:
             settings.update(Diagnostics=1, DiagReplayProbe=0)
         for key in settings:
@@ -181,6 +184,13 @@ def backend_evidence(args, output):
     lines = live.log_lines(output / live.LOG)
     active = any(line.startswith('D3D9 device wrapped.') for line in lines)
     hdr = any(line.startswith('HDR experimental requested=1 active=1 ') for line in lines)
+    effects = getattr(args, 'effects', None)
+    if effects is not None:
+        _, settings, _, master = gameplay_runtime.d3d9_quality(lines)
+        observed = settings.get('Effects')
+        if args.case not in NORTHLIGHT_D3D9_CASES or not (active and master and observed == effects):
+            raise ValueError(f'Expected a healthy wrapped Northlight D3D9 device with Effects={effects} '
+                             f'in {live.LOG} (observed Effects={observed})')
     if getattr(args, 'render_profile', False):
         profile = next((line for line in reversed(lines) if line.startswith('PROFILE effective ')), '')
         if not (active and profile.startswith('PROFILE effective diagnostics=1 renderProfile=1 replayProbe=0 ')):
@@ -236,7 +246,7 @@ def primary_display_pixels():
 
     mode = DisplayMode(size=ctypes.sizeof(DisplayMode))
     # EnumDisplaySettingsW reports physical pixels regardless of DPI awareness.
-    current_settings = wintypes.DWORD(-1)
+    current_settings = wintypes.DWORD(0xFFFFFFFF)  # ENUM_CURRENT_SETTINGS; DWORD is 64-bit c_ulong off Windows
     if not ctypes.windll.user32.EnumDisplaySettingsW(None, current_settings, ctypes.byref(mode)):
         raise ValueError('Cannot determine the primary display resolution')
     return mode.width, mode.height
@@ -412,6 +422,7 @@ def attempt(args, scene):
     client = output / 'client'
     report = {'status': 'FAIL', 'case': args.case, 'scene': scene, 'resolution': args.resolution,
               'msaa': 1, 'locale': args.locale, 'desktop': args.desktop, 'render_profile_requested': args.render_profile,
+              'effects_requested': args.effects,
               'focus_mode': 'foreground' if args.desktop == 'foreground' else 'background',
               'runtime': {'case': args.case, 'client_executable': CASES[args.case][0], 'client_bits': None}}
     try:
@@ -463,9 +474,13 @@ def main():
     parser.add_argument('--keep-client', action='store_true', help='Retain private clients for investigation')
     parser.add_argument('--render-profile', action='store_true',
                         help='Enable Northlight per-pass timing for every scene on a Northlight D3D9 case')
+    parser.add_argument('--effects', type=int, choices=(0, 1),
+                        help='Override and verify Effects for a Northlight D3D9 case (0 bypasses scene effects)')
     args = parser.parse_args()
-    if args.render_profile and (args.case.startswith('stock-') or CASES[args.case][1] == '-vulkan'):
+    if args.render_profile and args.case not in NORTHLIGHT_D3D9_CASES:
         parser.error('--render-profile requires a Northlight D3D9 case')
+    if args.effects is not None and args.case not in NORTHLIGHT_D3D9_CASES:
+        parser.error('--effects requires a Northlight D3D9 case')
     if os.name != 'nt':
         parser.error('Live gameplay timing requires a Windows GPU and desktop session')
     if not args.client or not live.fp.is_client(args.client):
