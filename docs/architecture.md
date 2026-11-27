@@ -613,6 +613,14 @@ corners. Cases close to a clip boundary use the full floating-point margin.
 optional group bounds after the pose worker joins. Each lamp reuses those boxes
 with its own sphere and face matrices. Unknown bounds keep their original
 fail-open behaviour and the face lists retain the chosen draw order.
+
+Each point cube omits its source's tagged luminous surface from static mesh
+submission. A live copy must match those world triangles, or match a native
+fixture catalog and put its authored anchor at the observed source with one
+rigid transform. The other triangles still cast. An excluded static range
+blocks index-gap coalescing. Faces with filtered replay ranges use explicit
+draw ranges and bypass the full-packet image caches.
+
 `PointShadowAdaptiveRefresh=1` alternates due updates for lamps whose projected
 influence covers at most a quarter of the viewport. It keeps the complete
 previous cubemap for one extra update while the map, committed geometry and

@@ -30,6 +30,9 @@ struct Fixture{
     std::array<std::vector<size_t>,6> pointReplayCandidates;
     unsigned pointCulled=0,policy=0,pointOrderCalls=0;
     std::vector<size_t> pointReplayOrder;bool pointReplayOrderReady=false;
+    size_t excludedLampReplay=SIZE_MAX;
+    int pointLampReplay(int,const std::vector<size_t>&){return 0;}
+    bool pointKeepLampReplay(size_t index,int,int,int&){return index!=excludedLampReplay;}
     void pointOrderReplays(){++pointOrderCalls;pointReplayOrderReady=policy!=0;
         pointReplayOrder.resize(replays.size()-(policy==2));
         for(size_t i=0;i<pointReplayOrder.size();++i)pointReplayOrder[i]=policy==1?replays.size()-i-1:i;}
@@ -51,6 +54,9 @@ struct Fixture{
             m[12]=(admitted&(1u<<face))?0.f:4.f;
         }
         const NorthlightPointShadow::FaceClip clip(matrices);
+        const int light=0;
+        const std::vector<size_t> owned;
+        int lampSplits=0;
         @NEW@
     }
 };
@@ -72,6 +78,10 @@ int main(){
         assert(now.pointCulled==expectedCulled);++cases;
     }
     Fixture disabled;disabled.policy=1;disabled.replays.push_back(nullptr);disabled.newLoop(63,false);assert(!disabled.pointOrderCalls);
+    Fixture lamp;
+    lamp.add(true,false);lamp.add(true,false);lamp.excludedLampReplay=0;
+    lamp.newLoop(63,true);
+    for(const auto& face:lamp.pointReplayCandidates)assert(face==std::vector<size_t>{1});
     Fixture grouped;
     for(unsigned i=0;i<64;++i){
         grouped.add(true,false);

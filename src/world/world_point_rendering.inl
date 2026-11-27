@@ -133,6 +133,8 @@
         std::vector<unsigned char>().swap(pointEmptyTerrainMasks);
         std::vector<unsigned char>().swap(pointNearbyBatches);pointNearbyReady=false;
         pointReplayCasters.release();pointMeshBounds.release();
+        pointLampSources.clear();
+        for(auto& memo:nativeShellMemo)memo=NativeShellMemo{};
         std::vector<size_t>().swap(pointReplayOrder);std::vector<PointPalettePacket>().swap(pointReplayPalette);pointReplayOrderReady=false;
         std::vector<PointReplaySortKey>().swap(pointReplaySortKeys);
     }
@@ -270,12 +272,22 @@
     const NorthlightLocalShadowSignature::Digest* pointFaceDigests(const NorthlightLocalLights::Light& light){
         const auto* records=uploadedLocalShadowRecords.get();if(!records)return nullptr;
         auto& memo=pointSlot().contentMemo;
-        if(!memo.valid||memo.records!=records||memo.generation!=meshGeneration||memo.range!=light.attenuationEnd||std::memcmp(memo.position,light.position,sizeof memo.position)){
+        if(!memo.valid||memo.records!=records||memo.generation!=meshGeneration||memo.source!=light.sourceId||memo.range!=light.attenuationEnd||std::memcmp(memo.position,light.position,sizeof memo.position)){
             float matrices[6][16];memo.valid=false;
             for(unsigned face=0;face<6;++face)if(!NorthlightPointShadow::faceMatrix(light.position,.1f,light.attenuationEnd,face,matrices[face],PointResolution))return nullptr;
             ++pointCold.contentPasses;pointCold.contentRecords+=records->size();
             NorthlightPointShadow::faceContent(*records,light,matrices,memo.faces);
-            memo.records=records;memo.generation=meshGeneration;memo.range=light.attenuationEnd;std::memcpy(memo.position,light.position,sizeof memo.position);memo.valid=true;
+            // Shell ownership can depend on parts from several faces. A new
+            // mesh generation must recheck the exclusion as a whole.
+            if(light.sourceId){
+                const bool indexed=pointLampSources.prepare(batches,meshGeneration);
+                const auto tagged=pointLampSources.find(light.sourceId);
+                const bool hasShell=indexed?tagged.first!=tagged.second:std::any_of(batches.begin(),batches.end(),
+                    [&](const Batch& batch){return !batch.terrain&&batch.lampSourceId==light.sourceId;});
+                if(hasShell)for(auto& digest:memo.faces)digest.add({{light.sourceId,meshGeneration},0});
+            }
+            memo.records=records;memo.generation=meshGeneration;memo.source=light.sourceId;memo.range=light.attenuationEnd;
+            std::memcpy(memo.position,light.position,sizeof memo.position);memo.valid=true;
         }
         return memo.faces;
     }
@@ -317,6 +329,7 @@
         return NorthlightPointShadow::selectMany(active->localLights.data(),active->localLights.size(),context.camera,NorthlightQuality::localShadowLimit(quality),{},float(quality.pointShadowDistance),true).count!=0||
             NorthlightPointShadow::selectMany(equipmentLights.output.data(),equipmentLights.outputCount,context.camera,NorthlightQuality::localShadowLimit(quality),{},float(quality.pointShadowDistance),true).count!=0;
     }
+#include "world_point_lamp_shells.inl"
 #include "world_point_replays.inl"
 
     bool bakePointSubset(IDirect3DSurface9* target,IDirect3DSurface9* staticSurface,const float* matrix,
@@ -436,9 +449,16 @@
         const NorthlightPointShadow::FaceClip clip(faceMatrices,pointSlot().selected,faces);
         const bool pointTimed=NorthlightQuality::renderProfile(quality);
         const int64_t prepareStart=pointTimed?QpcClock::now():0;
+        PointLampSplits lampSplits;
         try {
             for(auto* lists:{&pointStaticCandidates,&pointTerrainCandidates,&pointLiveCandidates,&pointReplayCandidates})for(auto& list:*lists)list.clear();
             preparePointTerrain(clip,faces,rebuildMask&faces);
+            std::vector<size_t> owned;
+            if(light.sourceId&&((rebuildMask&faces)||withReplays)){
+                const bool indexed=pointLampSources.prepare(batches,meshGeneration);
+                const auto candidates=pointLampSources.find(light.sourceId);
+                owned=NorthlightWmoLampShadow::parts(light,batches,indexed?&candidates:nullptr);
+            }
             if(rebuildMask&faces){
                 const unsigned staticFaces=rebuildMask&faces;
                 const bool listed=terrainBatchListGeneration==meshGeneration&&terrainBatchListSize==batches.size();
@@ -446,7 +466,11 @@
                 const size_t outside=NorthlightPointMesh::classifyStatic(batches,pointSubBatches,pointSubRanges,listed?&pointStaticList:nullptr,
                     pointNearbyReady?pointNearbyBatches.data():nullptr,staticFaces,pointBatchMasks,
                     [&](size_t i,const Batch& batch,unsigned mask){return pointMeshBounds.mask(i,batch,clip,mask);},
-                    [&](size_t i,unsigned mask){pointAppendCandidates(pointStaticCandidates,i,mask,staticFaces);});
+                    [&](size_t i,unsigned mask){
+                        if(!std::binary_search(owned.begin(),owned.end(),i))pointAppendCandidates(pointStaticCandidates,i,mask,staticFaces);
+                    });
+                // An excluded shell must also block coalescing across index gaps.
+                for(size_t i:owned)pointBatchMasks[i]|=staticFaces;
                 pointCold.staticEmptyCandidates+=outside;
                 pointCulled+=unsigned(outside)*unsigned(__builtin_popcount(staticFaces));
             }
@@ -458,6 +482,7 @@
             if(pointTimed)pointCold.boundsWait+=candidatesStart-boundsStart;
             if(withReplays){
                 pointOrderReplays();
+                const auto lamp=pointLampReplay(light,owned);
                 const bool ordered=pointReplayOrderReady&&pointReplayOrder.size()==replays.size();
                 pointReplayCasters.prepare(replays.size(),[&](size_t n){
                     const size_t i=ordered?pointReplayOrder[n]:n;
@@ -466,7 +491,7 @@
                     return NorthlightPointShadow::ReplayCasters::Source{i,bounds.low,bounds.high,bounds.valid,replay.shadowSkinned};
                 });
                 const auto counts=pointReplayCasters.classify(clip,faces,[&](size_t i,unsigned mask){
-                    pointAppendCandidates(pointReplayCandidates,i,mask,faces);
+                    if(pointKeepLampReplay(i,light,lamp,lampSplits))pointAppendCandidates(pointReplayCandidates,i,mask,faces);
                 });
                 pointCulled+=counts.culled;
                 pointWork.unboundedSkinned+=counts.unboundedSkinned;
@@ -481,8 +506,8 @@
         NorthlightPointShadow::FacePass facePass(d,check,
             PointResolution,pointTargets.depth(),pointTargets.casterPixel());
         using MeshPass=decltype(facePass)::MeshPass;
-        const bool opaqueEnabled=pointOpaqueReuseEnabled()&&!memoryPressure;
-        const bool mixedEnabled=pointMixedReuseEnabled()&&!memoryPressure;
+        const bool opaqueEnabled=pointOpaqueReuseEnabled()&&!memoryPressure&&lampSplits.empty();
+        const bool mixedEnabled=pointMixedReuseEnabled()&&!memoryPressure&&lampSplits.empty();
         for(unsigned face=0;face<6;++face){
             if(!(faces&(1u<<face)))continue; /* a later frame of this face cycle */
             const unsigned bit=1u<<face;
@@ -595,7 +620,8 @@
                         [&](UINT triangles){++pointDraws;++pointWork.live;pointWork.triangles+=triangles;}))return false;
                 }
                 const auto& replayPackets=mixed?pointMixedFaces.remaining():candidates;
-                if(withReplays&&!submitPointReplayFace(replayPass,replayPackets,matrix,rendererFrame,face,check))return false;
+                if(withReplays&&!submitPointReplayFace(replayPass,replayPackets,matrix,rendererFrame,face,check,
+                        lampSplits.empty()?nullptr:&lampSplits))return false;
             } /* dynamic candidates */
             // Preserve the original logical workload weights: coalescing must
             // not change the configured partial-face refresh groups/order.

@@ -148,6 +148,8 @@
       "test_native_more_lights_gpu.py",
       "test_point_shadow_stutter_gpu.py",
       "test_m2_lamp_self_shadow_gpu.py",
+      "test_city_lamp_regression.py",
+      "test_captured_lamp_actor_gpu.py",
       "test_shadow_transition_gpu.py",
       "test_shadow_history_state_gpu.py",
       "test_shadow_lamp_constants_gpu.py",

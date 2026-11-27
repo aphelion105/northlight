@@ -101,8 +101,13 @@ struct PointTerrainCoverageTest{
   assert(!shell.empty());for(auto i:owners)w.batches[i].lampSourceId=0;
   const auto before=cube(w,l);for(auto i:owners)w.batches[i].lampSourceId=l.sourceId;const auto after=cube(w,l);
   unsigned opened=0,blocked=0,improved=0;for(size_t i=0;i<before.size();++i){opened+=before[i]<.9999f&&after[i]==1.f;blocked+=after[i]<.9999f;improved+=after[i]>before[i]+1e-5f;assert(after[i]+1e-6f>=before[i]);}
-  std::printf("CUBE_CHECK parts=%zu batches=%zu draws=%u opened=%u blocked=%u improved=%u minBefore=%g minAfter=%g\n",owners.size(),w.batches.size(),w.pointDraws,opened,blocked,improved,*std::min_element(before.begin(),before.end()),*std::min_element(after.begin(),after.end()));std::fflush(stdout);assert(before==after&&blocked>1000&&opened==0&&improved==0);
+  std::printf("CUBE_CHECK parts=%zu batches=%zu draws=%u opened=%u blocked=%u improved=%u minBefore=%g minAfter=%g\n",owners.size(),w.batches.size(),w.pointDraws,opened,blocked,improved,*std::min_element(before.begin(),before.end()),*std::min_element(after.begin(),after.end()));std::fflush(stdout);assert(improved>1000&&blocked>1000);
   auto other=l;other.sourceId^=1;assert(cube(w,other)==before);
+  // A change in ownership evidence can affect faces whose local records match.
+  w.uploadedLocalShadowRecords=std::make_shared<NorthlightLocalShadowSignature::Records>();
+  const auto ownDigest=w.pointFaceDigests(l)[0],foreignDigest=w.pointFaceDigests(other)[0];
+  ++w.meshGeneration;
+  assert(w.pointFaceDigests(l)[0]!=ownDigest&&w.pointFaceDigests(other)[0]==foreignDigest);
   replayProof(w,shell);assert(cube(w,l,true)==after);
   for(bool strip:{false,true})for(bool indexed:{false,true}){w.replays.clear();replayProof(w,shell,true,indexed,strip);const auto mixed=cube(w,l,true);
     for(size_t i=0;i<after.size();++i)assert(std::fabs(mixed[i]-after[i])<1e-5f);}

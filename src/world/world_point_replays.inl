@@ -322,7 +322,7 @@
     bool submitPointReplayFace(NorthlightShadowReplay::Pass& replayPass,
                                const std::vector<size_t>& candidates,
                                const float* matrix,[[maybe_unused]] unsigned rendererFrame,[[maybe_unused]] unsigned face,
-                               const Check& check){
+                               const Check& check,const PointLampSplits* lampSplits=nullptr){
         if(candidates.empty())return true;
         // Each face clears texture zero on exit and supplies its own projection.
         replayPass.beginFace(pointReplayStateReuse());
@@ -336,17 +336,24 @@
         const char* failure="cube animated draw";
         const auto failed=[&](HRESULT hr,const char* operation){failure=operation;return hr;};
         const auto submit=[&](size_t& at)->HRESULT {
-            const auto& p=replays[candidates[at]];
-            bool instanced=false;HRESULT hr=pointPaletteDraw(candidates,at,rows,instanced);
-            if(FAILED(hr))return failed(hr,"cube palette replay");
-            if(instanced){replayPass.afterPalette();return D3D_OK;}
+            const size_t index=candidates[at];
+            const auto& p=replays[index];
+            HRESULT hr=D3D_OK;
             ShadowIndexPair pair;
-            if(pointIndexBatchesEnabled())pair=pointReplayIndexBatch(candidates,at,replayPass.skipping());
-            if(!pair.buffer)pair=pointReplayPair(candidates,at,replayPass.skipping());
+            if(!lampSplits){
+                bool instanced=false;
+                hr=pointPaletteDraw(candidates,at,rows,instanced);
+                if(FAILED(hr))return failed(hr,"cube palette replay");
+                if(instanced){replayPass.afterPalette();return D3D_OK;}
+                if(pointIndexBatchesEnabled())pair=pointReplayIndexBatch(candidates,at,replayPass.skipping());
+                if(!pair.buffer)pair=pointReplayPair(candidates,at,replayPass.skipping());
+            }
             hr=replayPass.bindGeometry(*p,&pair);
             if(FAILED(hr))return failed(hr,"cube replay geometry state");
             const size_t first=at;
-            const auto run=pair.buffer?pair.run:pointReplayRun(candidates,at,replayPass.skipping());
+            PointReplayRun run{p->start,p->count,p->min,p->vertices};
+            if(lampSplits)++at;
+            else run=pair.buffer?pair.run:pointReplayRun(candidates,at,replayPass.skipping());
             const auto uploadFloats=NorthlightReplayPoses::weightedRunUploadRange(p->constantUsage,
                 pair.buffer?pair.packets:at-first,[&](size_t i){return NorthlightReplayPoses::weightedPacketPaletteEnd(*replays[candidates[first+i]]);});
             if(!replayPass.preparePose(*p,rows,matrix,uploadFloats))return failed(E_FAIL,"cube replay pose");
@@ -361,7 +368,23 @@
             pointCold.constantBytes+=constantBytes;
             pointCold.weightedConstantDraws+=uploadFloats.count!=0&&uploadFloats.count<p->constantUsage.floats.count;
             if(FAILED(hr=replayPass.bindMaterial(*p)))return failed(hr,"cube replay material state");
-            hr=replayPass.draw(*p,run);
+            const auto draw=[&](const PointReplayRun& range){
+                const HRESULT result=replayPass.draw(*p,range);
+                if(SUCCEEDED(result)){++pointDraws;++pointWork.replay;pointWork.triangles+=range.count;pointCold.fixedDraws+=NorthlightShadowAlpha::fixed(p->alphaMode);}
+                return result;
+            };
+            if(lampSplits){
+                const auto split=lampSplits->find(index);
+                if(split!=lampSplits->end()){
+                    const UINT stride=p->type==D3DPT_TRIANGLELIST?3:1;
+                    for(const auto& part:split->second){
+                        hr=draw({p->start+part.first*stride,part.second,p->min,p->vertices});
+                        if(FAILED(hr))return failed(hr,"cube split emitter draw");
+                    }
+                    return D3D_OK;
+                }
+            }
+            hr=draw(run);
             if(pair.buffer&&SUCCEEDED(hr)){
                 at+=pair.packets;
                 pointBatchesMerged+=pair.packets-1;
@@ -369,7 +392,6 @@
                 if(pair.packets==2)++pointIndexedPairDraws;
                 else {++pointIndexedBatchDraws;pointIndexedBatchPackets+=pair.packets;}
             }
-            if(SUCCEEDED(hr)){++pointDraws;++pointWork.replay;pointWork.triangles+=run.count;pointCold.fixedDraws+=NorthlightShadowAlpha::fixed(p->alphaMode);}
             return hr;
         };
         const HRESULT replayResult=NorthlightShadowAlpha::drawSequence(d,candidates.size(),

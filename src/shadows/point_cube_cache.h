@@ -12,7 +12,7 @@ inline constexpr size_t CubeFaceBytes=size_t(CubeResolution)*CubeResolution*4;
 
 struct ContentMemo {
     const NorthlightLocalShadowSignature::Records* records=nullptr;
-    uint64_t generation=0;
+    uint64_t generation=0,source=0;
     float position[3]={},range=0;
     bool valid=false;
     NorthlightLocalShadowSignature::Digest faces[6];

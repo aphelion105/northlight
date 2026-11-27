@@ -125,7 +125,7 @@ checks['probe never on a diagnostic capture frame']='probeRecord=replayProbeActi
 # Point cube: withReplays gates both replay loops and the schedule's replay count.
 pb=pt[pt.index('    bool renderPointShadow('):pt.index('    void renderPointShadows(')]
 candidate_head='if(withReplays){\n                pointOrderReplays();'
-draw_head='if(withReplays&&!submitPointReplayFace(replayPass,replayPackets,matrix,rendererFrame,face,check))return false;'
+draw_head='if(withReplays&&!submitPointReplayFace(replayPass,replayPackets,matrix,rendererFrame,face,check,\n                        lampSplits.empty()?nullptr:&lampSplits))return false;'
 point_draws=guarded_block(fp.src('world_point_replays.inl').read_text(),'    bool submitPointReplayFace(')
 count='if(fresh)pointReplayCount=withReplays?replays.size():0;'
 replay_at='const auto replayAt=[&](size_t index)->const Replay&{return *replays[index];};'
@@ -140,8 +140,8 @@ def point_replays_guarded(text):
     for needle in ('const auto& bounds=replay.pointBounds;',
                    'pointReplayCasters.prepare(replays.size()',
                    'pointReplayCasters.classify(clip,faces',
-                   'pointAppendCandidates(pointReplayCandidates,i,mask,faces);'):once(candidates,needle,'point candidate guard')
-    for needle in ('const auto& p=replays[candidates[at]];',
+                   'if(pointKeepLampReplay(i,light,lamp,lampSplits))pointAppendCandidates(pointReplayCandidates,i,mask,faces);'):once(candidates,needle,'point candidate guard')
+    for needle in ('const size_t index=candidates[at];','const auto& p=replays[index];',
                    'pointReplayRun(candidates,at,replayPass.skipping())','NorthlightShadowAlpha::drawSequence(d,candidates.size(),',
                    '"cube animated draw"'):once(point_draws,needle,'point face submissions')
     empty='(!withReplays||replays.empty())'

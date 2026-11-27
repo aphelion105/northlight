@@ -14,7 +14,9 @@ namespace NorthlightPointShadow {
 // Resource/map invalidation is supplied by the owner. Failed partial updates
 // must invalidate before drawing the first face, and commit only after all six.
 inline bool sameCube(const NorthlightLocalLights::Light& a,const NorthlightLocalLights::Light& b){
-    return a.sourceId==b.sourceId&&a.attenuationEnd==b.attenuationEnd&&
+    return a.sourceId==b.sourceId&&a.kind==b.kind&&a.attenuationEnd==b.attenuationEnd&&
+           !((a.flags^b.flags)&NorthlightLocalLights::GlassEmitter)&&
+           (!(a.flags&NorthlightLocalLights::GlassEmitter)||a.attenuationStart==b.attenuationStart)&&
            a.position[0]==b.position[0]&&a.position[1]==b.position[1]&&a.position[2]==b.position[2];
 }
 // An identified native emitter may hold its complete previous cube for one
