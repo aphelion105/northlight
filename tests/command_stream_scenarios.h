@@ -152,11 +152,14 @@ static void stateKnownUnknown(){
     // implicit objects: the default render target is the swap chain's back buffer proxy
     IDirect3DSurface9 *rt=nullptr,*rt2=nullptr,*bb=nullptr;
     CHECK(rig.dev->GetRenderTarget(0,&rt)==D3D_OK&&rig.dev->GetRenderTarget(0,&rt2)==D3D_OK&&rt==rt2&&rig.dev->GetBackBuffer(0,0,(D3DBACKBUFFER_TYPE)0,&bb)==D3D_OK&&bb==rt);
+    IDirect3DSurface9* auxiliary=rt;
+    CHECK(rig.dev->GetRenderTarget(1,&auxiliary)==D3DERR_NOTFOUND&&!auxiliary&&get(s.syncCalls)==syncs+1);
     D3DSURFACE_DESC d{};CHECK(bb->GetDesc(&d)==D3D_OK&&d.Width==640&&d.Height==480);rt->Release();rt2->Release();bb->Release();
     IDirect3DSurface9* ds=nullptr;CHECK(rig.dev->GetDepthStencilSurface(&ds)==D3D_OK&&ds);ds->Release();
     // a state block's Apply makes StreamState unknown; the Get then reads the Target
     IDirect3DStateBlock9* sb=nullptr;CHECK(rig.dev->CreateStateBlock((D3DSTATEBLOCKTYPE)1,&sb)==D3D_OK);
     const auto before=get(s.syncCalls);CHECK(sb->Apply()==D3D_OK);CHECK(rig.dev->GetRenderState((D3DRENDERSTATETYPE)7,&v)==D3D_OK&&v==99&&get(s.syncCalls)==before+1);
+    CHECK(rig.dev->GetRenderTarget(1,&auxiliary)==D3DERR_NOTFOUND&&!auxiliary&&get(s.syncCalls)==before+2);
     // recording: setters are recorded but StreamState does not follow (as DeviceMirror::recording)
     CHECK(rig.dev->BeginStateBlock()==D3D_OK&&rig.dev->BeginStateBlock()==D3DERR_INVALIDCALL);
     rig.dev->SetRenderState((D3DRENDERSTATETYPE)9,4242);IDirect3DStateBlock9* made=nullptr;CHECK(rig.dev->EndStateBlock(&made)==D3D_OK&&made);

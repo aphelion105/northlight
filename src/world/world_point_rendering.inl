@@ -91,7 +91,10 @@
         NorthlightPointShadow::OpaqueFaceCache::Work mixedSaved;
         uint64_t constantBytes=0;
         unsigned facesWithoutCache=0,facesResized=0,facesMoved=0,facesMeshInvalidated=0;
-        size_t contentRecords=0,staticEmptyCandidates=0;int64_t ticks=0,order=0,prepare=0,boundsWait=0,candidates=0,submit=0;} pointCold;
+        unsigned nativeShellChecks=0,placedShellChecks=0,placedCacheable=0,placedShellHits=0,mergeShellBuilds=0,mergeShellHits=0;
+        unsigned placedWorldBuilds=0,placedWorldHits=0;
+        size_t contentRecords=0,staticEmptyCandidates=0;
+        int64_t ticks=0,order=0,prepare=0,boundsWait=0,candidates=0,submit=0,nativeShell=0,placedShell=0,mergeShell=0,placedWorld=0;} pointCold;
     template<class Call> HRESULT pointAllocate(unsigned& attempts,Call call){
         ++attempts;const bool timed=NorthlightQuality::renderProfile(quality);const int64_t start=timed?QpcClock::now():0;
         const HRESULT hr=call();if(timed)pointCold.ticks+=QpcClock::now()-start;return hr;
@@ -100,6 +103,7 @@
     struct PointLiveBatch {UINT start,count;V low,high;};std::vector<PointLiveBatch> pointLiveBatches;
 
     size_t clearPointKeeps(){
+        clearPlacedLampMemos();
         pointOpaqueFaces.clear();
         size_t mixedBytes=0;
         pointMixedFaces.visitTextures([&](auto*){mixedBytes+=NorthlightPointShadow::CubeFaceBytes;});
@@ -134,6 +138,7 @@
         std::vector<unsigned char>().swap(pointNearbyBatches);pointNearbyReady=false;
         pointReplayCasters.release();pointMeshBounds.release();
         pointLampSources.clear();
+        clearPlacedLampMemos();
         for(auto& memo:nativeShellMemo)memo=NativeShellMemo{};
         std::vector<size_t>().swap(pointReplayOrder);std::vector<PointPalettePacket>().swap(pointReplayPalette);pointReplayOrderReady=false;
         std::vector<PointReplaySortKey>().swap(pointReplaySortKeys);
@@ -360,7 +365,7 @@
     // withReplays=false (0.3.158 ActorShadows=0): static cache, terrain and union only; the
     // cube is complete without replays (fresh=true) and the schedule sees none.
     bool renderPointShadow(const NorthlightLocalLights::Light& light,bool fresh=true,bool withReplays=true,
-                           const NorthlightShadowRefreshBudget* budget=nullptr,unsigned rendererFrame=0){
+                           const NorthlightShadowRefreshBudget* budget=nullptr,unsigned rendererFrame=0,PointWorldTriangles* world=nullptr){
         const bool previouslyHeld=std::exchange(pointSlot().budgetHeld,false);
         pointSlot().prewarmed=false;pointSlot().ready=false;pointDraws=pointCulled=pointFacesReused=0;
         // Publication can lead the bounded upload. Its committed same-map
@@ -483,6 +488,7 @@
             if(withReplays){
                 pointOrderReplays();
                 const auto lamp=pointLampReplay(light,owned);
+                if(world&&lamp.placed.lampTriangles)world->prepare(replays.size());
                 const bool ordered=pointReplayOrderReady&&pointReplayOrder.size()==replays.size();
                 pointReplayCasters.prepare(replays.size(),[&](size_t n){
                     const size_t i=ordered?pointReplayOrder[n]:n;
@@ -491,7 +497,7 @@
                     return NorthlightPointShadow::ReplayCasters::Source{i,bounds.low,bounds.high,bounds.valid,replay.shadowSkinned};
                 });
                 const auto counts=pointReplayCasters.classify(clip,faces,[&](size_t i,unsigned mask){
-                    if(pointKeepLampReplay(i,light,lamp,lampSplits))pointAppendCandidates(pointReplayCandidates,i,mask,faces);
+                    if(pointKeepLampReplay(i,light,lamp,lampSplits,world))pointAppendCandidates(pointReplayCandidates,i,mask,faces);
                 });
                 pointCulled+=counts.culled;
                 pointWork.unboundedSkinned+=counts.unboundedSkinned;
@@ -725,6 +731,7 @@
                 // Retirement still resets every content key and schedule.
                 recycled.swapCube(pointSlot());
             }}
+        PointWorldTriangles world;
         for(pointIndex=0;pointIndex<pointTargets.slots().size();++pointIndex){const auto& pick=picks[pointIndex];if(pick.index<0)continue;
             ++selected;
             restorePointSlot(lights.sources[pick.index]);pointSlot().selectionGain=pick.gain;
@@ -732,7 +739,7 @@
             // Spread first renders across frames. Restored cubes and the refresh
             // of already usable cubes follow the ordinary scheduling rules.
             if(cold&&coldCubes>=2){pointSelection.defer(pointIndex);continue;}
-            renderPointShadow(lights.sources[pick.index],fresh,withReplays,&refreshBudget,rendererFrame);pointReady|=pointSlot().ready;
+            renderPointShadow(lights.sources[pick.index],fresh,withReplays,&refreshBudget,rendererFrame,memoryPressure?nullptr:&world);pointReady|=pointSlot().ready;
             if(cold&&pointSlot().ready)++coldCubes;
             held+=pointSlot().budgetHeld;
             movingHeld+=pointSlot().budgetHeld&&!NorthlightPointShadow::sameCube(pointSlot().schedule.light,pointSlot().selected);
@@ -778,6 +785,10 @@
         if(coldTimed&&captureFrequency.QuadPart>0){const double scale=1000.0/double(captureFrequency.QuadPart),cpuMs=double(QpcClock::now()-coldStarted)*scale;
             if(cpuMs>=8||profileSampled()){
                 logf("POINT_PHASE rendererFrame=%u prepareMs=%.3f boundsWaitMs=%.3f candidatesMs=%.3f submitMs=%.3f prepareIncludesBoundsAndCandidates=1 terrainMemoHits=%u terrainMemoMisses=%u terrainListSize=%zu totalBatches=%zu contentPasses=%u contentRecords=%zu spatialIndex=%u facesWithoutCache=%u facesResized=%u facesMoved=%u facesMeshInvalidated=%u staticEmptyCandidates=%zu preparedMeshBounds=%zu",rendererFrame,double(pointCold.prepare)*scale,double(pointCold.boundsWait)*scale,double(pointCold.candidates)*scale,double(pointCold.submit)*scale,pointCold.terrainMemoHits,pointCold.terrainMemoMisses,terrainBatchList.size(),batches.size(),pointCold.contentPasses,pointCold.contentRecords,unsigned(bool(pointTree)),pointCold.facesWithoutCache,pointCold.facesResized,pointCold.facesMoved,pointCold.facesMeshInvalidated,pointCold.staticEmptyCandidates,pointMeshBounds.size());
+                logf("POINT_SHELL rendererFrame=%u nativeMs=%.3f placedMs=%.3f mergeMs=%.3f nativeChecks=%u placedChecks=%u placedCacheable=%u placedHits=%u mergeBuilds=%u mergeHits=%u worldMs=%.3f worldBuilds=%u worldHits=%u insideCandidates=1",
+                    rendererFrame,double(pointCold.nativeShell)*scale,double(pointCold.placedShell)*scale,double(pointCold.mergeShell)*scale,
+                    pointCold.nativeShellChecks,pointCold.placedShellChecks,pointCold.placedCacheable,pointCold.placedShellHits,pointCold.mergeShellBuilds,pointCold.mergeShellHits,
+                    double(pointCold.placedWorld)*scale,pointCold.placedWorldBuilds,pointCold.placedWorldHits);
                 logf("POINT_ORDER rendererFrame=%u cpuMs=%.3f packets=%u eligible=%u oncePerFrame=1 alphaBarriers=1 fixedDraws=%u alphaScopes=%u",rendererFrame,double(pointCold.order)*scale,pointCold.orderPackets,pointCold.orderEligible,pointCold.fixedDraws,pointCold.alphaScopes);
                 // A reused cube may leave the bounds job running. Its mutable
                 // counters are readable only after that job has been joined.

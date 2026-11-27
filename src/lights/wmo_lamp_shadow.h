@@ -94,9 +94,24 @@ template<class Triangles> std::vector<bool> matching(const Triangles& shell,cons
     if(shell.empty()||shell.size()>4096||submitted.empty()||submitted.size()>4096)return {};
     constexpr float tolerance=.0025f; // Same native world-transform round-trip budget as StaticM2Dedup.
     const auto samePoint=[](const auto& a,const auto& b){return std::fabs(a.x-b.x)<=tolerance&&std::fabs(a.y-b.y)<=tolerance&&std::fabs(a.z-b.z)<=tolerance;};
+    auto low=shell.front()[0],high=low;
+    for(const auto& triangle:shell)for(const auto& point:triangle){
+        low.x=std::min(low.x,point.x);low.y=std::min(low.y,point.y);low.z=std::min(low.z,point.z);
+        high.x=std::max(high.x,point.x);high.y=std::max(high.y,point.y);high.z=std::max(high.z,point.z);
+    }
     // Bounded proof; unusually expensive/ambiguous geometry keeps casting.
     size_t work=0;std::vector<bool> result,used(shell.size());result.reserve(submitted.size());
     for(const auto& t:submitted){bool found=false,duplicate=false;
+        // A triangle that matches the shell must have its first vertex in
+        // the expanded shell box. Preserve the original matching work limit.
+        const auto& p=t[0];
+        if(low.x-p.x>tolerance||p.x-high.x>tolerance||low.y-p.y>tolerance||p.y-high.y>tolerance||
+           low.z-p.z>tolerance||p.z-high.z>tolerance){
+            work+=shell.size();
+            if(work>1u<<20)return {};
+            result.push_back(false);
+            continue;
+        }
         for(size_t i=0;i<shell.size();++i){const auto& s=shell[i];if(++work>1u<<20)return {};bool same=false;
             for(unsigned k=0;k<3&&!same;++k)
                 if(samePoint(t[0],s[k])&&((samePoint(t[1],s[(k+1)%3])&&samePoint(t[2],s[(k+2)%3]))||(samePoint(t[2],s[(k+1)%3])&&samePoint(t[1],s[(k+2)%3]))))same=true;

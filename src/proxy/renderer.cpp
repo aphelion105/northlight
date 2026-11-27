@@ -520,15 +520,19 @@ public:
 private:
     IDirect3DQuery9* latencyQuery=nullptr;bool latencyPending=false,latencyFailed=false;std::uint64_t latencyWaits=0;double latencyWaitMs=0;double latencyLastMs=0; /* task 45: the last Present's wait, not reset by logging */
     bool earlySceneSubmit=false;
-    unsigned earlySceneSubmits=0;
-    void submitSceneBeforeEffects(){
-        if(!earlySceneSubmit||!latencyPending||!latencyQuery||latencyQuery->GetData(nullptr,0,0)!=S_OK)return;
+    unsigned terrainSubmitDraw=0,terrainSubmitBase=0;
+    bool retainM2MaterialTargets=false;
+    unsigned terrainSubmitFrame=~0u;
+    unsigned earlySceneSubmits=0,terrainSceneSubmits=0;
+    void submitSceneBeforeEffects(bool afterTerrain=false){
+        if(!earlySceneSubmit||terrainSubmitFrame==frame||!latencyPending||!latencyQuery||latencyQuery->GetData(nullptr,0,0)!=S_OK)return;
         // Previous-frame pacing has already been satisfied. Reuse the query for
         // a nonblocking submit hint before the depth resolve and effects.
         latencyPending=false;
         if(SUCCEEDED(latencyQuery->Issue(D3DISSUE_END))){
             (void)latencyQuery->GetData(nullptr,0,D3DGETDATA_FLUSH);
-            ++earlySceneSubmits;
+            if(afterTerrain){terrainSubmitFrame=frame;++terrainSceneSubmits;}
+            else ++earlySceneSubmits;
         }
     }
     void waitPreviousFrameGpu(){
@@ -1143,6 +1147,7 @@ private:
         }}
         if(celestialDiscs)celestialDiscs->endFrame();if(shadowBlobs)shadowBlobs->endFrame();
         terrainAdmission.target=nullptr;drop(terrainAdmissionTarget.p);
+        terrainSubmitBase=terrainDraws;
         effectCoverage.endFrame();mirrorState.finishDeferredTargets();mirrorState.coverageTargetReuses=mirrorState.modelNormalTargetReuses=0;drop(worldDepth);worldDepthDescKnown=false; rainMrtUnbind();terrain = captured = applied = projectionValid = skySeen = menuScene = false;rainMaskCleared=rainMaskDrawn=rainMaskFrame=rainMaskOk=rainDepthOk=false; /* 0.3.202 (rain mask MRT): RT1 never outlives a frame */earlyDepth.reset();resetTranslucentCensus(); /* the TRANSLUCENT line is logged before clearFrame */
     }
     void captureWeatherDiagnostics(const NorthlightSurfaceFrame* constants,IDirect3DSurface9* target,IDirect3DSurface9* nameDepth,const char* unavailable,
@@ -1768,7 +1773,7 @@ private:
         constexpr bool fusedM2Enabled=true;
 #endif
         if constexpr(!userMemory)if(autoBump&&fusedM2Enabled){
-            bool canFuse=!hdr.active&&!shareM2Depth;
+            bool canFuse=!hdr.active&&(!shareM2Depth||retainM2MaterialTargets);
 #if defined(_WIN64) && !defined(NORTHLIGHT_REPLAY_STAND)
             if(!shareM2Depth&&hdr.active&&hdr.dxvk&&hdr.stream&&!hdrUiPhase&&hdrLegacyBack&&
                hdr.logical.MultiSampleType==D3DMULTISAMPLE_NONE&&(!modelNormals||!modelNormals->hybridRequested())){
@@ -3054,6 +3059,8 @@ private:
         if (tag==1||wmo||model) {
             if(tag==1){
                 ++terrainDraws;
+                if(terrainSubmitDraw&&terrainDraws-terrainSubmitBase==terrainSubmitDraw&&projectionValid&&!menuScene)
+                    submitSceneBeforeEffects(true);
                 if(terrain&&projectionValid&&!menuScene&&worldDepthDescKnown&&terrainAdmission.depth==worldDepth&&
                    world&&world->hasContext()&&world->hasOriginalFog()&&
                    terrainAdmission.matches(mirrorState)){
@@ -3434,9 +3441,13 @@ public:
 #ifndef NORTHLIGHT_REPLAY_STAND
         const bool dxvk311Stream=presentation.dxvk&&presentation.stream&&
             NorthlightStream::dxvk311EventPayload.load(std::memory_order_relaxed);
-        const bool dxvkX86=sizeof(void*)==4&&dxvk311Stream&&
+        const bool dxvkWindowsStream=dxvk311Stream&&
             !GetProcAddress(GetModuleHandleW(L"ntdll.dll"),"wine_get_version");
-        earlySceneSubmit=dxvkX86;
+        const bool dxvkX86=sizeof(void*)==4&&dxvkWindowsStream;
+        const bool dxvkX64=sizeof(void*)==8&&dxvkWindowsStream;
+        if(dxvkX64)terrainSubmitDraw=256;
+        earlySceneSubmit=dxvkX86||dxvkX64;
+        retainM2MaterialTargets=dxvkX64;
         mirrorState.dxvkResolvePointSize=dxvkX86;
         // DXVK's command thread can wait in convertIr() when the first draw
         // uses a shader that its background compiler is still converting.
@@ -3488,6 +3499,7 @@ public:
         const auto rasterSource=[](void* context,const D3DRENDERSTATETYPE* keys,unsigned count,DWORD* out){return static_cast<ExtensionDevice*>(static_cast<IDirect3DDevice9*>(context))->knownRenderStates(keys,count,out);};
         autoBump->setRasterStateSource(static_cast<IDirect3DDevice9*>(ext),rasterSource);
         autoBump->setDrawStateSource(*ext);
+        autoBump->retainNativeM2Target(retainM2MaterialTargets);
         world->setCaptureRasterStateSource(static_cast<IDirect3DDevice9*>(ext),rasterSource);
         autoBump->setEmptyTargetSource(static_cast<IDirect3DDevice9*>(ext),[](void* context){return static_cast<ExtensionDevice*>(static_cast<IDirect3DDevice9*>(context))->emptyAuxiliaryTargets();});
         modelNormals->setRasterStateSource(static_cast<IDirect3DDevice9*>(ext),rasterSource);
@@ -3679,7 +3691,8 @@ public:
         if(spellOn){spell.reset();spellSync();spellQueryN=0;spellQueryUnknown=false;spellTexFor=nullptr;spellTexKey=nullptr;spellFade.reset();} /* task 34: no state block, upload buffer or surface may outlive the device state */
         resetMark(1);
         frameIntervals.reset();frameCost.reset();stallFrames.reset();mirrorResources.queryProfile={};backDescKnown=false;backSurface=nullptr;
-        NorthlightParticleTextures::cache().reset();NorthlightMaterialTextures::cache().reset();NorthlightTrackedBuffers::invalidateAll(true);gpuProfile->reset();gpuSceneProfile->reset();if(materialProfile)materialProfile->reset();gpuFrameStarted=gpuSceneSplit=gpuEffectsSplit=false;gpuTimer->reset();gpuBudgetQpc=0;boundQpc=0;cpuBudgetQpc=0;cpuEffectsQpc=0;gpuBound.reset();replayWait.reset();replaySkipPrev=0;replayWaitPrevNs=0;eventGpuWaitPrevNs=0;drop(latencyQuery);latencyPending=false;latencyFailed=false;resetMark(2);
+        NorthlightParticleTextures::cache().reset();NorthlightMaterialTextures::cache().reset();NorthlightTrackedBuffers::invalidateAll(true);gpuProfile->reset();gpuSceneProfile->reset();if(materialProfile)materialProfile->reset();gpuFrameStarted=gpuSceneSplit=gpuEffectsSplit=false;gpuTimer->reset();gpuBudgetQpc=0;boundQpc=0;cpuBudgetQpc=0;cpuEffectsQpc=0;gpuBound.reset();replayWait.reset();replaySkipPrev=0;replayWaitPrevNs=0;eventGpuWaitPrevNs=0;drop(latencyQuery);latencyPending=false;latencyFailed=false;
+        terrainSubmitFrame=~0u;resetMark(2);
         releaseResources(true);resetMark(3);
         if(world)world->reset(true);resetMark(4);
         if(water)water->reset();if(celestialDiscs)celestialDiscs->reset();if(shadowBlobs)shadowBlobs->reset(); weatherDetect.reset();weatherSample={}; /* 0.3.198 (rain) */failed=false;latchDrawGates();resetMark(5);
@@ -3886,7 +3899,7 @@ public:
             const unsigned before=gpuBudget.level;world->setGpuBudgetLevel(gpuBudget.update(float(budget),float(ms),dt,gpuLimited));
             if(gpuBudget.level!=before&&(gpuBudget.changes<=32||diagnostics()))
                 logf("GPUBUDGET level %u -> %u smoothed=%.3f budget=%u changes=%u",before,gpuBudget.level,double(gpuBudget.smoothed),budget,gpuBudget.changes);}
-        if(limitGpuLatency&&sampled()&&NorthlightRenderThreadProbe::profiling()){logf("CSTREAM GPU latency waits=%llu waitMs=%.1f earlySceneSubmits=%u",(unsigned long long)latencyWaits,latencyWaitMs,earlySceneSubmits);latencyWaits=0;latencyWaitMs=0;earlySceneSubmits=0;}
+        if(limitGpuLatency&&sampled()&&NorthlightRenderThreadProbe::profiling()){logf("CSTREAM GPU latency waits=%llu waitMs=%.1f earlySceneSubmits=%u terrainSceneSubmits=%u",(unsigned long long)latencyWaits,latencyWaitMs,earlySceneSubmits,terrainSceneSubmits);latencyWaits=0;latencyWaitMs=0;earlySceneSubmits=terrainSceneSubmits=0;}
         if(sampled()&&NorthlightRenderThreadProbe::profiling())logf("GPUBUDGET ms=%.3f smoothed=%.3f budget=%.1f level=%u gpuWait=%.2f gpuBound=%d eventWait=%.2f scope=deferred-captures-and-effects inSceneCaptureIncluded=0 cpuGpuAdditive=0",gpuBudgetLastMs,double(gpuBudget.smoothed),double(budget),gpuBudget.level,double(gpuBound.smoothed),boundKnown?int(gpuBound.bound()):-1,double(eventGpuMs));
     }
     // task 45: ActorShadowCpuMs. The effects span of this frame (renderEffects from the applied check to its return: the world render incl. the actor shadow replay,

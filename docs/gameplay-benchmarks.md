@@ -14,6 +14,7 @@ its own account and never connects to a realm outside localhost.
 | `crowd128` | Same Dalaran viewpoint with 128 characters in staggered rows. It exercises crowd rendering, enchanted weapons, particles, and equipment lights. |
 | `crowd512` | Dense Dalaran M2 workload with 512 equipped characters in 16 rows. It stresses animation, model submission, and the renderer's world passes. |
 | `ratchet` | Waterfront road with 32 characters around the player. Half carry enchanted weapons. The add-on rotates left for five seconds, then right for five seconds, bringing different geometry, water, and characters into view. |
+| `valgarde` | Starts beside the Valgarde inn, facing the cliffs across Daggercap Bay in Howling Fjord. Two rings of 16 characters follow the terrain around the player. Half carry enchanted weapons. The camera follows the same five-second left and right sweeps as Ratchet. |
 
 ## Run on Windows
 
@@ -66,7 +67,7 @@ python scripts/benchmark_gameplay.py --case x64-dxvk --runtime <x64-payload> --b
 python scripts/benchmark_gameplay.py --case native-vulkan --runtime <native-x64-runtime> --vulkan-shaders <vulkan-shaders> --desktop interactive --output "$out/native-vulkan"
 ```
 
-Commands run all four scenes sequentially by default. Add `--scene crowd128 ratchet`
+Commands run all five scenes sequentially by default. Add `--scene crowd128 ratchet`
 to narrow a run. Use `--dxvk-adapter` to select and verify a DXVK device and
 `--keep-client` to retain the private copies for investigation. Give each
 repeat a fresh output directory. Without Windows Developer Mode the runner
@@ -80,6 +81,16 @@ run requires confirmation in `northlight-renderer.log`. Keep the flag consistent
 across FPS comparisons because profiling adds measurement overhead. RenderProfile
 is off by default and is unavailable in stock and Vulkan cases.
 
+In a D3D9 profile, `POINT_PHASE candidatesMs` includes the lamp's caster
+selection and self-shadow exclusion. The `POINT_SHELL` line breaks out time
+spent verifying native and placed lamp enclosures and merging multi-part
+geometry. Its hit counters show reuse when the placement or draw inputs still match.
+
+The **Experimental lamp-shadow warm-up** checkbox under **Rendering**
+increases the vertex limit for cold caster bounds in crowded lamp views
+within the existing time budget. It defaults to off. Record its value when
+comparing runs.
+
 Use `--effects 0` with a Northlight D3D9 case to bypass scene effects while
 keeping the renderer loaded. Use `--effects 1` to enable the scene effects
 configured in the quality profile. Both values require a wrapped D3D9 device
@@ -89,16 +100,18 @@ the flag to use the supplied quality profile's effects setting.
 ## Read the results
 
 The add-on waits 20 seconds after entering the world. The fixture arms it
-once the client has requested the entire roster. The next ten seconds of
-game-frame intervals come from `OnUpdate` and `debugprofilestop`. The add-on
+once the client has requested the entire roster. The add-on measures its
+`OnUpdate` intervals with `debugprofilestop` for the next ten seconds and
 sends its timing batches after the window closes. The runner checks the exact
 roster packet hash, phase order, frame count, elapsed time, window focus
 samples, client size, and backend evidence before marking the run `PASS`.
 
 - `summary.json` lists each scene and its verdict. A failed scene makes the command exit nonzero.
-- `<case>/<scene>/result.json` gives the roster hash, runtime and graphics hashes, observed backend, focus mode, and FPS results. Ratchet also reports each sweep separately.
+- `<case>/<scene>/result.json` gives the roster hash, runtime and graphics hashes, observed backend, focus mode, camera route and FPS results. Ratchet and Valgarde report each sweep separately.
 - `client-runtime.log` records the verified client executable bitness, observed D3D9, D3D9Ex or Vulkan path, DXVK version, D3D9On12 status, output mode, and Northlight effects. The same data appears under `runtime` in the JSON reports.
-- `frame-times.csv` contains the raw game-frame intervals in milliseconds. `avg_fps` is the frame count divided by elapsed seconds. `low_0_1_fps` is 1000 divided by the mean frame time of the slowest `ceil(frames / 1000)` frames. `worst_ms` records the longest measured interval.
+- `frame-times.csv` contains the raw add-on update intervals in milliseconds. The client can call the add-on less often than it renders.
+- `present-frame-times.csv` and `present_timing` measure complete CPU Present intervals inside the same ten-second span when D3D9 diagnostics report QPC anchors. This evidence is required once the runner observes an anchor, with or without `--render-profile`. Use these results to assess renderer FPS.
+- `avg_fps` is the frame or callback count divided by elapsed seconds. `low_0_1_fps` is 1000 divided by the mean duration of the slowest `ceil(frames / 1000)` intervals. `worst_ms` records the longest measured interval.
 - `server.log`, the launch profile, and available renderer and driver logs are retained for failed runs too.
 
 The DXVK console result reports `northlight` and `dxvk` even when timing fails.
@@ -116,10 +129,10 @@ means the process had the system DLL loaded when sampled after timing.
 
 `PASS` qualifies the measurement. Compare repeated measurements on the same
 hardware, with the same archives, camera, resolution, graphics and focus mode.
-Record differences in HDR and active effects when comparing backends. These are
-game-frame intervals. For Present intervals, GPU pass timings, color/depth
-parity, or verification of the actual sweep angle and recovery hitches in
-Ratchet, use the [Northrend baseline and replay harness](northrend-baseline.md).
+Record differences in HDR and active effects when comparing backends. The
+[Northrend baseline and replay harness](northrend-baseline.md) also supports
+GPU pass timings, color/depth parity and verification of the sweep angle
+and recovery hitches in Ratchet.
 
 Run the fixture and report checks without a client through the source suite.
 

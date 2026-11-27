@@ -139,6 +139,8 @@ struct Device {
     bool orthographicUiGeometry(){return ortho;}bool hdrUiInputs(){return uiInputs;}
     bool hdrBackTarget(){return backTarget;}
     unsigned terrainDraws=0,projectionRejects=0,earlyResolveUndone=0,earlyResolveUndoneTotal=0,uiDraws=0,uiAfterTerrain=0,frame=0,drawCalls=0,binds=0,allocations=0;
+    unsigned terrainSubmitDraw=0,terrainSubmitBase=0,terrainSubmitAttempts=0;
+    void submitSceneBeforeEffects(bool afterTerrain){assert(afterTerrain);++terrainSubmitAttempts;}
     float nearZ=0,farZ=0,scaleX=0,scaleY=0,fogForward=1,worldMinDepth=0,worldMaxDepth=.94f;
     struct Early{bool earlyCaptured=false;void undo(){}}earlyDepth;
     std::map<IDirect3DPixelShader9*,int> psTags;
@@ -249,10 +251,12 @@ int main(){
         p.terrainAdmission.viewport=p.mirrorState.viewport=p.state.vp;
         std::copy_n(p.state.rows,16,p.terrainAdmission.projection);
         p.mirrorState.projection=p.state.rows;
+        p.terrainSubmitDraw=2;p.terrainDraws=p.terrainSubmitBase=1000;
         p.beforeDraw(shader);
-        assert(!p.binds&&!p.allocations&&!p.captured&&p.earlyResolveUndone==1&&p.actorAO.resumes==1);
+        assert(!p.binds&&!p.allocations&&!p.captured&&p.earlyResolveUndone==1&&p.actorAO.resumes==1&&!p.terrainSubmitAttempts);
         p.state.rows[0]=1.3f;
-        p.beforeDraw(shader);assert(p.binds==1&&p.allocations==1&&p.scaleX==1.3f);++cases;
+        p.beforeDraw(shader);assert(p.binds==1&&p.allocations==1&&p.scaleX==1.3f&&p.terrainSubmitAttempts==1);
+        p.beforeDraw(shader);assert(p.terrainSubmitAttempts==1);++cases;
     }
     std::printf("production context/gate: %u cases passed; no terrain dependency; sky/UI/bad camera rejected\n",cases);
 }

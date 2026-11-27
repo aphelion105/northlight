@@ -404,7 +404,13 @@ public:
     bool answer(CmdTag<Cmd::Device_GetVertexShaderConstantB>,UINT r,WINBOOL* d,UINT n,HRESULT& hr){begin();return getB(st.vsB,r,d,n,hr);}
     bool answer(CmdTag<Cmd::Device_GetPixelShaderConstantB>,UINT r,WINBOOL* d,UINT n,HRESULT& hr){begin();return getB(st.psB,r,d,n,hr);}
     bool answer(CmdTag<Cmd::Device_GetRenderTarget>,DWORD i,IDirect3DSurface9** pp,HRESULT& hr){
-        begin();if(!pp||i>=StreamState::kRTs||!st.rtKnown[i]||!st.rt[i])return false;give(st.rt[i],pp);hr=D3D_OK;return hit();}
+        begin();
+        if(!pp||i>=StreamState::kRTs||!st.rtKnown[i])return false;
+        if(st.rt[i]){give(st.rt[i],pp);hr=D3D_OK;return hit();}
+        if(!i||!st.rtNotFound[i]||core.coopState.load(std::memory_order_acquire)!=D3D_OK)return false;
+        streamQueue().publish();
+        // Replay initializes the output to null even if the backend leaves it untouched.
+        *pp=nullptr;hr=D3DERR_NOTFOUND;return hit();}
     bool answer(CmdTag<Cmd::Device_GetDepthStencilSurface>,IDirect3DSurface9** pp,HRESULT& hr){begin();if(!pp||!st.dsKnown||!st.ds)return false;give(st.ds,pp);hr=D3D_OK;return hit();}
     bool answer(CmdTag<Cmd::Device_GetTexture>,DWORD s,IDirect3DBaseTexture9** pp,HRESULT& hr){
         begin();unsigned idx;if(!pp||!StreamState::sampIndex(s,idx)||!st.texKnown[idx])return false;give(st.tex[idx],pp);hr=D3D_OK;return hit();}

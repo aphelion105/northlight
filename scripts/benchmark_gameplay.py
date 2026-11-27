@@ -1,4 +1,4 @@
-"""Measure the same live Dalaran and Ratchet workloads on Windows backends."""
+"""Measure the same live Dalaran, Ratchet and Valgarde workloads on Windows backends."""
 
 import argparse
 from contextlib import ExitStack
@@ -25,7 +25,9 @@ SCENES = {
     'crowd128': ('crowd', fixture.DEFAULT_CROWD_SIZE),
     'crowd512': ('m2-stress', fixture.M2_STRESS_SIZE),
     'ratchet': (fixture.RATCHET_PAN, fixture.RATCHET_CROWD_SIZE),
+    'valgarde': (fixture.VALGARDE, fixture.VALGARDE_CROWD_SIZE),
 }
+ROTATING_SCENES = frozenset({'ratchet', 'valgarde'})
 CASES = {
     'stock-x86': ('Wow.exe', '', 'GxWindowClassD3d'),
     'stock-x64': ('WowClient64.exe', '-d3d9', 'GxWindowClassD3d'),
@@ -59,7 +61,8 @@ def read_timing(events, scene):
     if events.count(spawn) != 1 or events.count(arm) != 1 or events.index(spawn) >= events.index(arm):
         raise ValueError('The loopback server did not arm the expected equipped roster')
     evidence = [line for line in events[events.index(arm) + 1:] if line.startswith(('BENCH phase=', 'BENCH_PAYLOAD '))]
-    phases = ('start', 'right', 'done') if scene == 'ratchet' else ('start', 'done')
+    rotating = scene in ROTATING_SCENES
+    phases = ('start', 'right', 'done') if rotating else ('start', 'done')
     ticks = {}
     for phase, line in zip(phases, evidence):
         marker = re.fullmatch(rf'BENCH phase={phase} tick_ns=(\d+)', line)
@@ -86,14 +89,71 @@ def read_timing(events, scene):
         raise ValueError('Frame count or elapsed time differs from the timing payload')
     report = {'roster_sha256': spawn.rsplit('=', 1)[1], 'actors_queried': count,
               'phase_tick_ns': ticks, 'timing': stats(frames, elapsed)}
-    if scene == 'ratchet':
+    if rotating:
         if not 0 < turn < len(frames) or not 4900 <= sum(frames[:turn]) <= 5400:
-            raise ValueError('Ratchet rotation did not reverse around the midpoint')
+            raise ValueError('The camera rotation did not reverse around the midpoint')
         report['sweeps'] = {name: stats(part, sum(part)) for name, part in
                             (('left', frames[:turn]), ('right', frames[turn:]))}
     elif turn:
         raise ValueError('A stationary scene reported a rotation')
     return report, frames
+
+
+def present_timing(lines, phases, *, foreground):
+    """Measure renderer Presents inside the same span as the add-on markers."""
+    start_ns, done_ns = phases['start'], phases['done']
+    selected = []
+    for line in lines:
+        if not line.startswith('FRAME interval '):
+            continue
+        fields = dict(token.split('=', 1) for token in line.split() if '=' in token)
+        if 'lastQpc' not in fields or fields.get('complete') == '0':
+            continue
+        hz = int(fields['qpcHz'])
+        anchor_ns_hz = int(fields['lastQpc']) * 1_000_000_000
+        if anchor_ns_hz < start_ns * hz:
+            continue
+        selected.append(fields)
+        if anchor_ns_hz >= done_ns * hz:
+            break
+    else:
+        return None
+
+    enabled = selected[0]['enabled'] == '1'
+    evidence = live.frame_timing.summarize(selected, background=not foreground, enabled=enabled)
+    hz, windows = evidence['qpc_hz'], evidence['windows']
+    qpc = windows[0]['last_qpc'] - sum(windows[0]['qpc_deltas'])
+    if qpc * 1_000_000_000 > start_ns * hz:
+        raise ValueError('Present timing does not cover the start of the benchmark')
+    samples, left, right = [], [], []
+    turn_ns = phases.get('right')
+    previous = windows[0]['first_present'] - 1
+    for window in windows:
+        if window['first_present'] != previous + 1:
+            raise ValueError('Present timing has a missing window')
+        for frame, delta in enumerate(window['qpc_deltas'], window['first_present']):
+            begin, end = qpc * 1_000_000_000, (qpc + delta) * 1_000_000_000
+            if begin >= start_ns * hz and end <= done_ns * hz:
+                ms = delta * 1000.0 / hz
+                samples.append((frame, ms))
+                if turn_ns is not None:
+                    if end <= turn_ns * hz:
+                        left.append(ms)
+                    elif begin >= turn_ns * hz:
+                        right.append(ms)
+            qpc += delta
+        previous = window['last_present']
+    durations = [ms for _, ms in samples]
+    elapsed = sum(durations)
+    if not samples or (done_ns - start_ns) / 1_000_000 - elapsed > 200:
+        raise ValueError('Complete Present intervals do not cover the benchmark window')
+    report = dict(stats(durations, elapsed), scope=evidence['scope'], effects_enabled=enabled,
+                  first_present=samples[0][0], last_present=samples[-1][0])
+    if turn_ns is not None:
+        if not left or not right:
+            raise ValueError('Present timing is missing a camera sweep')
+        report['sweeps'] = {'left': stats(left, sum(left)), 'right': stats(right, sum(right))}
+    return report, samples
 
 
 def stage(args, scene, client, report):
@@ -106,6 +166,10 @@ def stage(args, scene, client, report):
     scene_id, _ = SCENES[scene]
     world = fixture.map_for(scene_id)[2]
     tiles = live.RATCHET_TILES if scene == 'ratchet' else None
+    if scene_id == fixture.VALGARDE:
+        # Three neighboring tiles in each direction cover the preset's far clip.
+        x, y = map(int, fixture.VALGARDE_TILE.split('_'))
+        tiles = {f'{tx}_{ty}' for tx in range(x - 3, x + 4) for ty in range(y - 3, y + 4)}
     files = {}
     for relative in live.copies(args.client, None if stock else world, base_game, tiles, data=args.data):
         if stock and relative.parts[0] != 'Data' and relative.name not in (
@@ -116,6 +180,8 @@ def stage(args, scene, client, report):
             continue
         files[relative] = args.data / relative.relative_to('Data') if relative.parts[0] == 'Data' else args.client / relative
     if not stock:
+        if scene_id == fixture.VALGARDE and Path(f'world-cache/{world}/{fixture.VALGARDE_TILE}.fg3') not in files:
+            raise ValueError('Missing the Valgarde static geometry tile')
         if not any(path.parts[:2] == ('world-cache', world) and path.suffix == '.fg3' for path in files):
             raise ValueError(f'The benchmark needs the installed {world} static geometry cache')
         for name in (*RUNTIME_FILES, game if native else 'd3d9.dll'):
@@ -176,7 +242,7 @@ def stage(args, scene, client, report):
         path = addon / f'{ADDON}.{suffix}'
         shutil.copyfile(FIXTURES / path.name, path)
         inputs[path.name] = live.digest(path)
-    (addon / 'Scene.lua').write_text(f'NorthlightBenchmarkRotate = {str(scene == "ratchet").lower()}\n'
+    (addon / 'Scene.lua').write_text(f'NorthlightBenchmarkRotate = {str(scene in ROTATING_SCENES).lower()}\n'
                                    f'NorthlightBenchmarkVulkan = {str(args.case == "native-vulkan").lower()}\n', encoding='ascii')
 
 
@@ -395,10 +461,32 @@ def measure(args, scene, output, client, report):
         observed = [(focused, size) for tick, focused, size in focus if ticks['start'] <= tick <= ticks['done']]
         check_window(report, observed, expected_size, foreground=foreground)
         report.update(timing)
+        report['timing_scope'] = 'Lua OnUpdate intervals'
         with (output / 'frame-times.csv').open('x', encoding='ascii', newline='') as file:
             rows = csv.writer(file)
             rows.writerow(('frame', 'game_frame_ms'))
             rows.writerows(enumerate(frames, 1))
+        if args.case in NORTHLIGHT_D3D9_CASES:
+            renderer_lines = live.log_lines(client / live.LOG)
+            anchored = any(line.startswith('FRAME interval ') and ' lastQpc=' in line for line in renderer_lines)
+            require_present_timing = anchored
+            deadline = time.monotonic() + (5 if require_present_timing else 0)
+            while True:
+                presents = present_timing(renderer_lines, ticks, foreground=foreground)
+                if presents or time.monotonic() >= deadline or process.poll() is not None:
+                    break
+                if desktop:
+                    desktop.confirm_inactive()
+                time.sleep(.1)
+                renderer_lines = live.log_lines(client / live.LOG)
+            if not presents and require_present_timing:
+                raise ValueError('Complete Present timing was unavailable in the renderer log')
+            if presents:
+                report['present_timing'], intervals = presents
+                with (output / 'present-frame-times.csv').open('x', encoding='ascii', newline='') as file:
+                    rows = csv.writer(file)
+                    rows.writerow(('present', 'interval_ms'))
+                    rows.writerows(intervals)
 
 
 def write_runtime(output, report):
@@ -421,6 +509,7 @@ def attempt(args, scene):
     output.mkdir(parents=True)
     client = output / 'client'
     report = {'status': 'FAIL', 'case': args.case, 'scene': scene, 'resolution': args.resolution,
+              'camera_route': 'left-right' if scene in ROTATING_SCENES else 'stationary',
               'msaa': 1, 'locale': args.locale, 'desktop': args.desktop, 'render_profile_requested': args.render_profile,
               'effects_requested': args.effects,
               'focus_mode': 'foreground' if args.desktop == 'foreground' else 'background',

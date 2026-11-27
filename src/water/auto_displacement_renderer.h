@@ -327,6 +327,12 @@ class NorthlightAutoDisplacement {
     }
     static bool readTerrain(NorthlightReplayBounds::detail::Value& v){if(!std::isfinite(v.value)||!std::isfinite(v.error))return false;if(v.value!=0&&std::fabs(v.value)<std::numeric_limits<float>::min())v.error+=std::fabs(v.value);return true;}
     static bool validTerrain(NorthlightReplayBounds::detail::Value v){return std::isfinite(v.value)&&std::isfinite(v.error)&&v.error>=0;}
+    static constexpr float ViewRangeMagnitude=1000000.f;
+    static bool boundedViewInputs(const float* low,const float* high){
+        for(unsigned axis=0;axis<3;++axis)
+            if(!(low[axis]<=high[axis]&&std::fabs(low[axis])<=ViewRangeMagnitude&&std::fabs(high[axis])<=ViewRangeMagnitude))return false;
+        return true;
+    }
     using DisplacementLod=NorthlightMaterialViewBounds::DisplacementLod;
     static bool depthFromView(const NorthlightReplayBounds::detail::Vector& view,float& nearest,float* farthest,DisplacementLod* lod){
         const double lo=double(view[2].value)-view[2].error,hi=double(view[2].value)+view[2].error;
@@ -346,9 +352,15 @@ class NorthlightAutoDisplacement {
     static bool terrainDepth(const Program& p,const float* low,const float* high,const float* bank,float& nearest,DisplacementLod* lod){
  using namespace NorthlightReplayBounds::detail;Vector pos={};for(unsigned k=0;k<3;++k){float mid=float((double(low[k])+high[k])*.5);pos[k]={mid,std::max(double(mid)-low[k],double(high[k])-mid)};}pos[3]={1,0};
  Vector c[4];for(unsigned i=0;i<4;++i){for(unsigned k=0;k<4;++k)c[i][k]={bank[4*i+k],0};for(const auto& def:p.definitions)if(def.reg==i)for(unsigned k=0;k<4;++k)c[i][k].value=def.value[k];}
- Vector tmp;for(unsigned k=0;k<4;++k){Value a=c[1][k],b=pos[1];if(!readTerrain(a)||!readTerrain(b))return false;tmp[k]=mul(a,b);if(!validTerrain(tmp[k]))return false;}
- for(unsigned op=0;op<2;++op)for(unsigned k=0;k<4;++k){Value a=pos[op==0?0:2],b=c[op==0?0:2][k],v=tmp[k];if(!readTerrain(a)||!readTerrain(b)||!readTerrain(v))return false;Value product=mul(a,b),r;if(product.value==0&&product.error==0)r=v;else{r=add(product,v);r.error+=roundError(std::fabs(double(a.value)*b.value)+std::fabs(v.value));}if(!validTerrain(r))return false;tmp[k]=r;}
- for(unsigned k=0;k<4;++k){Value a=tmp[k],b=c[3][k];if(!readTerrain(a)||!readTerrain(b))return false;tmp[k]=add(a,b);if(!validTerrain(tmp[k]))return false;}
+ // Bounded inputs keep every skipped product and sum finite. Depth-only
+ // admission needs Z and the original W check, while viewport LOD also needs XY.
+ bool depthOnly=!lod&&boundedViewInputs(low,high);
+ if(depthOnly)for(const auto& row:c)
+     if(!(std::fabs(row[0].value)<=ViewRangeMagnitude&&std::fabs(row[1].value)<=ViewRangeMagnitude)){depthOnly=false;break;}
+ const unsigned first=depthOnly?2:0;
+ Vector tmp{};for(unsigned k=first;k<4;++k){Value a=c[1][k],b=pos[1];if(!readTerrain(a)||!readTerrain(b))return false;tmp[k]=mul(a,b);if(!validTerrain(tmp[k]))return false;}
+ for(unsigned op=0;op<2;++op)for(unsigned k=first;k<4;++k){Value a=pos[op==0?0:2],b=c[op==0?0:2][k],v=tmp[k];if(!readTerrain(a)||!readTerrain(b)||!readTerrain(v))return false;Value product=mul(a,b),r;if(product.value==0&&product.error==0)r=v;else{r=add(product,v);r.error+=roundError(std::fabs(double(a.value)*b.value)+std::fabs(v.value));}if(!validTerrain(r))return false;tmp[k]=r;}
+ for(unsigned k=first;k<4;++k){Value a=tmp[k],b=c[3][k];if(!readTerrain(a)||!readTerrain(b))return false;tmp[k]=add(a,b);if(!validTerrain(tmp[k]))return false;}
  return tmp[3].value==1.f&&tmp[3].error==0&&depthFromView(tmp,nearest,nullptr,lod);
 }
 
@@ -359,7 +371,9 @@ class NorthlightAutoDisplacement {
     }
     static bool wallDepth(const Program& p,const float* low,const float* high,const float* bank,float& nearest,DisplacementLod* lod){
         using namespace NorthlightReplayBounds::detail;Vector pos={};for(unsigned k=0;k<3;++k){const float mid=float((double(low[k])+high[k])*.5);pos[k]={mid,std::max(double(mid)-low[k],double(high[k])-mid)};}pos[3]={1,0};
+        const bool depthOnly=!lod&&boundedViewInputs(low,high);
         Vector view={};for(unsigned op=0;op<4;++op){const unsigned reg=op==2?0:op==3?33:31+op;Vector constant={};for(unsigned k=0;k<4;++k)constant[k].value=bank[reg*4+k];for(const auto& d:p.definitions)if(d.reg==reg)for(unsigned k=0;k<4;++k)constant[k].value=d.value[k];
+            if(depthOnly&&op<2&&std::all_of(constant.begin(),constant.end(),[](Value v){return std::fabs(v.value)<=ViewRangeMagnitude;}))continue;
             if(op==2){Value w=constant[0];if(!readTerrain(w)||!validTerrain(w))return false;view[3]=w;continue;}
             Vector a={},b={};for(unsigned k=0;k<4;++k){a[k]=constant[k];b[k]=pos[k];if(!readTerrain(a[k])||!readTerrain(b[k]))return false;}
             Value sum;double magnitude=0;for(unsigned k=0;k<4;++k){Value term=mul(a[k],b[k]);magnitude+=std::fabs(term.value)+term.error;sum=add(sum,term);}sum.error+=roundError(magnitude)*8;if(!validTerrain(sum))return false;view[op==3?2:op]=sum;
@@ -788,13 +802,27 @@ public:
         }
         const unsigned input=skin?16:shader->second.rangeRegister==17?rangeInput(program):shader->second.rangeRegister;if(!skin&&input==16)return false;
         const bool shapeFirst=coarseOnly&&skin&&shader->second.rangeKind!=NorthlightModelNormalRange::Single;
-        const auto readPalette=[&]{P::Scope read(profile,P::Constants);return readConstantBank(shader->second.first,shader->second.count,skin,rangeConstants,rangeConstantStamp,rangeConstantFirst,rangeConstantCount);};
-        if(!shapeFirst&&!envelopeClosed&&!readPalette())return false;
         // Terrain capture already validated the default POSITION element of
         // this indexed draw. Only its stream-0 FLOAT3 box matches this path.
-        if(!skin&&!args.vertices&&captured&&captured->known&&captured->stream0Float3&&captured->owner==&args&&captured->shader==original&&
-           captured->low[0]<=captured->high[0]&&captured->low[1]<=captured->high[1]&&captured->low[2]<=captured->high[2]&&
-           nearestViewDepth(program,input,captured->low,captured->high,rangeConstants,nearest,shader->second.terrainDepthEligible,farthest,lod)){++capturedBoundsHits;return true;}
+        const bool sharedBounds=!skin&&!args.vertices&&captured&&captured->known&&captured->stream0Float3&&captured->owner==&args&&captured->shader==original&&
+            captured->low[0]<=captured->high[0]&&captured->low[1]<=captured->high[1]&&captured->low[2]<=captured->high[2];
+        const auto capturedDepth=[&](const float* bank){
+            if(!nearestViewDepth(program,input,captured->low,captured->high,bank,nearest,shader->second.terrainDepthEligible,farthest,lod))return false;
+            ++capturedBoundsHits;
+            return true;
+        };
+        // The audited terrain transform reads only c0-c3. Consume the current
+        // mirror rows before any device call, without staging a palette bank.
+        if(sharedBounds&&shader->second.terrainDepthEligible==1&&input==0&&!farthest&&mirror){
+            if(const auto* rows=mirror->borrowKnownVertexFloats(0,4)){
+                float view[16];
+                std::memcpy(view,rows,sizeof view);
+                if(capturedDepth(view))return true;
+            }
+        }
+        const auto readPalette=[&]{P::Scope read(profile,P::Constants);return readConstantBank(shader->second.first,shader->second.count,skin,rangeConstants,rangeConstantStamp,rangeConstantFirst,rangeConstantCount);};
+        if(!shapeFirst&&!envelopeClosed&&!readPalette())return false;
+        if(sharedBounds&&capturedDepth(rangeConstants))return true;
         NorthlightDrawSnapshot::Ref<IDirect3DVertexDeclaration9> decl;if(FAILED(d->GetVertexDeclaration(decl.out()))||!decl.p)return false;
         const D3DVERTEXELEMENT9* elements=nullptr;UINT count=0;if(!declarations.get(decl.p,elements,count))return false;
         const auto position=std::find_if(elements,elements+count,[](const D3DVERTEXELEMENT9& e){return e.Stream==0&&e.Usage==D3DDECLUSAGE_POSITION&&e.UsageIndex==0&&e.Type==D3DDECLTYPE_FLOAT3;});

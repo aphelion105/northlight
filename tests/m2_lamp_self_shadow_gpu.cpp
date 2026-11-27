@@ -109,6 +109,40 @@ struct PointTerrainCoverageTest{
   ++w.meshGeneration;
   assert(w.pointFaceDigests(l)[0]!=ownDigest&&w.pointFaceDigests(other)[0]==foreignDigest);
   replayProof(w,shell);assert(cube(w,l,true)==after);
+  auto& replay=*w.replays.back();
+  replay.shared=std::make_shared<const NorthlightDrawSnapshot::Mesh>(std::move(replay.snapshot));
+  const auto merged=w.pointLampReplay(l,owners);
+  assert(merged.placed.lampTriangles==w.pointLampReplay(l,owners).placed.lampTriangles);
+  WorldRenderer::PointReplayRuns remaining;
+  assert(w.pointOwnShell(replay,merged.placed,remaining)&&remaining.empty());
+  const unsigned hits=w.pointCold.placedShellHits;
+  assert(w.pointOwnShell(replay,merged.placed,remaining)&&remaining.empty()&&w.pointCold.placedShellHits==hits+1);
+  w.context.inverseView[12]+=2.f;
+  assert(!w.pointOwnShell(replay,merged.placed,remaining)&&w.pointCold.placedShellHits==hits+1);
+  w.context.inverseView[12]-=2.f;
+  assert(cube(w,l,true)==after);
+  {
+    auto foreign=merged.placed;
+    auto triangles=std::make_shared<WorldRenderer::Batch::LampTriangles>(*foreign.lampTriangles);
+    for(auto& triangle:*triangles)for(auto& point:triangle)point.x+=10.f;
+    foreign.lampTriangles=std::move(triangles);
+    WorldRenderer::PointWorldTriangles frame;
+    frame.prepare(1);
+    const auto builds=w.pointCold.placedWorldBuilds,reused=w.pointCold.placedWorldHits;
+    w.clearPlacedLampMemos();
+    assert(w.pointOwnShell(replay,merged.placed,remaining,&frame)&&remaining.empty());
+    assert(!w.pointOwnShell(replay,foreign,remaining,&frame));
+    assert(w.pointCold.placedWorldBuilds==builds+1&&w.pointCold.placedWorldHits==reused+1);
+  }
+  const auto timedShell=[&](bool cached){
+    w.memoryPressure=!cached;
+    const auto start=std::chrono::steady_clock::now();
+    for(unsigned i=0;i<128;++i)assert(w.pointOwnShell(replay,merged.placed,remaining)&&remaining.empty());
+    return std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count();
+  };
+  const auto warmMs=timedShell(true),coldMs=timedShell(false);
+  w.memoryPressure=false;
+  std::printf("PLACED_LAMP_MEMO_PASS checks=128 uncachedMs=%.3f cachedMs=%.3f movedCameraRejected=1\n",coldMs,warmMs);
   for(bool strip:{false,true})for(bool indexed:{false,true}){w.replays.clear();replayProof(w,shell,true,indexed,strip);const auto mixed=cube(w,l,true);
     for(size_t i=0;i<after.size();++i)assert(std::fabs(mixed[i]-after[i])<1e-5f);}
   // GI can leave replays while ActorShadows=0. A null entry makes any accidental

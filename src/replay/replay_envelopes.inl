@@ -94,7 +94,7 @@ private:
     }
     static constexpr std::uint64_t HeavyNanoseconds=AdaptiveTimeBudget::Heavy,CheapSliceNanoseconds=40000;
     AdaptiveTimeBudget timeBudget_;bool diagnostics_=true,terminalBuild_=false,manyPointShadows_=false;
-    bool workOnly_=false,readyClosed_=false;
+    bool workOnly_=false,readyClosed_=false,coldLampBounds_=false;
     size_t operationLimit_=BaseOperationLimit;
     size_t bytes_=0;
     std::unordered_multimap<std::uint64_t,Entry> entries_;
@@ -441,9 +441,9 @@ public:
     void clearPoseCertificates(){for(auto& p:poses_)p.serial=0;nextPose_=0;}
     void clear(){clearPoseCertificates();pending_=nullptr;pendingProgressFrame_=0;entrySerial_=0;readySkinPrograms_=0;entries_.clear();scratch_.clear();bytes_=0;clock_=frame_=0;expensive_={};stats_={};beginFrame();}
     size_t operationLimit()const{return operationLimit_;}
-    void beginFrame(bool diagnostics=true,size_t packets=0,bool manyPointShadows=false,bool crowdOperations=true,bool workOnly=false){
+    void beginFrame(bool diagnostics=true,size_t packets=0,bool manyPointShadows=false,bool crowdOperations=true,bool workOnly=false,bool coldLampBounds=false){
         fastOpen_=false;fastCount_=0;
-        manyPointShadows_=manyPointShadows;
+        manyPointShadows_=manyPointShadows;coldLampBounds_=coldLampBounds;
         workOnly_=workOnly;readyClosed_=false;
         operationLimit_=crowdOperationLimit(packets,manyPointShadows&&crowdOperations);
         diagnostics_=diagnostics;terminalBuild_=false;timeBudget_.reset(packets);++frame_;readyNanoseconds_=heavyNanoseconds_=buildNanoseconds_=classifyNanoseconds_=0;readyCalls_=heavyCalls_=buildCalls_=0;stats_={};
@@ -493,7 +493,7 @@ public:
     size_t pendingBuildIndices()const{return pending_?pending_->index:0;}
     void settleClock(){flushFast(BoundsClock::now());}
     void lendToBuild(Budget& budget){
-        settleClock();if(!workOnly_)timeBudget_.lendToBuild(readyNanoseconds_,heavyNanoseconds_,manyPointShadows_&&stats_.cold>=128);
+        settleClock();if(!workOnly_)timeBudget_.lendToBuild(readyNanoseconds_,heavyNanoseconds_,manyPointShadows_&&stats_.cold>=128,coldLampBounds_);
         budget.maxVertices=std::max(budget.maxVertices,timeBudget_.buildVertices());
     }
     void finishReservedTurnsAndLend(){

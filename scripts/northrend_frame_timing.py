@@ -5,7 +5,7 @@ from statistics import median
 from northrend_compat import strict_zip
 
 
-def summarize(windows, *, background=False):
+def summarize(windows, *, background=False, enabled=True):
     raw_fields = {'qpcHz', 'lastPresent', 'deltas'}
     if not any(raw_fields.intersection(row) for row in windows):
         return {'state': 'unavailable'}
@@ -24,7 +24,7 @@ def summarize(windows, *, background=False):
             settings = tuple(row[key] for key in ('gi', 'shadows', 'fog'))
             current = (hz, device, settings)
             start = end - count + 1
-            if (row.get('focus') != ('0' if background else '1') or row.get('enabled') != '1' or row.get('complete') == '0' or
+            if (row.get('focus') != ('0' if background else '1') or row.get('enabled') != str(int(enabled)) or row.get('complete') == '0' or
                     count != 120 or len(ticks) != count or any(not 0 < tick < 1 << 64 for tick in ticks) or
                     not 0 < hz < 1 << 63 or device <= 0 or end != int(row['frame']) or
                     start <= previous_end or any(value not in ('0', '1') for value in settings) or

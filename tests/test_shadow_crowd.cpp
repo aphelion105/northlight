@@ -35,6 +35,12 @@ int main(){
     }
     time.reset();assert(time.cheapLimit==AdaptiveTimeBudget::Cheap);
     time.finishReservedTurns(UINT64_MAX,UINT64_MAX);assert(time.cheapLimit==0);
+    time.reset(689);time.lendToBuild(483300,0,true);
+    assert(time.totalLimit==AdaptiveTimeBudget::MaxTotal&&time.buildVertices()==AdaptiveTimeBudget::BuildVertexCap);
+    time.reset(689);time.lendToBuild(483300,0,true,true);
+    assert(time.totalLimit==AdaptiveTimeBudget::MaxTotal&&time.buildVertices()==AdaptiveTimeBudget::ColdPointBuildVertexCap);
+    time.reset(689);
+    assert(time.buildVertices()==16384&&time.buildVertexCap==AdaptiveTimeBudget::BuildVertexCap);
     for(size_t count:{size_t(0),size_t(256),size_t(632),size_t(4096),SIZE_MAX}){
         for(uint64_t ready:{uint64_t(0),uint64_t(200000),UINT64_MAX})for(uint64_t heavy:{uint64_t(0),uint64_t(70000),UINT64_MAX}){
             time.reset(count);const auto total=time.totalLimit;time.lendToBuild(ready,heavy);
@@ -104,24 +110,27 @@ int main(){
         for(size_t v=0;v<Vertices;++v)std::memcpy(source->streams[0].bytes.data()+12*v,mesh->streams[0].bytes.data()+12*(v%30),12);
         coldInput[i].owner=source;coldInput[i].prepared=prepared;coldInput[i].constants=constants[i].data();
     }
-    const auto coldRun=[&](bool adaptive){
+    const auto coldRun=[&](bool adaptive,bool manyPointShadows=false){
         Cache cache;unsigned frames=0;uint64_t submissions=0;
         for(;frames<400;++frames){
-            auto frame=coldInput;cache.beginFrame(false,adaptive?ColdCount:0);
+            auto frame=coldInput;cache.beginFrame(false,adaptive?ColdCount:0,manyPointShadows,true,false,manyPointShadows);
             const auto result=schedule(cache,frame,inverse);submissions+=draws(frame);
-            assert(result.boundVertices<=131072&&result.boundOperations<=262144);
-            assert(cache.envelopeMilliseconds()<=1.3);
+            assert(result.boundVertices<=(manyPointShadows?AdaptiveTimeBudget::ColdPointBuildVertexCap:AdaptiveTimeBudget::BuildVertexCap));
+            assert(result.boundOperations<=BaseOperationLimit);
+            assert(cache.envelopeMilliseconds()<=(manyPointShadows?4.1:1.3));
             for(size_t i=0;i<ColdCount;++i)if(frame[i].bounds.valid)assert(same(frame[i].bounds,expected[i].bounds));
             if(result.valid==ColdCount)return std::make_pair(frames+1,submissions);
         }
         assert(false);return std::make_pair(frames,submissions);
     };
-    const auto coldBefore=coldRun(false),coldAfter=coldRun(true);
+    const auto coldBefore=coldRun(false),coldAfter=coldRun(true),coldPoint=coldRun(true,true);
     // The ordinary-scene policy now lends unused time too; the historical
     // threefold ratio no longer describes this improved comparison baseline.
     assert(coldAfter.first<coldBefore.first&&coldAfter.second<coldBefore.second);
-    std::printf("SHADOW_COLD_PASS packets=%zu baselineFrames=%u frames=%u baselineDraws=%llu draws=%llu exactBounds=1\n",
-        ColdCount,coldBefore.first,coldAfter.first,(unsigned long long)coldBefore.second,(unsigned long long)coldAfter.second);
+    assert(coldPoint.first<coldAfter.first&&coldPoint.second<coldAfter.second);
+    std::printf("SHADOW_COLD_PASS packets=%zu baselineFrames=%u frames=%u pointFrames=%u baselineDraws=%llu draws=%llu pointDraws=%llu exactBounds=1\n",
+        ColdCount,coldBefore.first,coldAfter.first,coldPoint.first,(unsigned long long)coldBefore.second,
+        (unsigned long long)coldAfter.second,(unsigned long long)coldPoint.second);
     CrowdClock::step=100;
     const auto timedCold=coldRun(true);assert(timedCold.first<coldBefore.first);
     std::printf("SHADOW_COLD_CLOCK_PASS frames=%u timeCapMs=1.3 operationCap=262144 vertexCap=131072\n",timedCold.first);

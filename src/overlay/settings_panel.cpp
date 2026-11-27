@@ -97,7 +97,7 @@ const std::map<std::string,const char*> Labels={
     {"GIPreserveRigidRoomLight","Preserve baked room light on static props"},
     {"ShadowRefreshCpuMs","Shadow map refresh target (ms)"},
     {"CaptureBudgetMiB","Capture memory (MiB)"},{"ActorShadowBudgetMiB","Character shadow memory (MiB)"},{"MinSkinnedTriangles","Minimum character triangles"},{"LocalLightLimit","Total local lights (0 = off)"},{"GpuBudgetMs","GPU effect budget (ms)"},{"ActorShadowCpuMs","Shadow CPU budget (ms)"},
-    {"CommandStream","Separate render thread"},{"StreamFramesAhead","Buffered frames"},{"StreamFrameSkip","Skip delayed frames"},{"StreamOcclusionLocal","Local occlusion results"},{"ReplayJobs","Parallel effect preparation"},{"FrameDrawGates","Skip inactive draw work"},
+    {"CommandStream","Separate render thread"},{"StreamFramesAhead","Buffered frames"},{"StreamFrameSkip","Skip delayed frames"},{"StreamOcclusionLocal","Local occlusion results"},{"ReplayJobs","Parallel effect preparation"},{"FrameDrawGates","Skip inactive draw work"},{"ColdLampBounds","Experimental lamp-shadow warm-up"},
     {"PointShadowLimit","Of these, shadowed lights"},{"PointShadowDistance","Shadow distance (yd)"},{"PointShadows","Local light shadows"},{"PointShadowRefreshMs","Shadow update interval (ms)"},{"PointShadowFacesPerFrame","Faces updated per light"},{"PointShadowAdaptiveRefresh","Adaptive lamp shadow updates"},{"BlobShadows","Round ground shadows"},{"ShadowProvider","Directional shadow renderer"},{"DisableOriginalTerrainShadows","Disable original terrain shadows"},{"BlobShadowStrength","Ground shadow strength (%)"},
     {"FarShadowInterval","Distant shadow interval (frames)"},{"NearShadowInterval","Near environment shadow interval (frames)"},{"StaticCacheSlices","Static cache update slices"},{"ShadowDirectionSteps","Shadow direction precision"},{"ShadowPivotCorrection","Correct shadow pivot"},
     {"GIDistance","GI distance (yards)"},{"GIChunkRadius","GI geometry chunk radius"},{"GIProbeAhead","GI look-ahead (yards)"},{"GIRays","GI rays per probe"},{"GIBounces","GI light bounces"},{"GIThreads","GI solver threads"},{"GIFastBVH","Fast geometry tracing"},{"GIProbeMoveStep","GI update movement step"},{"GIDynamicProbes","Dynamic GI probes"},
@@ -252,6 +252,7 @@ const std::map<std::string,std::vector<const char*>> Help={
     {"CommandStream",{"Records rendering commands on the game thread and executes them on a separate thread. Can help when CPU work limits performance, but needs spare CPU capacity. Required for HDR output."}},
     {"StreamFramesAhead",{"Number of buffered frames allowed ahead of rendering. More buffering can smooth uneven CPU work, but adds input latency and queue memory. Does not set an FPS limit."}},
     {"StreamFrameSkip",{"Drops outdated draws when the render thread falls behind, while retaining state changes and uploads. Can reduce accumulated delay, but skipped frames can make motion less smooth."}},
+    {"ColdLampBounds",{"Allows more caster geometry to be scanned within the existing frame budget when a crowded view first needs lamp shadows."}},
     {"StreamOcclusionLocal",{"Uses the latest completed visibility result instead of waiting for a fresh GPU query. Reduces stalls, but some visibility-dependent effects can react later. Disable when troubleshooting those effects."}},
     {"ReplayJobs",{"Prepares effect work on helper CPU threads. Can help with CPU-heavy scenes when spare cores are available; the intended image is unchanged."}},
     {"FrameDrawGates",{"Skips per-draw checks for effects that are inactive in the current frame. Reduces CPU work without changing enabled effects. Leave on unless troubleshooting."}},
@@ -327,8 +328,8 @@ const std::vector<Section> QualitySections={
     {"spells","Spells & names","SpellLayer SpellLayerClasses SpellFog NameMask DepthFuncAware",{
         {"spells","Spell effects","SpellLayer","SpellFog","SpellLayerClasses DepthFuncAware"},
         {"names","Unit name protection","NameMask","",""}},false},
-    {"rendering","Rendering","CommandStream StreamFramesAhead StreamFrameSkip StreamOcclusionLocal ReplayJobs FrameDrawGates GpuBudgetMs",{
-        {"execution","Rendering",nullptr,"","CommandStream StreamFramesAhead ReplayJobs FrameDrawGates StreamFrameSkip StreamOcclusionLocal GpuBudgetMs"}},false},
+    {"rendering","Rendering","CommandStream StreamFramesAhead StreamFrameSkip StreamOcclusionLocal ReplayJobs FrameDrawGates ColdLampBounds GpuBudgetMs",{
+        {"execution","Rendering",nullptr,"","CommandStream StreamFramesAhead ReplayJobs FrameDrawGates StreamFrameSkip StreamOcclusionLocal GpuBudgetMs ColdLampBounds"}},false},
     {"diagnostics","Diagnostics","Diagnostics RenderProfile DiagReplayProbe ShadowFateDiagnostics SpellTrace NameMaskDebug MemMap",{
         {"logging","Diagnostics","Diagnostics","RenderProfile","DiagReplayProbe ShadowFateDiagnostics"},
         {"debug","Additional diagnostics",nullptr,"SpellTrace NameMaskDebug MemMap",""}},false},

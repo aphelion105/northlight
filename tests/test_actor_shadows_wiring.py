@@ -140,7 +140,7 @@ def point_replays_guarded(text):
     for needle in ('const auto& bounds=replay.pointBounds;',
                    'pointReplayCasters.prepare(replays.size()',
                    'pointReplayCasters.classify(clip,faces',
-                   'if(pointKeepLampReplay(i,light,lamp,lampSplits))pointAppendCandidates(pointReplayCandidates,i,mask,faces);'):once(candidates,needle,'point candidate guard')
+                   'if(pointKeepLampReplay(i,light,lamp,lampSplits,world))pointAppendCandidates(pointReplayCandidates,i,mask,faces);'):once(candidates,needle,'point candidate guard')
     for needle in ('const size_t index=candidates[at];','const auto& p=replays[index];',
                    'pointReplayRun(candidates,at,replayPass.skipping())','NorthlightShadowAlpha::drawSequence(d,candidates.size(),',
                    '"cube animated draw"'):once(point_draws,needle,'point face submissions')

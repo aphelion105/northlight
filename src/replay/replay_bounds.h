@@ -254,8 +254,8 @@ class Cache {
         if(oldest!=entries_.end()){bytes_-=oldest->second.bytes;entries_.erase(oldest);}}
 public:
     void clear(){envelopeValid_=fallbackValid_=deferred_=0;replayCursor_=readyCursor_=heavyCursor_=buildCursor_=0;envelopes_.clear();entries_.clear();scratch_.clear();bytes_=0;clock_=hits_=misses_=avoidedVertices_=lookupNanoseconds_=0;lookupCalls_=0;}
-    void beginFrame(bool diagnostics=true,size_t packets=0,bool manyPointShadows=false,bool crowdOperations=true,bool workOnly=false){
-        envelopeValid_=fallbackValid_=deferred_=0;envelopes_.beginFrame(diagnostics,packets,manyPointShadows,crowdOperations,workOnly);
+    void beginFrame(bool diagnostics=true,size_t packets=0,bool manyPointShadows=false,bool crowdOperations=true,bool workOnly=false,bool coldLampBounds=false){
+        envelopeValid_=fallbackValid_=deferred_=0;envelopes_.beginFrame(diagnostics,packets,manyPointShadows,crowdOperations,workOnly,coldLampBounds);
         hits_=misses_=avoidedVertices_=lookupNanoseconds_=0;lookupCalls_=0;
     }
     size_t operationLimit()const{return envelopes_.operationLimit();}

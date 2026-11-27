@@ -797,6 +797,7 @@ public:
     unsigned geometryPrimitives()const{return displacement.preparedPrimitives();}
     bool geometryHeightGPU()const{return displacement.preparedHeightGPU();}
     void allowNativeM2Fusion(bool allow,IDirect3DSurface9* worldDepth,float nearZ,bool warmup=false){allowFusedM2=allow;fusedM2Warmup=warmup;fusedM2WorldDepth=worldDepth;fusedM2Near=nearZ;}
+    void retainNativeM2Target(bool retain){retainFusedM2Target=retain;}
     template<class Draw> HRESULT submitNativeMaterial(Draw draw,const NorthlightEffectCoverage::NativePixel* coverage){return submitFusedM2(draw,coverage);}
     void beginDraw(){if(drawDeferred&&!nativeSubmitted)beforeDepthChange();drawDeferred=nativeSubmitted=false;displacement.beginDraw();sharedMaps[0]={};sharedMaps[1]={};sharedPOM.beginDraw();pomInRange=true;profileTag=profilePrimitives=0;
         if(fusedM2.normal){fusedM2.normal={};drop(fusedM2.color.p);drop(fusedM2.depth.p);}
@@ -1244,7 +1245,8 @@ public:
             float view[12];if(FAILED(d->GetVertexShaderConstantF(0,view,3)))return;
             for(unsigned r=0;r<3;++r)for(unsigned c=0;c<3;++c)bank[24+r*4+c]=view[c*4+r];
         }
-        if(allowFusedM2&&domain==4&&modes[3]==1&&model&&geometry&&!userMemory&&!alpha&&
+        if(allowFusedM2&&(!useSceneDepthScratch||(retainFusedM2Target&&!multisampled&&!canDefer))&&
+           domain==4&&modes[3]==1&&model&&geometry&&!userMemory&&!alpha&&
            !s[5].value&&!stencil&&privateDepthSupported(zfunc)&&
            planFusedM2(geometry->draw,saved,v->second,*model,normal,bank,addressU,addressV,zfunc,needsOcclusion&&occlusionTarget))return;
         if(!multisampled&&!singleSample)drop(saved.depth);

@@ -31,8 +31,12 @@ struct Fixture{
     unsigned pointCulled=0,policy=0,pointOrderCalls=0;
     std::vector<size_t> pointReplayOrder;bool pointReplayOrderReady=false;
     size_t excludedLampReplay=SIZE_MAX;
-    int pointLampReplay(int,const std::vector<size_t>&){return 0;}
-    bool pointKeepLampReplay(size_t index,int,int,int&){return index!=excludedLampReplay;}
+    struct Lamp {struct {bool lampTriangles=true;} placed;};
+    struct WorldTriangles {unsigned initialized=0;void prepare(size_t){++initialized;}};
+    Lamp pointLampReplay(int,const std::vector<size_t>&){return {};}
+    bool pointKeepLampReplay(size_t index,int,const Lamp&,int&,WorldTriangles* world){
+        assert(world&&world->initialized==1);return index!=excludedLampReplay;
+    }
     void pointOrderReplays(){++pointOrderCalls;pointReplayOrderReady=policy!=0;
         pointReplayOrder.resize(replays.size()-(policy==2));
         for(size_t i=0;i<pointReplayOrder.size();++i)pointReplayOrder[i]=policy==1?replays.size()-i-1:i;}
@@ -57,7 +61,10 @@ struct Fixture{
         const int light=0;
         const std::vector<size_t> owned;
         int lampSplits=0;
+        WorldTriangles cache;
+        auto* world=&cache;
         @NEW@
+        assert(cache.initialized==unsigned(withReplays));
     }
 };
 int main(){

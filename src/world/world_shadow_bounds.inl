@@ -70,7 +70,7 @@
         try{items.reserve(replays.size());replayBoundsFallbacks.reserve(FallbackPreparations);}catch(...){return;}
         if(!replayBoundsWorker.ready())return;
         const bool diagnostics=replayBoundsDiagnosticSample(); /* logs and envelope timing fields only */
-        pointBoundsValid=0;replayBoundsCache.beginFrame(diagnostics,replays.size(),replayBoundsManyPointShadows(),replayCrowdBoundsOperations(),fixedReplayBoundsWork());replayBoundsMetadata.beginFrame();
+        pointBoundsValid=0;replayBoundsCache.beginFrame(diagnostics,replays.size(),replayBoundsManyPointShadows(),replayCrowdBoundsOperations(),fixedReplayBoundsWork(),quality.coldLampBounds!=0);replayBoundsMetadata.beginFrame();
         // Program/declaration lookups stay on the render thread.
         replayBoundsFallbacks.clear();replayBoundsCapped=0;
         replayBoundsWorker.nearList().begin(actorMatrices[0],actorValid[0],actorMatrices[1],actorValid[1]); /* the actor maps as last drawn: casters that can be wholly inside one are visited first, the self's own packets before all */
@@ -123,7 +123,7 @@
         heavyBudget.maxVertices=0;heavyBudget.maxOperations=32768;
         buildBudget.maxVertices=2048;buildBudget.maxOperations=65536;
         const bool diagnostics=replayBoundsDiagnosticSample(); /* logs and envelope timing fields only */
-        pointBoundsValid=0;replayBoundsCache.beginFrame(diagnostics,replays.size(),replayBoundsManyPointShadows(),replayCrowdBoundsOperations(),fixedReplayBoundsWork());replayBoundsMetadata.beginFrame();
+        pointBoundsValid=0;replayBoundsCache.beginFrame(diagnostics,replays.size(),replayBoundsManyPointShadows(),replayCrowdBoundsOperations(),fixedReplayBoundsWork(),quality.coldLampBounds!=0);replayBoundsMetadata.beginFrame();
         // Hints contain no entry/declaration pointers. Current pose bounds and
         // classifications never survive to another frame or recycled packet.
         for(auto& p:replays){p->pointBounds={};p->boundsWork={};p->boundsPrepared.reset();}

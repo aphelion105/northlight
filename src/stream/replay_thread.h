@@ -118,7 +118,9 @@ inline void StreamState::loadDefaults(IDirect3DDevice9* dev){
     bind(indices,nullptr);indicesKnown=true;indicesSet=false;bind(vs,nullptr);vsKnown=true;vsSet=false;bind(ps,nullptr);psKnown=true;psSet=false;bind(decl,nullptr);declKnown=true;declSet=false;
     for(unsigned i=0;i<kRTs;++i){
         IDirect3DSurface9* s=nullptr;
-        if(SUCCEEDED(dev->GetRenderTarget(i,&s))&&s){bind(rt[i],c.toProxyBound(s));}
+        const HRESULT hr=dev->GetRenderTarget(i,&s);
+        rtNotFound[i]=hr==D3DERR_NOTFOUND&&!s;
+        if(SUCCEEDED(hr)&&s){bind(rt[i],c.toProxyBound(s));}
         else bind(rt[i],nullptr);
         rtKnown[i]=true;
     }

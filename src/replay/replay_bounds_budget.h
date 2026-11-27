@@ -34,15 +34,17 @@ struct AdaptiveTimeBudget {
     // Missing current-pose bounds replay once per cascade and cube face. Give
     // large captures 2 us per extra packet; heavy work keeps its own cap.
     static constexpr std::uint64_t MaxTotal=4000000;
+    static constexpr std::uint64_t BuildVertexCap=131072,ColdPointBuildVertexCap=262144;
     std::uint64_t totalLimit=Total,cheapLimit=Cheap,buildLimit=Build;
+    std::uint64_t buildVertexCap=BuildVertexCap;
     bool reservedClosed=false;
     void reset(size_t packets=0){
         const auto extra=std::min<size_t>(packets>256?packets-256:0,(MaxTotal-Total)/2000)*2000;
-        totalLimit=Total+extra;cheapLimit=Cheap+extra;buildLimit=Build;reservedClosed=false;
+        totalLimit=Total+extra;cheapLimit=Cheap+extra;buildLimit=Build;buildVertexCap=BuildVertexCap;reservedClosed=false;
     }
     // After the first cheap/heavy turns, use half their unspent frame allowance
     // to warm cold sources. The final cheap turn receives only what remains.
-    void lendToBuild(std::uint64_t readyUsed,std::uint64_t heavyUsed,bool coldPointWave=false){
+    void lendToBuild(std::uint64_t readyUsed,std::uint64_t heavyUsed,bool coldPointWave=false,bool expandVertexLimit=false){
         if(reservedClosed)return;
         const auto left=readyUsed>=totalLimit||heavyUsed>=totalLimit-readyUsed?0:totalLimit-readyUsed-heavyUsed;
         buildLimit=std::max(Build,left/2);
@@ -50,12 +52,15 @@ struct AdaptiveTimeBudget {
             // Spend the existing headroom on new sources before the final cheap turn.
             buildLimit+=MaxTotal-totalLimit;
             totalLimit=MaxTotal;
+            // A turn into a crowded lamp view can hit the scan quota with
+            // time left. Each unfinished caster can fan out to six faces per light.
+            if(expandVertexLimit)buildVertexCap=ColdPointBuildVertexCap;
         }
     }
     // The rigid source scanner handles 32 vertices per clock check. Do not
     // strand its finished work behind the old scalar decoder's vertex quota;
     // the same wall-time and operation limits still stop every cold build.
-    size_t buildVertices()const{return size_t(std::min<std::uint64_t>(131072,16384*buildLimit/Build));}
+    size_t buildVertices()const{return size_t(std::min(buildVertexCap,16384*buildLimit/Build));}
     void finishReservedTurns(std::uint64_t heavyUsed,std::uint64_t buildUsed){
         if(reservedClosed)return;
         reservedClosed=true;

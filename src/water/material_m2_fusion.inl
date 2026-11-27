@@ -14,6 +14,7 @@
     FusedM2Draw fusedM2;
     std::unordered_map<IDirect3DPixelShader9*,NativeCapture> fusedM2Pixels[2][3];
     bool allowFusedM2=false,fusedM2Warmup=false,checkedFusedM2Caps=false,fusedM2Caps=false;
+    bool retainFusedM2Target=false;
     unsigned fusedM2Draws=0,fusedM2Fallbacks=0,fusedM2Candidates=0;
     unsigned fusedM2Rejections[5]={};
     IDirect3DSurface9 *fusedM2Samples=nullptr,*fusedM2ResolvedSurface=nullptr,*fusedM2MergedSurface=nullptr;
@@ -338,7 +339,8 @@ private:
             if(FAILED(d->GetSamplerState(14,ReplayState::samplerKeys[i],samplers+i)))return fallback(3);
         bool ok=true;
         auto set=[&](HRESULT hr){ok=SUCCEEDED(hr)&&ok;};
-        set(d->SetRenderTarget(slot,m.multisampled?fusedM2Samples:target));
+        auto* attachment=m.multisampled?fusedM2Samples:target;
+        set(d->SetRenderTarget(slot,attachment));
         set(d->SetViewport(&viewport));
         if(mask!=15)set(d->SetRenderState(maskKey,15));
         set(d->SetVertexShader(m.vertex));
@@ -361,7 +363,8 @@ private:
         set(d->SetTexture(14,texture.p));
         for(unsigned i=0;i<8;++i)if(changed&(1u<<i))set(d->SetSamplerState(14,ReplayState::samplerKeys[i],samplers[i]));
         set(d->SetPixelShaderConstantF(base,constants,9));
-        set(d->SetRenderTarget(slot,nullptr));
+        const bool retain=retainFusedM2Target&&drawStateSource&&!m.multisampled&&bound&&SUCCEEDED(hr)&&ok;
+        set(retain?drawStateSource->releaseAuxiliaryTarget(slot,attachment,false):d->SetRenderTarget(slot,nullptr));
         if(mask!=15)set(d->SetRenderState(maskKey,mask));
         set(d->SetViewport(&viewport));
         if(ok&&!bound)return fallback(4);

@@ -50,6 +50,7 @@
       "test_position_bounds.py",
       "test_backend_work_policy.py",
       "test_point_replay_admission.py",
+      "test_shadow_crowd.py",
       "test_point_face_pass.py",
       "test_directional_gpu_pass.py",
       "test_world_fog_field.py",

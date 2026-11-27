@@ -1,5 +1,7 @@
 #pragma once
+#ifdef _WIN32
 #include "blp_mip_guard.h"
+#endif
 #include <array>
 #include <atomic>
 #include <cmath>
@@ -9,7 +11,7 @@ inline std::atomic<bool> requested{false};
 inline void request(bool enabled){requested.store(enabled,std::memory_order_release);}
 inline bool enabled(){return requested.load(std::memory_order_acquire);}
 
-#if !defined(NORTHLIGHT_NATIVE_GX) && !defined(NORTHLIGHT_REPLAY_STAND)
+#if defined(_WIN32) && !defined(NORTHLIGHT_NATIVE_GX) && !defined(NORTHLIGHT_REPLAY_STAND)
 struct Proof {uintptr_t rva;size_t size;const char* hash;};
 struct Client {
     std::array<Proof,3> proofs;
@@ -74,7 +76,7 @@ inline bool replaceLimits(uintptr_t address,const Limits& expected,const Limits&
 inline bool available(){
 #if defined(NORTHLIGHT_NATIVE_GX)
     return true;
-#elif defined(NORTHLIGHT_REPLAY_STAND)
+#elif !defined(_WIN32) || defined(NORTHLIGHT_REPLAY_STAND)
     return false;
 #else
     return verifiedClient()!=nullptr;
@@ -84,7 +86,7 @@ inline bool available(){
 // Present is consumed on the game thread. Use the native setter so the engine
 // updates its streaming, camera and dirty state together.
 inline void producerPresent(){
-#if !defined(NORTHLIGHT_NATIVE_GX) && !defined(NORTHLIGHT_REPLAY_STAND)
+#if defined(_WIN32) && !defined(NORTHLIGHT_NATIVE_GX) && !defined(NORTHLIGHT_REPLAY_STAND)
     static bool active=false,ownedLimits=false;
     const bool extend=enabled();
     if(!extend&&!active)return;

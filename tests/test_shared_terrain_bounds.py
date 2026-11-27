@@ -130,7 +130,7 @@ struct Route {
  struct ShaderClass{bool skinned;};
  ShaderClass classifyVs(IDirect3DVertexShader9*)const{return {false};}
  unsigned drawRenderState(unsigned)const{return 0;}
- bool enabled=true,applied=false,failed=false;unsigned frame=127;
+ bool enabled=true,applied=false,failed=false,retainM2MaterialTargets=false;unsigned frame=127;
  NorthlightBackend::Kind selectedBackend=NorthlightBackend::Kind::Dxvk;
  struct{bool active=false;}hdr{};bool indexedPairGate=false,particlePairGate=false;void* worldDepth=nullptr;
  void* depthTex=nullptr;D3DFORMAT depthSnapshotFormat=D3DFMT_UNKNOWN;bool captured=false;float nearZ=.22f;

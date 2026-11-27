@@ -161,7 +161,8 @@ struct Settings {
     unsigned autoBumpModels=1,autoModelDisplacementStrength=25,autoModelDisplacementDistance=8,autoModelDisplacementDetail=2;
     unsigned autoHeightPolarity=0,autoHeightDetails=75,autoHeightBalance=50;
     unsigned autoNormalFilter=1;
-    char origin[132]={'d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d'};
+    unsigned coldLampBounds=0;
+    char origin[133]={'d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d'};
 };
 struct Key {
     const char* name;unsigned Settings::*field=nullptr;int Settings::*signedField=nullptr;
@@ -305,6 +306,7 @@ inline const Key Keys[]={
     {"TreeCanopy",&Settings::treeCanopy,0,1,{1,1,1}},
     {"TreeCrown",&Settings::treeCrown,0,1,{1,1,1}},
     {"ShadowRefreshCpuMs",&Settings::shadowRefreshCpuMs,0,20,{3,3,2}},
+    {"ColdLampBounds",&Settings::coldLampBounds,0,1,{0,0,0}},
 };
 // Sky replacement is a consumer in its own right. Godrays need the fog medium.
 // Presentation/HDR and the settings overlay remain available like F10.

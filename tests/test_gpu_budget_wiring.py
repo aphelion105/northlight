@@ -49,7 +49,7 @@ checks['renderer: timer spans surface work through deferred spells and is closed
 def in_order(text,*tokens):
     positions=[text.find(token) for token in tokens]
     return all(pos>=0 for pos in positions) and all(a<b for a,b in zip(positions,positions[1:]))
-early=rc[rc.index('void submitSceneBeforeEffects()'):rc.index('void waitPreviousFrameGpu()')]
+early=rc[rc.index('void submitSceneBeforeEffects('):rc.index('void waitPreviousFrameGpu()')]
 checks['renderer: scene submit reuses the pacing query only after the previous frame completed']=(
     in_order(early,'latencyQuery->GetData(nullptr,0,0)!=S_OK)return;',
              'latencyPending=false;', 'latencyQuery->Issue(D3DISSUE_END)',

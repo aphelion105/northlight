@@ -3,6 +3,7 @@
 """Check the gameplay benchmark's roster, timing and backend evidence gates."""
 from argparse import Namespace
 from io import StringIO
+import math
 from pathlib import Path
 import struct
 import sys
@@ -21,10 +22,10 @@ def events(scene):
     players = fixture.scene_roster(world, count)
     spawn = fixture.spawn_record(players, b''.join(fixture.crowd_packets(players)))
     lines = [spawn, f'BENCH_ARM actors={count}', 'BENCH phase=start tick_ns=1000000000']
-    if scene == 'ratchet':
+    if scene in bench.ROTATING_SCENES:
         lines.append('BENCH phase=right tick_ns=6000000000')
     lines += ['BENCH phase=done tick_ns=11000000000',
-              f'BENCH_PAYLOAD header:1000:{500 if scene == "ratchet" else 0}:10000.000']
+              f'BENCH_PAYLOAD header:1000:{500 if scene in bench.ROTATING_SCENES else 0}:10000.000']
     for first in range(1, 1001, 20):
         lines.append(f'BENCH_PAYLOAD data:{first}:' + ','.join(['10.000'] * 20))
     return lines + ['BENCH_PAYLOAD complete']
@@ -70,6 +71,21 @@ class GameplayBenchmarkTests(unittest.TestCase):
             api.user32.EnumDisplaySettingsW.side_effect = current_mode
             self.assertEqual(bench.primary_display_pixels(), (3840, 2160))
 
+    def test_valgarde_uses_northrend_and_two_equipped_rings(self):
+        scene, count = bench.SCENES['valgarde']
+        self.assertEqual(fixture.map_for(scene), (571, 495, 'Northrend'))
+        x, y, _, _ = fixture.spawn_for(scene)
+        self.assertEqual(f'{int(32 - y / (1600 / 3))}_{int(32 - x / (1600 / 3))}', fixture.VALGARDE_TILE)
+        players = fixture.scene_roster(scene, count)
+        self.assertEqual(len(players), 32)
+        self.assertEqual(sum(bool(outfit) for _, _, _, outfit in players.values()), 16)
+        self.assertEqual(sorted(round(math.hypot(px - x, py - y)) for _, (px, py, _, _), _, _ in players.values()),
+                         [9] * 16 + [17] * 16)
+        valgarde = bench.read_timing(events('valgarde'), 'valgarde')[0]
+        ratchet = bench.read_timing(events('ratchet'), 'ratchet')[0]
+        self.assertEqual(valgarde['sweeps'], ratchet['sweeps'])
+        self.assertEqual(valgarde['phase_tick_ns'], ratchet['phase_tick_ns'])
+
     def test_all_scene_receipts_match_the_fixture_roster(self):
         for scene, (_, count) in bench.SCENES.items():
             with self.subTest(scene=scene):
@@ -77,7 +93,7 @@ class GameplayBenchmarkTests(unittest.TestCase):
                 self.assertEqual(result['actors_queried'], count)
                 self.assertEqual(result['timing'], bench.stats([10.] * 1000, 10_000))
                 self.assertEqual(frames, [10.] * 1000)
-                if scene == 'ratchet':
+                if scene in bench.ROTATING_SCENES:
                     self.assertEqual(result['sweeps']['right']['frames'], 500)
                     self.assertEqual(result['sweeps']['left']['frames'], 500)
 
@@ -100,6 +116,25 @@ class GameplayBenchmarkTests(unittest.TestCase):
         self.assertEqual(timing['low_sample_count'], 2)
         self.assertEqual(timing['low_0_1_fps'], 40.)
         self.assertEqual(timing['worst_ms'], 28.)
+
+    def test_present_timing_measures_frames_between_the_addon_markers(self):
+        lua, _ = bench.read_timing(events('valgarde'), 'valgarde')
+        self.assertEqual(lua['timing']['avg_fps'], 100)
+        lines = []
+        for block in range(1, 25):
+            end = 120 * block
+            lines.append(f'FRAME interval device=1 frame={end} enabled=0 samples=120 '
+                         'meanMs=4.000 p50Ms=4.000 p95Ms=4.000 maxMs=4.000 gi=1 shadows=1 fog=1 focus=0 '
+                         f'qpcHz=1000 lastPresent={end} lastQpc={end * 4} deltas=' + ','.join(['4'] * 120))
+        result, frames = bench.present_timing(lines, lua['phase_tick_ns'], foreground=False)
+        self.assertEqual(result['avg_fps'], 250)
+        self.assertEqual(len(frames), 2500)
+        self.assertEqual((frames[0], frames[-1]), ((251, 4.), (2750, 4.)))
+        self.assertFalse(result['effects_enabled'])
+        self.assertEqual([sweep['frames'] for sweep in result['sweeps'].values()], [1250, 1250])
+        self.assertIsNone(bench.present_timing(lines[:21], lua['phase_tick_ns'], foreground=False))
+        with self.assertRaisesRegex(ValueError, 'missing window'):
+            bench.present_timing(lines[:7] + lines[8:], lua['phase_tick_ns'], foreground=False)
 
     def test_both_focus_modes_reject_changes_during_timing(self):
         size = (3840, 2160)

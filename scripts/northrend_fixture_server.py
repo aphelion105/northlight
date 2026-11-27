@@ -33,6 +33,11 @@ RATCHET_SPAWN = (-948.0, -3749.0, 6.2, 1.5 * math.pi)
 RATCHET_PAN = 'ratchet-pan'
 RATCHET_CROWD_SIZE = 32
 RATCHET_PHASES = ('idle', 'left', 'right', 'done')
+# Valgarde (AreaTable 3981), beside the inn facing the cliffs across Daggercap Bay.
+VALGARDE_SPAWN = (567.0, -4946.0, 18.40, math.tau - .94)
+VALGARDE = 'valgarde'
+VALGARDE_CROWD_SIZE = 32
+VALGARDE_TILE = '41_30'
 MAP = 571
 ZONE = 65  # Dragonblight. The client derives the local area from its own ADT.
 BUILD = 12340
@@ -41,7 +46,7 @@ PRIME = 0x894B645E89E1535BBDAD5B8B290650530801B18EBFBF5E8FAB3C82872A3E9BB7
 GENERATOR = 7
 SERVER_KEY = bytes.fromhex('cc98ae04e897eaca12ddc09342915357')
 CLIENT_KEY = bytes.fromhex('c2b3723cc6aed9b5343c53ee2f4367ce')
-SCENES = ('solo', 'crowd', 'm2-stress', 'rain', 'shoreline', 'interior', 'terrain', RATCHET_PAN)
+SCENES = ('solo', 'crowd', 'm2-stress', 'rain', 'shoreline', 'interior', 'terrain', RATCHET_PAN, VALGARDE)
 RAIN_STATE = 5  # Heavy rain in the 3.3.5 SMSG_WEATHER state table.
 CROWD_SIZES = range(50, 129)
 SMALL_BENCHMARK_CROWD = 8
@@ -92,19 +97,26 @@ def crowd_roster(count=DEFAULT_CROWD_SIZE, *, stress=False):
 
 
 def scene_roster(scene, crowd_size=DEFAULT_CROWD_SIZE):
-    if scene == RATCHET_PAN:
-        # Road heights sampled from the stock ADT. Each ring alternates an
+    if scene in (RATCHET_PAN, VALGARDE):
+        # Ground heights sampled from the stock ADTs. Each ring alternates an
         # enchanted character and one without a weapon or enchant.
-        heights = ((7.95, 8.21, 7.90, 6.95, 6.15, 5.73, 5.58, 5.52, 5.41, 5.37, 5.53, 5.61, 5.46, 5.63, 6.44, 7.32),
-                   (9.34, 9.33, 8.57, 6.92, 5.68, 5.65, 5.70, 5.32, 4.97, 4.82, 4.72, 4.19, 3.96, 4.87, 6.93, 8.76))
+        if scene == RATCHET_PAN:
+            prefix = 'Ratchet'
+            heights = ((7.95, 8.21, 7.90, 6.95, 6.15, 5.73, 5.58, 5.52, 5.41, 5.37, 5.53, 5.61, 5.46, 5.63, 6.44, 7.32),
+                       (9.34, 9.33, 8.57, 6.92, 5.68, 5.65, 5.70, 5.32, 4.97, 4.82, 4.72, 4.19, 3.96, 4.87, 6.93, 8.76))
+        else:
+            prefix = 'Valgarde'
+            heights = ((17.77, 17.66, 17.67, 17.82, 18.13, 18.54, 18.93, 19.23, 19.40, 19.50, 19.40, 19.33, 18.98, 18.73, 18.33, 18.00),
+                       (17.36, 17.15, 16.97, 17.95, 18.67, 18.35, 17.21, 16.08, 15.34, 13.90, 12.50, 11.51, 12.39, 15.47, 18.31, 17.67))
+        x, y, _, _ = spawn_for(scene)
         roster = {}
         for ring, (radius, levels) in enumerate(zip((9., 17.), heights)):
             for i, height in enumerate(levels):
                 angle = (i + ring * .5) * math.tau / len(levels)
                 appearance = OUTFITS[(i // 2 + 3 * ring) % len(OUTFITS)]
-                position = (RATCHET_SPAWN[0] + radius * math.cos(angle),
-                            RATCHET_SPAWN[1] + radius * math.sin(angle), height + .05, (angle + math.pi) % math.tau)
-                name = f'Ratchet{chr(65 + ring)}{chr(97 + i)}'.encode('ascii') + b'\0'
+                position = (x + radius * math.cos(angle), y + radius * math.sin(angle),
+                            height + .05, (angle + math.pi) % math.tau)
+                name = f'{prefix}{chr(65 + ring)}{chr(97 + i)}'.encode('ascii') + b'\0'
                 roster[2 + len(roster)] = (name, position, appearance[:5], appearance[5:] if (i + ring) % 2 == 0 else ())
         return roster
     if scene == 'm2-stress':
@@ -226,10 +238,12 @@ def send_realm_lists(incoming, sock, world_port):
 
 def spawn_for(scene):
     return {'shoreline': SHORELINE_SPAWN, 'interior': INTERIOR_SPAWN,
-            'terrain': TERRAIN_SPAWN, RATCHET_PAN: RATCHET_SPAWN}.get(scene, SPAWN)
+            'terrain': TERRAIN_SPAWN, RATCHET_PAN: RATCHET_SPAWN, VALGARDE: VALGARDE_SPAWN}.get(scene, SPAWN)
 
 
 def map_for(scene):
+    if scene == VALGARDE:
+        return (MAP, 495, 'Northrend')
     return (1, 392, 'Kalimdor') if scene == RATCHET_PAN else (MAP, ZONE, 'Northrend')
 
 

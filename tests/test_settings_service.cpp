@@ -111,6 +111,8 @@ int main(int argc,char** argv){
     }
     for(const auto* value:{"-101","201","-1.5","--1","+","99999999999999999"})
         fails([&]{applyChanges(docs,fields,std::string("Q\tQuality\tGIBrightness\t")+value+"\n");});
+    {auto edited=applyChanges(docs,fields,"Q\tQuality\tColdLampBounds\t1\n");
+     assert(!active.quality.coldLampBounds&&liveQualityUpdate(active.quality,configOf(edited,"").quality).coldLampBounds);}
     auto next=active.quality;next.weather=1;next.commandStream=0;auto applied=liveQualityUpdate(active.quality,next);assert(applied.weather==1&&applied.commandStream==active.quality.commandStream);
     // Preserve the local material and AO schema through the new in-process service.
     for(const auto* mode:{"0","1"}){

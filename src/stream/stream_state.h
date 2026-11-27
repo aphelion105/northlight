@@ -61,6 +61,7 @@ struct StreamState {
     struct Stream {ProxyBase* vb=nullptr;UINT offset=0,stride=0;bool known=false,fromSet=false;Slot<UINT> freq;};
     Stream streams[kStreams];
     bool indicesKnown=false,declKnown=false,vsKnown=false,psKnown=false,rtKnown[kRTs]={},dsKnown=false,texKnown[kSamplers]={};
+    bool rtNotFound[kRTs]={}; // Backend returned NOTFOUND for an unbound slot on this device.
     bool indicesSet=false,declSet=false,vsSet=false,psSet=false,texSet[kSamplers]={};   // fromSet of the bound-object slots
     ProxyBase *indices=nullptr,*decl=nullptr,*vs=nullptr,*ps=nullptr,*rt[kRTs]={},*ds=nullptr,*tex[kSamplers]={};
     Slot<DWORD> fvf;Slot<float> npatch;Slot<BOOL> swvp;Slot<UINT> palette;
