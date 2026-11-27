@@ -23,7 +23,9 @@ int main(int argc,char** argv){
     assert(argc==3);std::filesystem::path root=std::filesystem::u8path(argv[1]);const std::string mode=argv[2];
     const Bytes identity={1,0,0,0,7,3,75,50};
     if(mode=="produce"){
-        Store cache(root);auto read=request(cache,identity,source(),64,32);assert(wait(read)==Store::State::Miss);save(cache,read->key,pixels());
+        Store cache(root);const auto input=source();auto read=request(cache,identity,input,64,32);assert(wait(read)==Store::State::Miss);
+        assert(read->key==hash(input.data(),input.size(),hash(identity.data(),identity.size())));
+        save(cache,read->key,pixels());
         std::puts("MATERIAL_DISK_PRODUCER_PASS coldMiss=1 queuedWrite=1");return 0; // Destruction drains and atomically commits the write.
     }
     if(mode=="consume"){
