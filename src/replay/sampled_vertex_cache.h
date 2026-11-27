@@ -60,9 +60,8 @@ public:
         return sampledDistanceFromInputs(program,values,constants,inverseView,camera,squared,world);
     }
 };
-// Rigid palette test for the stable actor quota. The result depends only on
-// immutable snapshot bytes and the declaration, so it is cached per owner like
-// sampled inputs; draws without a shared owner are scanned (bounded) directly.
+// Rigid palette test for the stable actor quota. The result depends on
+// immutable snapshot bytes, the declaration and the shader's skinning mode.
 class RigidBoneCache {
     // Fixed-size entries (no per-entry allocation). The cached value depends only
     // on the immutable snapshot bytes and the declaration; whether the program
@@ -70,8 +69,52 @@ class RigidBoneCache {
     // cover the crowd working set that thrashed the old 1024x2 table every frame.
     static constexpr size_t InlineElements=10,Ways=8;
     struct Entry {std::weak_ptr<const NorthlightDrawSnapshot::Mesh> owner;const NorthlightDrawSnapshot::Mesh* key=nullptr;const void* declaration=nullptr;
-        D3DVERTEXELEMENT9 elements[InlineElements]={};std::uint32_t count=0,lanes=0;float bone=NAN;std::uint64_t touched=0;};
+        D3DVERTEXELEMENT9 elements[InlineElements]={};std::uint16_t count=0;std::uint8_t lanes=0,batchLanes=0;float bone=NAN;std::uint64_t touched=0;};
     std::vector<Entry> entries_;std::uint64_t clock_=0;
+
+    static unsigned repeatedRigidLanes(const Program& program){
+        if(!program.kernel.valid||program.paletteBase!=31)return 0;
+        switch(program.kernel.evaluator){
+        case Kernel::SingleFirst:case Kernel::SingleIndexFirst:
+        case Kernel::SingleWorldFirst:case Kernel::SingleWorldIndexFirst:return 1;
+        case Kernel::Weighted:case Kernel::WeightedCommuted:case Kernel::WeightedR0:case Kernel::WeightedR0Commuted:
+        case Kernel::WeightedWorld:case Kernel::WeightedWorldCommuted:return 4;
+        default:return 0;
+        }
+    }
+
+    template<class Read> static bool repeatedRigid(const NorthlightDrawSnapshot::Mesh& mesh,
+        const D3DVERTEXELEMENT9& position,bool weighted,Read read){
+        const auto& indices=mesh.indices;
+        if(!mesh.indexed||mesh.topology!=D3DPT_TRIANGLELIST||indices.size()<6||indices.size()>MaxVertices*3||indices.size()%3)return false;
+        const auto& stream=mesh.streams[position.Stream];
+        const unsigned positionBytes=NorthlightDrawSnapshot::declarationBytes(position.Type);
+        auto vertexPosition=[&](unsigned vertex){return stream.bytes.data()+size_t(vertex)*stream.stride+position.Offset;};
+        auto boneAt=[&](size_t i){
+            const unsigned vertex=indices[i];
+            if(vertex>=mesh.vertexCount)return NAN;
+            return NorthlightActorShadowSelection::rigidBone(1,weighted,[&](size_t,float* index,float* weight){return read(vertex,index,weight);});
+        };
+
+        // The client concatenates the same triangle list once per placement.
+        // Match local positions in index order, including after index compaction.
+        const float firstBone=boneAt(0);
+        if(!(firstBone>=0&&firstBone<=74&&std::floor(firstBone)==firstBone))return false;
+        size_t instanceSize=1;
+        for(;instanceSize<indices.size()&&boneAt(instanceSize)==firstBone;++instanceSize){}
+        if(instanceSize==indices.size()||instanceSize%3||indices.size()%instanceSize)return false;
+        bool usedBones[75]={};
+        usedBones[unsigned(firstBone)]=true;
+        for(size_t start=instanceSize;start<indices.size();start+=instanceSize){
+            const float bone=boneAt(start);
+            if(!(bone>=0&&bone<=74&&std::floor(bone)==bone)||usedBones[unsigned(bone)])return false;
+            usedBones[unsigned(bone)]=true;
+            for(size_t i=0;i<instanceSize;++i){
+                if((i&&boneAt(start+i)!=bone)||std::memcmp(vertexPosition(indices[start+i]),vertexPosition(indices[i]),positionBytes))return false;
+            }
+        }
+        return true;
+    }
 public:
     RigidBoneCache():RigidBoneCache(8192){}
     explicit RigidBoneCache(size_t capacity):entries_(std::max(Ways,((capacity+Ways-1)/Ways)*Ways)){}
@@ -81,44 +124,53 @@ public:
     void clear(){for(auto& e:entries_)e=Entry{};hits=misses=0;scannedVertices=0;clock_=0;}
     void beginFrame(){hits=misses=0;scannedVertices=0;}
     static bool readsIndices(const Program& program){for(const auto& i:program.inputs)if(i.usage==BlendIndices)return true;return false;}
-    float scanMesh(const NorthlightDrawSnapshot::Mesh& mesh,const D3DVERTEXELEMENT9* elements,size_t count,unsigned lanes=4){
+    float scanMesh(const NorthlightDrawSnapshot::Mesh& mesh,const D3DVERTEXELEMENT9* elements,size_t count,unsigned lanes=4,unsigned batchLanes=0){
         if(lanes!=1&&lanes!=4)return NAN;
         if(!elements||!count||count>MAXD3DDECLLENGTH+1||!mesh.vertexCount||mesh.vertexCount>MaxVertices)return NAN;
-        const D3DVERTEXELEMENT9* index=nullptr;const D3DVERTEXELEMENT9* weight=nullptr;
+        const D3DVERTEXELEMENT9* index=nullptr;const D3DVERTEXELEMENT9* weight=nullptr;const D3DVERTEXELEMENT9* position=nullptr;
         for(size_t j=0;j<count;++j){const auto& e=elements[j];if(e.Stream==0xff)break;if(e.UsageIndex!=0)continue;
             if(e.Usage==BlendIndices){if(index)return NAN;index=&e;}
-            if(e.Usage==BlendWeight){if(weight)return NAN;weight=&e;}}
+            if(e.Usage==BlendWeight){if(weight)return NAN;weight=&e;}
+            if(e.Usage==D3DDECLUSAGE_POSITION){if(position)batchLanes=0;position=&e;}}
         auto fits=[&](const D3DVERTEXELEMENT9* e){if(!e)return true;if(e->Stream>=4||e->Method!=D3DDECLMETHOD_DEFAULT)return false;
             const auto& s=mesh.streams[e->Stream];const unsigned size=NorthlightDrawSnapshot::declarationBytes(e->Type);
             return size&&unsigned(e->Offset)+size<=s.stride&&std::uint64_t(mesh.vertexCount)*s.stride<=s.bytes.size();};
         if(!index||!fits(index)||!fits(weight))return NAN;
         scannedVertices+=mesh.vertexCount;
-        return NorthlightActorShadowSelection::rigidBone(mesh.vertexCount,weight!=nullptr&&lanes!=1,[&](size_t v,float* i,float* w){
+        auto read=[&](size_t v,float* i,float* w,unsigned usedLanes){
             Four a,b;const auto& si=mesh.streams[index->Stream];
             if(!decodeElement(si.bytes.data()+v*si.stride+index->Offset,index->Type,a))return false;
-            if(weight&&lanes!=1){const auto& sw=mesh.streams[weight->Stream];if(!decodeElement(sw.bytes.data()+v*sw.stride+weight->Offset,weight->Type,b))return false;
+            if(weight&&usedLanes!=1){const auto& sw=mesh.streams[weight->Stream];if(!decodeElement(sw.bytes.data()+v*sw.stride+weight->Offset,weight->Type,b))return false;
                 for(unsigned l=0;l<4;++l)w[l]=b[l];}
-            for(unsigned l=0;l<4;++l)i[l]=a[lanes==1?0:l];return true;});
+            for(unsigned l=0;l<4;++l)i[l]=a[usedLanes==1?0:l];return true;
+        };
+        const float bone=NorthlightActorShadowSelection::rigidBone(mesh.vertexCount,weight&&lanes!=1,
+            [&](size_t v,float* i,float* w){return read(v,i,w,lanes);});
+        if(std::isnan(bone)&&batchLanes&&position&&fits(position)&&(batchLanes==1||weight)&&
+           repeatedRigid(mesh,*position,batchLanes==4,[&](size_t v,float* i,float* w){return read(v,i,w,batchLanes);}))
+            return NorthlightActorShadowSelection::MergedRigid;
+        return bone==NorthlightActorShadowSelection::MergedRigid?NAN:bone;
     }
     float scan(const Program& program,const NorthlightDrawSnapshot::Mesh& mesh,const D3DVERTEXELEMENT9* elements,size_t count){
-        return readsIndices(program)?scanMesh(mesh,elements,count):NAN;
+        return readsIndices(program)?scanMesh(mesh,elements,count,4,repeatedRigidLanes(program)):NAN;
     }
     float bone(const Program& program,const NorthlightDrawSnapshot::Mesh& mesh,const std::shared_ptr<const NorthlightDrawSnapshot::Mesh>& owner,
         const void* declaration,const D3DVERTEXELEMENT9* elements,size_t count,unsigned lanes=4){
         if(!readsIndices(program))return NAN;
-        if(!owner||owner.get()!=&mesh||!elements||!count||count>InlineElements)return scanMesh(mesh,elements,count,lanes);
+        const unsigned batchLanes=repeatedRigidLanes(program);
+        if(!owner||owner.get()!=&mesh||!elements||!count||count>InlineElements)return scanMesh(mesh,elements,count,lanes,batchLanes);
         std::uint64_t hash=(reinterpret_cast<uintptr_t>(owner.get())>>4)^((reinterpret_cast<uintptr_t>(declaration)>>4)*0x9e3779b1u);
         hash^=hash>>33;hash*=0xff51afd7ed558ccdULL;hash^=hash>>33;
         const auto slot=(hash%(entries_.size()/Ways))*Ways;++clock_;
         for(unsigned way=0;way<Ways;++way){auto& e=entries_[slot+way];
-            bool same=e.key==&mesh&&e.declaration==declaration&&e.count==count&&e.lanes==lanes;
+            bool same=e.key==&mesh&&e.declaration==declaration&&e.count==count&&e.lanes==lanes&&e.batchLanes==batchLanes;
             if(same)for(size_t i=0;i<count;++i){const auto& a=e.elements[i];const auto& b=elements[i];
                 if(a.Stream!=b.Stream||a.Offset!=b.Offset||a.Type!=b.Type||a.Method!=b.Method||a.Usage!=b.Usage||a.UsageIndex!=b.UsageIndex){same=false;break;}}
             if(same&&(NorthlightSourceIdentity::sameOwner(e.owner,owner)||e.owner.lock()==owner)){e.touched=clock_;++hits;return e.bone;}}
-        ++misses;const float result=scanMesh(mesh,elements,count,lanes);
+        ++misses;const float result=scanMesh(mesh,elements,count,lanes,batchLanes);
         Entry* victim=&entries_[slot];for(unsigned way=1;way<Ways;++way)if(entries_[slot+way].touched<victim->touched)victim=&entries_[slot+way];
         victim->owner=owner;victim->key=&mesh;victim->declaration=declaration;std::memcpy(victim->elements,elements,count*sizeof *elements);
-        victim->count=std::uint32_t(count);victim->lanes=lanes;victim->bone=result;victim->touched=clock_;
+        victim->count=std::uint16_t(count);victim->lanes=std::uint8_t(lanes);victim->batchLanes=std::uint8_t(batchLanes);victim->bone=result;victim->touched=clock_;
         return result;
     }
 };

@@ -136,6 +136,8 @@ inline Tuning atCadence(Tuning t,unsigned cadence){if(cadence<=1)return t;t.cade
 // it): bodies inside the radius all cast; only rigid classes and radius
 // identities are kept.
 struct Radius {float yards=0;const float* eye=nullptr;bool ranked=true,decide=false;bool active()const{return yards>0;}};
+// A batch of repeated rigid geometry has no single bone for replay or memory.
+constexpr float MergedRigid=-1.f;
 constexpr unsigned SelfHold=30;
 // An identity not found where it was is looked for shifted by the camera's move,
 // within IdentityTolerance + SelfGap*|move| (it may have missed a capture or two).
@@ -523,7 +525,7 @@ inline Result choose(std::vector<Draw>& draws,Scratch& scratch,std::size_t budge
     // single pass would). A settled free-standing actor that has not moved needs
     // no body search (the common fence); only diagnostics count bodies near it.
     bool anySearch=false;
-    for(auto& a:actors){if(!a.rigid)continue;auto* e=history.findRigid(a.key,a.at);
+    for(auto& a:actors){if(!a.rigid||draws[a.first].bone==MergedRigid)continue;auto* e=history.findRigid(a.key,a.at);
         if(!e&&moved>0){float at[3];for(unsigned k=0;k<3;++k)at[k]=a.at[k]-move[k];e=history.findRigid(a.key,at,IdentityTolerance+SelfGap*std::min(moved,MaxShift));
             if(e&&e->settled&&!e->attachment)e=nullptr;} /* a settled prop never moves with the camera: a same-model neighbour's entry */if(e)e->used=true;a.entry=e;result.rigidNew+=!e;
         float m=0;if(e&&e->settled)for(unsigned k=0;k<3;++k){const float x=a.at[k]-e->anchor[k];m+=x*x;}
@@ -544,7 +546,7 @@ inline Result choose(std::vector<Draw>& draws,Scratch& scratch,std::size_t budge
     std::sort(points.begin(),points.end(),[](const Point& a,const Point& b){return a.cell<b.cell||(a.cell==b.cell&&(a.x<b.x||(a.x==b.x&&a.actor<b.actor)));});
     auto& linkedBy=scratch.linkedBy;
     if(anySearch)linkedBy.assign(actors.size(),SIZE_MAX);
-    for(std::size_t n=0;n<actors.size();++n){auto& a=actors[n];if(!a.rigid)continue;float best=reach*reach;std::size_t inReach=SIZE_MAX,same=SIZE_MAX;
+    for(std::size_t n=0;n<actors.size();++n){auto& a=actors[n];if(!a.rigid||draws[a.first].bone==MergedRigid)continue;float best=reach*reach;std::size_t inReach=SIZE_MAX,same=SIZE_MAX;
         auto* e=a.entry;const std::size_t linked=links.size();
         // Nearest body over all draws of the rigid actor; ties go to the earlier
         // actor. An attachment stays with last frame's body while it is in reach.

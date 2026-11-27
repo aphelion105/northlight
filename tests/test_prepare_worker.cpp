@@ -24,6 +24,7 @@
 // Built by test_prepare_worker.py (O2, ASan+UBSan, TSan). Native, no game or GPU.
 #include "stream_hooks.h"
 #include "prepare_worker.h"
+#include "capture_admission.h"
 #include "vertex_declaration_cache.h"
 #include "actor_client_programs.h"
 #include <cassert>
@@ -130,6 +131,107 @@ struct World {
         return out;
     }
 };
+
+static void mergedRigidProps(World& world){
+    using namespace NorthlightActorShadowSelection;
+    using NorthlightCaptureAdmission::Admission;
+    using NorthlightCaptureAdmission::Verdict;
+    std::mt19937 rng(486);
+    const auto lamp=mesh(rng,488,0,false); // 486 triangles per instance
+    const float eye[3]={-10,0,4},pivot[3]={0,0,1};
+    const float inverseView[16]={1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1};
+    const Radius radius{40,eye,false,false};
+    auto caches=std::make_unique<Caches>();
+    for(unsigned count:{2u,3u,4u}){
+        auto merged=std::make_shared<Mesh>();
+        merged->indexed=true;
+        merged->streams[0].stride=20;
+        for(unsigned instance=0;instance<count;++instance){
+            auto& vertices=merged->streams[0].bytes;
+            vertices.insert(vertices.end(),lamp->streams[0].bytes.begin(),lamp->streams[0].bytes.end());
+            for(unsigned v=0;v<lamp->vertexCount;++v)vertices[20*(merged->vertexCount+v)+16]=std::uint8_t(instance);
+            for(auto index:lamp->indices)merged->indices.push_back(merged->vertexCount+index);
+            merged->vertexCount+=lamp->vertexCount;
+            merged->primitiveCount+=lamp->primitiveCount;
+        }
+
+        Rec record;
+        record.constantGroup=1;
+        record.originalShader=World::shader(3);
+        record.decl=&world.decls[0];
+        record.shared=merged;
+        record.count=merged->primitiveCount;
+        record.captureRootValid=true;
+        record.captureRoot[0]=80;
+        record.storage.resize(1024);
+        record.storage[0]=3;
+        record.storage[1]=1;
+        for(unsigned i=0;i<count;++i){
+            float* rows=record.storage.data()+4*(31+3*i);
+            rows[0]=rows[5]=rows[10]=1;
+            rows[3]=i?12.f*float(i):80.f;
+        }
+        record.constants=record.storage.data();
+        world.arena.reset();
+        world.fill(record);
+
+        Output out;
+        auto prepare=[&]{State state;NorthlightActorPrepare::prepareRecord(state,record,0,*caches,inverseView,eye,out);};
+        prepare();
+        assert(out.item.known&&out.item.at[0]>40&&out.item.rigid&&out.item.bone==MergedRigid);
+        const auto hits=caches->bones.hits;
+        prepare();
+        assert(caches->bones.hits==hits+1&&out.item.bone==MergedRigid);
+
+        Scratch scratch;
+        History history;
+        Draw farActor=out.item;
+        farActor.group=2;
+        farActor.bone=NAN;
+        farActor.rigid=false;
+        farActor.key++;
+        farActor.count++;
+        Draw player=farActor;
+        player.group=3;
+        player.key++;
+        player.hasRoot=false;
+        std::copy_n(pivot,3,player.at);
+        player.distanceSquared=109;
+        std::vector<Draw> draws{out.item,farActor,player};
+        const Tuning tuning;
+        Result chosen;
+        for(unsigned frame=0;frame<tuning.admitFrames;++frame)
+            chosen=choose(draws,scratch,0,history,false,pivot,tuning,&radius);
+        assert(chosen.radiusSelf==1&&draws[2].keep);
+        assert(draws[0].keep&&!draws[1].keep&&chosen.rigidDraws==1&&chosen.radiusDroppedDraws==1);
+        assert(!scratch.actors[0].rigidTracked&&scratch.actors[0].body==SIZE_MAX);
+
+        Admission admission;
+        admission.importOutside(scratch.actors,draws);
+        admission.arm({pivot,true,eye,40,false});
+        assert(admission.decide(out.item.shader,out.item.count,merged->vertexCount,out.item.captureRoot,false).verdict==Verdict::Admit);
+        assert(admission.decide(farActor.shader,farActor.count,merged->vertexCount,farActor.captureRoot,false).verdict==Verdict::RadiusGate);
+
+        const auto& weighted=*world.programs[3];
+        const auto& single=*world.programs[4];
+        auto scan=[&](const Program& program,const Mesh& data){return caches->bones.scan(program,data,gameLayout.data(),gameLayout.size());};
+        assert(scan(single,*merged)==MergedRigid);
+        assert(scan(weighted,*lamp)==0);
+        auto different=*merged;
+        different.streams[0].bytes[20*lamp->vertexCount]^=1;
+        assert(std::isnan(scan(weighted,different)));
+        auto blended=*merged;
+        auto* vertex=blended.streams[0].bytes.data()+20*lamp->vertexCount;
+        vertex[12]=128;vertex[13]=127;vertex[17]=2;
+        assert(std::isnan(scan(weighted,blended)));
+        auto crossing=*merged;
+        crossing.indices[lamp->indices.size()+1]=0;
+        assert(std::isnan(scan(weighted,crossing)));
+        crossing.indices[lamp->indices.size()+1]=merged->vertexCount;
+        assert(std::isnan(scan(weighted,crossing)));
+    }
+    std::puts("PASS merged rigid props: 2-4 copies keep their shadows, articulated batches and radius-gated characters retain their policy");
+}
 // ---- the 0.3.176 selectStableActors loop, verbatim (after the program-handle commit): the identity
 // reference of prepareRecord. Its renderer members, with the same caches, programs and declaration cache.
 struct Reference {
@@ -694,6 +796,7 @@ int main(int argc,char** argv){
     if(std::string(argv[2])=="quarantine-all-counterfactual"){abandonedBound(world,Bound::All);return 0;}
     if(std::string(argv[2])=="quarantine-published-counterfactual"){abandonedBound(world,Bound::Published);return 0;}
     if(std::string(argv[2])=="unpinned-counterfactual"){abandonedBound(world,Bound::Unpinned);return 0;}
+    mergedRigidProps(world);
     handoffMeter();
     loopIdentity(world,tsan?40:600);layouts(world,tsan?20:200);staleDeclaration(world);handover(world,tsan?4:24);evictedDeclaration(world);
     threaded<NorthlightActorPrepare::Prepare>(world,tsan?10000:3000,tsan?3:12,false);
