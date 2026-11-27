@@ -13,7 +13,7 @@ def summarize(windows, *, background=False):
     points = []
     evidence = []
     identity = None
-    previous_end = -1
+    previous_end, previous_qpc = -1, None
     for row in windows:
         try:
             hz = int(row['qpcHz'])
@@ -30,6 +30,13 @@ def summarize(windows, *, background=False):
                     start <= previous_end or any(value not in ('0', '1') for value in settings) or
                     (identity is not None and current != identity)):
                 raise ValueError('invalid or overlapping Present window, or device/profile changed')
+            anchor = int(row['lastQpc']) if 'lastQpc' in row else None
+            if anchor is not None:
+                elapsed = sum(ticks)
+                if not elapsed <= anchor < 1 << 63:
+                    raise ValueError('invalid Present QPC anchor')
+                if previous_qpc is not None and start == previous_end + 1 and anchor - elapsed != previous_qpc:
+                    raise ValueError('Present QPC anchors disagree with the raw intervals')
             samples = [tick * 1000.0 / hz for tick in ticks]
             ordered = sorted(samples)
             expected = (sum(samples) / count, median(samples), ordered[113], ordered[-1])
@@ -38,9 +45,12 @@ def summarize(windows, *, background=False):
                     raise ValueError(f'{field} disagrees with the raw intervals')
         except (KeyError, ValueError) as error:
             raise ValueError(f'Invalid raw frame timing: {error}') from error
-        identity, previous_end = current, end
+        identity, previous_end, previous_qpc = current, end, anchor
         points.extend(enumerate(samples, start=start))
-        evidence.append({'first_present': start, 'last_present': end, 'qpc_deltas': ticks})
+        window = {'first_present': start, 'last_present': end, 'qpc_deltas': ticks}
+        if anchor is not None:
+            window['last_qpc'] = anchor
+        evidence.append(window)
 
     ranked = sorted(value for _, value in points)
     count = len(ranked)

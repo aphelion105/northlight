@@ -616,11 +616,15 @@ inline bool sampledExtraWorld(const Program& program,const NorthlightDrawSnapsho
 // World position of palette bone 0's origin (rows paletteBase..+2 map model to
 // view space; their w components are the view-space translation). Stable for
 // an object whose parts wave around a fixed root: the per-instance anchor.
-inline bool rootWorld(const Program& program,const float* constants,const float* inverseView,float* world){
-    if(program.paletteBase<0||program.paletteBase+2>=256||!constants||!inverseView)return false;
-    const float* r=constants+4*program.paletteBase;const float v[3]={r[3],r[7],r[11]};
+inline bool rootWorldFromPaletteRows(const float* rows,const float* inverseView,float* world){
+    if(!rows||!inverseView)return false;
+    const float v[]={rows[3],rows[7],rows[11]};
     for(unsigned axis=0;axis<3;++axis){world[axis]=v[0]*inverseView[axis]+v[1]*inverseView[4+axis]+v[2]*inverseView[8+axis]+inverseView[12+axis];
         if(!std::isfinite(world[axis])||std::fabs(world[axis])>1000000)return false;}
     return true;
+}
+inline bool rootWorld(const Program& program,const float* constants,const float* inverseView,float* world){
+    if(!constants||program.paletteBase<0||program.paletteBase+2>=256)return false;
+    return rootWorldFromPaletteRows(constants+4*program.paletteBase,inverseView,world);
 }
 } // namespace NorthlightActorDeformation
