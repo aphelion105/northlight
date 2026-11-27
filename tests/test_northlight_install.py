@@ -1267,7 +1267,8 @@ class Install(Base):
     def test_instance_staging_paths_fit_the_windows_limit(self):
         names = [f'world-cache.instmp\\{m}\\build-{m}-1790000000-1234567.json' for m in instance_maps.ALL_MAPS]
         names += [f'world-cache.instmp\\{m}\\63_63.fg3' for m in instance_maps.ALL_MAPS]
-        names += [f'world-cache.instmp\\logs\\instances-scene-{k}.log' for k in instance_maps.KEYS]
+        names += ['world-cache.instmp\\logs\\instances-scene-16.log']
+        names += [f'world-cache.instmp\\claims\\{m}.claim' for m in instance_maps.ALL_MAPS]
         self.assertLessEqual(max(map(len, names)), fi.LONGEST_CACHE_NAME)
         self.assertLessEqual(len(fi.INSTMP), len(fi.STAGING))
 

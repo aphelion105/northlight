@@ -348,7 +348,7 @@ def decode_blp(b,maximum=128):
 class Builder:
     def __init__(self,assets,resolve_fixture_emission=True):
         self.resolve_fixture_emission=resolve_fixture_emission
-        self.assets=assets;self.meshes={};self.mesh_names={};self.textures={};self.cutout_textures={};self.flat_colors={};self.skipped_groups=[];self.skip_bad_groups=False;self.reset()
+        self.assets=assets;self.meshes={};self.mesh_names={};self.textures={};self.cutout_textures={};self.flat_colors={};self.clamped=set();self.skipped_groups=[];self.skip_bad_groups=False;self.reset()
     def reset(self):
         self.vertices=[];self.triangles=[];self.materials=[];self.material_ids={};self.tile_stats=collections.Counter();self.tile_errors=0
     def material(self,path='',blend=0,flat=False,point_glass=False):
@@ -532,7 +532,7 @@ class Builder:
                 try:_,glass=wmo_lamp_emission.analyze(rootBlob,groupBlob,self.assets.read,group,lampMaterials)
                 except (ValueError,FileNotFoundError,IndexError,KeyError,struct.error) as exc:
                     self.assets.unsupported.add('wmo_lamp:'+name+':'+str(exc))
-            if overrun:self.assets.clamped.add(name)
+            if overrun:self.assets.clamped.add(name);self.clamped.add(name)
             sub={}
             for tag,payload in chunks(g['MOGP'],68):sub.setdefault(tag,payload)
             modr=sub.get('MODR',b'');refs.update(x[0] for x in array(modr,0,len(modr)//2,'<H'))   # the group's doodad refs
@@ -675,10 +675,12 @@ class Builder:
 
 class InstancedBuilder(Builder):
     """FGS3 tile instance lists referencing shared FGS2 meshes."""
-    def __init__(self,assets,output,release_exported=False):
+    def __init__(self,assets,output,release_exported=False,keep_models=False):
         """release_exported: replace a model's cached mesh by a stub once its FGS2 is written (the command line's
-        builds; a caller that reads builder.meshes or m2()/wmo() results after building tiles keeps the default)."""
-        self.output=output;self.exported={};self.instances=[];self.model_triangles={};self.release_exported=release_exported
+        builds; a caller that reads builder.meshes or m2()/wmo() results after building tiles keeps the default).
+        keep_models: a model whose FGS2 already exists in <output>/models is not written again (no texture decode);
+        its placements are the same, the key and bounds coming from the parsed mesh as for a written one."""
+        self.output=output;self.exported={};self.instances=[];self.model_triangles={};self.release_exported=release_exported;self.keep_models=keep_models
         super().__init__(assets)
     def reset(self):
         super().reset();self.instances=[]
@@ -693,9 +695,11 @@ class InstancedBuilder(Builder):
             if not triangles:return
             used=sorted(set(i for triangle in triangles for i in triangle[:3]));remap={old:new for new,old in enumerate(used)}
             compact=([vertices[i] for i in used],[(remap[a],remap[b],remap[c],m) for a,b,c,m in triangles],materials)
-            temporary=Builder(self.assets);temporary.textures=self.textures;temporary.cutout_textures=self.cutout_textures;temporary.flat_colors=self.flat_colors
-            temporary.add_mesh(compact,((1,0,0),(0,1,0),(0,0,1)),(0,0,0),'model')
-            temporary.write_scene(self.output/'models'/(key.hex()+'.fgs'))
+            target=self.output/'models'/(key.hex()+'.fgs')
+            if not (self.keep_models and target.is_file()):
+                temporary=Builder(self.assets);temporary.textures=self.textures;temporary.cutout_textures=self.cutout_textures;temporary.flat_colors=self.flat_colors
+                temporary.add_mesh(compact,((1,0,0),(0,1,0),(0,0,1)),(0,0,0),'model')
+                temporary.write_scene(target)
             bounds=tuple(tuple(fn(v[i] for v in compact[0]) for i in range(3)) for fn in (min,max))
             self.exported[name]=(key,bounds);self.model_triangles[key]=len(triangles)
         cached=self.meshes.get(name)
@@ -795,13 +799,22 @@ def built_global(output,mapname):
         if tiles and all((output/mapname/f'{x}_{y}.fg3').is_file() for x,y in tiles):return True
     return False
 
+def claim(path):
+    """True for the one process that creates `path`."""
+    try:os.close(os.open(path,os.O_CREAT|os.O_EXCL|os.O_WRONLY))
+    except FileExistsError:return False
+    return True
+
+
 def main():
     p=argparse.ArgumentParser();p.add_argument('--map',nargs='+',default=['Azeroth'],help='one or more maps (Map.dbc directory names)');p.add_argument('--tiles',nargs=4,type=int,metavar=('X0','Y0','X1','Y1'))
     p.add_argument('--all-continents',action='store_true');p.add_argument('--output',type=Path,help='default: <client>/world-cache');p.add_argument('--force',action='store_true');p.add_argument('--instanced',action='store_true')
     p.add_argument('--band',nargs=2,type=int,metavar=('K','N'),help='build only part K (0..N-1) of N equal parts of each map\'s tiles (parallel builder processes)')
+    p.add_argument('--keep-models',action='store_true',help='with --instanced: do not write a model file that already exists in <output>/models')
+    p.add_argument('--claim',type=Path,metavar='DIR',help='build only the maps this process claims first (DIR/<map>.claim): parallel processes share the maps of one --map list')
     client_archives.add_arguments(p);args=p.parse_args()
     if args.band and not 0<=args.band[0]<args.band[1]:p.error('--band K N needs 0 <= K < N')
-    assets=Assets.from_args(args);args.output=args.output or assets.client/'world-cache';builder=InstancedBuilder(assets,args.output,release_exported=True) if args.instanced else Builder(assets);start=time.time()
+    assets=Assets.from_args(args);args.output=args.output or assets.client/'world-cache';builder=InstancedBuilder(assets,args.output,release_exported=True,keep_models=args.keep_models) if args.instanced else Builder(assets);start=time.time()
     maps=CONTINENTS if args.all_continents else list(dict.fromkeys(args.map))
     for warning in assets.warnings():print(json.dumps({'archive_warning':warning}),flush=True)   # install_world_cache shows these at once
     try:
@@ -816,12 +829,17 @@ def main():
             if args.band and mapname in plans and plans[mapname][0]=='adt':
                 plans[mapname]=('adt',band_tiles(plans[mapname][1],*args.band))
         # one progress total for the process: a global-WMO map counts as one unit (its tile list is known only once built)
-        print(json.dumps({'tiles_total':sum(len(v) if kind=='adt' else 1 for kind,v in plans.values()),'maps':maps}),flush=True)
+        # with --claim every process counts all the maps (shared: the processes' tile events add up to one total)
+        print(json.dumps({'tiles_total':sum(len(v) if kind=='adt' else 1 for kind,v in plans.values()),'maps':maps,**({'shared':True} if args.claim else {})}),flush=True)
         limitations=['Static M2 bind pose; animated characters absent.','Terrain albedo is first-layer texture mean; terrain geometry is exact including 4x4 holes.',
                 f'BLP2 selected mip up to 128px; alpha cutout threshold {ALPHA_KEY_CUTOFF} (game shadow pass: 128/255 at full resolution).','Additive/translucent batches excluded from opaque lighting geometry.',
                 'M2 active world geosets use first opaque/cutout material per submesh.','Cross-tile placed object duplicates may exist; runtime should deduplicate triangle geometry.']
-        args.output.mkdir(parents=True,exist_ok=True);totals=collections.Counter();seen=dict(stats=collections.Counter(),missing=set(),unsupported=set(),clamped=set())
+        args.output.mkdir(parents=True,exist_ok=True);totals=collections.Counter();seen=dict(stats=collections.Counter(),missing=set(),unsupported=set())
+        if args.claim:   # largest first (by planned tiles; a global-WMO map is one WMO, cheap), so no large map comes last
+            args.claim.mkdir(parents=True,exist_ok=True)
+            maps=sorted(maps,key=lambda m:-len(plans[m][1]) if m in plans and plans[m][0]=='adt' else 0)
         for mapname in maps:
+            if args.claim and not claim(args.claim/f'{mapname}.claim'):continue   # another process builds it (and writes its report)
             records=[];failures=[];deleted=[];empty=[];info=None
             if mapname in plan_errors:failures.append({'map':mapname,'tile':None,'error':plan_errors[mapname]})
             elif plans[mapname][0]=='global':
@@ -847,9 +865,10 @@ def main():
                         empty.append({'map':mapname,'tile':[x,y]});print(json.dumps({'tile':f'{mapname}/{x}_{y}','triangles':0,'MB':0.,'empty':True,'seconds':round(time.time()-start,1)}),flush=True)
                     except (ValueError,FileNotFoundError,IndexError,KeyError) as exc:
                         failures.append({'map':mapname,'tile':[x,y],'error':str(exc)});print('ERROR',failures[-1],flush=True)
-            # a report holds what this map added to the shared tallies
-            stats=assets.stats-seen['stats'];missing=assets.missing-seen['missing'];unsupported=assets.unsupported-seen['unsupported'];clamped=assets.clamped-seen['clamped']
-            seen=dict(stats=collections.Counter(assets.stats),missing=set(assets.missing),unsupported=set(assets.unsupported),clamped=set(assets.clamped))
+            # a report holds what this map added to the shared tallies, and every WMO group clamped while building it (also
+            # one clamped before in this process: which maps a process builds is not fixed, the map's report must be)
+            stats=assets.stats-seen['stats'];missing=assets.missing-seen['missing'];unsupported=assets.unsupported-seen['unsupported'];clamped=set(builder.clamped)
+            seen=dict(stats=collections.Counter(assets.stats),missing=set(assets.missing),unsupported=set(assets.unsupported));builder.clamped.clear()
             report={'format':'FGS3' if args.instanced else 'FGS2','generated':records,'failures':failures,'deleted_source_tiles':deleted,'empty_source_tiles':empty,'missing_assets':sorted(missing),
                 'unsupported_assets':sorted(unsupported),'clamped_wmo_groups':sorted(clamped),'archive_warnings':assets.warnings(),'statistics':dict(stats),'elapsed_seconds':time.time()-start,
                 'limitations':limitations,'archive_priority':[p.relative_to(assets.client).as_posix() for p in assets.paths],'archive_fingerprint':assets.fingerprint()}

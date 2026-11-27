@@ -45,8 +45,11 @@ celestial update needs about 0.5 GB and always runs). When the cache is complete
 a z archive that is not ours, so that archive counts as client content.
 
 Instance layer: --instances SPEC (group keys or numbers from renderer/instance_maps.py, "all" or "none") runs only
-that layer, on top of the existing continent cache in --output. Each selected group is built by one scene process
-into <output>.instmp (resumable), its lights go to lights/<map>.fgl (manifest lights/instances-manifest.json),
+that layer, on top of the existing continent cache in --output. The maps of the selected groups are built by as many
+scene processes as the memory budget fits (--parts), each claiming the next unbuilt map, largest first (--claim), into
+<output>.instmp (resumable). The models the continents and kept groups already use are hard-linked into it first, and
+no process exports a model that is already there (--keep-models; the move keeps those files of <output> as they are
+anyway). Each group's lights go to lights/<map>.fgl (manifest lights/instances-manifest.json),
 the maps are validated, and then the map folders, lights and new models move into <output> and
 <output>/instances-manifest.json is written last. A group whose digest (archive chain, locale, group maps,
 scene, lights and validation revisions) is unchanged is kept; a deselected one is removed together with the
@@ -140,7 +143,10 @@ MAX_MAP_PARTS = 4
 # A part's budget is at least this share of its map's. Measured 2026-11-27, stock 3.3.5a, the densest quarter of
 # Northrend: 1.23 GB peak working set (exported meshes released; decoded textures stay), 0.26 of the map's 4.8 GB.
 PART_MEMORY_SHARE = 0.35
-INSTANCE_MEMORY_GB = 1.5     # one scene process per instance group (measured peak 0.3-1.3 GB)
+# One scene process of the instance maps. Measured 2026-11-27, stock 3.3.5a, peak working set: 0.80 GB for one process
+# building all 74 maps (--parts 1, a computer whose budget fits one), 0.3-0.8 GB each for 7 or 11 processes; the
+# budget leaves room for HD textures on an 8 GB computer.
+INSTANCE_MEMORY_GB = 1.5
 POST_MEMORY_GB = 0.5         # lights 0.3 GB, fog and celestial 0.15
 MIN_TOTAL_GB = 7.0           # installed RAM; an "8 GB" PC may report a little less than 8 GiB
 LOCK_RETRIES = (0.2, 0.4, 0.8, 1.6, 3.0) if os.name == 'nt' else ()
@@ -196,7 +202,7 @@ def human(f):
         return f"World cache: {f['archives']} archives, locale {f['locale']}"
     if event == 'plan':
         if f['mode'] == 'instances':
-            return None if not f['groups'] else (f"Building the instance world cache: {', '.join(f['groups'])}, up to {f['jobs']} groups at a time. "
+            return None if not f['groups'] else (f"Building the instance world cache: {', '.join(f['groups'])}, up to {f['jobs']} builder processes at a time. "
                     'This takes a few minutes per group.')
         if f['mode'] == 'full':
             parts = f" in {f['parts']} parts each" if f.get('parts', 1) > 1 else ''
@@ -493,6 +499,50 @@ def map_jobs(maps, override_gb=None):
     return sorted(((m, (override_gb or MAP_MEMORY_GB[m]) * (1 << 30)) for m in maps), key=lambda job: -job[1])
 
 
+def instance_workers(groups, jobs, budget, need, override=None):
+    """How many scene processes build the instance groups' maps: `override` (--parts) or as many as the memory budget
+    fits, at most `jobs` and one per map. They all start at once: one admitted later would find the maps claimed."""
+    fit = max(1, int(budget // need)) if budget != float('inf') else jobs
+    return min(override or fit, jobs, len(instance_maps.maps_for(groups)))
+
+
+def instance_scene_specs(groups, workers, common, staging, need):
+    """run_parallel specs of the scene processes that build the maps of `groups`: each process claims the next map no
+    other has, largest first (--claim), from one claims folder, a fresh one per run (an interrupted map is claimed
+    again), and does not export a model another one (or the continents, link_shared_models) already has."""
+    claims = staging / 'claims'
+    if claims.exists():
+        retry(shutil.rmtree, claims)
+    args = [fp.tracked('world_scene_builder.py'), '--instanced', '--keep-models', '--claim', claims,
+            '--map', *instance_maps.maps_for(groups), '--output', staging, *common]
+    return [('instances scene', args, staging / 'logs' / (f'instances-scene-{i + 1}.log' if workers > 1 else 'instances-scene.log'),
+             None, need, f'{i + 1}/{workers}' if workers > 1 else None) for i in range(workers)]
+
+
+def link_shared_models(output, staging, exclude):
+    """Hard-link into <staging>/models the models that the tiles of <output> outside `exclude` (the maps this run
+    builds or removes) use: the continents' and kept groups'. apply_instances never replaces those, so the scene
+    builders (--keep-models) do not export them again. Returns how many were linked; on a drive without hard links
+    the linking stops and the builders export the rest as before."""
+    keys = set()
+    for folder in output.iterdir() if output.is_dir() else []:
+        if folder.is_dir() and folder.name not in NOT_MAPS and folder.name not in exclude:
+            keys |= tile_keys(folder)
+    models = staging / 'models'
+    models.mkdir(parents=True, exist_ok=True)
+    linked = 0
+    for key in sorted(keys):
+        source, target = output / 'models' / f'{key}.fgs', models / f'{key}.fgs'
+        if target.exists() or not source.is_file():
+            continue
+        try:
+            os.link(source, target)
+        except OSError:
+            break
+        linked += 1
+    return linked
+
+
 def map_parts(maps, jobs):
     """How many world_scene_builder processes (--band K N) build each map: enough to give every one of `jobs`
     processes work, at most MAX_MAP_PARTS (each part parses its region's models again, so more parts add work)."""
@@ -558,6 +608,10 @@ class Step:
                     continue
                 count = self.progress
                 with progress_lock:
+                    if 'tiles_total' in event and event.get('shared'):   # each part of a group counts all its tiles
+                        self.total = count['total'] = event['tiles_total']
+                        count['shared'] = True
+                        continue
                     if 'tiles_total' in event:
                         self.total += event['tiles_total']
                         count['total'] += event['tiles_total']
@@ -570,7 +624,9 @@ class Step:
                     # the parts of a map have equal tile counts: the map's fraction is the mean of its parts'
                     # (a part not started yet counts 0), so it never reaches 100% early and never goes back
                     count['parts'][id(self)] = self.done / self.total if self.total else 0
-                    step = int(sum(count['parts'].values()) / count['count'] * 20 + 1e-9)
+                    # a shared total (the parts of an instance group): the group's tiles done of all its tiles
+                    fraction = done / total if count.get('shared') else sum(count['parts'].values()) / count['count']
+                    step = int(fraction * 20 + 1e-9)
                     shown, count['shown'] = count['shown'], max(count['shown'], step)
                 if PROGRESS == 'json':
                     emit(event='tile', step=self.name, map=self.map, **({'part': self.part} if self.part else {}),
@@ -1028,9 +1084,12 @@ def instance_group_result(staging, key):
     return built, failures, empty, clamped, list(warnings.values())
 
 
-def instance_failed_logs(steps, bad):
-    """The logs to show for a failed instance build: steps that exited non-zero, else those named in `bad`."""
-    failed = [s for s in steps if s.proc.returncode] or [s for s in steps if s.name in bad] or steps
+def instance_failed_logs(steps, staging=None, maps=()):
+    """The logs to show for a failed instance build: steps that exited non-zero, else the scene processes that built
+    the failed `maps` (a build report's name ends in its process id), else all of them."""
+    pids = {int(g.group(1)) for m in maps for p in staging.glob('build-*.json')
+            if (g := re.fullmatch(r'build-' + re.escape(m) + r'-\d+-(\d+)\.json', p.name))} if maps else set()
+    failed = [s for s in steps if s.proc.returncode] or [s for s in steps if s.proc.pid in pids] or steps
     return [str(s.log) for s in failed][:MAX_FAILED_LOGS]
 
 
@@ -1190,8 +1249,10 @@ def run_instances(args, client, locale, output, inputs, started):
     common += ['--without', args.without] if args.without else []
     jobs = args.jobs or max(1, (os.cpu_count() or 2) - 1)
     budget = float('inf') if args.jobs else available_memory() * 0.8
+    need = (args.job_memory_gb or INSTANCE_MEMORY_GB) * (1 << 30)
+    workers = instance_workers([k for k in build if k not in reuse], jobs, budget, need, args.parts)
     emit(event='plan', mode='instances', steps=['scene', 'lights', 'validate'] if build else [], groups=build, remove=remove,
-         keep=keep, jobs=min(jobs, len(build) or 1), maps=instance_maps.maps_for(build),
+         keep=keep, jobs=workers or 1, maps=instance_maps.maps_for(build),
          available_memory_gb=round(available_memory() / (1 << 30), 1), total_memory_gb=round(total_memory() / (1 << 30), 1))
 
     ran, results = [], {}
@@ -1199,23 +1260,24 @@ def run_instances(args, client, locale, output, inputs, started):
         if reuse:
             emit(event='instances_reuse', groups=reuse)
         reuse_maps = [m for k in reuse for m in old_groups[k]['maps_built']]
-        by_size = sorted(scene_build, key=lambda k: -next(g['est_gb'] for g in instance_maps.GROUPS if g['key'] == k))
-        need = (args.job_memory_gb or INSTANCE_MEMORY_GB) * (1 << 30)
-        ran = run_parallel([(f'instances {k}', [fp.tracked('world_scene_builder.py'), '--instanced', '--map',
-                                                *instance_maps.maps_for([k]), '--output', staging, *common],
-                             staging / 'logs' / f'instances-scene-{k}.log', None, need) for k in by_size], jobs, budget)
+        if scene_build:
+            rebuilt = set(instance_maps.maps_for([*build, *remove])) - set(reuse_maps)
+            emit(event='instances_shared_models', linked=link_shared_models(output, staging, rebuilt))
+        ran = run_parallel(instance_scene_specs(scene_build, workers, common, staging, need), jobs, budget)
         results = {k: instance_group_result(staging, k) for k in scene_build}
         for k in reuse:
             r = old_groups[k]
             results[k] = (r['maps_built'], r.get('tile_failures', {}), r.get('empty_source_tiles', {}),
                           r.get('clamped_wmo_groups', 0), r.get('archive_warnings', []))
-        problems = [f'{s.name} exit {s.proc.returncode}' for s in ran if s.proc.returncode]
+        problems = [f"{s.name}{f' (part {s.part})' if s.part else ''} exit {s.proc.returncode}" for s in ran if s.proc.returncode]
+        failed_maps = []
         for k, (built, failures, _, _, _) in results.items():
             problems += [f'instances {k}: no tiles built'] if not built else []
             problems += [f'instances {k} {m}: {len(f)} tile failures' for m, f in failures.items()]
+            failed_maps += [*failures] if built else instance_maps.maps_for([k])
         if problems:
             return final('failed', 1, **base, problems=problems, staging=str(staging),
-                         logs=instance_failed_logs(ran, [f'instances {k}' for k in build]))
+                         logs=instance_failed_logs(ran, staging, failed_maps))
         stage_instance_files(output, staging, reuse_maps)
         stage_instance_files(output, staging, [m for k in reuse if k not in light_build for m in old_groups[k]['maps_built']], lights=True)
         built_maps = [m for k in build for m in results[k][0]]
@@ -1232,7 +1294,7 @@ def run_instances(args, client, locale, output, inputs, started):
         if light_maps and not (staging / 'lights/native-fixtures.bin').is_file():
             problems.append('missing lights/native-fixtures.bin')
         if problems:
-            return final('failed', 1, **base, problems=problems, staging=str(staging), logs=instance_failed_logs(ran, []))
+            return final('failed', 1, **base, problems=problems, staging=str(staging), logs=instance_failed_logs(ran))
         for k in build:
             for warning in results[k][4]:
                 warn_archive(warning)
@@ -1287,7 +1349,8 @@ def main(argv=None):
     ap.add_argument('--jobs', type=int, help='parallel builder processes (default: by the memory budgets and CPUs)')
     ap.add_argument('--job-memory-gb', type=float, help='memory budget of every map process (default: per map)')
     ap.add_argument('--parts', type=int, choices=range(1, 17), metavar='N',
-                    help=f'scene builder processes per map (default: by --jobs, at most {MAX_MAP_PARTS}; 1 = one per map)')
+                    help=f'scene builder processes per map (default: by --jobs, at most {MAX_MAP_PARTS}; 1 = one per map); with --instances, '
+                         'for all instance maps together (default: as many as fit into memory)')
     ap.add_argument('--force', action='store_true', help='rebuild everything even when the digests match')
     ap.add_argument('--keep-previous', action='store_true', help='keep the replaced cache as <output>.previous')
     ap.add_argument('--instances', metavar='SPEC', help='only the instance layer on top of the cache in --output: group keys or '

@@ -68,6 +68,14 @@ for extra in (0, 64):
     meshes.append(Builder(assets).wmo('x.wmo')[:3])
     assert assets.clamped == ({'x_000.wmo'} if extra else set()), assets.clamped
 assert meshes[0] == meshes[1] and len(meshes[0][1]) == 1, meshes
+# The builder's own record (one map's build report, cleared per map) holds the group again when a later map parses the
+# WMO again, also after the process clamped it before: a map's report does not depend on what its process built first.
+builder = Builder(FakeAssets({'x.wmo': ROOT, 'x_000.wmo': group(extra=64)}))
+builder.wmo('x.wmo')
+assert builder.clamped == {'x_000.wmo'}
+builder.meshes.clear(); builder.mesh_names.clear(); builder.clamped.clear()   # main(): the next map
+builder.wmo('x.wmo')
+assert builder.clamped == {'x_000.wmo'}, builder.clamped
 
 # c) A clamped group whose last sub-chunk is really cut still raises (no silent partial mesh).
 assets = FakeAssets({'x.wmo': ROOT, 'x_000.wmo': group(extra=10, cut=10)})
