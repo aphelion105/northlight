@@ -47,6 +47,30 @@ int main(int argc,char** argv){
          fails([&]{applyChanges(initial,fields,f->id()+"\t9\n");});fails([&]{applyChanges(initial,fields,f->id()+"\t2\n");});
      }}
     assert(argc==2);auto root=std::filesystem::path(argv[1]);std::filesystem::create_directories(root);
+    {
+        auto legacy=factoryDocuments();
+        legacy[WaterFile]=Document("[Water]\nShortReflectionDistance=1\nWaveStrength=2\n");
+        const auto fields=schema(legacy,legacy,configOf(legacy,""),"","native","",true);
+        const auto distance=std::find_if(fields.begin(),fields.end(),[](const Field& f){return f.key=="ReflectionDistance";});
+        assert(distance!=fields.end()&&distance->saved=="1");
+        const auto changed=applyChanges(legacy,fields,distance->id()+"\t2\n");
+        assert(explicitValue(changed[WaterFile],"Water","ShortReflectionDistance")=="~");
+        assert(explicitValue(changed[WaterFile],"Water","ReflectionDistance")=="2");
+        assert(explicitValue(changed[WaterFile],"Water","WaveStrength")=="2");
+    }
+    {
+        const auto folder=root/"appearance-presets";
+        std::filesystem::create_directories(folder);
+        writeImage(folder/"Vibrant.ini","[default]\ntone_curve_strength=1\nday_vibrance=0.4\n");
+        const auto docs=factoryDocuments();
+        const auto active=configOf(docs,"");
+        const auto fields=schema(docs,docs,active,"","native","",false,root);
+        const auto changed=applyChanges(docs,fields,"C\tAppearance\tPalette\tVibrant\n");
+        const auto config=configOf(changed,"",true,"",root);
+        assert(config.celestial.fallback.toneStrength==1.f);
+        assert(config.celestial.fallback.grade[0].vibrance==0.4f);
+        assert(config.celestial.fallback.fogGain[0]==active.celestial.fallback.fogGain[0]);
+    }
     std::string raw="\xef\xbb\xbf; note\r\n[Quality]\r\n  Weather = 1  ; keep\r\nUnknown=future\r\n";Document d(raw);assert(d.bytes()==raw);
     std::string zero="0";d.set("Quality","Weather",&zero);assert(d.bytes().find("  Weather = 0  ; keep")!=std::string::npos);d.set("Quality","Weather",nullptr);assert(d.bytes().find("; keep")!=std::string::npos&&d.bytes().find("Unknown=future")!=std::string::npos);
     Document u;u.encoding=Document::Utf16LE;u.lines={{"# caf\xc3\xa9","\r\n"},{"[Quality]","\r\n"},{"Weather=1","\r\n"}};auto unicode=u.bytes();Document u2(unicode);assert(u2.bytes()==unicode);u2.set("Quality","Weather",&zero);assert(u2.bytes().substr(0,2)=="\xff\xfe"&&u2.text().find("# caf")!=std::string::npos);

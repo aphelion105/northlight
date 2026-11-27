@@ -44,14 +44,19 @@ inline void clearRangeShadow(ProxyBase& p,BufferState& s){
     const auto bytes=s.range.capacity();s.range.clear();
     if(bytes)p.core->q.stats.rangeShadowBytes.fetch_sub(std::int64_t(bytes),std::memory_order_relaxed);
 }
+inline void resetBufferRange(ProxyBase& p,BufferState& s,bool discarded){
+    const auto bytes=s.range.capacity();
+    if(discarded)s.range.discard();else s.range.invalidate();
+    if(bytes)p.core->q.stats.rangeShadowBytes.fetch_sub(std::int64_t(bytes),std::memory_order_relaxed);
+}
 inline void rememberBufferRange(ProxyBase& p,BufferState& s,const void* data){
     if(!rangeShadowCandidate(p,s)||!s.size)return;
     auto& st=p.core->q.stats;const auto before=s.range.capacity();
     const auto total=std::size_t(std::max<std::int64_t>(0,st.rangeShadowBytes.load(std::memory_order_relaxed)));
-    s.range.remember(s.off,s.size,data,RangeShadowBudgetBytes-std::min(total,RangeShadowBudgetBytes));
+    const bool stored=s.range.remember(s.off,s.size,data,RangeShadowBudgetBytes-std::min(total,RangeShadowBudgetBytes));
     const auto after=s.range.capacity();
     if(after!=before)st.rangeShadowBytes.fetch_add(std::int64_t(after)-std::int64_t(before),std::memory_order_relaxed);
-    if(s.range.covers(s.off,s.size))own(st.rangeShadowStores);else own(st.rangeShadowRefused);
+    if(stored)own(st.rangeShadowStores);else own(st.rangeShadowRefused);
 }
 inline void clearPending(BufferState& s){s.pend.clear();s.pendMin=s.pendMax=0;s.pendingSliceSeq=0;}
 // 0.3.205 (#34): the slice's contents no longer matter (a DISCARD, a rename, a dropped or fresh shadow): the patches go unapplied (their bytes are in the queue already, in the staged unlocks).
@@ -188,10 +193,10 @@ inline bool makeRoomForBufferShadow(StreamCore& c,std::size_t bytes,bool relock,
 // large shadow and mayEvict, that one is dropped if unlocked and idle for kLargeIdleFrames, LRU). Game thread.
 inline bool largeCandidate(const ProxyBase& p){const std::size_t len=p.info.length;return dynamicBuffer(p)&&len>p.core->q.shadowItemLimit()&&len<=kMaxLargeShadow;}
 inline bool makeRoomForLarge(StreamCore& c,std::size_t bytes,bool mayEvict,const BufferState* keep){
-    trimRetired(c);   // 0.3.204 (task 21): retired slices the replay thread has passed count against the allowance until freed
+    trimRetired(c);
     if(c.q.largeAdmit(bytes))return true;
     if(!mayEvict||bytes>kMaxLargeShadow)return false;
-    {   // 0.3.204: up to two holders: evict only if the idle unlocked ones (LRU prefix) free enough, else refuse and drop nothing
+    {   // Evict only if idle unlocked shadows free enough room.
         std::lock_guard<std::mutex> l(c.texMutex);std::size_t freeable=0;
         for(const BufferState* s=c.bufLarge.head;s&&c.frameNo>=s->lastUse+kLargeIdleFrames;s=s->lru.next)if(s!=keep&&s->mode==BufferState::Free&&!slicesBusy(c,*s))freeable+=s->proxy->info.length;
         if(c.q.largeBytes()-std::min(freeable,c.q.largeBytes())+bytes>LargeShadowBudgetBytes)return false;
@@ -199,7 +204,7 @@ inline bool makeRoomForLarge(StreamCore& c,std::size_t bytes,bool mayEvict,const
     while(!c.q.largeAdmit(bytes)){
         std::lock_guard<std::mutex> l(c.texMutex);
         BufferState* victim=nullptr;
-        for(BufferState* s=c.bufLarge.head;s&&c.frameNo>=s->lastUse+kLargeIdleFrames;s=s->lru.next)if(s!=keep&&s->mode==BufferState::Free&&!slicesBusy(c,*s)){victim=s;break;}   // (at most a few entries)
+        for(BufferState* s=c.bufLarge.head;s&&c.frameNo>=s->lastUse+kLargeIdleFrames;s=s->lru.next)if(s!=keep&&s->mode==BufferState::Free&&!slicesBusy(c,*s)){victim=s;break;}
         if(!victim)return false;
         ProxyBase& vp=*victim->proxy;noteShadowEvicted(c,vp);dropShadowLocked(vp,*victim);
     }
@@ -207,6 +212,7 @@ inline bool makeRoomForLarge(StreamCore& c,std::size_t bytes,bool mayEvict,const
 }
 inline bool takeShadow(ProxyBase& p,BufferState& s,bool relock=false){   // a zero-filled shadow (creation, or a DISCARD lock: the contents are undefined anyway)
     const std::size_t len=p.info.length;
+    if(len>kMaxLargeShadow)return false;
     const bool large=len&&largeCandidate(p);
     if(!len||!(large?makeRoomForLarge(*p.core,len,relock,&s):makeRoomForBufferShadow(*p.core,len,relock,&s)))return false;
     try{s.shadow.allocate(len+kLockSlack,true);}catch(...){return false;}
@@ -328,8 +334,8 @@ inline bool prepareSliceWrite(ProxyBase& self,BufferState& s,DWORD eff,bool& zc,
             // Keep at least 20 MiB available to large rings and count retired slices too.
             constexpr std::size_t regularBorrowBytes=16u<<20;
             const auto regularLimit=RingRegularBudgetBytes+(pressure?0:regularBorrowBytes);
-            const bool room=(s.large?large+len<=LargeShadowBudgetBytes:regular+len<=regularLimit)&&
-                regular+large+len<=RingRegularBudgetBytes+LargeShadowBudgetBytes;
+            const bool room=(s.large?large+len<=RingLargeBudgetBytes:regular+len<=regularLimit)&&
+                regular+large+len<=RingRegularBudgetBytes+RingLargeBudgetBytes;
             if(!room)noRoom=true;
             else{
                 try{BufferState::Slice sl;sl.mem.allocate(len+kLockSlack,false);sl.frame=c.frameNo;s.ring.push_back(std::move(sl));pick=s.ring.size()-1;}catch(...){pick=s.ring.size();allocFailed=true;}   // DISCARD leaves the new bytes undefined.
@@ -366,7 +372,8 @@ inline HRESULT lockBuffer(ProxyBase& self,BufferState& s,UINT off,UINT size,void
     if(!size||std::uint64_t(off)+size>length)size=length-off;
     s.off=off;s.size=size;s.flags=flags;
     const DWORD eff=effectiveLockFlags(flags,self.info.pool);
-    const bool rangeHit=rangeShadowCandidate(self,s)&&!(flags&D3::kLockReadOnly)&&!(eff&D3::kLockDiscard)&&s.range.canRead(off,size);
+    const bool rangeCandidate=rangeShadowCandidate(self,s);
+    const bool rangeHit=rangeCandidate&&!(flags&D3::kLockReadOnly)&&!(eff&D3::kLockDiscard)&&s.range.canRead(off,size);
     // a buffer without a shadow (refused at creation, evicted, dropped) gets one now when room can be made: where its contents are undefined anyway (a DYNAMIC
     // buffer's DISCARD lock, default pool) a zero-filled one; at a WRITE lock of a written buffer one whole-buffer readback (a first write / non-DYNAMIC DISCARD
     // stays on the staged path; a READONLY lock stays a pass-through like a texture's); a refusal keeps the old paths
@@ -419,10 +426,15 @@ inline HRESULT lockBuffer(ProxyBase& self,BufferState& s,UINT off,UINT size,void
     PassReason why=PassReason::NoShadow;
     if(flags&D3::kLockReadOnly)why=PassReason::ReadOnly;
     else if(!s.written||(eff&D3::kLockDiscard)||rangeHit){
+        auto populate=[&](unsigned char* dst){
+            if(rangeHit){s.range.read(dst,off,size);own(q.stats.rangeShadowHits);return;}
+            if((eff&D3::kLockDiscard)&&rangeShadowCandidate(self,s))resetBufferRange(self,s,true);
+            std::memset(dst,0,size);
+        };
         // 0.3.192 (CS): a small lock stages in game-side scratch and unlocks as an inline record (like the shadow path): no pooled Block, no cross-thread pool mutex.
         // The range is zeroed (bytes the game leaves unwritten replay deterministically); the slack past it is never replayed and stays as it was.
         if(unsigned char* sp=self.core->scratch.take(size,s.scratchSlot)){
-            s.mode=BufferState::Scratch;if(rangeHit){s.range.read(sp,off,size);own(q.stats.rangeShadowHits);}else{if(rangeShadowCandidate(self,s)&&(eff&D3::kLockDiscard))s.range.discard();else s.range.invalidate();std::memset(sp,0,size);}
+            s.mode=BufferState::Scratch;populate(sp);
             *pp=sp;own(q.stats.lockAsync);return D3D_OK;
         }
         s.mode=BufferState::Busy; // A budget wait may pump a nested Lock, Unlock or GPU write.
@@ -430,7 +442,7 @@ inline HRESULT lockBuffer(ProxyBase& self,BufferState& s,UINT off,UINT size,void
         if(staged&&((rangeHit&&(!rangeShadowCandidate(self,s)||!s.range.canRead(off,size)))||(!rangeHit&&s.written&&!(eff&D3::kLockDiscard)))){q.freeBlock(staged);staged=nullptr;}
         if(Block* b=staged){
             s.mode=BufferState::Staged;s.stage=b;b->used=size;
-            if(rangeHit){s.range.read(b->data(),off,size);own(q.stats.rangeShadowHits);}else{if(rangeShadowCandidate(self,s)&&(eff&D3::kLockDiscard))s.range.discard();else s.range.invalidate();std::memset(b->data(),0,size);}
+            populate(b->data());
             *pp=b->data();own(q.stats.lockAsync);return D3D_OK;
         }
         why=PassReason::Budget;
@@ -442,7 +454,7 @@ inline HRESULT lockBuffer(ProxyBase& self,BufferState& s,UINT off,UINT size,void
         hr=self.kind==Kind::VertexBuffer?static_cast<IDirect3DVertexBuffer9*>(self.inner)->Lock(off,size,&got,flags)
                                          :static_cast<IDirect3DIndexBuffer9*>(self.inner)->Lock(off,size,&got,flags);},Cmd::SyncLock);
     if(!ran)return D3DERR_INVALIDCALL;
-    if(SUCCEEDED(hr)){s.mode=BufferState::Pass;s.passData=got;if(eff&D3::kLockDiscard)s.range.invalidate();*pp=got;}
+    if(SUCCEEDED(hr)){s.mode=BufferState::Pass;s.passData=got;if(rangeCandidate&&(eff&D3::kLockDiscard))resetBufferRange(self,s,false);*pp=got;}
     return hr;
 }
 inline void noteRecorded(ProxyBase& p,const BufferState& s,UINT bytes){auto& st=p.core->q.stats;own(st.lockRecordedBytes,bytes);if(s.whole)own(st.wholeLockBytes,bytes);}   // game thread is the only writer: no locked instruction per buffer unlock

@@ -20,6 +20,17 @@ struct WaterHostCamera
     uint32_t nativeFogRangeKnown;
     float nativeFogStart, nativeFogEnd;
 };
+// Optional copy_frame record for hosts with verified world context. Its first
+// member is the original ABI-1 record; older cores accept the original size.
+struct WaterHostWorldFrame
+{
+    WaterFrameValues values{};
+    int32_t mapId = -1;
+    uint32_t zoneId = 0;
+    uint32_t modelMilliseconds = 0;
+    uint32_t skyPaletteKnown = 0;
+    uint32_t skyPalette[6] = {};
+};
 struct WaterHostReflection
 {
     uint32_t size;
@@ -40,7 +51,11 @@ enum WaterHostPass : uint32_t
 };
 // Native is the default each frame. Enhanced coverage must be confirmed by the
 // host for this exact frame; DLL presence is never a readiness signal.
-enum WaterHostFog : uint32_t { WaterHostNativeFog = 0, WaterHostFogCoversWater = 1 };
+enum WaterHostFog : uint32_t {
+    WaterHostNativeFog = 0, WaterHostFogCoversWater = 1,
+    // Native mirror fog is retained. The host also lights the world with spatial fog this frame.
+    WaterHostSpatialFog = 2
+};
 struct WaterHostResources
 {
     uint32_t size;

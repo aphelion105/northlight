@@ -27,6 +27,17 @@ struct PipelineOffTest {
         assert(NorthlightUnlitReceiver::roomAmbientLevel(innRoom)==sharedTint);
         const float tinted[]={0,1,0,0,1,0,1,0};
         assert(NorthlightUnlitReceiver::roomAmbientLevel(tinted)==0);
+        const float forestAmbient[]={.03922f,.20392f,.34510f};
+        const float forestDirect[]={.33725f,.44706f,.53333f};
+        const float scaledDirect[]={.16863f,.22353f,.26667f,0,.03922f,.20392f,.34510f,0};
+        const float scaledAmbient[]={.33725f,.44706f,.53333f,0,.04403f,.22896f,.38746f,0};
+        assert(!NorthlightUnlitReceiver::lightingOverride(scaledDirect,forestAmbient,forestDirect,true));
+        assert(!NorthlightUnlitReceiver::lightingOverride(scaledAmbient,forestAmbient,forestDirect,true));
+        assert(NorthlightUnlitReceiver::lightingOverride(scaledDirect,forestDirect,forestAmbient));
+        const float rugAmbient[]={.23529f,.28627f,.33333f};
+        const float rugDirect[]={.15686f,.22353f,.29020f};
+        const float rugRoom[]={.68235f,.58039f,.50980f,0,.37647f,.31765f,.28235f,0};
+        assert(NorthlightUnlitReceiver::lightingOverride(rugRoom,rugAmbient,rugDirect,true));
         float outdoor[8]{};
         std::copy_n(model?world.context.direct:world.context.ambient,3,outdoor);
         std::copy_n(model?world.context.ambient:world.context.direct,3,outdoor+4);

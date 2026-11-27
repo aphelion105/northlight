@@ -8,8 +8,12 @@
 #include "material_profile.h"
 #include "settings_schema.h"
 #include "surface_frame.h"
-#if defined(NORTHLIGHT_WATER) && defined(_WIN64)
-#include "frame_values.h"
+#ifdef NORTHLIGHT_WATER
+#include "host_scenery_pose.h"
+#include "water_environment.h"
+#ifdef _WIN64
+#include "host_api.h"
+#endif
 #endif
 #include "weather_shelter.h"
 #include "stream_hooks.h"
@@ -17,6 +21,7 @@
 #include "world_screen_fallbacks.h"
 #include "name_stencil.h"
 #include "world_context.h"
+#include "world_appearance.h"
 #include "effect_switches.h"
 #include "frame_requirements.h"
 #include "frame_parity_clock.h"
@@ -386,6 +391,8 @@ private:
     NorthlightRegionalShadow::Table shadowRanges;
     NorthlightCelestialProfiles::Transition paletteTransition;
     NorthlightCelestialProfiles::Profile framePalette;
+    NorthlightWorldAppearance appearance;
+    NorthlightTone::BakeKeys appearanceKeys{};
     bool paletteFrameValid=false;std::string paletteFrameMap;DWORD paletteLogAt=0;
 #if NORTHLIGHT_DEV_TUNING
     // Developer-only zone tuning (scripts/dev_tuning/zone_tuner.py), never compiled into a release build. Two files in the game root:
@@ -470,6 +477,8 @@ private:
     // Model capture skip (quality_settings.h skipModelCapture), decided at the frame's first model draw.
     // captureDemand: a skipped frame had to keep a map/cube past its schedule; the next frame captures.
     enum CaptureMode:unsigned char {CaptureUndecided,CaptureFresh,CaptureSkipped};CaptureMode captureMode=CaptureUndecided;
+    bool staggerColdCaptures=false,previousCaptureView=false;
+    float previousCaptureForward[3]={};
     bool captureDemand=false,lastCaptureSkipped=false;unsigned lastCapturePhaseReads=0;int lastRenderDebug=0;size_t pointReplayCount=0;
     unsigned nearReuses=0,farReuses=0,captureSkippedFrames=0,captureDeferrals=0; /* 600-frame log window */
     DWORD animationEpoch=GetTickCount();
@@ -1605,6 +1614,8 @@ public:
         const bool foreverLoaded=foreverAtmosphere.load(root+"forever-atmosphere.bin");
         logf("FOREVER atmosphere loaded=%d lights=%zu keys=%zu outlines=%zu",foreverLoaded,foreverAtmosphere.lights.size(),foreverAtmosphere.keys.size(),foreverAtmosphere.zones.size());
         bool paletteLoaded=NorthlightCelestialProfiles::load(root+"celestial-profiles.ini",celestialProfiles,paletteError);
+        if(paletteLoaded&&!NorthlightSettings::applyAppearancePreset(celestialProfiles,std::filesystem::u8path(root)))
+            paletteError="selected appearance preset unavailable";
         logf("CELESTIAL profiles loaded=%d zones=%zu %s",paletteLoaded,celestialProfiles.zones.size(),paletteError.c_str());
 #if NORTHLIGHT_DEV_TUNING
         celestialShipped=celestialProfiles;
@@ -1640,6 +1651,7 @@ public:
     // them) is released as before. recover() and the destructor release the mesh as well; the CPU payload is gone by then, so
     // upload() asks the builder for a fresh generation.
     void releaseGPU(bool keepMesh=false){
+        appearance.reset();
         releaseFogVolume();
         screenGroups=geometryGroups=0;
         shadowReplayAlpha.reset();
@@ -1736,10 +1748,16 @@ public:
     bool directionalShadowWork()const{return northlightShadowsRequested()&&(menuDomain||nativeShadowAvailable);}
     bool nativeShadowReplacementReady()const{
         if(menuDomain||!directionalShadowWork()||!ready()||!fogGeometryReady||!shadowFrameReady||!composited)return false;
-        for(unsigned source=0;source<2;++source)if(NorthlightGI::dot(sourceColors[source],sourceColors[source])>1e-10f)
+        bool activeSource=false;
+        for(unsigned source=0;source<2;++source){
+            if(NorthlightGI::dot(sourceColors[source],sourceColors[source])<=1e-10f)continue;
+            activeSource=true;
             for(unsigned cascade=0;cascade<2;++cascade){const unsigned slot=source*2+cascade;const char action=cascadeActions[slot];
                 if(!directionalMaps.current(slot).texture||(action!='R'&&action!='U'&&!(action=='D'&&shadowTransition[slot].workingValid)))return false;}
-        return true;
+        }
+        // Under open sky, keep the client lighting while both celestial sources are dark.
+        const bool openSky=celestialValid&&celestial.nativePlanets&&celestial.skyboxCover==0.f;
+        return activeSource||!openSky;
     }
     void setNativeShadowOwnership(bool owned,bool available=true){
         if(nativeShadowOwned==owned&&nativeShadowAvailable==available)return;
@@ -1933,6 +1951,8 @@ public:
         captureWmoProjectionBorrows=captureWmoPacketBorrows=captureWmoPacketRegisters=0;
 #endif
         rejSmall=rejGate=rejCut=rejBudget=rejOther=0;
+        previousCaptureView=staggerColdCaptures&&rendererFrame&&valid&&!menuDomain;
+        if(previousCaptureView)std::copy_n(context.inverseView+8,3,previousCaptureForward);
         valid=false;traceContext=0;traceFog=0;legacyFogKnown=false;shadowFrameReady=false;legacyFog=NorthlightLegacyFog::Constants{};
         // Bound retained vector capacities across changing scenes. Reuse storage,
         // never old geometry: each subsequent draw still re-reads every byte.
@@ -2142,6 +2162,7 @@ public:
     }
     void setHdrBaseCompositeEnabled(bool enabled){composite.permitBase(enabled);}
     void setTemporalZeroWeightEnabled(bool enabled){history.permitZeroWeight(enabled);}
+    void setStaggerColdCaptures(bool enabled){staggerColdCaptures=enabled;}
     void setModelNormals(IDirect3DTexture9* texture){modelNormals=texture;}
     static constexpr float MoonTerrainSpecularDistance=128.f;
     float sunSurfaceSpecularGain(float wetness=0)const{
@@ -2172,9 +2193,62 @@ public:
         const unsigned body=NorthlightGI::dot(sourceColors[1],sourceColors[1])>NorthlightGI::dot(sourceColors[0],sourceColors[0])?1:0;
         if(NorthlightGI::dot(rawSourceDirections[body],rawSourceDirections[body])>.5f){std::memcpy(frame.c[9],&sourceColors[body].x,12);}return true;
     }
+#ifdef NORTHLIGHT_WATER
+    bool tideglassEnvironment(WaterEnvironmentValues& values,WaterLampSamples& lamps,bool wantsLamps,float farZ){
+        if(!hasContext()||menuDomain||!lightSlotsValid||!celestialValid||!std::isfinite(farZ)||farZ<=1.f)return false;
+        const bool moon=celestial.moonWeight>celestial.sunWeight;
+        const auto& body=moon?celestial.moon:celestial.sun;
+        values.policy=WaterEnvironmentHostRetainsDistance;
+        values.encoding=WaterEnvironmentSurfaceCompositeRGB;
+        values.paletteKnown=1;
+        std::copy_n(lightSlots+3,6,values.palette);
+        values.environmentKey=std::hash<std::string>{}(lightSlotsMap);
+        values.light=water::NativeWaterLight(body.direction,lightSlots[NorthlightSunHue::SlotSun],moon,weatherEffects().discGain());
+        values.referenceDistance=farZ;
+        values.transmissionAtReference=1.f;
+
+        if(wantsLamps&&active&&quality.localLights&&quality.localLightLimit){
+            const V camera=vec(context.camera);
+            const unsigned limit=std::min(4u,unsigned(quality.localLightLimit));
+            const V delta=camera-tideglassLampCamera;
+            if(tideglassLampScene.lock()!=active||NorthlightGI::dot(delta,delta)>4.f||tideglassLampLimit!=limit){
+                tideglassLampScene=active;tideglassLampCamera=camera;tideglassLampLimit=limit;
+                tideglassLamps={};
+                const auto selected=NorthlightLocalLightSelection::select(active->localLights,context.camera,limit);
+                for(unsigned i=0;i<selected.count;++i){
+                    std::copy_n(selected.position[i].data(),4,tideglassLamps.positions[i]);
+                    std::copy_n(selected.color[i].data(),4,tideglassLamps.colours[i]);
+                }
+            }
+            lamps=tideglassLamps;
+        }
+        return true;
+    }
+private:
+    std::weak_ptr<const Snapshot> tideglassLampScene;
+    V tideglassLampCamera{};
+    unsigned tideglassLampLimit=0;
+    WaterLampSamples tideglassLamps{};
+public:
+#endif
 #if defined(NORTHLIGHT_WATER) && defined(_WIN64)
-    bool tideglassFrame(WaterFrameValues& input)const{
+    bool tideglassFrame(WaterHostWorldFrame& worldFrame){
         if(!hasContext()||menuDomain)return false;
+        auto& input=worldFrame.values;
+        if(paletteFrameValid){
+            if(paletteFrameMap=="Azeroth")worldFrame.mapId=0;
+            else if(paletteFrameMap=="Kalimdor")worldFrame.mapId=1;
+            else if(paletteFrameMap=="Expansion01")worldFrame.mapId=530;
+            else if(paletteFrameMap=="Northrend")worldFrame.mapId=571;
+            std::lock_guard<std::mutex> lock(mutex);
+            if(publishedPaletteRegion&&publishedPaletteRegion->map==paletteFrameMap)
+                worldFrame.zoneId=NorthlightRegionalFog::zoneAt(publishedPaletteRegion->region,context.camera[0],context.camera[1]);
+        }
+        worldFrame.modelMilliseconds=visualTime();
+        if(lightSlotsValid&&lightSlotsMap==paletteFrameMap){
+            worldFrame.skyPaletteKnown=1;
+            std::copy_n(lightSlots+3,6,worldFrame.skyPalette);
+        }
         std::copy_n(context.view,16,input.cameraRelativeView);
         std::fill_n(input.cameraRelativeView+12,3,0.f);
         std::copy_n(context.camera,3,input.cameraPosition);
@@ -2615,6 +2689,14 @@ public:
         return legacyFog;
     }
     bool hasOriginalFog()const{return legacyFogKnown;}
+    NorthlightTone::TimeWeights appearanceTime()const{
+        return NorthlightTone::clockWeights(celestialValid?celestial.dayFraction*24.f:-1.f);
+    }
+    template<class State,class Quad>
+    bool gradeScene(IDirect3DSurface9* target,IDirect3DSurface9* nameDepth,bool hdr,State state,Quad quad){
+        if(!paletteFrameValid||menuDomain)return false;
+        return appearance.draw(d,target,nameDepth,appearanceKeys,appearanceTime(),hdr,state,quad);
+    }
     const NorthlightCelestialProfiles::Profile& celestialPalette(const char* map,const float* camera){
         // Freeze once per frame: early disc, late halo, direct/GI and fog cannot
         // observe different worker publications or temporal transition states.
@@ -2624,8 +2706,9 @@ public:
 #if NORTHLIGHT_DEV_TUNING
         devPoll(map,camera,region&&region->map==map?NorthlightRegionalFog::zoneAt(region->region,camera[0],camera[1]):0);
 #endif
-        auto target=celestialProfiles.fallback;
+        auto target=celestialProfiles.fallbackFor(map);
         if(region&&region->map==map)target=NorthlightCelestialProfiles::sample(celestialProfiles,region->region,map,camera[0],camera[1]);
+        appearanceKeys=NorthlightTone::makeBakeKeys(target.grade,target.toneStrength);
         framePalette=paletteTransition.update(target,map,camera[0],camera[1],double(visualTime())*.001);
         paletteFrameMap=map;paletteFrameValid=true;
         DWORD now=GetTickCount();if(NorthlightDiagnostics::enabled()&&(!paletteLogAt||now-paletteLogAt>=10000)){paletteLogAt=now;
@@ -3010,7 +3093,9 @@ public:
                 (different(lastRequest.light.sunDirection,r.light.sunDirection,.02f)?4u:0u)|(different(lastRequest.light.sunIrradiance,r.light.sunIrradiance,.03f)?8u:0u)|((!NorthlightGI::sameAngularSky(lastRequest.light,r.light)||different(lastRequest.light.skyRadiance,r.light.skyRadiance,.01f))?16u:0u)|
                 (lastRequest.light.additionalDirections.empty()||different(lastRequest.light.additionalDirections[0].direction,r.light.additionalDirections[0].direction,.02f)||different(lastRequest.light.additionalDirections[0].irradiance,r.light.additionalDirections[0].irradiance,.03f)?32u:0u)|
                 (NorthlightWorldStreaming::leadMoved(lastRequest.camera,lastRequest.geometryCenter,r.camera,r.geometryCenter)?128u:0u);
-            if(r.reason){queueRequestLocked(r,GetTickCount(),true);settingsRequestDirty=false;wake.notify_one();
+            const bool deferSky=r.reason==16u&&r.giEnabled&&NorthlightGI::deferAnimatedAuroraRefresh(
+                lastRequest.light,r.light,pending||workerBusy.load(std::memory_order_relaxed));
+            if(r.reason&&!deferSky){queueRequestLocked(r,GetTickCount(),true);settingsRequestDirty=false;wake.notify_one();
                 if(NorthlightDiagnostics::enabled())logf("GI request tick=%lu id=%llu reason=%u camera=(%.2f %.2f %.2f) sun=(%.5f %.5f %.5f)",(unsigned long)r.queuedAt,(unsigned long long)r.id,r.reason,r.camera.x,r.camera.y,r.camera.z,r.light.sunDirection.x,r.light.sunDirection.y,r.light.sunDirection.z);
             }
             // 0.3.156 watchdog (log only): the builder waited for a free geometry generation
@@ -3212,7 +3297,11 @@ public:
                 if(terrainFailures++<12)logf("TERRAIN snapshot rejected: %s hr=%08lx vertexUsage=%lx indexUsage=%lx type=%u stride=%u",NorthlightTerrainCapture::rejectName(why.reason),(unsigned long)why.hr,(unsigned long)why.vertexUsage,(unsigned long)why.indexUsage,why.positionType,why.stride);return;}
             if(const auto* native=NorthlightAdtBounds::current)
                 nativeAdtCoverage.record(*native,why.low,why.high,&logf);
-            if(positions){std::copy(why.low,why.low+3,positions->low);std::copy(why.high,why.high+3,positions->high);positions->known=true;}
+            if(positions){
+                std::copy(why.low,why.low+3,positions->low);std::copy(why.high,why.high+3,positions->high);
+                positions->stream0Float3=why.positionStream==0&&why.positionType==D3DDECLTYPE_FLOAT3;
+                positions->known=true;
+            }
             appendTerrain(snapshot);return;
         }
         captureModel(type,base,min,vertexTotal,start,count,indexed,current,sample,nullptr,D3DFMT_INDEX16,nullptr,0,captured,capturedDeclaration,pose,bank);
@@ -3373,6 +3462,20 @@ public:
         if(!pipelineActive)return true;
         if(menuDomain){captureMode=CaptureFresh;return false;}
         if(captureMode==CaptureUndecided){bool skip=false;
+            if(previousCaptureView&&!lastCaptureSkipped&&!lastRenderDebug&&!particleLights.hasFlash()){
+                const auto* f=context.inverseView+8;
+                const float dot=f[0]*previousCaptureForward[0]+f[1]*previousCaptureForward[1]+f[2]*previousCaptureForward[2];
+                if(std::isfinite(dot)&&dot<.7071068f){
+                    // Keep the existing shadow maps for the camera cut. The next frame
+                    // captures the new casters. Materials and receiver normals run now.
+                    captureMode=CaptureSkipped;
+                    captureDemand=true;
+                    actorCaptureDecided=true;
+                    actorCaptureDue=false;
+                    ++captureSkippedFrames;
+                    return true;
+                }
+            }
             // Unavailable geometry cannot consume directional or point replays.
             // Keep the existing GI cadence, pending-demand and diagnostic exceptions.
             const bool shadows=shadowCaptureDemand();
@@ -3388,15 +3491,70 @@ public:
     // device mirror. Null: not a palette program, or the rows cannot be read.
     const NorthlightActorDeformation::Program* paletteRows(IDirect3DVertexShader9* shader,float* rows){
         auto program=actorPrograms.find(shader);
-        if(program==actorPrograms.end()||program->second->paletteBase<0||program->second->paletteBase+2>=256||FAILED(d->GetVertexShaderConstantF(UINT(program->second->paletteBase),rows,3)))return nullptr;
+        if(program==actorPrograms.end()||program->second->paletteBase<0||program->second->paletteBase+2>=256)return nullptr;
+        const UINT first=UINT(program->second->paletteBase);
+#ifndef _WIN64
+        const auto* mirror=constantEpochSource.mirror;
+        if(const auto* known=mirror?mirror->borrowKnownVertexFloats(first,3):nullptr){
+            std::memcpy(rows,known,3*sizeof(*known));return program->second.get();
+        }
+#endif
+        if(FAILED(d->GetVertexShaderConstantF(first,rows,3)))return nullptr;
         return program->second.get();
     }
+#ifdef NORTHLIGHT_WATER
+    void observeWaterPose(WaterSceneryPoseRequests& requests,INT base,UINT first,UINT vertices,UINT triangles){
+        const uint32_t tick=GetTickCount();
+        const auto end=requests.placements+requests.count;
+        auto* p=std::find_if(requests.placements,end,[&](const auto& q){
+            return q.status==WaterPosePlacement::Waiting && q.triangles==triangles && q.vertices==vertices && q.samples<4 &&
+                   (!q.samples || tick-q.observed[q.samples-1].tick>=320);
+        });
+        if(p==end || !hasContext())return;
+        IDirect3DVertexShader9* vs=nullptr;
+        if(FAILED(d->GetVertexShader(&vs)) || !vs)return;
+        float root[3];const NorthlightActorDeformation::Program* program=nullptr;
+        const bool known=drawRoot(vs,root,&program);vs->Release();
+        if(!known)return;
+        for(;p!=end;++p){
+            if(p->status!=WaterPosePlacement::Waiting || p->triangles!=triangles || p->vertices!=vertices || p->samples>=4 ||
+               (p->samples && tick-p->observed[p->samples-1].tick<320))continue;
+            float distance2=0;
+            for(unsigned a=0;a<3;++a){const float delta=root[a]-p->origin[a];distance2+=delta*delta;}
+            if(distance2>.25f || p->bones==0 || p->bones>kWaterPoseBones || program->paletteBase+3*p->bones>256)continue;
+            UINT offset=0,stride=0;IDirect3DVertexBuffer9* vb=nullptr;
+            if(FAILED(d->GetStreamSource(0,&vb,&offset,&stride)) || !vb)return;
+            const int64_t address=(int64_t(base)+first)*stride+offset;
+            D3DVERTEXBUFFER_DESC desc={};bool matches=false;
+            if(stride==sizeof(p->firstVertex) && address>=0 && SUCCEEDED(vb->GetDesc(&desc)) &&
+               uint64_t(address)+sizeof(p->firstVertex)<=desc.Size){
+                NorthlightReplayCopies::Reader<IDirect3DVertexBuffer9> reader(vb);void* bytes=nullptr;
+                if(SUCCEEDED(reader.lock(UINT(address),sizeof(p->firstVertex),&bytes))){
+                    matches=std::memcmp(bytes,p->firstVertex,sizeof(p->firstVertex))==0;
+                    reader.unlock();
+                }
+            }
+            vb->Release();
+            if(!matches)continue;
+            float rows[kWaterPoseBones][3][4];
+            if(FAILED(d->GetVertexShaderConstantF(UINT(program->paletteBase),&rows[0][0][0],p->bones*3)))return;
+            auto& sample=p->observed[p->samples];
+            for(unsigned axis=0;axis<3;++axis){
+                const auto length=[&](unsigned b){float sum=0;for(unsigned r=0;r<3;++r)sum+=rows[b][r][axis]*rows[b][r][axis];return std::sqrt(sum);};
+                const float rootLength=length(0);
+                if(!(rootLength>.00001f))return;
+                for(unsigned b=0;b<p->bones;++b){sample.scales[b][axis]=length(b)/rootLength;if(!std::isfinite(sample.scales[b][axis]))return;}
+            }
+            sample.tick=tick;++p->samples;
+            return;
+        }
+    }
+#endif
     // Palette root (bone 0 origin, world) of the draw about to be issued: paletteRows() through
     // the capture's inverse view. False: not a palette program, or the rows cannot be read.
     bool drawRoot(IDirect3DVertexShader9* shader,float* root,const NorthlightActorDeformation::Program** used=nullptr){
         float rows[12];const auto* program=paletteRows(shader,rows);if(!program)return false;if(used)*used=program;
-        float bank[4*256];std::memcpy(bank+4*program->paletteBase,rows,sizeof rows);
-        return NorthlightActorDeformation::rootWorld(*program,bank,context.inverseView,root);
+        return NorthlightActorDeformation::rootWorldFromPaletteRows(rows,context.inverseView,root);
     }
     // 0.3.172 near capture reserve (near_reserve.h): asked only for a skinned draw the budget is
     // about to turn away for bytes. The anchor is taken once per capture frame, at the first ask
@@ -3563,8 +3721,15 @@ public:
         phase.next(CaptureProjection);fate.reason=NorthlightShadowFate::Projection;
         float projectionScratch[16];const unsigned kind=metadata.projectionKind,first=kind==1?4:2;
         const auto* packetBank=bank;
-        const auto* wmoMirror=metadata.wmo&&indexed&&!userIndices&&!userVertices?constantEpochSource.mirror:nullptr;
-        const auto* projectionMirror=wmoMirror;
+#if defined(_WIN64) || defined(NORTHLIGHT_REPLAY_STAND)
+        const bool wmoBuffered=metadata.wmo&&indexed&&!userIndices&&!userVertices;
+#endif
+        const auto* modelMirror=constantEpochSource.mirror;
+#ifdef _WIN64
+        // The broader mirror path increased AMD64 frame-time spikes in Ratchet.
+        if(!wmoBuffered)modelMirror=nullptr;
+#endif
+        const auto* projectionMirror=modelMirror;
 #ifdef NORTHLIGHT_REPLAY_STAND
         static const bool legacyProjectionBank=[]{
             const char* value=std::getenv("NORTHLIGHT_RETRACE_LEGACY_SHADOW_PROJECTION_BANK");
@@ -3580,7 +3745,7 @@ public:
 #endif
         const auto* projectionRows=!q&&projectionMirror?projectionMirror->borrowKnownVertexFloats(first,4):nullptr;
 #ifdef NORTHLIGHT_REPLAY_STAND
-        if(projectionRows)++captureWmoProjectionBorrows;
+        if(projectionRows&&wmoBuffered)++captureWmoProjectionBorrows;
 #endif
         if(!q&&!projectionRows){
 #ifdef NORTHLIGHT_REPLAY_STAND
@@ -3639,7 +3804,7 @@ public:
         p->constantUsage=usage;
         const auto f=usage.floats,b=usage.booleans,i=usage.integers;
         const Replay* previous=replays.empty()?nullptr:replays.back().get();
-        const auto* packetMirror=wmoMirror;
+        const auto* packetMirror=modelMirror;
 #ifdef NORTHLIGHT_REPLAY_STAND
         static const bool legacyPacketBank=[]{
             const char* value=std::getenv("NORTHLIGHT_RETRACE_LEGACY_SHADOW_PACKET_BANK");
@@ -3668,7 +3833,7 @@ public:
                 if(const auto* rows=packetMirror->borrowKnownVertexFloats(first,count)){
                     std::memcpy(out,rows,std::size_t(count)*sizeof(*rows));
 #ifdef NORTHLIGHT_REPLAY_STAND
-                    ++captureWmoPacketBorrows;captureWmoPacketRegisters+=count;
+                    if(wmoBuffered){++captureWmoPacketBorrows;captureWmoPacketRegisters+=count;}
 #endif
                     return true;
                 }

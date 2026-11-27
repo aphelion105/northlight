@@ -137,14 +137,22 @@ inline bool classifyTriangleSequence(VertexAt vertexAt,std::size_t count,
         const double area=(double(p[1].x)-p[0].x)*(double(p[2].y)-p[0].y)-
                           (double(p[1].y)-p[0].y)*(double(p[2].x)-p[0].x);
         if(std::fabs(area)<1e-9)continue; // Includes strip connectors.
-        const double centerX=(double(p[0].x)+p[1].x+p[2].x)/3.;
-        const double centerY=(double(p[0].y)+p[1].y+p[2].y)/3.;
+        // The extrema of an interior triangle prove both its centroid's
+        // cell and vertex containment. Only edge triangles need the centroid.
+        const float low[]={std::min(p[0].x,std::min(p[1].x,p[2].x)),std::min(p[0].y,std::min(p[1].y,p[2].y)),std::min(p[0].z,std::min(p[1].z,p[2].z))};
+        const float high[]={std::max(p[0].x,std::max(p[1].x,p[2].x)),std::max(p[0].y,std::max(p[1].y,p[2].y)),std::max(p[0].z,std::max(p[1].z,p[2].z))};
         int x,y;double minX,maxX,minY,maxY;
-        // A strict interior margin proves the original double floor's cell.
-        // Borderline centroids retain the original calculation and tolerance.
-        const bool reusePrevious=previousChunk!=std::numeric_limits<unsigned>::max()&&
-            centerX>previousMinX+tolerance&&centerX<previousMaxX-tolerance&&
-            centerY>previousMinY+tolerance&&centerY<previousMaxY-tolerance;
+        const bool havePrevious=previousChunk!=std::numeric_limits<unsigned>::max();
+        const double innerMinX=previousMinX+tolerance,innerMaxX=previousMaxX-tolerance;
+        const double innerMinY=previousMinY+tolerance,innerMaxY=previousMaxY-tolerance;
+        const bool interior=havePrevious&&low[0]>innerMinX&&high[0]<innerMaxX&&low[1]>innerMinY&&high[1]<innerMaxY;
+        double centerX=0,centerY=0;
+        if(!interior){
+            centerX=(double(p[0].x)+p[1].x+p[2].x)/3.;
+            centerY=(double(p[0].y)+p[1].y+p[2].y)/3.;
+        }
+        const bool reusePrevious=interior||(havePrevious&&centerX>innerMinX&&centerX<innerMaxX&&
+            centerY>innerMinY&&centerY<innerMaxY);
         if(reusePrevious){
             x=int(previousChunk%1024);y=int(previousChunk/1024);
             minX=previousMinX;maxX=previousMaxX;minY=previousMinY;maxY=previousMaxY;
@@ -156,11 +164,7 @@ inline bool classifyTriangleSequence(VertexAt vertexAt,std::size_t count,
             minX=origin-(y+1)*step;maxX=origin-y*step;
             minY=origin-(x+1)*step;maxY=origin-x*step;
         }
-        // Finite triangle extrema prove the same per-vertex containment with
-        // four double comparisons. Preserve vertex order on equal extrema.
-        const float low[]={std::min(p[0].x,std::min(p[1].x,p[2].x)),std::min(p[0].y,std::min(p[1].y,p[2].y)),std::min(p[0].z,std::min(p[1].z,p[2].z))};
-        const float high[]={std::max(p[0].x,std::max(p[1].x,p[2].x)),std::max(p[0].y,std::max(p[1].y,p[2].y)),std::max(p[0].z,std::max(p[1].z,p[2].z))};
-        if(low[0]<minX-tolerance||high[0]>maxX+tolerance||low[1]<minY-tolerance||high[1]>maxY+tolerance)return false;
+        if(!interior&&(low[0]<minX-tolerance||high[0]>maxX+tolerance||low[1]<minY-tolerance||high[1]>maxY+tolerance))return false;
         for(unsigned j=0;j<3;++j){result.low[j]=std::min(result.low[j],low[j]);result.high[j]=std::max(result.high[j],high[j]);}
         const unsigned chunk=unsigned(y)*1024+unsigned(x);
         // Chunk-local triangles are contiguous in normal terrain draws. Avoid

@@ -37,8 +37,8 @@ constexpr std::size_t MaxInlinePayload=ChunkBytes/4;   // larger payloads travel
 // 0.3.192 (CS): the stream's own memory shares a 32-bit address space with the game and the world renderer. Real sessions hold 17-30 MiB in all (queue ~3-12, buffer shadows 4-50, texture shadows <= 16, rings only while a buffer DISCARDs with the replay behind;
 // rings are freed after 60 idle frames, idle pools are kept small: kPoolMaxChunks, kMaxPooledBlockBytes, PoolTuner).
 // 0.3.216 (issue #66 follow-up): memory pressure never refuses a shadow, a large grant or a ring slice, never drops one and never waits for a slice: each of those turned a buffer lock into a synchronous round trip to the replay thread
-// (hundreds per frame, an unplayable game), which costs more than the memory. Pressure only halves the queue budget and frees pooled chunks, Blocks, scratch, spare level allocations and free ring slices. WORST CASE game-side under pressure
-// (every cap at its maximum at once, which no session approaches): buffer shadows 32 (adaptive regular max) + large allowance 36 + rings 20 (regular) + 36 (large) + texture shadows 16 + queue 10 (the halved 20) = 150 MiB, plus the replay-side
+// (hundreds per frame, an unplayable game), which costs more than the memory. Pressure only halves the queue budget and frees pooled chunks, Blocks, scratch, spare level allocations and free ring slices. The main x86 game-side caps under pressure sum
+// buffer shadows 32 (adaptive regular max) + large allowance 36 + rings 20 (regular) + 36 (large) + texture shadows 16 + queue 10 (the halved 20) = 150 MiB, plus the replay-side
 // copies' 16+16 MiB (replay_copies.h; halved under pressure).
 constexpr std::size_t BudgetBytes=std::size_t(16)<<20;
 // 0.3.200 (pipeline): StreamFramesAhead (1..kMaxFramesAhead) frames may be in flight; the queue budget grows by BudgetBytes per extra frame up to
@@ -63,8 +63,15 @@ constexpr std::uint64_t kShadowHotFrames=60,kShadowGrowFrames=60;
 // kMaxLargeShadow may keep a shadow in a separate budget of LargeShadowBudgetBytes (the game's ~15.8 MB dynamic buffer whose every lock was a synchronous pass-through, and
 // 0.3.204: on some clients also an ~18 MB one, so two fit). Granted and kept under memory pressure too (0.3.216: dropping it made every lock of the buffer a synchronous readback).
 // Granted at creation when the allowance is free, else at a write re-lock (readback) or a DISCARD lock; another large buffer takes it over only by LRU
-// when the holder is unlocked and idle for kLargeIdleFrames (a 16 MB readback must not ping-pong). Worst case +36 MiB game-side on top of the regular cap; not dropped under memory pressure (0.3.216).
-constexpr std::size_t LargeShadowBudgetBytes=std::size_t(36)<<20,kMaxLargeShadow=std::size_t(24)<<20;   // 0.3.204: was 16/16 MiB (one ~15.8 MB buffer); a player's client also has an 18 MB one
+// when the holder is unlocked and idle for kLargeIdleFrames. The x64 terrain pool can exceed 50 MiB.
+#ifdef _WIN64
+constexpr std::size_t LargeShadowBudgetBytes=std::size_t(5126)<<20,kMaxLargeShadow=std::size_t(64)<<20;
+// Two spare slices for a maximum-sized buffer, independent of the persistent shadow budget.
+constexpr std::size_t RingLargeBudgetBytes=2*kMaxLargeShadow;
+#else
+constexpr std::size_t LargeShadowBudgetBytes=std::size_t(36)<<20,kMaxLargeShadow=std::size_t(24)<<20;
+constexpr std::size_t RingLargeBudgetBytes=LargeShadowBudgetBytes;
+#endif
 constexpr std::uint64_t kLargeIdleFrames=60;
 constexpr std::size_t kPoolMaxChunks=4,kReserveChunks=2;   // idle chunks kept at most / after a quiet window
 constexpr std::uint32_t kAutoPublishCommands=64,kAutoPublishBytes=64u<<10;

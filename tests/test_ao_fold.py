@@ -165,7 +165,7 @@ checks['menu: proven scene context uses the shared pipeline; screen-only fallbac
     'const bool celestial=celestialDiscs&&' in effects_cpp and
     '!menuScene' not in effects_cpp)
 checks['proxy: one shared effect-state setup, used before the AO pass and before the late legacy composite'] = (
-    renderer.count('    void effectState() {') == 1 and effects_cpp.count('effectState();') == 2
+    renderer.count('    void effectState() {') == 1 and effects_cpp.split('world->gradeScene(', 1)[0].count('effectState();') == 2
     and effects_cpp.index('effectState();') < effects_cpp.index('bindEffects(nullptr);')
     and 'D3DRS_MULTISAMPLEANTIALIAS,TRUE' in function_text(renderer, '    void effectState() {')
     and 'kAoContactBloomShader' in renderer and 'kAoContactShader' not in renderer)

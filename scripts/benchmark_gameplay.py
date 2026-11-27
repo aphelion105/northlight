@@ -105,8 +105,6 @@ def stage(args, scene, client, report):
     scene_id, _ = SCENES[scene]
     world = fixture.map_for(scene_id)[2]
     tiles = live.RATCHET_TILES if scene == 'ratchet' else None
-    if not (args.data / 'enGB/base-enGB.MPQ').is_file():
-        raise ValueError('The benchmark needs the enGB 3.3.5a client archives')
     files = {}
     for relative in live.copies(args.client, None if stock else world, base_game, tiles, data=args.data):
         if stock and relative.parts[0] != 'Data' and relative.name not in (
@@ -145,7 +143,7 @@ def stage(args, scene, client, report):
             inputs[relative.as_posix()] = live.digest(target)
 
     if not stock:
-        config = '[Renderer]\nHDRPipelineVersion=2\nSettingsOverlay=0\nDiagnostics=0\n'
+        config = '[Renderer]\nHDRPipelineVersion=2\nSettingsOverlay=0\n'
         config += f'ExperimentalHDR={int(args.case.endswith("-hdr"))}\n'
         if proxy:
             config += 'Backend=dxvk\nBackendPath=backend_d3d9.dll\n'
@@ -158,8 +156,10 @@ def stage(args, scene, client, report):
         quality = client / 'northlight-quality.ini'
         template = quality if quality.is_file() else live.fp.RENDERER / 'windows-package' / quality.name
         profile = template.read_text(encoding='utf-8-sig')
-        settings = {'CommandStream': int(proxy), 'StreamFrameSkip': 0, 'RenderProfile': 0}
-        for key, value in settings.items():
+        settings = {'CommandStream': int(proxy), 'StreamFrameSkip': 0, 'RenderProfile': int(args.render_profile)}
+        if args.render_profile:
+            settings.update(Diagnostics=1, DiagReplayProbe=0)
+        for key in settings:
             profile = re.sub(rf'(?im)^[;#]?[ \t]*{key}[ \t]*=[^\r\n]*(?:\r?\n|$)', '', profile)
         profile, count = re.subn(r'(?im)^\[Quality\][ \t]*$',
                                  '[Quality]\n' + '\n'.join(f'{key}={value}' for key, value in settings.items()), profile)
@@ -181,6 +181,10 @@ def backend_evidence(args, output):
     lines = live.log_lines(output / live.LOG)
     active = any(line.startswith('D3D9 device wrapped.') for line in lines)
     hdr = any(line.startswith('HDR experimental requested=1 active=1 ') for line in lines)
+    if getattr(args, 'render_profile', False):
+        profile = next((line for line in reversed(lines) if line.startswith('PROFILE effective ')), '')
+        if not (active and profile.startswith('PROFILE effective diagnostics=1 renderProfile=1 replayProbe=0 ')):
+            raise ValueError('Expected active Northlight RenderProfile with diagnostics enabled')
     if args.case.endswith('-dxvk'):
         backend = [line for line in lines if line.startswith('BACKEND selected=') and ' rules=dxvk ' in line
                    and line.endswith(' fallback=0')]
@@ -220,6 +224,24 @@ def stop_server(server):
         server.wait(timeout=5)
 
 
+def primary_display_pixels():
+    class DisplayMode(ctypes.Structure):
+        # DEVMODEW layout, including the portions unused by this query.
+        _fields_ = [('device_name', wintypes.WCHAR * 32), ('versions', wintypes.WORD * 2),
+                    ('size', wintypes.WORD), ('driver_extra', wintypes.WORD), ('fields', wintypes.DWORD),
+                    ('position', wintypes.POINT), ('orientation', wintypes.DWORD), ('fixed_output', wintypes.DWORD),
+                    ('printer_options', wintypes.SHORT * 5), ('form_name', wintypes.WCHAR * 32),
+                    ('log_pixels', wintypes.WORD), ('bits_per_pixel', wintypes.DWORD),
+                    ('width', wintypes.DWORD), ('height', wintypes.DWORD), ('other_fields', wintypes.DWORD * 10)]
+
+    mode = DisplayMode(size=ctypes.sizeof(DisplayMode))
+    # EnumDisplaySettingsW reports physical pixels regardless of DPI awareness.
+    current_settings = wintypes.DWORD(-1)
+    if not ctypes.windll.user32.EnumDisplaySettingsW(None, current_settings, ctypes.byref(mode)):
+        raise ValueError('Cannot determine the primary display resolution')
+    return mode.width, mode.height
+
+
 def park_window(user, hwnd):
     # Character selection is complete. Keep the owned window visible in the
     # background without letting it activate again during a sweep.
@@ -234,11 +256,22 @@ def park_window(user, hwnd):
 def check_window(report, observations, size, *, foreground):
     report['focus_samples'] = len(observations)
     report['foreground_samples'] = sum(focused for focused, _ in observations)
-    report['observed_sizes'] = sorted({extent for _, extent in observations})
+    report['observed_sizes'] = sorted({extent for _, extent in observations if extent is not None})
+    missing = sum(extent is None for _, extent in observations)
     expected_focus = len(observations) if foreground else 0
-    if (len(observations) < 20 or report['foreground_samples'] != expected_focus or
-            report['observed_sizes'] != [size]):
-        raise ValueError(f'The timing window needs stable {report["focus_mode"]} focus and the requested client size')
+    problems = []
+    if len(observations) < 20:
+        problems.append(f'only {len(observations)} window samples, expected at least 20')
+    if missing:
+        problems.append(f'game window missing in {missing}/{len(observations)} samples')
+    if report['foreground_samples'] != expected_focus:
+        problems.append(f'expected stable {report["focus_mode"]} focus, '
+                        f'foreground in {report["foreground_samples"]}/{len(observations)} samples')
+    if report['observed_sizes'] != [size] and report['observed_sizes']:
+        observed = ', '.join(f'{width}x{height}' for width, height in report['observed_sizes'])
+        problems.append(f'expected client size {size[0]}x{size[1]}, observed {observed}')
+    if problems:
+        raise ValueError('Timing window rejected (' + ' | '.join(problems) + ')')
 
 
 def measure(args, scene, output, client, report):
@@ -258,7 +291,7 @@ def measure(args, scene, output, client, report):
     installed_config = args.client / 'WTF' / 'Config.wtf'
     consent = re.compile(r'SET (?:readTOS|readEULA|readTerminationWithoutNotice) "[01]"', re.I)
     profile_lines = [line for line in graphics.splitlines() if not consent.fullmatch(line)]
-    config = live.graphics_profile('\n'.join(profile_lines), args.resolution, 1)
+    config = live.graphics_profile('\n'.join(profile_lines), args.resolution, 1, args.locale, args.maximize)
     if installed_config.is_file():
         config += ''.join(line + '\n' for line in installed_config.read_text(encoding='utf-8-sig').splitlines()
                           if consent.fullmatch(line))
@@ -286,7 +319,7 @@ def measure(args, scene, output, client, report):
         launch_config = live.runtime_client_config(config.encode('utf-8'), endpoint)
         config_path.write_bytes(launch_config)
         (output / 'launch-Config.wtf').write_bytes(launch_config)
-        (client / live.REALMLIST).write_text(live.realmlist_config(endpoint), encoding='ascii')
+        (client / live.realmlist_path(args.locale)).write_text(live.realmlist_config(endpoint), encoding='ascii')
 
         argv = [str(client / game)] + ([launch_flag] if launch_flag else [])
         console = output / 'client.stdout'
@@ -311,25 +344,37 @@ def measure(args, scene, output, client, report):
         actions, focus, events = {}, [], []
         report['login_actions'] = actions
         expected_size = tuple(map(int, args.resolution.split('x')))
+        foreground = args.desktop == 'foreground'
         placed = None
+        next_placement = start
+        spawned = armed = False
         while process.poll() is None and time.monotonic() - start < args.timeout:
             if desktop:
                 desktop.confirm_inactive()
             hwnd = next(iter(live.process_windows(process.pid, window_class)), None)
             events = live.log_lines(server_log)
+            now = time.monotonic()
+            spawned = spawned or any(line.startswith('PLAYER_SPAWN ') for line in events)
+            armed = armed or any(line.startswith('BENCH_ARM ') for line in events)
             if hwnd:
                 report['runtime']['window_class'] = window_class
-                if not desktop and hwnd != placed and any(line.startswith('PLAYER_SPAWN ') for line in events):
-                    if args.desktop == 'foreground':
+                # Windows can deny activation during the login-to-world transition.
+                # Retry in the warm-up only, before the fixture arms the timing window.
+                if (not desktop and spawned and not armed and now >= next_placement and
+                        (hwnd != placed or (user.GetForegroundWindow() == hwnd) != foreground)):
+                    if foreground:
                         live.focus_private_window(hwnd)
                     else:
                         park_window(user, hwnd)
                     placed = hwnd
+                    next_placement = now + 1
                 focus.append((time.monotonic_ns(), user.GetForegroundWindow() == hwnd,
                               live.window_extent(hwnd, client=True)))
-                live.advance_login(hwnd, events, actions, start, time.monotonic(), slow_login=True)
-                if 'BENCH_PAYLOAD complete' in events:
-                    break
+                live.advance_login(hwnd, events, actions, start, now, slow_login=True)
+            elif spawned:
+                focus.append((time.monotonic_ns(), False, None))
+            if 'BENCH_PAYLOAD complete' in events:
+                break
             time.sleep(.1)
         else:
             last_event = events[-1] if events else 'none'
@@ -338,7 +383,7 @@ def measure(args, scene, output, client, report):
         timing, frames = read_timing(events, scene)
         ticks = timing['phase_tick_ns']
         observed = [(focused, size) for tick, focused, size in focus if ticks['start'] <= tick <= ticks['done']]
-        check_window(report, observed, expected_size, foreground=args.desktop == 'foreground')
+        check_window(report, observed, expected_size, foreground=foreground)
         report.update(timing)
         with (output / 'frame-times.csv').open('x', encoding='ascii', newline='') as file:
             rows = csv.writer(file)
@@ -366,7 +411,7 @@ def attempt(args, scene):
     output.mkdir(parents=True)
     client = output / 'client'
     report = {'status': 'FAIL', 'case': args.case, 'scene': scene, 'resolution': args.resolution,
-              'msaa': 1, 'desktop': args.desktop,
+              'msaa': 1, 'locale': args.locale, 'desktop': args.desktop, 'render_profile_requested': args.render_profile,
               'focus_mode': 'foreground' if args.desktop == 'foreground' else 'background',
               'runtime': {'case': args.case, 'client_executable': CASES[args.case][0], 'client_bits': None}}
     try:
@@ -388,8 +433,11 @@ def attempt(args, scene):
             report['error'] = str(error)
     write_runtime(output, report)
     live.write_json(output / 'result.json', report)
+    details = [report['error']] if 'error' in report else []
+    if args.case.endswith('-dxvk'):
+        details.extend(f'{key}={report["runtime"][key]}' for key in ('northlight', 'dxvk'))
     print(f'{report["status"]}: {output / "result.json"}' +
-          (f' ({report["error"]})' if 'error' in report else ''), flush=True)
+          (' (' + ', '.join(details) + ')' if details else ''), flush=True)
     return report
 
 
@@ -399,6 +447,7 @@ def main():
     parser.add_argument('--scene', choices=SCENES, nargs='+', default=tuple(SCENES))
     parser.add_argument('--client', type=Path, default=live.fp.client_root(required=False))
     parser.add_argument('--data', type=Path, help='Use MPQs from this Data directory instead of the installed client Data')
+    parser.add_argument('--locale', help='Client locale, such as enUS, when Data holds several (default: the only one)')
     parser.add_argument('--runtime', type=Path, help='Unpacked proxy or source-linked runtime directory')
     parser.add_argument('--backend', type=Path, help='DXVK d3d9.dll with the same bitness as the proxy')
     parser.add_argument('--dxvk-adapter', help='Optional DXVK device name filter')
@@ -406,12 +455,17 @@ def main():
     parser.add_argument('--graphics', type=Path, default=FIXTURES / 'gameplay-4k.wtf',
                         help='Override the versioned benchmark graphics preset')
     parser.add_argument('--output', type=Path, required=True, help='New output directory')
-    parser.add_argument('--resolution', choices=('1280x720', '1920x1080', '3840x2160'), default='3840x2160')
+    parser.add_argument('--resolution', choices=('1280x720', '1920x1080', '2560x1440', '3840x2160'), default='3840x2160',
+                        help='Maximized when it equals the primary display, otherwise windowed')
     parser.add_argument('--desktop', choices=('private', 'interactive', 'foreground'), default='private',
                         help='Inactive desktop, interactive background, or interactive foreground timing')
     parser.add_argument('--timeout', type=int, default=180, help='Maximum client time per scene in seconds')
     parser.add_argument('--keep-client', action='store_true', help='Retain private clients for investigation')
+    parser.add_argument('--render-profile', action='store_true',
+                        help='Enable Northlight per-pass timing for every scene on a Northlight D3D9 case')
     args = parser.parse_args()
+    if args.render_profile and (args.case.startswith('stock-') or CASES[args.case][1] == '-vulkan'):
+        parser.error('--render-profile requires a Northlight D3D9 case')
     if os.name != 'nt':
         parser.error('Live gameplay timing requires a Windows GPU and desktop session')
     if not args.client or not live.fp.is_client(args.client):
@@ -424,11 +478,23 @@ def main():
         args.vulkan_shaders = (args.vulkan_shaders or args.runtime / 'VulkanShaders').resolve()
         if not (args.vulkan_shaders / 'manifest.txt').is_file():
             parser.error('Pass --vulkan-shaders with a client-compatible shader set containing manifest.txt')
+    try:
+        display = primary_display_pixels()
+    except ValueError as error:
+        parser.error(str(error))
+    requested = tuple(map(int, args.resolution.split('x')))
+    if requested[0] > display[0] or requested[1] > display[1]:
+        parser.error(f'--resolution {args.resolution} exceeds the {display[0]}x{display[1]} primary display')
+    args.maximize = requested == display
     if args.timeout < 45 or len(set(args.scene)) != len(args.scene):
         parser.error('Use distinct scenes and a timeout of at least 45 seconds')
     args.output = args.output.resolve()
     args.client = args.client.resolve()
     args.data = (args.data or args.client / 'Data').resolve()
+    try:
+        args.locale = live.data_locale(args.data, args.locale)
+    except (OSError, ValueError) as error:
+        parser.error(str(error))
     for source in (args.client, args.data, args.runtime, args.vulkan_shaders):
         if source and (args.output.is_relative_to(source.resolve()) or source.resolve().is_relative_to(args.output)):
             parser.error('Benchmark output must be disjoint from client, runtime and shader inputs')

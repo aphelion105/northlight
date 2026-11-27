@@ -133,6 +133,14 @@ static void compatibilityReload(){
     assert(forced==initial+"; dxvk.allowFse = False; ");
     assert(config(forced,true)==forced&&config(forced)==forced&&forced.size()<260);
     assert(config(config(""))==config(""));
+    const auto latency=config(overrides,false,true);
+    assert(latency.find("dxvk.enableGraphicsPipelineLibrary=True;d3d9.maxFrameLatency=1;")!=std::string::npos);
+    assert(latency.find("dxvk.latencySleep=True;dxvk.disableNvLowLatency2=True;")!=std::string::npos);
+    assert(config("",true,true).size()<260);
+    assert(latency.substr(latency.size()-overrides.size())==overrides);
+    assert(config(latency,false,true)==latency&&initial.find("d3d9.maxFrameLatency")==std::string::npos);
+    const std::string longOverrides(80,' ');
+    assert(config(longOverrides,true,true)==config(longOverrides,true));
 }
 int main(int argc,char** argv){
     inspection();loading();reentry();hashing();compatibilityReload();

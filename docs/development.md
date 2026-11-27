@@ -17,6 +17,11 @@ the regular scene. Each view requires Northlight effects to be enabled.
 textures. Reports, geometry, and shader inputs go to a session under the
 client's diagnostic directory.
 
+For world-light testing, the [catalog](world-light-catalog.md) lists decisions
+and recorded checks. Use `python scripts/plan_world_light_review.py --help` to
+plan capture batches and `python renderer/world_lights_builder.py --help` to
+rebuild the runtime cache from the current client assets.
+
 ## Layout
 
 | Path | Contents |
@@ -252,7 +257,7 @@ This variant uses direct submission with native HDR. Its device smoke test is
 
 ## Tideglass
 
-The optional Tideglass 0.1.0 core uses the cooperative D3D9 API. The export
+The optional Tideglass 0.2.0 core uses the cooperative D3D9 API. The export
 under `tideglass/` comes from the upstream combo release and is checked against
 its SHA-256 manifest before build or packaging. Build the 32-bit core with
 CMake, Ninja and the i686 LLVM-MinGW tools on PATH. The combo command also
@@ -260,15 +265,18 @@ builds the regular Northlight renderer with the pinned Zig toolchain.
 
 ```powershell
 python scripts/build_combo.py --storm-source <clean-pinned-StormLib-checkout>
-python renderer/build_packages.py --platform windows --version 0.3.218-tideglass-0.1.0 --water-core <out>/tideglass/water-core.dll
-python tests/verify_packages.py <out>/packages/Northlight-0.3.218-tideglass-0.1.0-Windows.zip
+python renderer/build_packages.py --platform windows --version 0.3.218-tideglass-0.2.0 --water-core <out>/tideglass/water-core.dll
+python tests/verify_packages.py <out>/packages/Northlight-0.3.218-tideglass-0.2.0-Windows.zip
 ```
 
 Omit `--storm-source` to let CMake fetch the pinned revision. The installer
 preserves both water INIs and generates the reflection archive list from the
 client's archive chain. With the art layer enabled, the combo package uses
 daylight lighting underwater. Water settings are under **Water** in the
-in-game overlay. Changing **Use Tideglass** requires a restart.
+in-game overlay. Ultra selects Far reflections, nearby scenery details and fine highlights.
+Changing **Use Tideglass** requires a restart. Overview also selects Default, Vibrant or Atmospheric.
+Appearance presets are INI files in the appearance-presets directory beside the executable.
+The renderer bakes regional daylight, dusk and night colour tables on a worker.
 
 For the standalone AMD64 client, put the x86_64 LLVM-MinGW tools on PATH and
 run `python scripts/build_combo.py --x64 --storm-source <clean-pinned-StormLib-checkout>`.
@@ -281,8 +289,8 @@ and the native textures used to identify indoor slime and magma.
 Build and verify the Windows x64 release ZIP from the combo output:
 
 ```powershell
-python renderer/build_packages.py --platform windows-x64 --version 0.3.218-tideglass-0.1.0 --water-core <out>/x64-proxy/water-core.dll
-python tests/verify_packages.py <out>/packages/Northlight-0.3.218-tideglass-0.1.0-Windows-x64.zip
+python renderer/build_packages.py --platform windows-x64 --version 0.3.218-tideglass-0.2.0 --water-core <out>/x64-proxy/water-core.dll
+python tests/verify_packages.py <out>/packages/Northlight-0.3.218-tideglass-0.2.0-Windows-x64.zip
 ```
 
 Extract the x64 ZIP outside the game folder and run `Install.cmd`. Select the
@@ -295,8 +303,7 @@ The HDR path uses the legacy scene before Northlight decodes it into linear
 colour. MSAA scene snapshots resolve to single-sample textures while liquid
 shading writes to the original target. During rain, the depth-scrubbed rain
 mask retains streaks over the composited water. Northlight uses native water
-when the DLL is disabled, missing or incompatible. The vendored core carries
-local changes for multisample snapshots and state restoration.
+when the DLL is disabled, missing or incompatible. The verified vendored export builds for both Windows architectures.
 
 ## Test
 

@@ -240,10 +240,12 @@ struct Tracker {
         out.count=selected+fades;
         const auto emit=[&](unsigned slot,const NorthlightLocalLights::Light& l,float score,float gain){
             gain*=NorthlightLocalLights::pulseGain(l,sourceTime);
-            out.position[slot]={l.position[0],l.position[1],l.position[2],l.attenuationEnd};
+            auto& source=out.sources[slot];
+            source=l;
+            out.position[slot]={source.position[0],source.position[1],source.position[2],l.attenuationEnd};
             out.fogDistance=std::max(out.fogDistance,score+2*l.attenuationEnd);
             out.color[slot]={l.diffuse[0]*gain,l.diffuse[1]*gain,l.diffuse[2]*gain,transport(l)};
-            out.sources[slot]=l;for(unsigned k=0;k<3;++k)out.sources[slot].diffuse[k]=out.color[slot][k];};
+            for(unsigned k=0;k<3;++k)source.diffuse[k]=out.color[slot][k];};
         for(unsigned i=0;i<selected;++i){const Sel& s=sel[order[i]];emit(i,*s.light,s.score,s.shown);}
         for(unsigned i=0;i<fades;++i){const Fade& f=fade[tail[i]];emit(selected+i,entries[f.index].light,f.score,f.shown);}
         if(out.count)out.nearest=selected?sel[order[0]].score:fade[tail[0]].score;

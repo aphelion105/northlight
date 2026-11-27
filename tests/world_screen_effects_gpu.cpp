@@ -113,6 +113,31 @@ struct WorldScreenEffectsTest {
         if constexpr(HasFogScreen<W>::value)return w.fogScreen.temporalShader_;
         else return w.fogTemporalPS;
     }
+#ifdef NORTHLIGHT_OPEN_SKY_SHADOW_HANDOFF_TEST
+    static void nativeShadowHandoff(IDirect3DDevice9* d,IDirect3DTexture9* scene){
+        WorldRenderer w(d);
+        w.valid=true;w.effects.shadows=true;
+        w.quality.shadowProvider=1;w.nativeShadowAvailable=true;
+        w.active=std::make_shared<WorldRenderer::Snapshot>();
+        w.active->bvh=std::make_shared<NorthlightGI::BVH>();
+        w.fogGeometryReady=w.shadowFrameReady=w.composited=true;
+        w.celestialValid=true;w.celestial={};
+        w.sourceColors[0]=w.sourceColors[1]={};
+        assert(!w.nativeShadowReplacementReady());
+        w.celestial.skyboxCover=1.f;
+        assert(w.nativeShadowReplacementReady());
+        w.celestial.skyboxCover=0.f;
+        w.sourceColors[1]={1,1,1};
+        assert(!w.nativeShadowReplacementReady());
+        for(unsigned slot:{2u,3u}){
+            scene->AddRef();
+            w.directionalMaps.current_[slot].texture=scene;
+            w.cascadeActions[slot]='R';
+        }
+        assert(w.nativeShadowReplacementReady());
+        std::puts("WORLD_OPEN_SKY_SHADOW_HANDOFF_PASS");
+    }
+#endif
     static void menuContext(WorldRenderer& w,IDirect3DDevice9* d){
         w.pipelineActive=true;w.quality.gi=0;w.effects={false,true,true};
         w.nativeShadowOwned=w.nativeShadowAvailable=false;
@@ -1982,6 +2007,9 @@ int main(int argc,char** argv){
     // Capture stores positive-hemisphere normal detail relative to its reference.
     const float rgb[]={.4f,.4f,.4f,1},ambient[]={0,0,0,1},normal[]={.7f,.6f,20,1},z[]={1000.f/999.f-1000.f/(999.f*20)};
     auto* scene=screenTexture(d,W,H,rgb);auto* ao=screenTexture(d,W/2,H/2,ambient);auto* detail=screenTexture(d,W,H,normal);auto* depth=screenTexture(d,W,H,z,1);
+#ifdef NORTHLIGHT_OPEN_SKY_SHADOW_HANDOFF_TEST
+    WorldScreenEffectsTest::nativeShadowHandoff(d,scene);
+#endif
     {auto menu=std::make_unique<WorldRenderer>(d);WorldScreenEffectsTest::menuContext(*menu,d);}
 #ifdef NORTHLIGHT_SHARED_SHADOW_TEST
     {

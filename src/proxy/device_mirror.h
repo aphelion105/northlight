@@ -55,6 +55,7 @@ struct DeviceMirror {
     MirrorGate gate; /* 0.3.180 (D0): the recursive mutex plus the owner thread and the census */
     NorthlightConstantEpoch::Clock constantEpoch;
     bool enabled=true,recording=false;
+    bool dxvkResolvePointSize=false;
     SyncedSlots* synced=nullptr; // the spell layer's 'Model equals the device' bits (synced_slots.h): every setter below clears the slot it writes, invalidate() clears all
     std::size_t rawDepth=0; // Gate-protected; suspends caching across private extension work.
     const char* disableReason=nullptr;
@@ -76,11 +77,12 @@ struct DeviceMirror {
     unsigned nPatchWrites=0;
     D3DVIEWPORT9 viewport={};bool viewportKnown=false;
     IDirect3DSurface9* targets[Targets]={};bool targetKnown[Targets]={},targetAbsent[Targets]={};
-    // DXVK may retain an internal coverage attachment between compatible
+    // DXVK may retain an internal auxiliary attachment between compatible
     // draws. Its logical state is empty until the same attachment is rebound.
     IDirect3DDevice9* deferredTargetDevice=nullptr;
     IDirect3DSurface9* deferredTargets[Targets]={};
-    unsigned deferredTargetMask=0,coverageTargetReuses=0;
+    bool deferredModelNormal[Targets]={};
+    unsigned deferredTargetMask=0,coverageTargetReuses=0,modelNormalTargetReuses=0;
     unsigned targetWrites=0,pixelShaderWrites=0,viewportWrites=0;
     IDirect3DSurface9* depth=nullptr;bool depthKnown=false;
     using FloatRow=float[4];
@@ -346,7 +348,12 @@ public:
         if(m->synced)m->synced->renderState(unsigned(type));const std::uint64_t serial=m->mutations+1;HRESULT hr=real->SetRenderState(type,value);const bool slot=unsigned(type)<DeviceMirror::RenderStates;
         if(slot)m->renderStateKnown[type]=false;
         // Vendor command states (RESZ/ATOC etc.) may have implicit side effects.
-        const bool vendor=type==D3DRS_POINTSIZE||type==D3DRS_ADAPTIVETESS_Y;if(vendor)m->invalidate();
+        const bool vendor=type==D3DRS_POINTSIZE||type==D3DRS_ADAPTIVETESS_Y;
+        // The audited DXVK path only changes point size or copies the bound
+        // depth to texture zero. Neither operation changes other bindings.
+        const bool knownResolve=type==D3DRS_POINTSIZE&&m->dxvkResolvePointSize&&!m->recording&&
+            (value==0x3f800000||value==0x7fa05000);
+        if(vendor&&!knownResolve)m->invalidate();
         if(accepted(hr)&&slot&&!vendor){m->renderStates[type]=value;const unsigned id=DeviceMirror::RenderStateSlot+unsigned(type);m->renderStateKnown[type]=m->written(id,serial,m->isProven(DeviceMirror::pair(id,value)));}
         else if(slot)m->forget(DeviceMirror::RenderStateSlot+unsigned(type));
         if(particleSlot)m->particleDraw.blend(particleSlot,value,m->renderStateKnown[type]);return hr;
@@ -374,7 +381,10 @@ public:
     HRESULT STDMETHODCALLTYPE SetRenderTarget(DWORD n,IDirect3DSurface9* value) override{
         Guard lock(m->gate);
         const bool reuse=m->targetDeferred(n)&&value==m->deferredTargets[n]&&m->active()&&!m->targetWrites;
-        if(reuse){m->deferredTargetMask&=~(1u<<n);m->deferredTargets[n]=nullptr;++m->coverageTargetReuses;}
+        if(reuse){
+            m->deferredTargetMask&=~(1u<<n);m->deferredTargets[n]=nullptr;
+            ++(m->deferredModelNormal[n]?m->modelNormalTargetReuses:m->coverageTargetReuses);
+        }
         else if(!m->finishDeferredTargets())return E_FAIL;
         DeviceMirror::TargetWrite write(m,n);
         if(n==0&&m->synced)m->synced->viewport(); /* target 0 resets the viewport */const std::uint64_t serial=m->mutations+1;HRESULT hr=reuse?D3D_OK:real->SetRenderTarget(n,value);const bool slot=n<DeviceMirror::Targets;if(slot)m->targetKnown[n]=false;
@@ -716,18 +726,21 @@ public:
 #include "extension_raw_methods.inl"
 
     ExtensionDevice(IDirect3DDevice9* device,DeviceMirror* mirror):MirrorDevice(device,mirror){}
-    void releaseCoverageTarget(unsigned slot,IDirect3DSurface9* surface){
+    HRESULT releaseAuxiliaryTarget(unsigned slot,IDirect3DSurface9* surface,bool modelNormal){
         // Only the owner of the just-submitted private draw may hide this
         // attachment. In raw/recording mode the backend remains authoritative.
         if(!slot||slot>=DeviceMirror::Targets||!surface||!m->heldByThisThread()||!m->active()||
-           m->targetWrites||m->targets[slot]!=surface||indexedPairOwner==this){SetRenderTarget(slot,nullptr);return;}
+           m->targetWrites||m->targets[slot]!=surface||indexedPairOwner==this)return SetRenderTarget(slot,nullptr);
         m->deferredTargetDevice=real;
         m->deferredTargets[slot]=surface;
+        m->deferredModelNormal[slot]=modelNormal;
         m->deferredTargetMask|=1u<<slot;
         m->targetKnown[slot]=m->targetAbsent[slot]=false;
         m->forget(DeviceMirror::TargetSlot+slot);
         ++m->mutations;
+        return D3D_OK;
     }
+    void releaseCoverageTarget(unsigned slot,IDirect3DSurface9* surface){releaseAuxiliaryTarget(slot,surface,false);}
     const DeviceMirror* constantMirror()const{return m;}
     NorthlightConstantEpoch::TrustedSource trustedConstantSource(){
         return NorthlightConstantEpoch::TrustedSource(static_cast<IDirect3DDevice9*>(this),[](void* context,NorthlightConstantEpoch::Stamp& stamp){return static_cast<ExtensionDevice*>(static_cast<IDirect3DDevice9*>(context))->constantStamp(stamp);},[](void* context,unsigned first,unsigned count,float* out,NorthlightConstantEpoch::Stamp& stamp){return static_cast<ExtensionDevice*>(static_cast<IDirect3DDevice9*>(context))->knownVertexConstantSpan(first,count,out,stamp);},
@@ -737,14 +750,16 @@ public:
                     NorthlightConstantEpoch::sameWords(expected,mirror->constantEpoch.live());
             });
     }
-    // Compare the retained target and copy its viewport under one gate. No
-    // borrowed COM reference escapes and a target write can reset the viewport.
-    bool knownFrameViewport(IDirect3DSurface9* retained,bool& matches,D3DVIEWPORT9& viewport){
+    // Compare the retained attachments and copy the viewport under one gate.
+    // No borrowed COM reference escapes a target write.
+    bool knownFrameViewport(IDirect3DSurface9* retained,bool& matches,D3DVIEWPORT9& viewport,
+                            IDirect3DSurface9* retainedDepth=nullptr){
         MirrorGuard lock(m->gate,MirrorSite::Device);
         if(!kMirrorBorrowedPeek||!m->active()||m->targetWrites||m->viewportWrites||!m->targetKnown[0]||!m->viewportKnown)return false;
-        matches=m->targets[0]==retained;
+        if(retainedDepth&&!m->depthKnown)return false;
+        matches=m->targets[0]==retained&&(!retainedDepth||m->depth==retainedDepth);
         viewport=m->viewport;
-        m->answered+=2;
+        m->answered+=retainedDepth?3:2;
         return true;
     }
     struct MaterialCaptureState {

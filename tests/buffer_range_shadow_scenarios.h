@@ -76,6 +76,7 @@ static void oversizedBufferRangeShadows(){
         }
     }
     CHECK(get(counters.syncCalls)==rotationStart);
+    CHECK(counters.rangeShadowBytes.load()==32768); // Adjacent short appends share the same allocations.
     // Read through the real backend, not the range mirror, and check every byte.
     CHECK(vb->Lock(0,32768,&data,D3::kLockReadOnly)==D3D_OK);
     for(unsigned i=0;i<32768;++i)CHECK(static_cast<unsigned char*>(data)[i]==15+i/1024);

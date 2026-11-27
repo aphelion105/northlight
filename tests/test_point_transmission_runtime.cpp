@@ -71,5 +71,10 @@ int main(int argc,char** argv){
     NorthlightPointShadow::RefreshSchedule schedule;schedule.commit(100,light,1);auto pulsed=light;
     for(auto& c:pulsed.diffuse)c*=1.05f;
     assert(!schedule.due(101,pulsed,1,300,false)); // Colour flicker never invalidates the static cube.
+    for(uint32_t time:{0u,95u,96u,192u,960u}){
+        const auto sample=tracker.update(lights,camera,32,.1f,false,nullptr,nullptr,0,nullptr,0,time);
+        assert(sample.count==1&&NorthlightPointShadow::sameCube(light,sample.sources[0]));
+        for(unsigned k=0;k<3;++k)assert(sample.position[0][k]==light.position[k]);
+    }
     std::puts("PASS point-only loader/category, neutral transmission, unchanged directional/GI sources, transactional failure, bounded mean-preserving pulses and matching shadow colour");
 }

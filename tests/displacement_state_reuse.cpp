@@ -326,22 +326,26 @@ struct RangeBackend:Backend {
 };
 static void capturedPositionBounds(){
     struct Buffered:RangeBackend {
-        unsigned bufferQueries=0;
+        unsigned bufferQueries=0,declarationQueries=0;
+        HRESULT STDMETHODCALLTYPE GetVertexDeclaration(IDirect3DVertexDeclaration9** out)override{++declarationQueries;return RangeBackend::GetVertexDeclaration(out);}
         HRESULT STDMETHODCALLTYPE GetStreamSource(UINT,IDirect3DVertexBuffer9**,UINT*,UINT*)override{++bufferQueries;return D3DERR_INVALIDCALL;}
     } backend;
     NorthlightAutoDisplacement g(&backend);auto* shader=reinterpret_cast<IDirect3DVertexShader9*>(uintptr_t(1));
     DisplacementStateTestAccess::rangeProgram(g,shader);
     float vertices[]={0,0,50000,1,0,50001,0,1,50002};
     NorthlightAutoDisplacement::Args up{{D3DPT_TRIANGLELIST,0,0,3,0,1,false},nullptr,D3DFMT_UNKNOWN,vertices,12},buffered=up;buffered.vertices=nullptr;
-    NorthlightCaptureMetadata::PositionBounds bounds;bounds.owner=&buffered;bounds.shader=shader;bounds.known=true;
+    NorthlightCaptureMetadata::PositionBounds bounds;bounds.owner=&buffered;bounds.shader=shader;bounds.known=bounds.stream0Float3=true;
     bounds.low[2]=50000;bounds.high[0]=bounds.high[1]=1;bounds.high[2]=50002;
     for(bool geometry:{false,true})for(float distance:{0.f,7.99f,8.f,8.01f,15.99f,16.f,16.01f,47.99f,48.f,48.01f,60.f,150.f}){
         backend.bank[2]=distance-50000;float expected=0,actual=0;
         assert(g.nearestMaterialDepth(shader,up,expected,geometry));
+        const auto declarations=backend.declarationQueries;
         assert(g.nearestMaterialDepth(shader,buffered,actual,geometry,&bounds)&&!std::memcmp(&actual,&expected,sizeof actual)&&!backend.bufferQueries);
+        assert(backend.declarationQueries==declarations);
     }
-    for(unsigned invalid=0;invalid<5;++invalid){auto bad=bounds;float nearest=0;const auto before=backend.bufferQueries;
+    for(unsigned invalid=0;invalid<6;++invalid){auto bad=bounds;float nearest=0;const auto before=backend.bufferQueries;
         if(invalid==0)bad.owner=&up;if(invalid==1)bad.shader=nullptr;if(invalid==2)bad.known=false;if(invalid==3)bad.low[2]=NAN;if(invalid==4)bad.high[2]=bad.low[2]-1;
+        if(invalid==5)bad.stream0Float3=false;
         assert(!g.nearestMaterialDepth(shader,buffered,nearest,true,&bad)&&backend.bufferQueries>before);
     }
     DisplacementStateTestAccess::rangeProgram(g,shader,true);float nearest=0;assert(!g.nearestMaterialDepth(shader,buffered,nearest,true,&bounds));
@@ -609,6 +613,47 @@ void DisplacementStateTestAccess::poseHandoff(const char* path,const std::vector
     float farBank[1024];std::memcpy(farBank,device.bank,sizeof farBank);farBank[22]=1;
     for(unsigned bone=0;bone<4;++bone)farBank[4*(33+3*bone)+3]=80;
     assert(SUCCEEDED(extension.SetVertexShaderConstantF(0,farBank,256)));
+    { // An exhausted envelope budget must still reject a far resident skin.
+        struct Indices:ForwardIDirect3DIndexBuffer9 {
+            Indices():ForwardIDirect3DIndexBuffer9(nullptr){for(unsigned i=0;i<96;++i)values[i]=i;}
+            std::uint16_t values[96];unsigned refs=1;
+            ULONG STDMETHODCALLTYPE AddRef()override{return ++refs;}
+            ULONG STDMETHODCALLTYPE Release()override{return --refs;}
+            HRESULT STDMETHODCALLTYPE Lock(UINT offset,UINT,void** out,DWORD)override{*out=reinterpret_cast<char*>(values)+offset;return D3D_OK;}
+            HRESULT STDMETHODCALLTYPE Unlock()override{return D3D_OK;}
+            HRESULT STDMETHODCALLTYPE GetDesc(D3DINDEXBUFFER_DESC* out)override{
+                *out={D3DFMT_INDEX16,D3DRTYPE_INDEXBUFFER,0,D3DPOOL_MANAGED,sizeof values};return D3D_OK;
+            }
+        } indices;
+        g.tracking(+[](void* p,bool)->uint64_t{return reinterpret_cast<uintptr_t>(p);},+[](void*,bool)->uint64_t{return 1;},
+            +[](const NorthlightCaptureMetadata::Request* req,NorthlightCaptureMetadata::Info* info,unsigned n){
+                for(unsigned i=0;i<n;++i)info[i]={reinterpret_cast<uintptr_t>(req[i].buffer),1,req[i].index?192u:3072u,0,req[i].index?D3DFMT_INDEX16:D3DFMT_VERTEXDATA,true};
+            });
+        mirror.indices=&indices;mirror.indicesKnown=true;mirror.vertexShader=&device.vs;mirror.vertexShaderKnown=true;
+        mirror.declaration=&layout;mirror.declarationKnown=true;mirror.streams[0]={&buffer,0,32,true};mirror.frequency[0]=1;mirror.frequencyKnown[0]=true;
+        auto indexed=args;indexed.draw.indexed=true;
+        g.endFrame();float depth=0;NorthlightAutoDisplacement::CaptureSource admitted;
+        assert(g.nearestMaterialDepth(&device.vs,indexed,depth,false,nullptr,nullptr,&admitted,false,nullptr,&mirror)&&depth>48);
+        g.poseEnvelopes.chargeCheapPreparation(UINT64_MAX);assert(!g.poseEnvelopes.canReady());
+        const auto bytes=g.skinRangeSnapshots.bytesRead();const auto ready=g.poseEnvelopes.stats().ready;
+        assert(g.nearestMaterialDepth(&device.vs,indexed,depth,false,nullptr,nullptr,&admitted,false,nullptr,&mirror)&&depth>48&&admitted.pose.outsideRange);
+        assert(!admitted.bank.bank);
+        mirror.vsFloatKnown[2]=false;
+        assert(!g.nearestMaterialDepth(&device.vs,indexed,depth,false,nullptr,nullptr,nullptr,false,nullptr,&mirror));
+        mirror.vsFloatKnown[2]=true;
+        auto miss=indexed;miss.draw.primitives=31;
+        assert(!g.nearestMaterialDepth(&device.vs,miss,depth,false,nullptr,nullptr,nullptr,false,nullptr,&mirror));
+        float nearBank[1024];std::copy_n(farBank,1024,nearBank);
+        for(unsigned bone=0;bone<4;++bone)nearBank[4*(33+3*bone)+3]=4;
+        assert(SUCCEEDED(extension.SetVertexShaderConstantF(0,nearBank,256)));
+        admitted.clear();
+        assert(!g.nearestMaterialDepth(&device.vs,indexed,depth,false,nullptr,nullptr,&admitted,false,nullptr,&mirror)&&!admitted.pose.outsideRange);
+        assert(g.skinRangeSnapshots.bytesRead()==bytes&&g.poseEnvelopes.stats().ready==ready);
+        assert(SUCCEEDED(extension.SetVertexShaderConstantF(0,farBank,256)));
+        g.skinRangeSnapshots.clearSnapshotCache();mirror.invalidate();
+        g.tracking(+[](void* p,bool)->uint64_t{return reinterpret_cast<uintptr_t>(p);},+[](void*,bool)->uint64_t{return 1;},nullptr);
+        std::puts("M2_RESIDENT_RANGE_PASS closed_envelope far_culled near_retained missing_source_no_readback");
+    }
     std::vector<double> depthCosts[2];
     for(unsigned round=0;round<12;++round)for(bool fast:{false,true,true,false}){
         g.endFrame();single.rangeKind=fast?NorthlightModelNormalRange::Single:NorthlightModelNormalRange::None;

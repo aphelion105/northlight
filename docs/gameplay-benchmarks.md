@@ -17,7 +17,9 @@ its own account and never connects to a realm outside localhost.
 
 ## Run on Windows
 
-Use a 3.3.5a enGB client with `Wow.exe`. The x64 stock and DXVK cases use
+Use a 3.3.5a client of any locale with `Wow.exe`. The runner uses the locale
+folder in Data that holds `locale-<locale>.MPQ`, and records it in each report.
+If Data holds several, choose one with `--locale`. The x64 stock and DXVK cases use
 `WowClient64.exe` and its companion files. Set `NORTHLIGHT_CLIENT` or pass
 `--client` explicitly. For Northlight cases, the client directory must also
 hold the appropriate `world-cache/Northrend` and `world-cache/Kalimdor` data.
@@ -28,14 +30,20 @@ profile's saved first-launch consent values when present.
 
 The [checked-in graphics preset](../scripts/fixtures/gameplay-benchmark/gameplay-4k.wtf)
 uses the same scene settings in every case. Runs default to 3840×2160 and
-1× MSAA, with sound, VSync, and FPS caps off. Use `--resolution 1920x1080` or
-`1280x720` on a smaller display, or `--graphics` to provide another preset.
+1× MSAA, with sound, VSync, and FPS caps off. Use `--resolution 2560x1440`,
+`1920x1080` or `1280x720` on a smaller display, or `--graphics` to provide another
+preset. A resolution equal to the primary display runs maximized, a smaller one
+runs windowed, and a larger one is refused.
 The default `--desktop private` runs on an inactive Windows desktop. Use
 `--desktop interactive` for a background window on the current desktop if the
 driver cannot initialize on an inactive desktop. Use `--desktop foreground`
 for a focused run when the client brings its window forward during the
-Ratchet sweeps. Keep the same focus and desktop mode across repeats. The runner
-rejects any run that switches focus during the sample.
+Ratchet sweeps. If Windows leaves the game in the background, click the game
+window during warm-up and leave it focused. For 3840×2160, the maximized game
+window must have a 3840×2160 client area. If the report shows a smaller area,
+select a supported resolution that fits your display. Keep the same focus and
+desktop mode across repeats. The runner rejects any run that switches focus or
+size during the sample and reports the observed values.
 
 | Case | Runtime arguments and expected backend |
 | --- | --- |
@@ -61,7 +69,16 @@ python scripts/benchmark_gameplay.py --case native-vulkan --runtime <native-x64-
 Commands run all four scenes sequentially by default. Add `--scene crowd128 ratchet`
 to narrow a run. Use `--dxvk-adapter` to select and verify a DXVK device and
 `--keep-client` to retain the private copies for investigation. Give each
-repeat a fresh output directory. Run one benchmark at a time on the GPU.
+repeat a fresh output directory. Without Windows Developer Mode the runner
+hard-links the client archives, so the output must be on the client's drive. Run one benchmark at a time on the GPU.
+
+Add `--render-profile` to a Northlight D3D9 run (`x86-dxvk`, `x64-dxvk`,
+`native-d3d9ex`, or `native-d3d9ex-hdr`) to collect per-pass timings for every
+selected scene. The runner enables `Diagnostics` and `RenderProfile` in the
+private quality file and disables the extra `DiagReplayProbe` replay. A profiled
+run requires confirmation in `northlight-renderer.log`. Keep the flag consistent
+across FPS comparisons because profiling adds measurement overhead. RenderProfile
+is off by default and is unavailable in stock and Vulkan cases.
 
 ## Read the results
 
@@ -77,6 +94,11 @@ samples, client size, and backend evidence before marking the run `PASS`.
 - `client-runtime.log` records the verified client executable bitness, observed D3D9, D3D9Ex or Vulkan path, DXVK version, D3D9On12 status, output mode, and Northlight effects. The same data appears under `runtime` in the JSON reports.
 - `frame-times.csv` contains the raw game-frame intervals in milliseconds. `avg_fps` is the frame count divided by elapsed seconds. `low_0_1_fps` is 1000 divided by the mean frame time of the slowest `ceil(frames / 1000)` frames. `worst_ms` records the longest measured interval.
 - `server.log`, the launch profile, and available renderer and driver logs are retained for failed runs too.
+
+The DXVK console result reports `northlight` and `dxvk` even when timing fails.
+`northlight=effects-enabled` confirms that Northlight wrapped the D3D9 device
+with effects enabled. The benchmark disables the Northlight settings overlay,
+so the settings panel shortcut is unavailable in the staged client.
 
 The D3D9 report uses the renderer's quality log, applied settings, and effect
 toggles. It reports which effects are enabled for the scene. The Vulkan report

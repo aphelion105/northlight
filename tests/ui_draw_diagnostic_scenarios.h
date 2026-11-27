@@ -20,7 +20,8 @@ static void uiDrawScenarios(IDirect3DDevice9* d,IDirect3DDevice9* backend,Northl
     U::Bytes invalid;assert(!U::copyUp(reinterpret_cast<void*>(1),0,16,invalid)&&invalid.data.empty());
     UiCpuOnlyBuffer cpu;NorthlightReplayCopies::Slot slot;std::atomic<unsigned> locks{0};
     NorthlightReplayCopies::attach(slot,&cpu,&cpu,&cpu,128,&locks);assert(NorthlightReplayCopies::beginFill(slot,128));
-    for(unsigned n=0;n<128;++n)slot.data[n]=static_cast<unsigned char>(n);NorthlightReplayCopies::endFill(slot,true);NorthlightReplayCopies::unpin(slot);
+    for(unsigned n=0;n<128;++n)slot.data.push_back(static_cast<unsigned char>(n));
+    assert(NorthlightReplayCopies::endFill(slot,true));NorthlightReplayCopies::unpin(slot);
     U::Bytes cached;assert(U::read(&cpu,8,16,cached)&&cached.data.front()==8&&cached.data.back()==23&&cpu.refs==1&&!slot.pins&&!cpu.locks);
     assert(std::string(cached.source)=="valid-replay-CPU-copy");NorthlightReplayCopies::invalidate(slot,true);
     U::Bytes miss;assert(!U::read(&cpu,8,16,miss)&&miss.data.empty()&&cpu.locks==1&&!cpu.unlocks);NorthlightReplayCopies::detach(slot);

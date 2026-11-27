@@ -164,7 +164,9 @@ class Frame {
         // allocation can skip value initialization without changing that policy.
         if(size>bytes.capacity()&&!bytes.empty())bytes.resize(size);else bytes.reserve(size);
     }
-    std::vector<std::uint64_t> indexMaskScratch_;
+    using IndexWord=std::uintptr_t;
+    static constexpr unsigned IndexWordBits=std::numeric_limits<IndexWord>::digits;
+    std::vector<IndexWord> indexMaskScratch_;
     std::vector<UINT> remapScratch_,uniqueSourceScratch_;
     size_t sourceSpanVertices_=0,uniqueVertices_=0,savedVertexBytes_=0;unsigned compactedDraws_=0;
     bool compacted_=false,chargeResidentHits_=true;
@@ -802,13 +804,19 @@ private:
         // triangles or altering their vertex order. No allocation scales with a
         // malicious 32-bit index span: large sparse ranges use bounded sort.
         if(span<=262144){
-            indexMaskScratch_.assign(size_t((span+63)/64),0);
-            for(auto index:mesh.indices){UINT relative=index-low;indexMaskScratch_[relative/64]|=uint64_t(1)<<(relative%64);}
-            size_t unique=0;for(auto word:indexMaskScratch_)unique+=size_t(__builtin_popcountll(word));
+            indexMaskScratch_.assign(size_t((span+IndexWordBits-1)/IndexWordBits),0);
+            for(auto index:mesh.indices){UINT relative=index-low;indexMaskScratch_[relative/IndexWordBits]|=IndexWord(1)<<(relative%IndexWordBits);}
+            size_t unique=0;
+            for(auto word:indexMaskScratch_){
+                if constexpr(IndexWordBits==32)unique+=size_t(__builtin_popcount(unsigned(word)));
+                else unique+=size_t(__builtin_popcountll(word));
+            }
             if(unique==span){for(auto& index:mesh.indices)index-=low;mesh.vertexCount=UINT(span);remember();return true;}
             uniqueSourceScratch_.reserve(unique);remapScratch_.resize(size_t(span));
             for(size_t wordIndex=0;wordIndex<indexMaskScratch_.size();++wordIndex){auto word=indexMaskScratch_[wordIndex];
-                while(word){const UINT relative=UINT(wordIndex*64+__builtin_ctzll(word));word&=word-1;
+                while(word){
+                    const unsigned first=IndexWordBits==32?__builtin_ctz(unsigned(word)):__builtin_ctzll(word);
+                    const UINT relative=UINT(wordIndex*IndexWordBits+first);word&=word-1;
                     remapScratch_[relative]=UINT(uniqueSourceScratch_.size());uniqueSourceScratch_.push_back(low+relative);}}
             for(auto& index:mesh.indices)index=remapScratch_[index-low];
         }else{
@@ -1090,13 +1098,27 @@ public:
             target.stride=stride;const size_t size=size_t(mesh.vertexCount)*stride;
             // Prepare capacity before Lock: trivial byte assignment cannot allocate
             // while a backend lock is held. Fresh spans need no zero-fill pass.
-            if(!compacted_)prepareCopy(target.bytes,size);else target.bytes.resize(size);
+            // Append short runs in destination order so the copy initializes the storage.
+            // Retain resize's growth policy and the direct copy path for fragmented meshes.
+            const bool appendRuns=compacted_&&activeRuns_->size()<=8&&
+                (target.bytes.empty()||target.bytes.capacity()>=size);
+            if(appendRuns){target.bytes.clear();target.bytes.reserve(size);}
+            else if(!compacted_)prepareCopy(target.bytes,size);
+            else target.bytes.resize(size);
             if(!reserve(size_t(readBytes[s]),why))return false;void* ptr=nullptr;
             NorthlightReplayCopies::Reader<IDirect3DVertexBuffer9> read(vb.p);
             if(FAILED(hr=read.lock(UINT(begins[s]),UINT(lockBytes[s]),&ptr)))return fail(why,Error::Lock,hr);
             if(ptr){
                 if(!compacted_){const auto* source=static_cast<const std::uint8_t*>(ptr);target.bytes.assign(source,source+size_t(readBytes[s]));target.bytes.resize(size);}
-                else copyVertices(target.bytes.data(),static_cast<const std::uint8_t*>(ptr),stride,extent[s],low,mesh.vertexCount);
+                else if(appendRuns){
+                    const auto* source=static_cast<const std::uint8_t*>(ptr);
+                    for(const auto& run:*activeRuns_){
+                        const auto* first=source+size_t(run.source-low)*stride;
+                        const size_t bytes=size_t(run.count)*stride-(run.destination+run.count==mesh.vertexCount?stride-extent[s]:0);
+                        target.bytes.insert(target.bytes.end(),first,first+bytes);
+                    }
+                    target.bytes.resize(size);
+                }else copyVertices(target.bytes.data(),static_cast<const std::uint8_t*>(ptr),stride,extent[s],low,mesh.vertexCount);
             }
             HRESULT unlocked=read.unlock();
             if(FAILED(unlocked))return fail(why,Error::Unlock,unlocked);if(!ptr)return fail(why,Error::Lock);

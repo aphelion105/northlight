@@ -7,6 +7,7 @@ import struct
 import sys
 from tempfile import TemporaryDirectory
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
 import benchmark_gameplay as bench
@@ -29,6 +30,45 @@ def events(scene):
 
 
 class GameplayBenchmarkTests(unittest.TestCase):
+    def test_client_locale_follows_the_installed_locale_archive(self):
+        locale_of = bench.live.data_locale
+        with TemporaryDirectory() as temp:
+            data = Path(temp)
+            with self.assertRaisesRegex(ValueError, 'no <locale>'):
+                locale_of(data)
+            (data / 'dede').mkdir()
+            (data / 'dede' / 'locale-dede.MPQ').write_bytes(b'MPQ')
+            self.assertEqual(locale_of(data), 'deDE')
+            self.assertEqual(locale_of(data, 'DEDE'), 'deDE')
+            with self.assertRaisesRegex(ValueError, r'locale frFR is not installed \(found: dede\)'):
+                locale_of(data, 'frFR')
+            (data / 'ruRU').mkdir()
+            (data / 'ruRU' / 'locale-ruRU.MPQ').write_bytes(b'MPQ')
+            with self.assertRaisesRegex(ValueError, 'several locales'):
+                locale_of(data)
+            self.assertEqual(locale_of(data, 'ruRU'), 'ruRU')
+        self.assertEqual(bench.live.realmlist_path('ruRU'), 'Data/ruRU/realmlist.wtf')
+        self.assertIn('SET locale "ruRU"\n', bench.live.graphics_profile('', '1920x1080', 1, 'ruRU'))
+        self.assertIn('SET locale "enGB"\n', bench.live.graphics_profile('', '1920x1080', 1))
+
+    def test_display_sized_resolution_is_maximized(self):
+        profile = bench.live.graphics_profile
+        self.assertIn('SET gxmaximize "1"\n', profile('', '2560x1440', 1, 'enUS', True))
+        self.assertIn('SET gxmaximize "0"\n', profile('', '3840x2160', 1, 'enUS', False))
+        self.assertIn('SET gxmaximize "1"\n', profile('', '3840x2160', 1))
+
+    def test_primary_display_uses_physical_pixels(self):
+        def current_mode(device, settings, mode):
+            self.assertIsNone(device)
+            self.assertEqual(settings.value, 0xffffffff)
+            mode._obj.width, mode._obj.height = 3840, 2160
+            return True
+
+        with patch.object(bench.ctypes, 'windll', create=True) as api:
+            api.user32.GetSystemMetrics.side_effect = (2560, 1440)
+            api.user32.EnumDisplaySettingsW.side_effect = current_mode
+            self.assertEqual(bench.primary_display_pixels(), (3840, 2160))
+
     def test_all_scene_receipts_match_the_fixture_roster(self):
         for scene, (_, count) in bench.SCENES.items():
             with self.subTest(scene=scene):
@@ -68,8 +108,16 @@ class GameplayBenchmarkTests(unittest.TestCase):
             bench.check_window(report, observations, size, foreground=foreground)
             self.assertEqual(report['foreground_samples'], 20 if foreground else 0)
             observations[-1] = (not foreground, size)
-            with self.assertRaisesRegex(ValueError, 'stable'):
+            with self.assertRaisesRegex(ValueError, f'foreground in {19 if foreground else 1}/20 samples'):
                 bench.check_window(report, observations, size, foreground=foreground)
+
+    def test_window_report_identifies_size_changes_and_disappearance(self):
+        size = (3840, 2160)
+        observations = [(False, size)] * 18 + [(False, (1920, 1080)), (False, None)]
+        report = {'focus_mode': 'background'}
+        with self.assertRaisesRegex(ValueError, 'missing in 1/20 samples.*expected client size 3840x2160, '
+                                    'observed 1920x1080, 3840x2160'):
+            bench.check_window(report, observations, size, foreground=False)
 
     def test_gameplay_messages_do_not_change_ratchet_pan_markers(self):
         say = struct.pack('<II', 1, 0)
@@ -78,6 +126,34 @@ class GameplayBenchmarkTests(unittest.TestCase):
         pan = say + b'NorthlightRatchet:left\0'
         self.assertIsNone(fixture.gameplay_message(pan))
         self.assertEqual(fixture.ratchet_camera_marker(pan), 'left')
+
+    def test_render_profile_overrides_the_staged_quality_file(self):
+        with (TemporaryDirectory(dir=bench.live.fp.output_dir()) as temporary,
+              patch.object(bench.live, 'stage_pe'), patch.object(bench.live, 'link_asset')):
+            root = Path(temporary)
+            data = root / 'Data'
+            (data / 'enGB').mkdir(parents=True)
+            (data / 'enGB/locale-enGB.MPQ').touch()
+            cache = root / 'world-cache/Northrend'
+            cache.mkdir(parents=True)
+            (cache / '0_0.fg3').write_bytes(b'FGS3' + bytes(8))
+            for name in ('Wow.exe', 'd3d9.dll', 'northlight-assets.bin'):
+                (root / name).touch()
+            template = root / 'northlight-quality.ini'
+            original = '[Quality]\nDiagnostics=0\nRenderProfile=1\nDiagReplayProbe=1\n'
+            template.write_text(original, encoding='ascii')
+            args = Namespace(case='x86-dxvk', client=root, data=data, runtime=root, backend=root / 'd3d9.dll')
+            for requested in (True, False):
+                with self.subTest(render_profile=requested):
+                    args.render_profile = requested
+                    client = root / str(requested)
+                    bench.stage(args, 'crowd8', client, {'runtime': {}})
+                    settings = dict(line.split('=') for line in
+                                    (client / template.name).read_text(encoding='ascii').splitlines()[1:])
+                    self.assertEqual(settings['RenderProfile'], str(int(requested)))
+                    self.assertEqual(settings['Diagnostics'], str(int(requested)))
+                    self.assertEqual(settings['DiagReplayProbe'], str(int(not requested)))
+            self.assertEqual(template.read_text(encoding='ascii'), original)
 
     def test_native_sdr_reports_passthrough_and_hdr_requires_gpu_transfer(self):
         with TemporaryDirectory() as temporary:
@@ -94,6 +170,13 @@ class GameplayBenchmarkTests(unittest.TestCase):
                 bench.backend_evidence(args, output)
             log.write_text(factory + 'D3D9 device wrapped.\nHDR experimental requested=1 active=1 mode=scRGB\n'
                            'HDR native DXGI Present frame=2 color=scRGB transfer=D3D9On12 GPU\n', encoding='ascii')
+            self.assertTrue(bench.backend_evidence(args, output)['renderer_active'])
+
+            args.render_profile = True
+            with self.assertRaisesRegex(ValueError, 'RenderProfile'):
+                bench.backend_evidence(args, output)
+            with log.open('a', encoding='ascii') as stream:
+                stream.write('PROFILE effective diagnostics=1 renderProfile=1 replayProbe=0 period=127 cpuGpuAdditive=0\n')
             self.assertTrue(bench.backend_evidence(args, output)['renderer_active'])
 
     def test_stock_runtime_log_records_bits_and_backend(self):

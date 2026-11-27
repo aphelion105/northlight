@@ -59,8 +59,8 @@ if a.m2_admission:
  old='domain==4&&(coarseOnly||deferredAllowed||source)?&geometrySource:nullptr';assert source.count(old)==1
  source=source.replace(old,'domain==4&&(coarseOnly||(deferredAllowed&&northlightReadOnlyPolicy==2))?&geometrySource:nullptr',1)
  cpp=test_cpp.read_text(encoding='utf-8')
- old='unsigned scenario=0;scenario<(benchmark||negative?1:25);++scenario';assert cpp.count(old)==1
- cpp=cpp.replace(old,'unsigned scenario: {6u,23u,24u}',1)
+ old='unsigned trial=0;trial<(benchmark||negative?1:26);++trial){const unsigned scenario=trial<25?trial:Fixture::SharedDepthCutout;';assert cpp.count(old)==1
+ cpp=cpp.replace(old,'unsigned scenario: {6u,23u,24u}){',1)
  test_cpp=out/'m2-admission-gpu.cpp';test_cpp.write_text(cpp,encoding='utf-8',newline='\n')
 if a.m2_preflight:
  old='if(geometry&&(!geometryMode||domain==4||!displacement.skinned(original))){float nearest=0;';assert source.count(old)==1
@@ -75,8 +75,9 @@ if a.m2_preflight:
  displacement=displacement.replace(old,'if(northlightReadOnlyPolicy!=2||!captureSource||!trustedConstants)return;',1)
  (overlay/'auto_displacement_renderer.h').write_text(displacement,encoding='utf-8',newline='\n')
  cpp=test_cpp.read_text(encoding='utf-8')
- cpp=cpp.replace('unsigned scenario=0;scenario<(benchmark||negative?1:25);++scenario','unsigned scenario=25;scenario<34;++scenario',1)
- cpp=cpp.replace('alpha(kind!=10&&kind!=23&&kind!=24)','alpha(kind<25&&kind!=10&&kind!=23&&kind!=24)',1).replace('equal(kind!=6&&kind!=23&&kind!=24)','equal(kind<25&&kind!=6&&kind!=23&&kind!=24)',1)
+ cpp=cpp.replace('unsigned trial=0;trial<(benchmark||negative?1:26);++trial){const unsigned scenario=trial<25?trial:Fixture::SharedDepthCutout;',
+                 'unsigned scenario=25;scenario<34;++scenario){',1)
+ cpp=cpp.replace('alpha(kind!=10&&kind!=23&&kind!=24)','alpha(kind<25&&kind!=10&&kind!=23&&kind!=24)',1).replace('equal(kind!=6&&kind!=23&&kind!=24&&kind!=SharedDepthCutout)','equal(kind<25&&kind!=6&&kind!=23&&kind!=24)',1)
  cpp=cpp.replace('scenario==3||scenario==11||scenario==23||scenario==24','scenario>=25||scenario==3||scenario==11||scenario==23||scenario==24')
  cpp=cpp.replace('v[12]=255;','v[12]=102;v[13]=77;v[14]=51;v[15]=25;for(unsigned k=0;k<4;++k)v[16+k]=(i+k)%12;',1)
  start=cpp.index('    void pose(unsigned draw)');end=cpp.index('    HRESULT draw()',start)

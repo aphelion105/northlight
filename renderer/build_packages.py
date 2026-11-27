@@ -77,7 +77,9 @@ APP_FILES = [
 ]
 PAYLOAD_COMMON = {'celestial-profiles.ini': 'client-config/celestial-profiles.ini',
                   'shadow-range-profiles.ini': 'client-config/shadow-range-profiles.ini',
-                  'northlight-quality.ini': 'renderer/windows-package/northlight-quality.ini'}
+                  'northlight-quality.ini': 'renderer/windows-package/northlight-quality.ini',
+                  'appearance-presets/Vibrant.ini': 'client-config/appearance-presets/Vibrant.ini',
+                  'appearance-presets/Atmospheric.ini': 'client-config/appearance-presets/Atmospheric.ini'}
 WATER_SETTINGS = ('water.ini', 'water-host.ini')
 PRESERVE = set(PAYLOAD_COMMON) | set(WATER_SETTINGS)
 DXVK_BACKEND = 'renderer-backends/dxvk/dxvk_d3d9.dll'

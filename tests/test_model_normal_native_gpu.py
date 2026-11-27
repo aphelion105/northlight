@@ -39,8 +39,8 @@ timing_state.add_argument('--timing-srgb',action='store_true',help='Keep native 
 timing_state.add_argument('--timing-fixed-pixel',action='store_true',help='Finish each frame with an unsupported fixed-function scene-depth writer')
 timing_state.add_argument('--timing-capture-hazard',action='store_true',help='Finish the immutable queue early after the native MRT audit')
 args=parser.parse_args()
-if args.hybrid and (not args.x64 or args.reference_native or args.reference_packet_layout):
-    parser.error('--hybrid requires --x64 with the current normal renderer')
+if args.hybrid and (args.reference_native or args.reference_packet_layout):
+    parser.error('--hybrid requires the current normal renderer')
 if args.x64 and args.reference_native:
     parser.error('--reference-native uses the x86 native normal renderer')
 out=args.output.resolve();out.mkdir(parents=True,exist_ok=False)

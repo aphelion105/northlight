@@ -173,10 +173,10 @@ float FoamRelief(float3 normal)
 #if !defined(DEFERRED_SLIME) && defined(READS_SURFACE_DETAIL)
 // s9's rain-ring field has already been resolved into surface detail for this pass.
 sampler2D sSurfaceVisibility : WATER_S_REGISTER(WATER_SLOT_sSurfaceVisibility);
-float4 cSurfaceVisibility : WATER_C_REGISTER(WATER_SLOT_cSurfaceVisibility); // x: matching current-frame sun/moon map
+float4 cSurfaceVisibility : WATER_C_REGISTER(WATER_SLOT_cSurfaceVisibility); // x: current sun/moon map; y: the resolved mirror includes an enclosed water receiver
 #endif
 
-float FoamVisibility(float2 pixel)
+float DirectLightVisibility(float2 pixel)
 {
     float visibility = 1.0;
 #if !defined(DEFERRED_SLIME) && defined(READS_SURFACE_DETAIL)
@@ -185,6 +185,8 @@ float FoamVisibility(float2 pixel)
         float2 sources = tex2Dlod(sSurfaceVisibility, float4((pixel + 0.5) * cTexelGrid.xy, 0, 0)).rg;
         visibility = saturate(lerp(sources.r, sources.g, cSurface.y));
     }
+    [branch] if (cSurfaceVisibility.y > 0.5)
+        visibility *= 1.0 - tex2Dlod(sReflectionHit, float4((pixel + 0.5) * cTexelGrid.xy, 0, 0)).b;
 #endif
     return visibility;
 }
@@ -245,15 +247,16 @@ float3 Refracted(float2 pixel, float3 world, float3 normal, float thickness, flo
             colour = tex2Dlod(sUnderwaterScene, float4(sceneUv, 0, 0)).rgb;
             bentHit = tex2Dlod(sUnderwaterThickness, float4(sceneUv, 0, 0));
         }
-        // A filled texel provides background colour. Its borrowed depth can be much deeper than the water here,
-        // producing a dark copy of the occluder's outline along a shallow bank. Use the receiving path there,
-        // blending at the boundary where the half-resolution state mixes known (3) and filled (4) texels.
-        bentThickness = bentHit.r > 2.5 ? lerp(bentHit.g, thickness, saturate(bentHit.r - 3.0)) : thickness;
+        // The water's depth there: where the fill made it up (round a character's body), the depth of the water it
+        // was filled from, as its colour is; this pixel's own (the few inches over a submerged arm) left the sand filled
+        // in round the body almost untinted, a bright copy of the body's outline. (The shore's ground is kept, not
+        // filled, see underwater_scene_ps.) Bent onto nothing, this pixel's own.
+        bentThickness = bentHit.r > 2.5 ? bentHit.g : thickness;
         colour = BlurredBottom(bent, world, bentThickness, surfaceDepth, colour);
         // Bent onto nothing (dry land along the shore with no water near to fill it from): the foam's colour rather
         // than dark.
         if (bentHit.r < 1.5)
-            colour = FoamLight(FoamVisibility(pixel)) * cFoamColor.rgb;
+            colour = FoamLight(DirectLightVisibility(pixel)) * cFoamColor.rgb;
     }
 #endif
     float bentDepth = SampleRawDepth(sOpaqueDepth, bent);
@@ -317,11 +320,13 @@ float3 WithStockRelief(float3 normal, float2 uv)
 #endif
 
 
+#include "crest_light.hlsli"
+
 float GgxDistribution(float facingHalf, float roughness)
 {
     float a2 = roughness * roughness * roughness * roughness;
     float d = facingHalf * facingHalf * (a2 - 1.0) + 1.0;
-    return a2 / (3.14159265 * d * d);
+    return CrestDensity(a2, d);
 }
 
 float NormalScreenVariance(float3 normal)
@@ -356,7 +361,19 @@ float SunReflectionResponse(float3 normal, float3 toCamera, float variance)
     float ball = (disc + glow * kSunGlowShare) * sunFresnel * kSunBallStrength;
     float energy = (glitter + sheen * kSheenWeight + ball) * lowSun * cToLight.w * SunVisibility() *
                    SpecularStrength();
-    return (1.0 - exp(-energy * kGlintExposure)) * kGlintCeiling;
+    float response = (1.0 - exp(-energy * kGlintExposure)) * kGlintCeiling;
+#if defined(FINE_HIGHLIGHTS) && !defined(DEFERRED_SLIME)
+    if (cSurface.y < .5)
+    {
+        // Compress the bright shoulder and return a compact tip to aligned facets.
+        // Use the existing solar direction and pixel footprint at every swell sample.
+        float excess = max(response - .40, 0.0);
+        float shoulder = min(response, .40) + excess * .48 / (.48 + excess);
+        float tip = FilteredCrestLobe(1.0 - facingHalf * facingHalf, .020, variance / 12.0);
+        response = lerp(shoulder, response, tip);
+    }
+#endif
+    return response;
 }
 
 float3 SunReflection(float3 normal, float3 toCamera, float2 world, float variance)
@@ -422,11 +439,45 @@ float3 WithSurfaceDetail(float3 normal, float2 uv, float3 world, float drawnHeig
     return normalize(normal + float3(-rings, 0.0));
 }
 
+// The folds lapping at the slime's edge here (the shore's waves, see water_common's ReadShoreWaves): the slope they
+// give the surface (x, y), and the lip (z) that glows where a fold's crest nears the edge, within kSlimeLipReach of it
+// (in the waves' own measure).
+static const float kSlimeLipReach = 3.8;
+static const float kSlimeLipGlow = 0.4;
+// Thick slime folds over rather than breaks: its fronts keep the broad, round shape the sea's have far out, right up
+// to the edge, and being broader are steepened to show as much (kSlimeLapSlope).
+static const float kSlimeLapSlope = 2.0;
+
+float3 SlimeLap(float2 p, float surfaceHeight, float footprint)
+{
+    float3 lap = 0.0;
+    ShoreWaves waves;
+    [branch] if (ReadShoreWaves(p, surfaceHeight, waves))
+    {
+        float phase = WavePhase(waves.distance, waves.along);
+        float behind = frac(phase);
+        float size = WaveSize(phase, waves.along) * waves.known;
+        float profile = WaveProfile(behind, kWaveReach);
+        float rise = (WaveProfile(behind + kProfileStep, kWaveReach) - profile) / (kProfileStep * kWaveLength);
+        float strength = kWaveSlope * kSlimeLapSlope * saturate(1.0 - waves.distance / kWaveReach) * size *
+                         Resolved(kWaveLength * 0.5, footprint * kSlimeLapScale);
+        // Rising behind the front means the surface slopes up away from the edge.
+        lap.xy = -waves.toShore * rise * strength * SlimeLaps();
+        // (The broad front's crest stands about half as high as the sea's steep one.)
+        lap.z = smoothstep(0.11, 0.39, profile * size) * (1.0 - smoothstep(0.0, kSlimeLipReach, waves.distance)) *
+                saturate(SlimeLaps());
+    }
+    return lap;
+}
+
+// Light a region's slime gives off by itself, in the slot where water carries its crest foam.
+float SlimeBodyGlow() { return cLookingDown.w; }
+
 // The slime glows with its own colour: the scene light sets how bright it is, not its hue (the Undercity's purple
-// light would otherwise grey the green).
+// light would otherwise grey the green). A regional slime adds its own glow, so it stays bright in a dark place.
 float3 LiquidLight()
 {
-    return dot(SceneLight(), float3(0.2126, 0.7152, 0.0722));
+    return dot(SceneLight(), float3(0.2126, 0.7152, 0.0722)) + SlimeBodyGlow();
 }
 
 // Seen through the surface, so the waves and ripples bend it as they would a view into the liquid.
@@ -459,12 +510,32 @@ float3 MissedReflection(float3 reflected, float3 light)
     return lerp(cShallowColor.rgb, cDeepColorDepth.rgb, 0.5) * light * kSlimeMissedReflection;
 }
 
-// A smooth glow that brightens as the slime thins towards anything it touches (walls, steps, legs), like the green
-// edges of the depth view.
+// How near the slime here is to where it meets a wall or anything standing in it, from the marks on the ripple grid
+// (contact_ps): under an upright wall the slime is as deep as anywhere, so its depth cannot find one. The grid holds a
+// falloff exp(-d^2 / 2w^2) with the distance d from the nearest mark, w being kSlimeContactWidth cells; raised to a
+// power it falls over the edge's own width instead.
+static const float kSlimeContactWidth = 2.5;
+static const float kSlimeContactFarthest = 60.0;
+
+float SlimeContact(float2 world, float distance)
+{
+    float2 uv = RippleUv(world);
+    float field = InsideRippleArea(uv) ? saturate(tex2Dlod(sRipples, float4(uv, 0, 0)).b) : 0.0;
+    float width = kSlimeContactWidth * cRippleGrid.y;
+    // (No wider than the grid carries the falloff: wider, it would end in a step.)
+    float reach = clamp(FoamDepth(), 0.5 * width, 1.5 * width);
+    float near = 1.0 - smoothstep(kSlimeContactFarthest * 0.6, kSlimeContactFarthest, distance);
+    return field > 0.0 ? pow(field, width * width / (reach * reach)) * near : 0.0;
+}
+
+// A smooth glow that brightens as the slime thins towards anything it touches (banks, steps, legs), like the green
+// edges of the depth view, and along the walls it stands against. wakeFoam.x: the lip of a fold lapping at the edge
+// (SlimeLap), which glows a little as it comes in.
 float LiquidFoam(float3 world, float3 toCamera, float drawnHeight, float thickness, float bentThickness, float distance,
                  float2 wakeFoam)
 {
-    return saturate(exp(-bentThickness / (FoamDepth() * kSlimeGlowWidth)) * FoamStrength());
+    float shallow = exp(-bentThickness / (FoamDepth() * kSlimeGlowWidth));
+    return saturate(max(max(shallow, SlimeContact(world.xy, distance)), wakeFoam.x * kSlimeLipGlow) * FoamStrength());
 }
 
 bool DebugColour(float3 world, float drawnHeight, float foam, out float4 colour)
@@ -568,8 +639,11 @@ float3 MissedReflection(float3 reflected, float3 light)
 float LiquidFoam(float3 world, float3 toCamera, float drawnHeight, float thickness, float bentThickness, float distance,
                  float2 wakeFoam)
 {
-    return WaterFoam(FoamPoint(world.xy, toCamera), drawnHeight, bentThickness, distance,
-                     PixelFootprint(distance, toCamera.z), wakeFoam, cLookingDown.w);
+    float foam = 0.0;
+    [branch] if (FoamStrength() > 0.0)
+        foam = WaterFoam(FoamPoint(world.xy, toCamera), drawnHeight, bentThickness, distance,
+                         PixelFootprint(distance, toCamera.z), wakeFoam, cLookingDown.w);
+    return foam;
 }
 
 // Where the water thins to nothing at the shore it fades to the ground under it, bent like the rest (an unbent copy
@@ -660,6 +734,8 @@ struct LiquidSurface
     float3 foamNormal;
     // Water: how much foam covers the surface here (from the surface detail pass).
     float foam;
+    // Slime: the fold lapping at its edge here (SlimeLap).
+    float3 lap;
     float facing;
     float glancing;
     float3 reflected;
@@ -728,6 +804,10 @@ LiquidSurface SurfaceAt(float2 pixel, float surfaceDepth, float thickness)
     {
         float3 normal = WaveNormal(surface.world, surface.distance, surface.toCamera, baseNormal, footprint, surface.uv,
                                    surface.foamNormal);
+#ifdef DEFERRED_SLIME
+        surface.lap = SlimeLap(surface.world.xy, surface.drawnHeight, footprint);
+        normal = normalize(normal + float3(-surface.lap.xy, 0.0));
+#endif
         surface.normal =
             WithSurfaceDetail(normal, surface.uv, surface.world, surface.drawnHeight, surface.distance, footprint);
     }
@@ -736,6 +816,9 @@ LiquidSurface SurfaceAt(float2 pixel, float surfaceDepth, float thickness)
     surface.foam = tex2Dlod(sSurfaceDetail, float4(surface.uv, 0, 0)).z;
 #else
     surface.foam = 0.0;
+#endif
+#ifndef DEFERRED_SLIME
+    surface.lap = 0.0;
 #endif
     surface.facing = saturate(dot(surface.normal, surface.toCamera));
     // Towards glancing angles the surface becomes the near-perfect mirror real water is.
@@ -911,6 +994,21 @@ float3 FilteredSwellSun(float3 normal, float3 toCamera, float variance, float sc
 
 #endif
 
+#ifdef FINE_HIGHLIGHTS
+float3 HighlightNormal(float3 normal, float3 world, float distance, float3 toCamera, float3 baseNormal)
+{
+    float footprint = PixelFootprint(distance, dot(toCamera, baseNormal));
+    float resolved = Resolved(1.0 / 6.5, footprint) * (1.0 - smoothstep(16.0, 48.0, distance));
+    [branch] if (resolved > 0 && cToLight.w * SunVisibility() * SpecularStrength() > 0)
+    {
+        // Capillary waves break up the reflected disc while each cell still spans several screen pixels.
+        float2 fine = Octave(world.xy, float2x2(0.8, -0.6, 0.6, 0.8), 6.5, float2(-0.42, 0.55), 0.010);
+        normal = normalize(float3(normal.xy - normal.z * fine * (resolved * WaveStrength()), normal.z));
+    }
+    return normal;
+}
+#endif
+
 float4 ShadeLiquid(float2 pixel, float surfaceDepth, float thickness)
 {
     LiquidSurface surface = SurfaceAt(pixel, surfaceDepth, thickness);
@@ -926,8 +1024,8 @@ float4 ShadeLiquid(float2 pixel, float surfaceDepth, float thickness)
     float bentThickness;
     float3 refracted = Refracted(pixel, world, normal, thickness, surfaceDepth, bentThickness);
 #ifdef DEFERRED_SLIME
-    // Slime's glowing edge follows the bent view's depth.
-    float foam = LiquidFoam(world, toCamera, drawnHeight, thickness, bentThickness, distance, 0.0);
+    // Slime's glowing edge follows the bent view's depth, and takes the lip of a fold lapping at it.
+    float foam = LiquidFoam(world, toCamera, drawnHeight, thickness, bentThickness, distance, float2(surface.lap.z, 0.0));
 #else
     float foam = surface.foam;
 #endif
@@ -956,6 +1054,11 @@ float4 ShadeLiquid(float2 pixel, float surfaceDepth, float thickness)
     sceneExposure=cWaterDebug.y>0?cWaterDebug.y:1;
 #endif
     float3 underwater = SeenThrough(refracted*sceneExposure, world, toCamera, bentThickness, distance, stock, light);
+#ifdef DEFERRED_SLIME
+    // A fold lapping at the edge shades the murky body as the big waves do (SeenThrough).
+    underwater *= 1.0 + clamp(dot(-surface.lap.xy, normalize(toCamera.xy + 1.0e-5)) * kSlimeWaveShading,
+                              -kSlimeWaveShadeLimit, kSlimeWaveShadeLimit);
+#endif
 
     float facing = surface.facing;
     float distanceRamp = lerp(cInsideAndReflection.z, 1.0, saturate(distance / cInsideAndReflection.w));
@@ -1013,10 +1116,14 @@ float4 ShadeLiquid(float2 pixel, float surfaceDepth, float thickness)
 #endif
     float3 color = lerp(underwater, sky, fresnel);
 
+    float3 glintNormal = normal;
+#ifdef FINE_HIGHLIGHTS
+    glintNormal = HighlightNormal(normal, world, distance, toCamera, surface.baseNormal);
+#endif
 #ifdef WATER_FILTERED_MATERIAL
     // Screen derivatives describe the resolved mean normal. Sharing this estimate across
     // normalized slope samples avoids derivative work inside a conditional SM3 branch.
-    float screenVariance = NormalScreenVariance(normal);
+    float screenVariance = NormalScreenVariance(glintNormal);
 #ifndef DEFERRED_SLIME
     // (RefractionDebug 5 shows no reflection: fresnel is 0 above, so the samples would give back what is taken away.)
     [branch] if (FilterDistantSwell() && !(cWaterDebug.x > 4.5 && cWaterDebug.x < 5.5))
@@ -1036,7 +1143,7 @@ float4 ShadeLiquid(float2 pixel, float surfaceDepth, float thickness)
     float3 sun;
 #ifndef DEFERRED_SLIME
     [branch] if (FilterDistantSwell())
-        sun = FilteredSwellSun(normal, toCamera,
+        sun = FilteredSwellSun(glintNormal, toCamera,
             UnresolvedSwellVariance(PixelFootprint(distance, dot(toCamera, surface.baseNormal))), screenVariance
 #ifdef WATER_WAVE_MOMENT_MATERIAL
             , uv
@@ -1044,11 +1151,17 @@ float4 ShadeLiquid(float2 pixel, float surfaceDepth, float thickness)
             );
     else
 #endif
-        sun = SunReflection(normal, toCamera, world.xy, screenVariance);
+        sun = SunReflection(glintNormal, toCamera, world.xy, screenVariance);
 #else
-    float3 sun = SunReflection(normal, toCamera, world.xy);
+    float3 sun = SunReflection(glintNormal, toCamera, world.xy);
 #endif
-    color += sun;
+#ifdef SLIME_SURFACE_SHELTER
+    // The mirror resolve marks only pixels owned by an authored indoor liquid.
+    [branch] if (cReflectionGrid.w > 0.5)
+        sun *= 1.0 - tex2Dlod(sReflectionHit, float4(uv, 0, 0)).b;
+#endif
+    float directVisibility = DirectLightVisibility(pixel);
+    color += sun * directVisibility;
     color += Scattered(normal, toCamera, light) * (1.0 - fresnel) * (1.0 - Overcast() * kOvercastScatterLoss);
 
     float3 foamColour = cFoamColor.rgb;
@@ -1056,8 +1169,16 @@ float4 ShadeLiquid(float2 pixel, float surfaceDepth, float thickness)
     // Tinted towards a light water colour (see FoamLines).
     foamColour *= lerp(1.0, kFoamTintColour, kFoamTint);
 #endif
-    float3 foamLit = lerp(FoamLight(FoamVisibility(pixel)) * foamColour * FoamRelief(surface.foamNormal),
+    float3 foamLit = lerp(FoamLight(directVisibility) * foamColour * FoamRelief(surface.foamNormal),
                           cFoamColor.rgb * kGlowBrightness, saturate(FoamGlow()));
+#ifndef DEFERRED_SLIME
+    // Wet foam catches a broad highlight around the glints, including the
+    // space between bright facets. Sheltered foam keeps its diffuse light.
+    float alignment = saturate(dot(toCamera, float3(-cToLight.xy, cToLight.z)));
+    float wetHighlight = pow(alignment, 8.0) * directVisibility *
+                         saturate(cToLight.w * SunVisibility() * SpecularStrength());
+    foamLit += cSunColor.rgb * (0.3 * wetHighlight);
+#endif
     color = lerp(color, foamLit, foam) + cFoamColor.rgb * foam * FoamGlow() * kGlowSpill;
 
     [flatten]if(cEnvironment.x>.5&&cSkyLayout.x>1.5){
@@ -1117,8 +1238,16 @@ DeferredSlimeOutput main(float2 pixel : VPOS)
     DeferredSlimeOutput output;
     // Over water where the slime style fades: the composited water shows through by the share.
     float share = SlimeFadeShare(pixel, surfaceDepth);
+#ifdef SLIME_REFLECTION_VIEW
+    // Inspect the same resolved texel as the slime composite, before pigment and Fresnel.
+    float4 mirrored = 0;
+    [branch] if (ReflectionsDrawn()) mirrored = SceneReflection(pixel);
+    output.color = lerp(tex2Dlod(sSceneBefore, float4((pixel + 0.5) * cTexelGrid.xy, 0, 0)),
+                        float4(ReflectionView() > 2.5 ? mirrored.aaa : mirrored.rgb, 1), share);
+#else
     output.color = lerp(tex2Dlod(sSceneBefore, float4((pixel + 0.5) * cTexelGrid.xy, 0, 0)),
                         ShadeLiquid(pixel, surfaceDepth, thickness), share);
+#endif
     output.depth = surfaceDepth;
     return output;
 }
@@ -1281,10 +1410,13 @@ ReflectionOutput main(float2 pixel : VPOS)
     // Explicit control flow avoids evaluating the surface and scenery lookup for
     // every pixel of every receiving height. clip alone need not skip that work.
     bool belongs=true;
+    bool indoors=false;
     if(cSceneryAlignment.z>0.5)
     {
         float2 uv=(SceneryRaster(pixel)+0.5)*cSceneryGrid.zw;
         float receiver=tex2Dlod(sReceiverMask,float4(uv,0,0)).r;
+        indoors=receiver < -0.5;
+        receiver=abs(receiver);
         belongs=abs(receiver-cSceneryAlignment.w)<0.25;
         // Source quads own their pixels. Beyond that finite import, a proven
         // flat view continues only where native liquid depth matches its level.
@@ -1310,7 +1442,18 @@ ReflectionOutput main(float2 pixel : VPOS)
         // the undistorted bank. Actual misses still carry zero colour and alpha.
         float2 lookup=lerp(pixel,ReflectionLookupPixel(pixel,surface),coverage);
         result=SceneryReflection(lookup, pixel, surface);
+#ifndef DEFERRED_SLIME
+        // The foreground leg already receives host fog. Only the far part of
+        // the water-to-scenery path borrows the colour of the lower sky.
+        if (!indoors && cSkyLayout.y > 0 && cEnvironment.y > 0.5 && cFogRange.y > cFogRange.x)
+        {
+            float fog = saturate((result.hit.g - cFogRange.x) / (cFogRange.y - cFogRange.x));
+            float3 tint = (0.40 * cSkyLayout.y) * (cEnvironmentPalette[4].rgb - cFogColor.rgb);
+            result.colour.rgb += tint * (saturate(2.0 * fog - 1.0) * result.colour.a);
+        }
+#endif
         result.colour*=coverage;
+        result.hit.b = indoors && abs(surface.world.z - cReceiverContinuation.w) < kSameWaterBody ? 1.0 : 0.0;
     }
     return result;
 }

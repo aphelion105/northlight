@@ -5,11 +5,11 @@
 #include "version.h"
 #include "host_environment.h"
 #include "host_liquid.h"
-#include "liquid.h"
-#include "engine.h"
-#include "frame_snapshot.h"
-#include "render_session.h"
-#include "log.h"
+#include "client/liquid.h"
+#include "client/engine.h"
+#include "frame/frame_snapshot.h"
+#include "render/render_session.h"
+#include "base/log.h"
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -55,6 +55,10 @@ struct WaterHostContext
     water::RenderSession session;
     WaterHostFrame* frame = nullptr;
     WaterHostFog fog = WaterHostNativeFog;
+    float reflectedFogWeight = 0;
+    WaterLampSamples lamps{};
+    WaterSceneryPoseRequests sceneryPoses{};
+    bool poseHost=false;
     LiquidClassifier liquids;
     bool slimePending = false, slimeOutdoors = false, outdoorSlimeSeen = false, waterSeen = false;
     LiquidKind surfaceKind = LiquidKind::Slime;
@@ -114,6 +118,8 @@ int __cdecl End(WaterHostContext* context)
         Release(context->frame);
         context->frame = nullptr;
         context->fog = WaterHostNativeFog;
+        context->reflectedFogWeight = 0;
+        context->lamps={};
         context->slimePending = context->slimeOutdoors = context->outdoorSlimeSeen = context->waterSeen = false;
         return 1;
     });
@@ -133,9 +139,22 @@ int __cdecl Destroy(WaterHostContext* context)
 WaterHostFrame* __cdecl CopyFrame(const WaterFrameValues* values, uint32_t size)
 {
     return Boundary([&]() -> WaterHostFrame* {
-        if (!values || size != sizeof(*values)) return nullptr;
+        if (!values || (size != sizeof(*values) && size != sizeof(WaterHostWorldFrame))) return nullptr;
         FrameInputs input = {};
         static_cast<WaterFrameValues&>(input) = *values;
+        if (size == sizeof(WaterHostWorldFrame)) {
+            const auto& world = *reinterpret_cast<const WaterHostWorldFrame*>(values);
+            input.mapId = world.mapId;
+            input.zoneId = world.zoneId;
+            input.modelMilliseconds = world.modelMilliseconds;
+            input.skyPaletteKnown = world.skyPaletteKnown != 0;
+            if (input.skyPaletteKnown)
+                std::copy_n(world.skyPalette, 6, input.skyPalette);
+            input.sceneLightingKnown = true;
+            std::copy_n(values->toLight, 3, input.sceneToLight);
+            input.sceneAmbientColor = values->ambientColor;
+            input.sceneDirectColor = values->directColor;
+        }
         return Publish(input);
     });
 }
@@ -224,6 +243,9 @@ bool Current(WaterHostContext* context, WaterHostStamp stamp)
 FrameInputs LiquidInputs(WaterHostContext* context)
 {
     auto input = context->frame->snapshot->Inputs();
+    input.sceneryPoses=context->poseHost?&context->sceneryPoses:nullptr;
+    input.lamps=context->lamps;
+    input.reflectedFogWeight = context->fog == WaterHostSpatialFog ? context->reflectedFogWeight : 0;
     input.stockFogPushed = input.stockFogPushed || context->fog == WaterHostFogCoversWater;
     // Some outdoor slime uses a native water type. Keep the immutable captured
     // frame intact; correct only this context's view after observing its draws.
@@ -378,7 +400,7 @@ int __cdecl Reflection(WaterHostContext* context, WaterHostStamp stamp, const Wa
 }
 int __cdecl Fog(WaterHostContext* context, WaterHostStamp stamp, WaterHostFog fog)
 {
-    if (!Current(context, stamp) || (fog != WaterHostNativeFog && fog != WaterHostFogCoversWater)) return 0;
+    if (!Current(context, stamp) || (fog != WaterHostNativeFog && fog != WaterHostFogCoversWater && fog != WaterHostSpatialFog)) return 0;
     if(fog==WaterHostFogCoversWater&&context->config.Get().waterAtmosphere==1&&context->session.EnvironmentAvailable())return 0;
     context->fog = fog;
     return 1;
@@ -388,9 +410,13 @@ int EnvironmentVersion(WaterHostContext* context,WaterHostStamp stamp,const Wate
     return Boundary([&]{
         if(!Current(context,stamp))return 0;
         // A late/stale producer cannot revoke a newer record on this context.
-        if(input&&(input->size!=sizeof(*input)||input->source.session!=stamp.session||input->source.generation!=stamp.generation||
+        const bool lamps=input&&version>=4&&input->size==sizeof(WaterHostLampEnvironment);
+        const bool measured=lamps||(input&&version>=3&&input->size==sizeof(WaterHostFogEnvironment));
+        if(input&&((!measured&&input->size!=sizeof(*input))||input->source.session!=stamp.session||input->source.generation!=stamp.generation||
            input->source.frame!=stamp.frame))return 0;
         if(!context->session.ClearEnvironment(Stamp(stamp)))return 0;
+        context->reflectedFogWeight=0;
+        context->lamps={};
         if(!input)return 1;
         if(version==1&&(input->values.backgroundContent&~15u)){
             context->session.SetEnvironment(Stamp(stamp),{},nullptr);return 0;
@@ -398,19 +424,49 @@ int EnvironmentVersion(WaterHostContext* context,WaterHostStamp stamp,const Wate
         if(input->values.policy==WaterEnvironmentCoreOwnsDistance&&context->config.Get().waterAtmosphere==1&&context->fog==WaterHostFogCoversWater){
             context->session.SetEnvironment(Stamp(stamp),{},nullptr);return 0;
         }
-        return context->session.SetEnvironment(Stamp(stamp),input->values,input->background)?1:0;
+        if(!context->session.SetEnvironment(Stamp(stamp),input->values,input->background))return 0;
+        if(lamps){
+            const auto& samples=reinterpret_cast<const WaterHostLampEnvironment*>(input)->lamps;
+            unsigned count=0;
+            for(unsigned i=0;i<4;++i){
+                const auto& p=samples.positions[i];const auto& c=samples.colours[i];
+                bool valid=p[3]>0 && p[3]<=2000 && c[3]>0;
+                for(unsigned j=0;j<4;++j)valid=valid&&std::isfinite(p[j])&&std::isfinite(c[j])&&c[j]>=0&&c[j]<=10000;
+                if(valid){
+                    std::copy(p,p+4,context->lamps.positions[count]);
+                    std::copy(c,c+4,context->lamps.colours[count]);
+                    ++count;
+                }
+            }
+        }
+        if(measured){
+            const float tau=reinterpret_cast<const WaterHostFogEnvironment*>(input)->viewOpticalDepth48;
+            // An optical depth of 0.16 extinguishes about 15 percent of the light.
+            if(std::isfinite(tau))context->reflectedFogWeight=std::clamp(tau/0.16f,0.f,1.f);
+        }
+        return 1;
     });
 }
 int __cdecl Environment(WaterHostContext* context,WaterHostStamp stamp,const WaterHostEnvironment* input)
 {return EnvironmentVersion(context,stamp,input,kWaterEnvironmentABI);}
+int __cdecl EnvironmentV3(WaterHostContext* context,WaterHostStamp stamp,const WaterHostEnvironment* input)
+{return EnvironmentVersion(context,stamp,input,3);}
+int __cdecl EnvironmentV2(WaterHostContext* context,WaterHostStamp stamp,const WaterHostEnvironment* input)
+{return EnvironmentVersion(context,stamp,input,2);}
 int __cdecl EnvironmentLegacy(WaterHostContext* context,WaterHostStamp stamp,const WaterHostEnvironment* input)
 {return EnvironmentVersion(context,stamp,input,1);}
-int __cdecl SurfaceStatus(WaterHostContext* context,WaterHostStamp stamp,WaterHostSurfaceStatus* output)
+static int SurfaceStatusVersion(WaterHostContext* context,WaterHostStamp stamp,WaterHostSurfaceStatus* output,bool allowLamps)
 {
     return Boundary([&]{
-        if(!output||output->size!=sizeof(*output))return 0;
-        *output={sizeof(*output),WaterHostSurfaceUnchanged,0,WaterEnvironmentNotProvided};
+        const bool lamps=allowLamps&&output&&output->size==sizeof(WaterHostLampStatus);
+        if(!output||(!lamps&&output->size!=sizeof(*output)))return 0;
+        *output={output->size,WaterHostSurfaceUnchanged,0,WaterEnvironmentNotProvided};
+        if(lamps)reinterpret_cast<WaterHostLampStatus*>(output)->wantsLamps=0;
         if(!Current(context,stamp))return 0;
+        if(lamps){
+            const auto& cfg=context->config.Get();
+            reinterpret_cast<WaterHostLampStatus*>(output)->wantsLamps=cfg.enable&&cfg.fineHighlights&&cfg.specular>0;
+        }
         const auto result=context->session.LastSurfaceResult();
         switch(result){
         case Renderer::SurfaceResult::Unchanged:output->outcome=WaterHostSurfaceUnchanged;break;
@@ -423,8 +479,12 @@ int __cdecl SurfaceStatus(WaterHostContext* context,WaterHostStamp stamp,WaterHo
         return 1;
     });
 }
-int __cdecl Draw(WaterHostContext* context, WaterHostStamp stamp, WaterHostPass pass,
-                 const WaterHostResources* resources, int shade)
+int __cdecl SurfaceStatus(WaterHostContext* context,WaterHostStamp stamp,WaterHostSurfaceStatus* output)
+{return SurfaceStatusVersion(context,stamp,output,false);}
+int __cdecl LampStatus(WaterHostContext* context,WaterHostStamp stamp,WaterHostSurfaceStatus* output)
+{return SurfaceStatusVersion(context,stamp,output,true);}
+int DrawPass(WaterHostContext* context, WaterHostStamp stamp, WaterHostPass pass,
+             const WaterHostResources* resources, int shade, uint32_t stencilBit)
 {
     return Boundary([&] {
         if (!Current(context, stamp) || !ResourcesSize(resources)) return 0;
@@ -453,19 +513,31 @@ int __cdecl Draw(WaterHostContext* context, WaterHostStamp stamp, WaterHostPass 
         case WaterHostCompositeWater: result = session.CompositeWater(d, t, z, input, cfg, shade != 0,
             resources->size >= offsetof(WaterHostResources, refractionScene) ? resources->nativeWater : nullptr,
             resources->size >= offsetof(WaterHostResources, surfaceVisibility) ? resources->refractionScene : nullptr,
-            resources->size == sizeof(*resources) ? resources->surfaceVisibility : nullptr); break;
-        case WaterHostWorldDone: result = session.Render(d, t, z, input, cfg); session.CaptureFinished(d); break;
+            resources->size == sizeof(*resources) ? resources->surfaceVisibility : nullptr, stencilBit); break;
+        case WaterHostWorldDone: result = session.Render(d, t, z, input, cfg, stencilBit); session.CaptureFinished(d); break;
         default: break;
         }
         return result ? 1 : 0;
     });
 }
+int __cdecl Draw(WaterHostContext* context, WaterHostStamp stamp, WaterHostPass pass,
+                 const WaterHostResources* resources, int shade)
+{ return DrawPass(context,stamp,pass,resources,shade,0); }
+
+template<WaterHostPass pass> int __cdecl MaskedPass(WaterHostContext* context, WaterHostStamp stamp,
+                                 const WaterHostResources* resources, uint32_t stencilBit)
+{
+    if(!stencilBit || stencilBit>0xff || (stencilBit & (stencilBit-1)))return 0;
+    return DrawPass(context,stamp,pass,resources,1,stencilBit);
+}
+
 int __cdecl Lost(WaterHostContext* context)
 {
     return Boundary([&] {
         if (!context || !context->Owner()) return 0;
         End(context);
         context->liquids.ReleaseAll();
+        context->sceneryPoses={};
         context->session.LoseDevice();
         return 1;
     });
@@ -491,7 +563,9 @@ int __cdecl ProfilePresentEnd(WaterHostContext* context,int32_t result)
 }
 uint64_t __cdecl TraceBegin(WaterHostContext* context){return context&&context->Owner()?context->session.Diagnostics().BeginCall():0;}
 int __cdecl TraceEnd(WaterHostContext* context,uint64_t token,const char* name){return Boundary([&]{if(!context||!context->Owner())return 0;context->session.Diagnostics().EndCall(token,name);return 1;});}
-const WaterHostEnvironmentAPI environment={kWaterEnvironmentABI,sizeof(WaterHostEnvironmentAPI),Environment,SurfaceStatus};
+const WaterHostEnvironmentAPI environment={kWaterEnvironmentABI,sizeof(WaterHostEnvironmentAPI),Environment,LampStatus};
+const WaterHostEnvironmentAPI environmentV3={3,sizeof(WaterHostEnvironmentAPI),EnvironmentV3,SurfaceStatus};
+const WaterHostEnvironmentAPI environmentV2={2,sizeof(WaterHostEnvironmentAPI),EnvironmentV2,SurfaceStatus};
 const WaterHostEnvironmentAPI environmentLegacy={1,sizeof(WaterHostEnvironmentAPI),EnvironmentLegacy,SurfaceStatus};
 const WaterHostTraceAPI trace={kWaterTraceABI,sizeof(WaterHostTraceAPI),TraceBegin,TraceEnd};
 const WaterHostDiagnosticsAPI diagnostics={kWaterDiagnosticsABI,sizeof(WaterHostDiagnosticsAPI),ProfilePresentBegin,ProfilePresentReady,ProfilePresentEnd};
@@ -503,9 +577,9 @@ int __cdecl CaptureHostPass(WaterHostContext* context,WaterHostStamp stamp,const
 const WaterHostCaptureAPI captureAPI={kWaterCaptureABI,sizeof(WaterHostCaptureAPI),CaptureHostPass};
 const WaterHostAPI api = {kWaterHostABI, sizeof(WaterHostAPI), Create, Destroy, CopyFrame, CaptureClient,
                           Retain, Release, Begin, Reflection, Fog, Draw, End, Lost, Restored, CanUnload};
-const WaterHostLiquidAPI liquid = {kWaterLiquidABI, sizeof(WaterHostLiquidAPI), ClassifyLiquid, ObserveLiquid, BeforeSurface, AfterSurface, CompositeSurfaces, CaptureClientMapped, EffectsMask, SceneBefore, ObserveLiquidDraw};
+const WaterHostLiquidAPI liquid = {kWaterLiquidABI, sizeof(WaterHostLiquidAPI), ClassifyLiquid, ObserveLiquid, BeforeSurface, AfterSurface, CompositeSurfaces, CaptureClientMapped, EffectsMask, SceneBefore, ObserveLiquidDraw, MaskedPass<WaterHostCompositeWater>, MaskedPass<WaterHostWorldDone>};
 // ABI 6 callers read the unchanged prefix and continue to use the original scene.
-const WaterHostLiquidAPI liquidLegacy = {6, offsetof(WaterHostLiquidAPI, scene_before), ClassifyLiquid, ObserveLiquid, BeforeSurface, AfterSurface, CompositeSurfaces, CaptureClientMapped, EffectsMask, nullptr, nullptr};
+const WaterHostLiquidAPI liquidLegacy = {6, offsetof(WaterHostLiquidAPI, scene_before), ClassifyLiquid, ObserveLiquid, BeforeSurface, AfterSurface, CompositeSurfaces, CaptureClientMapped, EffectsMask, nullptr, nullptr, nullptr, nullptr};
 }
 
 extern "C" __declspec(dllexport) const WaterHostAPI* __cdecl WaterHostGetAPI(uint32_t abi, uint32_t size)
@@ -516,9 +590,13 @@ extern "C" __declspec(dllexport) const WaterHostLiquidAPI* __cdecl WaterHostGetL
 {
     if (abi == 6 && size == offsetof(WaterHostLiquidAPI, scene_before)) return &liquidLegacy;
     // ABI 7/8 keep the original prefix; their observations remain conservative.
-    static const WaterHostLiquidAPI previous7 = {7, offsetof(WaterHostLiquidAPI, observe_draw), ClassifyLiquid, ObserveLiquid, BeforeSurface, AfterSurface, CompositeSurfaces, CaptureClientMapped, EffectsMask, SceneBefore, nullptr};
-    static const WaterHostLiquidAPI previous8 = {8, offsetof(WaterHostLiquidAPI, observe_draw), ClassifyLiquid, ObserveLiquid, BeforeSurface, AfterSurface, CompositeSurfaces, CaptureClientMapped, EffectsMask, SceneBefore, nullptr};
+    static const WaterHostLiquidAPI previous7 = {7, offsetof(WaterHostLiquidAPI, observe_draw), ClassifyLiquid, ObserveLiquid, BeforeSurface, AfterSurface, CompositeSurfaces, CaptureClientMapped, EffectsMask, SceneBefore, nullptr, nullptr, nullptr};
+    static const WaterHostLiquidAPI previous8 = {8, offsetof(WaterHostLiquidAPI, observe_draw), ClassifyLiquid, ObserveLiquid, BeforeSurface, AfterSurface, CompositeSurfaces, CaptureClientMapped, EffectsMask, SceneBefore, nullptr, nullptr, nullptr};
     if(size==offsetof(WaterHostLiquidAPI, observe_draw))return abi==7?&previous7:abi==8?&previous8:nullptr;
+    static const WaterHostLiquidAPI previous9 = {9, offsetof(WaterHostLiquidAPI, composite_masked_water), ClassifyLiquid, ObserveLiquid, BeforeSurface, AfterSurface, CompositeSurfaces, CaptureClientMapped, EffectsMask, SceneBefore, ObserveLiquidDraw, nullptr, nullptr};
+    if(abi==9 && size==previous9.size)return &previous9;
+    static const WaterHostLiquidAPI previous10 = {10, offsetof(WaterHostLiquidAPI, finish_masked_world), ClassifyLiquid, ObserveLiquid, BeforeSurface, AfterSurface, CompositeSurfaces, CaptureClientMapped, EffectsMask, SceneBefore, ObserveLiquidDraw, MaskedPass<WaterHostCompositeWater>, nullptr};
+    if(abi==10 && size==previous10.size)return &previous10;
     return abi==kWaterLiquidABI && size==sizeof(WaterHostLiquidAPI)?&liquid:nullptr;
 }
 #endif
@@ -536,9 +614,15 @@ extern "C" __declspec(dllexport) const WaterHostTraceAPI* __cdecl WaterHostGetTr
 #endif
 
 #if defined(WATER_COOPERATIVE_BUILD)
+extern "C" __declspec(dllexport) WaterSceneryPoseRequests* __cdecl WaterHostSceneryPoses(WaterHostContext* context,uint32_t abi,uint32_t size)
+{
+    if(!context || !context->Owner() || abi!=1 || size!=sizeof(WaterSceneryPoseRequests))return nullptr;
+    context->poseHost=true;
+    return &context->sceneryPoses;
+}
 extern "C" __declspec(dllexport) const WaterHostEnvironmentAPI* __cdecl WaterHostGetEnvironmentAPI(uint32_t abi,uint32_t size)
 {
     if(size!=sizeof(WaterHostEnvironmentAPI))return nullptr;
-    return abi==kWaterEnvironmentABI?&environment:abi==1?&environmentLegacy:nullptr;
+    return abi==kWaterEnvironmentABI?&environment:abi==3?&environmentV3:abi==2?&environmentV2:abi==1?&environmentLegacy:nullptr;
 }
 #endif

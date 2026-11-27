@@ -10,25 +10,25 @@ float2 ReflectionBend(float2 pixel, LiquidSurface surface)
     // around the local river plane. Correct that basis before adding the bounded wave distortion.
     float3 sourceNormal = normalize(lerp(baseNormal,float3(0,0,1),sloped));
     float3 baseWay = reflect(reflect(flatWay,baseNormal),sourceNormal);
-    float waveReach = cReflectionTuning.z;
-#ifndef DEFERRED_SLIME
-    // Keep the bend visible after projection as the receiving water recedes.
-    const float kWaveReachReference = 6.0; // yards where the configured reach starts scaling
-    waveReach *= max(1.0, surface.distance / kWaveReachReference);
-#endif
     float3 waveWay = reflect(surface.reflected,sourceNormal);
-    // Approximate parallax from the base plane separately from the wave bend.
+    // A finite lookup stands in for scene parallax; keep the water's waves at their existing reach.
     const float kSlopeMirrorReach = 10.0;
     float3 baseView = WorldToView(surface.world+baseWay*kSlopeMirrorReach);
     float3 straightView = WorldToView(surface.world+flatWay*kSlopeMirrorReach);
     baseView.z=max(baseView.z,kMinRayViewZ);straightView.z=max(straightView.z,kMinRayViewZ);
     float2 baseBend = (ViewToPixel(baseView)-ViewToPixel(straightView))*sloped;
-    float3 flatView = WorldToView(surface.world + baseWay * waveReach);
-    float3 waveView = WorldToView(surface.world + waveWay * waveReach);
+    float3 flatView = WorldToView(surface.world + baseWay * cReflectionTuning.z);
+    float3 waveView = WorldToView(surface.world + waveWay * cReflectionTuning.z);
     flatView.z = max(flatView.z, kMinRayViewZ);
     waveView.z = max(waveView.z, kMinRayViewZ);
     float2 bend = ViewToPixel(waveView) - ViewToPixel(flatView);
     float limit = AcrossView(max(cReflectionTuning.y, 0.0));
+#ifndef DEFERRED_SLIME
+    // At a sand bank a displaced mirror lookup can pull a dark sliver of
+    // scenery across the last film of water. Ease only the waves' displacement.
+    float verticalDepth = surface.thickness * abs(surface.toCamera.z);
+    limit *= smoothstep(0.0, 2.0 * kShoreFade, verticalDepth);
+#endif
     return baseBend + bend * (limit / (limit + length(bend) + 1.0e-4));
 }
 

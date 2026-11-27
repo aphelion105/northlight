@@ -51,8 +51,9 @@ with tempfile.TemporaryDirectory(prefix='native-light-transport-') as folder:
     normalized=(*placed[:8],1,2,2)
     dim=(0,0,0,.35,.14,.07,2,100,2,2,2)
     rgb,start,end=builder.native_transport(dim[3:6]);dim_normalized=(*dim[:3],*rgb,start,end,*dim[8:])
-    wmo=(*raw[:8],3,1,3);curated=(*raw[:8],4,3,2)
-    for version,records in [(1,[raw,dim,wmo,curated]),(2,[normalized,dim_normalized,wmo,curated])]:
+    legacy_wmo=(*raw[:8],3,1,1)
+    wmo=(*legacy_wmo[:-1],3);curated=(*raw[:8],4,3,2)
+    for version,records in [(1,[raw,dim,legacy_wmo,curated]),(2,[normalized,dim_normalized,wmo,curated])]:
         (root/f'v{version}.fgl').write_bytes(struct.pack('<4sIII',b'FGL1',version,48,len(records))+b''.join(builder.RECORD.pack(*r) for r in records))
     for mode in ('O0','O2'):
         exe=root/('test.exe' if sys.platform=='win32' else 'test')

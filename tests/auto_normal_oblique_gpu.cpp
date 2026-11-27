@@ -646,6 +646,7 @@ int NORTHLIGHT_OBLIQUE_ENTRY(int argc,char** argv){
             std::shared_ptr<const NorthlightTerrainCapture::MeshSnapshot> snapshot;
             const bool valid=world.readMeshShared(d,geometry.draw.topology,geometry.draw.base,geometry.draw.minimum,geometry.draw.vertices,geometry.draw.start,geometry.draw.primitives,nullptr,snapshot,&why);if(!valid)std::printf("CAPTURED_GPU_REJECT reason=%s hr=%08lx\n",NorthlightTerrainCapture::rejectName(why.reason),(unsigned long)why.hr);assert(valid);
             std::copy(why.low,why.low+3,captured.low);std::copy(why.high,why.high+3,captured.high);captured.known=true;
+            captured.stream0Float3=why.positionStream==0&&why.positionType==D3DDECLTYPE_FLOAT3;
         }
         const auto modeCreates=captureDevice.vertexCreates;LARGE_INTEGER variantStart{},variantEnd{},variantHz{};
         if(std::getenv("NORTHLIGHT_TEST_VARIANT_AUDIT")){QueryPerformanceFrequency(&variantHz);QueryPerformanceCounter(&variantStart);}

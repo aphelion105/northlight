@@ -39,7 +39,8 @@ source = values['harness'].split('int main(){')[0] + r'''
 #include <string>
 #include "adt_draw_bounds.h"
 #include "captured_constant_epoch.h"
-struct IDirect3DVertexShader9 {};
+struct IDirect3DVertexShader9 {void AddRef(){assert(false);}};
+enum {D3DRS_ZWRITEENABLE,D3DRS_ALPHABLENDENABLE,D3DRS_ALPHATESTENABLE,D3DRS_COLORWRITEENABLE};
 namespace NorthlightDrawSnapshot {struct Mesh;}
 namespace NorthlightPoseBounds {struct Handoff {};}
 static unsigned adtSummaries=0,adtCompared=0,adtContained=0,adtExamples=0;
@@ -101,6 +102,7 @@ namespace NorthlightAutoDisplacement {using Args=Geometry;using CaptureSource=No
 struct Bump {
  std::vector<std::string>* events;unsigned calls=0;bool hint=false,activeValue=true;
  bool active()const{return activeValue;}
+ void setSceneDepthScratch(bool,void*){}
  void allowNativeM2Fusion(bool,void*,float,bool=false){}
  template<class Draw>void capture(IDirect3DVertexShader9* vs,Draw draw,bool up,const Geometry* geometry,const NorthlightCaptureMetadata::PositionBounds* bounds,NormalSource* source,const std::shared_ptr<const NorthlightDrawSnapshot::Mesh>* batchSource=nullptr){
   assert(source&&!batchSource);source->captured=true;
@@ -120,9 +122,18 @@ struct Native {
 CAPTURE_NAMESPACE
 struct Route {
  World* world;Bump* autoBump;Native* ext;std::vector<std::string>* events;
+ struct {bool beginHybridMrt(void*){return false;}} normals{};
+ decltype(normals)* modelNormals=&normals;
+ bool modelNormalsNeeded=false;
+ struct HybridDraw {struct{IDirect3DVertexShader9* p;}shader;NormalSource handoff;};
+ HybridDraw* hybridNormalDraw=nullptr;
+ struct ShaderClass{bool skinned;};
+ ShaderClass classifyVs(IDirect3DVertexShader9*)const{return {false};}
+ unsigned drawRenderState(unsigned)const{return 0;}
  bool enabled=true,applied=false,failed=false;unsigned frame=127;
  NorthlightBackend::Kind selectedBackend=NorthlightBackend::Kind::Dxvk;
- struct{bool active=false;}hdr{};bool indexedPairGate=false,particlePairGate=false;void* worldDepth=nullptr;float nearZ=.22f;
+ struct{bool active=false;}hdr{};bool indexedPairGate=false,particlePairGate=false;void* worldDepth=nullptr;
+ void* depthTex=nullptr;D3DFORMAT depthSnapshotFormat=D3DFMT_UNKNOWN;bool captured=false;float nearZ=.22f;
  template<class T>void captureWater(IDirect3DVertexShader9*,unsigned,T){events->push_back("water");}
  template<class Source>void noteIndexedPairSource(IDirect3DVertexShader9*,const Source&){}
  template<class Draw>std::shared_ptr<const NorthlightDrawSnapshot::Mesh> pendingIndexedSource(const Draw&,IDirect3DVertexShader9*){return {};}
@@ -141,7 +152,7 @@ int main(){
  IDirect3DVertexShader9 vs;
  {CaptureDevice d;fill(d);World w(d);NorthlightCaptureMetadata::PositionBounds out;out.known=true;
   const auto capture=[&]{w.capture(D3DPT_TRIANGLELIST,-3,7,3,1,1,true,&vs,false,true,&out);};
-  capture();assert(out.known&&out.low[2]==3&&out.high[2]==5&&w.accepted);
+  capture();assert(out.known&&out.stream0Float3&&out.low[2]==3&&out.high[2]==5&&w.accepted);
   assert(d.viewGets==1&&d.projectionGets==1);
   CameraMirror live;std::memcpy(live.rows,d.view,64);std::memcpy(live.rows+4,d.view,64);w.constantEpochSource.mirror=&live;
   capture();assert(out.known&&out.low[2]==3&&out.high[2]==5&&d.viewGets==1&&d.projectionGets==1);

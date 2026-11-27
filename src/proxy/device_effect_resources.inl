@@ -59,6 +59,7 @@
         // Resource replacement must not invalidate this frame's retained depth surface.
         if (w!=width || h!=height || format!=sceneFormat) {drop(sceneSurface); drop(scene);}
         if (w!=width || h!=height || (!colorOnly && depthFormat!=depthSnapshotFormat)) {
+            if(autoBump&&depthTex)autoBump->discardSceneDepthScratch(depthTex);
             rainMrtUnbind();rainDepthOk=rainMaskCleared=rainMaskDrawn=false;rainMaskFailed=false;
             drop(aoSurface); drop(ao); drop(aoRawSurface); drop(aoRaw); drop(depthTex); captured=false;drop(rainMaskMS);drop(rainMaskSurface);drop(rainMask);drop(rainDepth); /* 0.3.202 (rain): the mask follows the effect size */
         }

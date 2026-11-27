@@ -4,15 +4,21 @@ A profile pins one model asset by sha256 (asset_sha256, position, rgb, intensity
 Optional "variants" pin other assets of the same model path, e.g. the stock 3.3.5a model where the
 profile was authored on an HD pack: {sha256: {position, position_basis, [rgb, intensity, start,
 end, family]}}; omitted fields are the profile's own.
+An optional max_world_end limits the scaled attenuation range of all pinned assets for placed lights.
+Set merge_emitters to false for reviewed lights separated by opaque fixture geometry.
 """
 import hashlib,json,math,re
 from pathlib import Path
 
 EMITTER=('position','rgb','intensity','start','end')
-VARIANT_FIELDS={'asset','family','position','position_basis','rgb','intensity','start','end','emitters','casts_shadows'}
+FIXTURE_OPTIONS=('emitters','casts_shadows','merge_emitters')
+VARIANT_FIELDS={'asset','family','position_basis',*EMITTER,*FIXTURE_OPTIONS}
 
 def check(p):
     if 'casts_shadows' in p and type(p['casts_shadows']) is not bool:raise ValueError('Invalid shadow policy')
+    if 'merge_emitters' in p and type(p['merge_emitters']) is not bool:raise ValueError('Invalid emitter merge policy')
+    if 'max_world_end' in p and (type(p['max_world_end']) not in (float,int) or not 0<p['max_world_end']<=2000):
+        raise ValueError('Invalid world-space emitter range limit')
     if len(p['position'])!=3 or len(p['rgb'])!=3:raise ValueError('Emitter vector size')
     if not all(math.isfinite(v) for v in [*p['position'],*p['rgb'],p['intensity'],p['start'],p['end']]):raise ValueError('Nonfinite emitter')
     if any(abs(v)>100 for v in p['position']) or not all(0<=v<=1 for v in p['rgb']) or max(p['rgb'])<=0 or not 0<p['intensity']<=4 or not 0<=p['start']<p['end']<=32:raise ValueError('Emitter outside bounded policy')
@@ -45,20 +51,56 @@ def load(path=None):
         if 'injected_sha256' in p and p['injected_sha256'] not in p.get('variants',{}):raise ValueError('Unpinned injected model: '+name)
     return data['profiles']
 
+def native_placement_ranges():
+    extension=Path(__file__).with_name('wotlk-emitter-profiles.json')
+    if not extension.exists():return {}
+    ranges={}
+    for map_name,entries in json.loads(extension.read_text()).get('native_placement_ranges',{}).items():
+        for entry in entries:
+            model,sha,end=entry['model'],entry['asset_sha256'],entry['end']
+            if (not model.startswith('world\\') or not model.endswith('.m2')
+                    or model!=model.lower().replace('/','\\') or not re.fullmatch('[0-9a-f]{64}',sha)
+                    or type(end) not in (int,float) or not 0<end<=32):
+                raise ValueError('Invalid native placement range: '+model)
+            for uid in entry['placements']:
+                key=(map_name,model,uid)
+                if type(uid) is not int or not 0<uid<2**64 or key in ranges:
+                    raise ValueError('Invalid or duplicate native range placement: '+model)
+                ranges[key]=(sha,end)
+    return ranges
+
+def wmo_point_omissions():
+    extension=Path(__file__).with_name('wotlk-emitter-profiles.json')
+    if not extension.exists():return {}
+    omissions={}
+    for map_name,entries in json.loads(extension.read_text()).get('wmo_point_omissions',{}).items():
+        for entry in entries:
+            model,sha,uid=entry['model'],entry['asset_sha256'],entry['placement']
+            sources=entry['sources']
+            key=(map_name,model,uid,sha)
+            if (not model.startswith('world\\') or not model.endswith('.wmo')
+                    or model!=model.lower().replace('/','\\') or not re.fullmatch('[0-9a-f]{64}',sha)
+                    or type(uid) is not int or not 0<uid<2**64 or key in omissions
+                    or not sources or any(type(i) is not int or not 0<=i<2**31 for i in sources)
+                    or len(set(sources))!=len(sources)):
+                raise ValueError('Invalid WMO point omission: '+model)
+            omissions[key]=frozenset(sources)
+    return omissions
+
 def pinned(p):
     """{asset sha256: emitter fields} of every asset a profile covers, the profile's own first."""
-    fields=(*EMITTER,*(['emitters'] if 'emitters' in p else []),*(['casts_shadows'] if 'casts_shadows' in p else []))
+    fields=(*EMITTER,*(k for k in FIXTURE_OPTIONS if k in p))
     result={p['asset_sha256']:{k:p[k] for k in fields}}
     for sha,v in p.get('variants',{}).items():
         result[sha]={k:v.get(k,p[k]) for k in EMITTER}
-        if 'casts_shadows' in v or 'casts_shadows' in p:result[sha]['casts_shadows']=v.get('casts_shadows',p.get('casts_shadows'))
-        if 'emitters' in v or 'emitters' in p:result[sha]['emitters']=v.get('emitters',p.get('emitters'))
+        for k in FIXTURE_OPTIONS:
+            if k in v or k in p:result[sha][k]=v.get(k,p.get(k))
     return result
 
 def fixture_emitters(p):
-    """One bounded light for a compact authored fixture, never across models."""
+    """Merge nearby lights unless the fixture needs their separate positions."""
     emitters=p.get('emitters',[p])
-    if len(emitters)<2:return emitters
+    if len(emitters)<2 or not p.get('merge_emitters',True):return emitters
     shadow=emitters[0].get('casts_shadows',p.get('casts_shadows',False))
     if any(e.get('casts_shadows',p.get('casts_shadows',False))!=shadow for e in emitters):return emitters
     if any(math.dist(a['position'],b['position'])>3 for i,a in enumerate(emitters) for b in emitters[:i]):return emitters
@@ -99,3 +141,28 @@ def deduplicate_parent_lights(records,owners):
         if duplicate:removed+=1
         else:out.append(r)
     return out,removed
+
+def merge_drak_bonfire(map_name, records, owners, provenance):
+    if map_name != "DrakTheronKeep":
+        return records
+    # These two adjacent doodads form the stone-bowl fire beside the hanging runes.
+    fire = r'world\exteriordesigners\zuldrak\ed_zuldrakbridge_fire.m2'
+    glow = r'world\expansion01\doodads\generic\draenei\glow\dr_glow.m2'
+    if (provenance.get(fire, {}).get('asset_sha256') != '7ee708d3d9b4393b65f39fcfa4cb0682219516ae106c5c3d90c8394169844ad1'
+            or provenance.get(glow, {}).get('asset_sha256') != 'fa3ed7e3632bd04b5936e472023577dd0d234d9d136bb73a8a3191b2c393fa31'):
+        return records
+    proxy = [light for light in records if owners[light[8]] == (3, 9480539010499056)]
+    flame = [light for light in records if owners[light[8]] == (3, 9480539010499055)]
+    if len(proxy) != 9 or any(light[9:] != (3, 0) for light in proxy) or len(flame) != 1:
+        return records
+    if flame[0][9:] != (2, 2) or max(flame[0][3:6]) >= .01:
+        return records
+    core = max(proxy, key=lambda light: max(light[3:6]))
+    if math.dist(core[:2], flame[0][:2]) > .15 or not 1 < core[2] - flame[0][2] < 3:
+        return records
+    from world_emitter_index import CAST_SHADOW, FIRE
+    # The dim companion source is part of the same fire. Leave one stable
+    # shadow origin and animate its intensity through the ordinary fire pulse.
+    replaced={light[8] for light in proxy+flame}
+    return [light for light in records if light[8] not in replaced] + [
+        (*core[:3], 1.70, .48, 1.92, .7, 15., core[8], 3, CAST_SHADOW | FIRE)]

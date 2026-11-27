@@ -509,6 +509,18 @@ public:
     const NorthlightStream::Counters* streamStats=nullptr; // task 45: the command stream's counters (null without CommandStream), read-only for the CPU budget
 private:
     IDirect3DQuery9* latencyQuery=nullptr;bool latencyPending=false,latencyFailed=false;std::uint64_t latencyWaits=0;double latencyWaitMs=0;double latencyLastMs=0; /* task 45: the last Present's wait, not reset by logging */
+    bool earlySceneSubmit=false;
+    unsigned earlySceneSubmits=0;
+    void submitSceneBeforeEffects(){
+        if(!earlySceneSubmit||!latencyPending||!latencyQuery||latencyQuery->GetData(nullptr,0,0)!=S_OK)return;
+        // Previous-frame pacing has already been satisfied. Reuse the query for
+        // a nonblocking submit hint before the depth resolve and effects.
+        latencyPending=false;
+        if(SUCCEEDED(latencyQuery->Issue(D3DISSUE_END))){
+            (void)latencyQuery->GetData(nullptr,0,D3DGETDATA_FLUSH);
+            ++earlySceneSubmits;
+        }
+    }
     void waitPreviousFrameGpu(){
         latencyLastMs=0;
         if(!latencyPending||!latencyQuery)return;latencyPending=false;
@@ -1117,7 +1129,7 @@ private:
         }}
         if(celestialDiscs)celestialDiscs->endFrame();if(shadowBlobs)shadowBlobs->endFrame();
         terrainAdmission.target=nullptr;drop(terrainAdmissionTarget.p);
-        effectCoverage.endFrame();mirrorState.finishDeferredTargets();mirrorState.coverageTargetReuses=0;drop(worldDepth);worldDepthDescKnown=false; rainMrtUnbind();terrain = captured = applied = projectionValid = skySeen = menuScene = false;rainMaskCleared=rainMaskDrawn=rainMaskFrame=rainMaskOk=rainDepthOk=false; /* 0.3.202 (rain mask MRT): RT1 never outlives a frame */earlyDepth.reset();resetTranslucentCensus(); /* the TRANSLUCENT line is logged before clearFrame */
+        effectCoverage.endFrame();mirrorState.finishDeferredTargets();mirrorState.coverageTargetReuses=mirrorState.modelNormalTargetReuses=0;drop(worldDepth);worldDepthDescKnown=false; rainMrtUnbind();terrain = captured = applied = projectionValid = skySeen = menuScene = false;rainMaskCleared=rainMaskDrawn=rainMaskFrame=rainMaskOk=rainDepthOk=false; /* 0.3.202 (rain mask MRT): RT1 never outlives a frame */earlyDepth.reset();resetTranslucentCensus(); /* the TRANSLUCENT line is logged before clearFrame */
     }
     void captureWeatherDiagnostics(const NorthlightSurfaceFrame* constants,IDirect3DSurface9* target,IDirect3DSurface9* nameDepth,const char* unavailable,
                                    const std::string& directory={},bool consumeRequest=true){
@@ -1255,6 +1267,7 @@ private:
     // otherwise it only returns false (the rain depth snapshot). RT1 is unbound first: SavedState would restore it under a different draw.
     bool resolveDepthInto(IDirect3DTexture9* target, bool fatal) {
         rainMrtUnbind();
+        if(autoBump&&target==depthTex&&target)autoBump->beforeSceneDepthWrite(target);
         if (!terrain || !worldDepth || !target || !projectionValid) return false;
 #if defined(_WIN64) || defined(NORTHLIGHT_X86_D3D9ON12)
         if(hdr.nativeOutput){
@@ -1619,14 +1632,12 @@ private:
             return autoBump->nativeDraw(draw,vs,ps);
         }return draw();
     }
-#ifdef _WIN64
     struct HybridNormalDraw {
         NorthlightDrawSnapshot::Ref<IDirect3DVertexShader9> shader;
         NorthlightAutoDisplacement::CaptureSource handoff;
         bool submitted=false,written=false;
     };
     HybridNormalDraw* hybridNormalDraw=nullptr;
-#endif
     template<class Draw> HRESULT nativeLocalSubmit(Draw draw,bool prepared=false,IDirect3DVertexShader9* source=nullptr){
         // Factory provenance names the original material and bound private pair
         // for POM and supported skinned displacement.
@@ -1643,7 +1654,6 @@ private:
                     if(displacement&&displacement->originalVS==original&&displacement->matches(bound))return M::PairValid;
                     return 0;
                 };
-#ifdef _WIN64
             if(domain&&hybridNormalDraw&&hybridNormalDraw->shader.p){
                 auto* original=hybridNormalDraw->shader.p;
                 auto& written=hybridNormalDraw->written;
@@ -1659,7 +1669,6 @@ private:
                 cpuPrep+=extra;cpuCapture+=extra;cpuNormalCapture+=extra;
                 return result;
             }
-#endif
             return modelNormals->nativeDraw(draw,domain,prove);
         };
         return world&&nativeLocalDomain&&enabled&&!applied&&!failed&&projectionValid&&!debugMode&&!worldDebug?world->nativeLocalDraw(frame,worldDepth,native,prepared,autoBump?autoBump->nativePOM():nullptr,source,autoBump?autoBump->nativeDisplacement():nullptr,effectCoverage.nativePixel()):native();
@@ -1731,6 +1740,11 @@ private:
 #endif
     template<NorthlightWaterRenderer::UserPointer UserPointer,class Raw,class Draw> void captureGameDraw(IDirect3DVertexShader9* vs,const NorthlightAutoDisplacement::Args& geometry,Raw raw,Draw draw){
         constexpr bool userMemory=UserPointer!=NorthlightWaterRenderer::NoUserPointer;
+        // DF24 is the normal post-effect snapshot. It is writable scratch until
+        // the first scene-depth resolve, which drains material work before copying.
+        const bool shareM2Depth=selectedBackend==NorthlightBackend::Kind::Dxvk&&depthTex&&
+            depthSnapshotFormat==D3DFORMAT(MAKEFOURCC('D','F','2','4'));
+        if(autoBump)autoBump->setSceneDepthScratch(shareM2Depth,shareM2Depth&&!captured?depthTex:nullptr);
 #ifdef NORTHLIGHT_PROFILE_BUILD
         static const bool fusedM2Enabled=[]{
             const auto* value=std::getenv("NORTHLIGHT_GAME_M2_FUSED_CAPTURE");
@@ -1740,9 +1754,9 @@ private:
         constexpr bool fusedM2Enabled=true;
 #endif
         if constexpr(!userMemory)if(autoBump&&fusedM2Enabled){
-            bool canFuse=!hdr.active;
+            bool canFuse=!hdr.active&&!shareM2Depth;
 #if defined(_WIN64) && !defined(NORTHLIGHT_REPLAY_STAND)
-            if(hdr.active&&hdr.dxvk&&hdr.stream&&!hdrUiPhase&&hdrLegacyBack&&
+            if(!shareM2Depth&&hdr.active&&hdr.dxvk&&hdr.stream&&!hdrUiPhase&&hdrLegacyBack&&
                hdr.logical.MultiSampleType==D3DMULTISAMPLE_NONE&&(!modelNormals||!modelNormals->hybridRequested())){
                 static const bool tryLegacyHdr=[]{
                     const char* option=std::getenv("NORTHLIGHT_X64_HDR_M2_FUSION");
@@ -1773,13 +1787,11 @@ private:
             [&]{return enabled&&!applied&&!failed;},
             [&](auto& source){
                 if constexpr(!userMemory)noteIndexedPairSource(vs,source);
-#ifdef _WIN64
                 if constexpr(!userMemory)if(hybridNormalDraw&&modelNormalsNeeded&&modelNormals->beginHybridMrt(worldDepth)&&
                     classifyVs(vs).skinned&&drawRenderState(D3DRS_ZWRITEENABLE)&&!drawRenderState(D3DRS_ALPHABLENDENABLE)&&
                     !drawRenderState(D3DRS_ALPHATESTENABLE)&&(drawRenderState(D3DRS_COLORWRITEENABLE)&7)==7){
                     vs->AddRef();hybridNormalDraw->shader.p=vs;return;
                 }
-#endif
                 captureModelNormals(vs,raw,userMemory,geometry,&source);
             },
             [&]{captureWater(vs,UserPointer,draw);}
@@ -1787,9 +1799,7 @@ private:
             ,audit?&route:nullptr
 #endif
             ,sourceHint?&sourceHint:nullptr
-#ifdef _WIN64
             ,hybridNormalDraw?&hybridNormalDraw->handoff:nullptr
-#endif
         );
 #ifdef NORTHLIGHT_REPLAY_STAND
         if(audit)logCaptureWork(geometry.draw,userMemory,route,before,shaderClass,alphaTest);
@@ -3365,9 +3375,18 @@ public:
         gpuScene=std::make_shared<NorthlightGpuScene::Scene>(ext,shareMaterialCapacity);
         world=std::make_unique<WorldRenderer>(ext,gpuScene);world->setEffectsBuckets(&effectsBuckets);world->setMaterialProfiler(materialProfile.get());
 #ifndef NORTHLIGHT_REPLAY_STAND
-        if(presentation.dxvk&&presentation.stream&&NorthlightStream::dxvk311EventPayload.load(std::memory_order_relaxed)){
+        const bool dxvk311Stream=presentation.dxvk&&presentation.stream&&
+            NorthlightStream::dxvk311EventPayload.load(std::memory_order_relaxed);
+        const bool dxvkX86=sizeof(void*)==4&&dxvk311Stream&&
+            !GetProcAddress(GetModuleHandleW(L"ntdll.dll"),"wine_get_version");
+        earlySceneSubmit=dxvkX86;
+        mirrorState.dxvkResolvePointSize=dxvkX86;
+        // DXVK's command thread can wait in convertIr() when the first draw
+        // uses a shader that its background compiler is still converting.
+        const unsigned x86ShaderWarmupMs=150;
+        if(dxvk311Stream){
             const char* override=std::getenv("NORTHLIGHT_DXVK_NATIVE_SHADER_GRACE");
-            const unsigned warmupMs=override&&std::strcmp(override,"0")==0?0:50;
+            const unsigned warmupMs=override&&std::strcmp(override,"0")==0?0:dxvkX86?x86ShaderWarmupMs:50;
             world->setNativeLightShaderWarmup(warmupMs);
             logf("NATIVE_DIRECT shader warmup ms=%u",warmupMs);
         }
@@ -3393,6 +3412,9 @@ public:
         const bool hybrid=presentation.dxvk&&presentation.stream&&hybridMrt&&!std::strcmp(hybridMrt,"1");
         const char* grace=std::getenv("NORTHLIGHT_X64_M2_MRT_SHADER_GRACE");
         modelNormals->enableHybridMrt(hybrid,std::chrono::milliseconds(hybrid&&(!grace||std::strcmp(grace,"0"))?50:0));
+#elif !defined(NORTHLIGHT_REPLAY_STAND)
+        world->setStaggerColdCaptures(dxvkX86);
+        modelNormals->enableHybridMrt(dxvkX86,std::chrono::milliseconds(dxvkX86?x86ShaderWarmupMs:0));
 #endif
         autoBump=std::make_unique<NorthlightAutoBump>(ext,gpuScene);if(rootPath[0])autoBump->setPersistentCache(std::filesystem::path(rootPath)/L"Cache"/L"Northlight"/L"Materials-v1",NorthlightBackend::name(selectedBackend),materialCacheBackendIdentity.c_str(),materialCacheAsyncReadback);autoBump->setGeometryTracking(&NorthlightTrackedBuffers::identity,&NorthlightTrackedBuffers::version,&NorthlightTrackedBuffers::captureMetadata);autoBump->configure(world->surfaceSettings());
         modelNormals->setDrawStateSource(*ext);
@@ -3805,7 +3827,7 @@ public:
             const unsigned before=gpuBudget.level;world->setGpuBudgetLevel(gpuBudget.update(float(budget),float(ms),dt,gpuLimited));
             if(gpuBudget.level!=before&&(gpuBudget.changes<=32||diagnostics()))
                 logf("GPUBUDGET level %u -> %u smoothed=%.3f budget=%u changes=%u",before,gpuBudget.level,double(gpuBudget.smoothed),budget,gpuBudget.changes);}
-        if(limitGpuLatency&&sampled()&&NorthlightRenderThreadProbe::profiling()){logf("CSTREAM GPU latency waits=%llu waitMs=%.1f",(unsigned long long)latencyWaits,latencyWaitMs);latencyWaits=0;latencyWaitMs=0;}
+        if(limitGpuLatency&&sampled()&&NorthlightRenderThreadProbe::profiling()){logf("CSTREAM GPU latency waits=%llu waitMs=%.1f earlySceneSubmits=%u",(unsigned long long)latencyWaits,latencyWaitMs,earlySceneSubmits);latencyWaits=0;latencyWaitMs=0;earlySceneSubmits=0;}
         if(sampled()&&NorthlightRenderThreadProbe::profiling())logf("GPUBUDGET ms=%.3f smoothed=%.3f budget=%.1f level=%u gpuWait=%.2f gpuBound=%d eventWait=%.2f scope=deferred-captures-and-effects inSceneCaptureIncluded=0 cpuGpuAdditive=0",gpuBudgetLastMs,double(gpuBudget.smoothed),double(budget),gpuBudget.level,double(gpuBound.smoothed),boundKnown?int(gpuBound.bound()):-1,double(eventGpuMs));
     }
     // task 45: ActorShadowCpuMs. The effects span of this frame (renderEffects from the applied check to its return: the world render incl. the actor shadow replay,
@@ -3832,6 +3854,9 @@ public:
              diagnosticId,frame,(unsigned long)GetTickCount(),int(mode),r.count,r.meanMs,r.p50Ms,r.p95Ms,r.maxMs,1000.0/r.meanMs,unsigned(effects.gi),unsigned(effects.shadows),unsigned(effects.fog),int(focused),reason,(unsigned long long)NorthlightStream::nowNs(),(long long)r.frequency,r.lastFrame,deltas.data());
     }
     void finishFrameImpl() {
+#ifdef NORTHLIGHT_WATER
+        if(cooperativeWaterEnabled)cooperativeWater.ExpireSceneryPoses();
+#endif
         nameMaskRunEnd(); /* 0.3.212 (task 32) */
         captureEffectDiagnostics();
         const auto frameEffects=effectKeys.settings;const bool frameEnabled=enabled;
@@ -3857,7 +3882,7 @@ public:
         LARGE_INTEGER intervalTick={};NorthlightFrameIntervals::Report intervalReport;
         if(!diagnosticFrame&&diagnostics()&&QueryPerformanceCounter(&intervalTick)&&frameIntervals.sample(intervalTick.QuadPart,cpuFrequency.QuadPart,frame,intervalReport)){
             const auto deltas=intervalReport.csv();
-            logf("FRAME interval device=%ld frame=%u tick=%lu enabled=%d samples=%u meanMs=%.3f p50Ms=%.3f p95Ms=%.3f maxMs=%.3f fps=%.2f gi=%u shadows=%u fog=%u focus=%d qpcHz=%lld lastPresent=%u deltas=%s",diagnosticId,frame,(unsigned long)GetTickCount(),enabled,intervalReport.count,intervalReport.meanMs,intervalReport.p50Ms,intervalReport.p95Ms,intervalReport.maxMs,1000.0/intervalReport.meanMs,unsigned(frameEffects.gi),unsigned(frameEffects.shadows),unsigned(frameEffects.fog),int(intervalFocus),(long long)intervalReport.frequency,intervalReport.lastFrame,deltas.data());intervalFocus=true;}
+            logf("FRAME interval device=%ld frame=%u tick=%lu enabled=%d samples=%u meanMs=%.3f p50Ms=%.3f p95Ms=%.3f maxMs=%.3f fps=%.2f gi=%u shadows=%u fog=%u focus=%d qpcHz=%lld lastPresent=%u lastQpc=%lld deltas=%s",diagnosticId,frame,(unsigned long)GetTickCount(),enabled,intervalReport.count,intervalReport.meanMs,intervalReport.p50Ms,intervalReport.p95Ms,intervalReport.maxMs,1000.0/intervalReport.meanMs,unsigned(frameEffects.gi),unsigned(frameEffects.shadows),unsigned(frameEffects.fog),int(intervalFocus),(long long)intervalReport.frequency,intervalReport.lastFrame,(long long)intervalTick.QuadPart,deltas.data());intervalFocus=true;}
         if(diagnostics()){gpuProfile->poll();if(gpuSceneProfile)gpuSceneProfile->poll();}
         if(materialProfile)materialProfile->poll();if(world)world->pollMaterialProfile();pollProjectedAudit();
         if(diagnostics()&&frame%600==0)logClientLatency(frame,"periodic");
@@ -4001,6 +4026,8 @@ public:
             const double us=cpuFrequency.QuadPart>0?1e6/double(cpuFrequency.QuadPart):0.0;
             const double decide=nameDecideTimed?double(cpuNameDecide)*double(nameDecideCalls)/double(nameDecideTimed)*us:0.0,mark=double(cpuNameMark)*us,unmark=double(cpuNameUnmark)*us;
             if(modelNormals)modelNormals->report(frame,[](const char* format,auto... args){logf(format,args...);});
+            if(modelNormals&&modelNormals->hybridRequested())
+                logf("MODEL_NORMALS hybrid attachments frame=%u reused=%u",frame,mirrorState.modelNormalTargetReuses);
             logf("NAMEMASK frame=%u marked=%u runs=%u unmarked=%u composite=%d depthFormat=%lu stencil=%d prelit=%u unlit=%u decisions=%u decisionsTimed=%u decideUs=%.1f markUs=%.1f unmarkUs=%.1f cpuUs=%.1f",frame,nameMask.marks,nameMask.runs,nameMask.unmarkDraws,int(nameMask.composited),(unsigned long)(worldDepthDescKnown?worldDepthDesc.Format:D3DFMT_UNKNOWN),int(maskStencil),prelitMarks,unlitMarks,nameDecideCalls,nameDecideTimed,decide,mark,unmark,decide+mark+unmark);
         }
         if(sampledDrawTimers()&&modelNormals)modelNormals->reportCaptureProfile(frame,[](const char* format,auto... args){logf(format,args...);});
@@ -4476,13 +4503,11 @@ public:
         if(enabled||uiDrawDiagnostic.left)spellArgs=NorthlightSpellLayer::DrawArgs::primitive(t,start,count);
         return drawHook(t,count,[&](IDirect3DVertexShader9* vs){captureGameDraw<NorthlightWaterRenderer::NoUserPointer>(vs,geometry,raw,draw);},draw,&nativeSky,&skyCaptured,&geometry);}
     HRESULT STDMETHODCALLTYPE DrawIndexedPrimitive(D3DPRIMITIVETYPE t,INT base,UINT min,UINT vertices,UINT start,UINT count) override { Guard mirrorLock(mirrorState.gate);
-#ifdef _WIN64
         std::optional<HybridNormalDraw> hybrid;
         if(modelNormals&&modelNormals->hybridRequested()&&t==D3DPT_TRIANGLELIST&&!indexedPairGate&&!particlePairGate&&!worldDebug)
             hybrid.emplace();
         struct RestoreHybridDraw {HybridNormalDraw*& slot;HybridNormalDraw* previous;~RestoreHybridDraw(){slot=previous;}} restoreHybrid{hybridNormalDraw,hybridNormalDraw};
         hybridNormalDraw=hybrid?&*hybrid:nullptr;
-#endif
 #ifdef NORTHLIGHT_PROFILE_BUILD
         NorthlightStream::ReplayFrameProfile::IndexedDraw* timing=nullptr;
         if(auto* profile=NorthlightStream::sampledIndexedReplay){
@@ -4492,13 +4517,15 @@ public:
         }
         const auto drawStart=timing?NorthlightStream::nowNs():0;
 #endif
+#ifdef NORTHLIGHT_WATER
+        if(t==D3DPT_TRIANGLELIST&&world&&cooperativeWater.sceneryPoses&&cooperativeWater.sceneryPoses->waiting)
+            extensionWork("Tideglass scenery pose",[&]{world->observeWaterPose(*cooperativeWater.sceneryPoses,base,min,vertices,count);});
+#endif
         NorthlightAutoDisplacement::Args geometry{{t,base,min,vertices,start,count,true}};
         bool nativeSky=false,skyCaptured=false;
         beginIndexedPairDraw();
         auto raw=[&]{return submitIndexedPair(geometry.draw,[&]{
-#ifdef _WIN64
             if(hybrid)hybrid->submitted=true;
-#endif
 #ifdef NORTHLIGHT_PROFILE_BUILD
             if(timing){
                 const auto submitStart=NorthlightStream::nowNs();
@@ -4512,14 +4539,12 @@ public:
         auto draw=[&]{return submitGameDraw(count,nativeSky,&skyCaptured,raw,&geometry.draw);};
         if(enabled||uiDrawDiagnostic.left)spellArgs=NorthlightSpellLayer::DrawArgs::indexed(t,base,min,vertices,start,count);
         const auto result=drawHook(t,count,[&](IDirect3DVertexShader9* vs){captureGameDraw<NorthlightWaterRenderer::NoUserPointer>(vs,geometry,raw,draw);},draw,&nativeSky,&skyCaptured,&geometry);
-#ifdef _WIN64
         if(hybrid&&hybrid->submitted&&hybrid->shader.p&&!hybrid->written&&SUCCEEDED(result)&&!failed){
             extensionWork("normal fallback",[&]{
                 CpuScope captureCost(sampledDrawTimers()?&cpuCapture:nullptr),prepCost(sampledDrawTimers()?&cpuPrep:nullptr);
                 captureModelNormals(hybrid->shader.p,raw,false,geometry,&hybrid->handoff);
             });
         }
-#endif
 #ifdef NORTHLIGHT_PROFILE_BUILD
         if(timing)timing->ns+=NorthlightStream::nowNs()-drawStart;
 #endif
@@ -4685,6 +4710,27 @@ public:
 #endif
         if(stream)flags|=D3DCREATE_MULTITHREADED; /* DXVK's window-proc hook may touch the swap chain on the game thread while the replay thread presents */
         presentation.stream=stream;
+#if !defined(_WIN64) && !defined(NORTHLIGHT_REPLAY_STAND)
+        if(stream&&presentation.dxvk&&NorthlightStream::dxvk311EventPayload.load(std::memory_order_relaxed)&&
+           !GetProcAddress(GetModuleHandleW(L"ntdll.dll"),"wine_get_version")){
+            // DXVK EVENT can wait behind a competing graphics context after encoding.
+            // Request the WDDM priority class for this client process before creating the device.
+            enum GpuPriority : int {GpuNormal=2,GpuHigh=4};
+            using GetGpuPriority=LONG (WINAPI*)(HANDLE,GpuPriority*);
+            using SetGpuPriority=LONG (WINAPI*)(HANDLE,GpuPriority);
+            const auto gdi=GetModuleHandleW(L"gdi32.dll");
+            const auto get=gdi?reinterpret_cast<GetGpuPriority>(GetProcAddress(gdi,"D3DKMTGetProcessSchedulingPriorityClass")):nullptr;
+            const auto set=gdi?reinterpret_cast<SetGpuPriority>(GetProcAddress(gdi,"D3DKMTSetProcessSchedulingPriorityClass")):nullptr;
+            const HANDLE process=GetCurrentProcess();
+            GpuPriority previous{};
+            if(get&&set&&get(process,&previous)==0&&previous==GpuNormal){
+                const LONG status=set(process,GpuHigh);
+                GpuPriority current=previous;
+                const LONG observed=get(process,&current);
+                logf("DXVK x86 GPU priority previous=%d current=%d set=0x%08lx read=0x%08lx",int(previous),int(current),(unsigned long)status,(unsigned long)observed);
+            }
+        }
+#endif
         if(presentation.supportsSubmission()&&presentation.dxvk)presentation.formatsPrepared=NorthlightHdr::unlockFormats(real);
         memmapProcess("pre-create",InterlockedCompareExchange(&deviceSerial,0,0)+1); /* task 42 (MEMMAP): what the backend's CreateDevice (and our Device) add shows in the create diff */
         HRESULT hr=real->CreateDevice(adapter,type,window,flags,pp,out);

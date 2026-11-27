@@ -27,8 +27,7 @@ bool SetScreenPassState(IDirect3DDevice9* dev, IDirect3DVertexShader9* vs, IDire
         {D3DRS_ALPHABLENDENABLE, FALSE}, {D3DRS_SEPARATEALPHABLENDENABLE, FALSE}, {D3DRS_CULLMODE, D3DCULL_NONE},
         {D3DRS_STENCILENABLE, FALSE}, {D3DRS_TWOSIDEDSTENCILMODE, FALSE}, {D3DRS_SCISSORTESTENABLE, FALSE},
         {D3DRS_COLORWRITEENABLE, 0xF}, {D3DRS_SRGBWRITEENABLE, FALSE}, {D3DRS_FOGENABLE, FALSE},
-        {D3DRS_CLIPPLANEENABLE, 0}, {D3DRS_FILLMODE, D3DFILL_SOLID},
-        {D3DRS_MULTISAMPLEMASK, 0xFFFFFFFF}, {D3DRS_MULTISAMPLEANTIALIAS, TRUE}};
+        {D3DRS_CLIPPLANEENABLE, 0}, {D3DRS_FILLMODE, D3DFILL_SOLID}};
     for (const auto& state : states) ok = SUCCEEDED(dev->SetRenderState(state.name, state.value)) && ok;
     return ok;
 }
@@ -90,6 +89,21 @@ bool ScreenPassState::Restore()
 }
 
 namespace screen_pass {
+bool SaveMultisampleColour(IDirect3DDevice9* device, IDirect3DSurface9* source,
+                           const D3DSURFACE_DESC& desc, IDirect3DSurface9*& backup)
+{
+    D3DSURFACE_DESC old = {};
+    if (backup && (FAILED(backup->GetDesc(&old)) || old.Width != desc.Width || old.Height != desc.Height ||
+        old.Format != desc.Format || old.MultiSampleType != desc.MultiSampleType ||
+        old.MultiSampleQuality != desc.MultiSampleQuality)) {
+        backup->Release();
+        backup = nullptr;
+    }
+    if (!backup && FAILED(device->CreateRenderTarget(desc.Width, desc.Height, desc.Format,
+        desc.MultiSampleType, desc.MultiSampleQuality, FALSE, &backup, nullptr))) return false;
+    return SUCCEEDED(device->StretchRect(source, nullptr, backup, nullptr, D3DTEXF_NONE));
+}
+
 bool BindPointTexture(IDirect3DDevice9* dev, DWORD stage, IDirect3DBaseTexture9* tex)
 {
     bool ok=SUCCEEDED(dev->SetTexture(stage,tex));

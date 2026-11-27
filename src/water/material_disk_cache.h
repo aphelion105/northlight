@@ -15,7 +15,11 @@
 #include <vector>
 #include "backend_loader.h"
 #ifdef _WIN32
-extern "C" __declspec(dllimport) int __stdcall MoveFileExW(const wchar_t*,const wchar_t*,unsigned long);
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#include <bcrypt.h>
 #endif
 
 // CPU bytes only. The owner never opens files, waits for the worker or helps run
@@ -34,6 +38,63 @@ inline Key hash(const void* data,size_t size,Key prefix={}){
     const auto hex=digest.hex();Key key;auto nibble=[](char c){return unsigned(c<='9'?c-'0':c-'a'+10);};
     for(unsigned i=0;i<32;++i)key.bytes[i]=std::uint8_t(nibble(hex[i*2])*16+nibble(hex[i*2+1]));return key;
 }
+// One reusable CNG handle per I/O worker. The software implementation also
+// covers hosts without reusable CNG hashes. Both hash the same prefix and bytes.
+class WorkerHash {
+#ifdef _WIN32
+    HMODULE module_=nullptr;
+    BCRYPT_ALG_HANDLE algorithm_=nullptr;
+    BCRYPT_HASH_HANDLE hash_=nullptr;
+    decltype(&BCryptCloseAlgorithmProvider) close_=nullptr;
+    decltype(&BCryptDestroyHash) destroy_=nullptr;
+    decltype(&BCryptHashData) update_=nullptr;
+    decltype(&BCryptFinishHash) finish_=nullptr;
+
+    template<class Function> Function lookup(const char* name) const {
+        return reinterpret_cast<Function>(GetProcAddress(module_,name));
+    }
+#endif
+public:
+    WorkerHash(){
+#ifdef _WIN32
+        module_=LoadLibraryExW(L"bcrypt.dll",nullptr,LOAD_LIBRARY_SEARCH_SYSTEM32);
+        if(!module_)return;
+        const auto open=lookup<decltype(&BCryptOpenAlgorithmProvider)>("BCryptOpenAlgorithmProvider");
+        const auto create=lookup<decltype(&BCryptCreateHash)>("BCryptCreateHash");
+        close_=lookup<decltype(close_)>("BCryptCloseAlgorithmProvider");
+        destroy_=lookup<decltype(destroy_)>("BCryptDestroyHash");
+        update_=lookup<decltype(update_)>("BCryptHashData");
+        finish_=lookup<decltype(finish_)>("BCryptFinishHash");
+        if(open&&create&&close_&&destroy_&&update_&&finish_&&
+           open(&algorithm_,BCRYPT_SHA256_ALGORITHM,nullptr,BCRYPT_HASH_REUSABLE_FLAG)>=0){
+            BCRYPT_HASH_HANDLE handle=nullptr;
+            if(create(algorithm_,&handle,nullptr,0,nullptr,0,BCRYPT_HASH_REUSABLE_FLAG)>=0)hash_=handle;
+        }
+#endif
+    }
+    WorkerHash(const WorkerHash&)=delete;
+    WorkerHash& operator=(const WorkerHash&)=delete;
+    ~WorkerHash(){
+#ifdef _WIN32
+        if(hash_)destroy_(hash_);
+        if(algorithm_)close_(algorithm_,0);
+        if(module_)FreeLibrary(module_);
+#endif
+    }
+    Key operator()(const void* data,size_t size,Key prefix={}){
+#ifdef _WIN32
+        if(hash_&&size<=UINT32_MAX){
+            Key result;
+            if(update_(hash_,prefix.bytes.data(),ULONG(prefix.bytes.size()),0)>=0&&
+               (!size||update_(hash_,const_cast<PUCHAR>(static_cast<const unsigned char*>(data)),ULONG(size),0)>=0)&&
+               finish_(hash_,result.bytes.data(),ULONG(result.bytes.size()),0)>=0)return result;
+            destroy_(hash_);
+            hash_=nullptr; // A partially updated hash cannot be reused.
+        }
+#endif
+        return hash(data,size,prefix);
+    }
+};
 inline std::string filename(Key k){
     const char digits[]="0123456789abcdef";std::string out;out.reserve(68);
     for(auto b:k.bytes){out+=digits[b>>4];out+=digits[b&15];}return out+".nlm";
@@ -71,18 +132,18 @@ private:
             lock.unlock();wake_.notify_one();return t;
         }catch(...){++stats.refused;return {};}
     }
-    bool read(Ticket& t){
+    bool read(Ticket& t,WorkerHash& digest){
         std::ifstream f(root_/filename(t.key),std::ios::binary|std::ios::ate);if(!f)return false;
         const auto length=f.tellg();Header h{};f.seekg(0);f.read(reinterpret_cast<char*>(&h),sizeof h);
         const size_t bytes=size_t(t.width)*t.height*4;
         if(!f||h.magic!=Header{}.magic||h.key!=t.key||h.reserved||h.width!=t.width||h.height!=t.height||h.bytes!=bytes||length!=std::streamoff(sizeof h+bytes)){++stats.invalid;return false;}
         Bytes pixels(bytes);f.read(reinterpret_cast<char*>(pixels.data()),std::streamsize(bytes));
-        if(!f||hash(pixels.data(),pixels.size())!=h.checksum){++stats.invalid;return false;}
+        if(!f||digest(pixels.data(),pixels.size())!=h.checksum){++stats.invalid;return false;}
         t.pixels=std::move(pixels);std::error_code ec;std::filesystem::last_write_time(root_/filename(t.key),std::filesystem::file_time_type::clock::now(),ec);return true;
     }
-    bool write(Ticket& t){
+    bool write(Ticket& t,WorkerHash& digest){
         if(t.source.size()!=size_t(t.width)*t.height*4)return false;
-        Header h;h.key=t.key;h.width=t.width;h.height=t.height;h.bytes=std::uint32_t(t.source.size());h.checksum=hash(t.source.data(),t.source.size());
+        Header h;h.key=t.key;h.width=t.width;h.height=t.height;h.bytes=std::uint32_t(t.source.size());h.checksum=digest(t.source.data(),t.source.size());
         const auto final=root_/filename(t.key);auto temporary=final;temporary+=std::string(".tmp-")+std::to_string(++serial_);
         bool written=false;
         {std::ofstream f(temporary,std::ios::binary|std::ios::trunc);if(f){f.write(reinterpret_cast<const char*>(&h),sizeof h);f.write(reinterpret_cast<const char*>(t.source.data()),std::streamsize(t.source.size()));f.close();written=bool(f);}}
@@ -127,14 +188,15 @@ private:
     }
     void loop(){
         try{std::error_code ec;std::filesystem::create_directories(root_,ec);if(ec){failPending();return;}trim();}catch(...){failPending();return;}
+        WorkerHash digest;
         for(;;){
             Handle t;
             {std::unique_lock<std::mutex> lock(mutex_);wake_.wait(lock,[&]{return stop_||!queue_.empty();});if(queue_.empty()&&stop_)return;t=std::move(queue_.front());queue_.pop_front();}
             State state=State::Error;
             try{
                 if(beforeIO_)beforeIO_(ioContext_);
-                if(t->write){if(write(*t)){++stats.writes;state=State::Stored;if(++writes_%32==0)trim();}else ++stats.errors;}
-                else {t->key=hash(t->source.data(),t->source.size(),hash(t->identity.data(),t->identity.size()));if(read(*t)){++stats.hits;state=State::Hit;}else{++stats.misses;state=State::Miss;}}
+                if(t->write){if(write(*t,digest)){++stats.writes;state=State::Stored;if(++writes_%32==0)trim();}else ++stats.errors;}
+                else {t->key=digest(t->source.data(),t->source.size(),digest(t->identity.data(),t->identity.size()));if(read(*t,digest)){++stats.hits;state=State::Hit;}else{++stats.misses;state=State::Miss;}}
             }catch(...){++stats.errors;}
             complete(*t,state);
         }

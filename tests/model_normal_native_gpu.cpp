@@ -270,6 +270,14 @@ int main(int argc,char** argv){
                 unsigned committed=0;
                 for(unsigned i=0;i<4;++i)committed=frame(true,scenario,0,true);
                 assert(committed>0&&ModelNormalPacketTestAccess::queued(*n)+committed==N);
+                if(scenario==0||scenario==1||scenario==37){
+                    const auto reuses=mirror.modelNormalTargetReuses;
+                    assert(frame(true,scenario,0,true)==committed);
+                    assert(mirror.modelNormalTargetReuses-reuses==(scenario==0?N-1:0));
+                    assert(!mirror.deferredTargetMask);
+                    IDirect3DSurface9* aux=nullptr;
+                    assert(raw->GetRenderTarget(1,&aux)==D3DERR_NOTFOUND&&!aux);
+                }
                 if(scenario==1||scenario==37)assert(committed<N);
                 if(scenario==0||scenario==17||scenario==38)assert(committed==N);
             }

@@ -246,8 +246,9 @@ static void nativeIndexedPairs(PaletteDevice& d){
             NorthlightReplayCopies::invalidate(slot);
             if(copy){
                 assert(NorthlightReplayCopies::beginFill(slot,sizeof values));
-                std::memcpy(slot.data.data(),values,sizeof values);
-                NorthlightReplayCopies::endFill(slot,true);NorthlightReplayCopies::unpin(slot);
+                const auto* bytes=reinterpret_cast<const unsigned char*>(values);
+                slot.data.assign(bytes,bytes+sizeof values);
+                assert(NorthlightReplayCopies::endFill(slot,true));NorthlightReplayCopies::unpin(slot);
             }
         };
         writeIndices(true);

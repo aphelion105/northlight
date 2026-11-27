@@ -76,7 +76,7 @@ struct NativeHook {
     Backend backend;Backend* d=&backend;Native nativeMrt;
     void* rasterContext=nullptr;bool(*rasterReader)(void*,const D3DRENDERSTATETYPE*,unsigned,DWORD*)=nullptr;
     bool bad=false;std::vector<Packet*> pending{&packet};
-    int storage=0;IDirect3DSurface9 *surface=&storage,*frameTarget=&storage;
+    int storage=0;IDirect3DSurface9 *surface=&storage,*frameTarget=&storage,*hybridDepth=nullptr;
     unsigned width=1,height=1;Packet* nativeCandidate=&packet;
     static void release(IDirect3DSurface9*& p){p=nullptr;}
     @NATIVE_DRAW@

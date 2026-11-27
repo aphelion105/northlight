@@ -39,6 +39,15 @@
     }
 #endif
 
+    void supplyTideglassEnvironment(){
+        bool wantsLamps=false;
+        if(!world||!cooperativeWater.WantsEnvironment(wantsLamps))return;
+        WaterEnvironmentValues values{};
+        WaterLampSamples lamps{};
+        if(world->tideglassEnvironment(values,lamps,wantsLamps,farZ))
+            cooperativeWater.Environment(values,nullptr,0.f,lamps);
+    }
+
     bool legacyTideglassTarget(){
         IDirect3DSurface9* target=nullptr;
         if(ext->peekRenderTarget(0,target))return target==hdrLegacyBack;
@@ -105,8 +114,9 @@
             // The renderer's world context comes from this frame's validated draw and camera.
             // In CommandStream mode this uses the context already built from the producer snapshot.
             if(fogForward<=0.f)return;
-            WaterFrameValues values{};
-            if(!world->tideglassFrame(values))return;
+            WaterHostWorldFrame inputsFrame{};
+            if(!world->tideglassFrame(inputsFrame))return;
+            auto& values=inputsFrame.values;
             values.viewport=viewport;
             values.viewport.MinZ=worldMinDepth;
             values.viewport.MaxZ=worldMaxDepth;
@@ -124,7 +134,7 @@
                 values.cameraWaterHeight=values.cameraPosition[2]+inputs.depth;
             }
             tideglassWakes.sample(inputs,GetTickCount(),values);
-            const auto waterFrame=northlightWaterSettings.Module().Copy(values);
+            const auto waterFrame=northlightWaterSettings.Module().Copy(inputsFrame);
 #else
             const auto* snapshot=NorthlightStream::activeSnapshot;
             const auto waterFrame=SelectNorthlightWaterFrame(snapshot?&snapshot->waterFrame:nullptr,streamStats!=nullptr,

@@ -46,9 +46,21 @@ inline WaterHostFrameRef CaptureNorthlightWater(const D3DVIEWPORT9& viewport,Wat
 class NorthlightWaterBridge
 {
 public:
+    WaterSceneryPoseRequests* sceneryPoses=nullptr; // borrowed on the device thread
+    void ExpireSceneryPoses(){
+        if(!sceneryPoses||!sceneryPoses->waiting)return;
+        const DWORD now=GetTickCount();
+        for(unsigned i=0;i<sceneryPoses->count;++i){
+            auto& p=sceneryPoses->placements[i];
+            if(p.status==WaterPosePlacement::Waiting && now-p.started>5000){
+                p.status=WaterPosePlacement::Unavailable;--sceneryPoses->waiting;
+            }
+        }
+    }
     void PresentBegin(IDirect3DDevice9* device,uint64_t frame){
         if (northlightWaterSettings.Open() && Initialise(device)) {
             northlightTracePasses = &m_passes;
+            ExpireSceneryPoses();
             m_passes.PresentBegin(2, frame);
         }
     }
@@ -101,7 +113,7 @@ public:
     }
     bool Composite(IDirect3DTexture9* opaqueDepth, IDirect3DTexture9* mask, IDirect3DSurface9* boundDepth,
                    float nearPlane, float farPlane, float minDepth, float maxDepth, bool enhancedFogReady,
-                   IDirect3DTexture9* refractionScene = nullptr, IDirect3DTexture9* surfaceVisibility = nullptr)
+                   IDirect3DTexture9* refractionScene = nullptr, IDirect3DTexture9* surfaceVisibility = nullptr, bool spatialFog = false, uint32_t stencilBit = 0)
     {
         if (!m_liquid) return false;
         m_liquid = false;
@@ -114,18 +126,18 @@ public:
         m_nativeWater = mask;
         m_frameDepth = m_depth.Build(m_device, opaqueDepth, mask, nearPlane, farPlane, minDepth, maxDepth);
         if (!m_frameDepth) { ReleaseColour(); m_passes.End(); return false; }
-        m_passes.Fog(enhancedFogReady);
+        m_passes.Fog(enhancedFogReady, spatialFog);
         if (northlightWaterSettings.CompositeAfterEffects()) {
             m_pendingComposite = true;
             return true;
         }
-        return m_passes.AfterLiquid({sizeof(WaterHostResources), m_frameDepth, boundDepth, mask, refractionScene, surfaceVisibility}, true);
+        return m_passes.AfterLiquid({sizeof(WaterHostResources), m_frameDepth, boundDepth, mask, refractionScene, surfaceVisibility}, true, stencilBit);
     }
     // scene, sceneDepth and sceneViewport: the host's finished world colour, its resolved depth and viewport, used when
     // no liquid was drawn this frame. The camera can be under a surface it cannot see (looking down from under the sea,
     // 2026-11-21), and the underwater view is drawn here, not with a surface.
     bool WorldDone(IDirect3DSurface9* boundDepth, IDirect3DSurface9* scene = nullptr,
-                   IDirect3DTexture9* sceneDepth = nullptr, const D3DVIEWPORT9* sceneViewport = nullptr)
+                   IDirect3DTexture9* sceneDepth = nullptr, const D3DVIEWPORT9* sceneViewport = nullptr, uint32_t stencilBit = 0)
     {
         // Consume the deferred pass once, even if finalisation cannot bind the
         // completed scene. End never flushes it over an incomplete world or UI.
@@ -154,17 +166,17 @@ public:
         bound = SUCCEEDED(m_device->SetDepthStencilSurface(boundDepth)) && bound;
         bound = SUCCEEDED(m_device->SetViewport(&m_frameViewport)) && bound;
         const WaterHostResources resources = {sizeof(WaterHostResources), m_frameDepth, boundDepth, m_nativeWater};
-        const bool composed = pending && bound && m_passes.AfterLiquid(resources, true);
+        const bool composed = pending && bound && m_passes.AfterLiquid(resources, true, stencilBit);
         // A memory-only WorldDone can succeed internally while reporting no
         // on-screen draw. Never use its result to skip restoration or composition.
-        const bool drawn = bound && m_passes.Draw(WaterHostWorldDone, resources);
+        const bool drawn = bound && m_passes.FinishWorld(resources, stencilBit);
         const bool restored = saved.Restore();
         return restored && (composed || drawn);
     }
     bool CapturePass(const char* name,bool after){return m_passes.CapturePass(name,after);}
     bool Current() const { return m_passes.Current(); }
-    bool Environment(const WaterEnvironmentValues& values,IDirect3DTexture9* background){return m_passes.Environment(values,background);}
-    bool WantsEnvironment(){WaterHostSurfaceStatus status={};return m_passes.SurfaceStatus(status)&&status.fallback!=WaterEnvironmentDisabled;}
+    bool Environment(const WaterEnvironmentValues& values,IDirect3DTexture9* background,float viewOpticalDepth48=0,const WaterLampSamples& lamps={}){return m_passes.Environment(values,background,viewOpticalDepth48,lamps);}
+    bool WantsEnvironment(bool& lamps){return m_passes.WantsEnvironment(lamps);}
     bool OwnsDistance(){WaterHostSurfaceStatus status={};return m_passes.SurfaceStatus(status)&&status.outcome==WaterHostSurfaceShaded&&status.distanceAtmosphereShaded!=0;}
     bool SurfaceStatus(WaterHostSurfaceStatus& status){return m_passes.SurfaceStatus(status);}
     IDirect3DTexture9* SurfaceDepth()const{return m_frameDepth;} // borrowed until End/Lost/Shutdown
@@ -199,18 +211,25 @@ public:
         m_frameDepth = nullptr;
         m_depth.ReleaseAll();
         m_device = nullptr;
+        sceneryPoses=nullptr;m_poseConnected=false;
         return m_passes.Shutdown();
     }
 private:
     bool Initialise(IDirect3DDevice9* device)
     {
         auto& module = northlightWaterSettings.Module();
-        return m_passes.Initialise(module.API(), device, northlightWaterSettings.SettingsPath().c_str(),
+        const bool ready=m_passes.Initialise(module.API(), device, northlightWaterSettings.SettingsPath().c_str(),
                                    module.Diagnostics(), module.Trace(), module.Environment(), module.Liquid(),
                                    module.CaptureAPI());
+        if(ready && !m_poseConnected){
+            sceneryPoses=m_passes.PoseRequests(module.PoseRequests());
+            m_poseConnected=true;
+        }
+        return ready;
     }
 
     void ReleaseColour() { m_nativeWater = nullptr; if (m_frameColour) { m_frameColour->Release(); m_frameColour = nullptr; } }
+    bool m_poseConnected=false;
     WaterHostPasses m_passes;
     IDirect3DTexture9* m_nativeWater = nullptr; // borrowed only while m_frameDepth/m_frameColour are valid
     water::SurfaceDepth m_depth;

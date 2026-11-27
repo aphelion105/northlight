@@ -48,6 +48,9 @@ int main(){
    float bank[1024]={};bank[4*31+3]=7;bank[4*32+3]=-2;bank[4*33+3]=3; /* bone 0 view-space translation */
    float inverse[16]={1,0,0,0,0,1,0,0,0,0,1,0,100,200,300,1},root[3];
    assert(rootWorld(four,bank,inverse,root)&&root[0]==107&&root[1]==198&&root[2]==303);
+   float rows[12];std::memcpy(rows,bank+4*31,sizeof rows);
+   float fromRows[3];assert(rootWorldFromPaletteRows(rows,inverse,fromRows)&&!std::memcmp(root,fromRows,sizeof root));
+   rows[7]=NAN;assert(!rootWorldFromPaletteRows(rows,inverse,fromRows));
    Program other=four;other.operations.pop_back();assert(!NorthlightReplayBounds::SkinEnvelope::supports(other)); /* any deviation: vertex-sample fallback */
    Program flat;assert(!rootWorld(flat,bank,inverse,root)); /* no a0 palette */
    // evaluateFast (sampled distances): the skinning template written out and the

@@ -279,3 +279,25 @@ float4 HdrBloomWidePairVertical(float2 uv:TEXCOORD0,float2 pixel:VPOS):COLOR0 {
     [branch]if(x-2*column>.5)return hdrBloomPairVertical(HdrAux,sampleUV);
     return hdrBloomPairVertical(HdrScene,sampleUV);
 }
+
+sampler3D AppearanceDay : register(s1);
+sampler3D AppearanceDusk : register(s2);
+sampler3D AppearanceNight : register(s3);
+// HdrGrade.rgb carries the clock weights of the resident LUTs, HdrGrade.w selects scRGB.
+float4 RegionalAppearance(float2 uv:TEXCOORD0):COLOR0 {
+    float4 pixel=tex2D(HdrScene,uv);
+    float3 colour=saturate(pixel.rgb);
+    float headroom=1;
+    [branch]if(HdrGrade.w>.5){
+        headroom=max(1,max(pixel.r,max(pixel.g,pixel.b)));
+        float3 radiance=saturate(pixel.rgb/headroom);
+        colour=lerp(radiance*12.92,1.055*pow(radiance,1.0/2.4)-.055,step(.0031308,radiance));
+    }
+    float4 address=float4(mad(colour,31.0/32,.5/32),0);
+    float3 graded=colour*(1-HdrGrade.x-HdrGrade.y-HdrGrade.z);
+    [branch]if(HdrGrade.x>0)graded+=tex3Dlod(AppearanceDay,address).rgb*HdrGrade.x;
+    [branch]if(HdrGrade.y>0)graded+=tex3Dlod(AppearanceDusk,address).rgb*HdrGrade.y;
+    [branch]if(HdrGrade.z>0)graded+=tex3Dlod(AppearanceNight,address).rgb*HdrGrade.z;
+    [branch]if(HdrGrade.w>.5)graded=hdrDecode(graded)*headroom;
+    return float4(graded,pixel.a);
+}

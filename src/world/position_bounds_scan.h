@@ -27,16 +27,22 @@ inline bool scanPositionsScalar(const void* data,std::size_t count,std::size_t s
 inline bool scanPositions(const void* data,std::size_t count,std::size_t stride,float* low,float* high){
 #if defined(__SSE2__)
     __m128 lo=_mm_set1_ps(FLT_MAX),hi=_mm_set1_ps(-FLT_MAX);
-    const auto exponent=_mm_set1_epi32(0x7f800000),magnitude=_mm_set1_epi32(0x7fffffff),zero=_mm_setzero_si128();
+    const auto magnitude=_mm_set1_epi32(0x7fffffff),zero=_mm_setzero_si128();
+    const auto bias=_mm_set1_epi32(0x7f800000),lastNormal=_mm_set1_epi32(-0x01000001);
+    const auto* bytes=static_cast<const unsigned char*>(data);
     for(std::size_t i=0;i<count;++i){
-        float xyz[3];std::memcpy(xyz,static_cast<const unsigned char*>(data)+i*stride,sizeof xyz);
-        const auto p=_mm_set_ps(0,xyz[2],xyz[1],xyz[0]);
-        const auto bits=_mm_castps_si128(p),field=_mm_and_si128(bits,exponent);
-        const auto subnormal=_mm_and_si128(_mm_cmpeq_epi32(field,zero),_mm_cmpgt_epi32(_mm_and_si128(bits,magnitude),zero));
-        // Keep the prior scalar behavior for NaN/Inf and subnormals, including
-        // DAZ/FTZ modes where packed min/max can round an input to signed zero.
-        if(_mm_movemask_ps(_mm_castsi128_ps(_mm_or_si128(subnormal,_mm_cmpeq_epi32(field,exponent)))))
-            return detail::scanPositionsScalar(data,count,stride,low,high);
+        const auto* source=bytes+i*stride;
+        const auto xy=_mm_loadl_epi64(reinterpret_cast<const __m128i*>(source));
+        std::int32_t z;std::memcpy(&z,source+8,sizeof(z));
+        const auto bits=_mm_unpacklo_epi64(xy,_mm_cvtsi32_si128(z));
+        const auto abs=_mm_and_si128(bits,magnitude);
+        // Translate the positive normal encoding range to a single signed
+        // comparison, then allow either sign of zero. Subnormals keep the
+        // scalar path so DAZ/FTZ and the original zero sign stay authoritative.
+        const auto exceptional=_mm_andnot_si128(_mm_cmpeq_epi32(abs,zero),
+            _mm_cmpgt_epi32(_mm_add_epi32(abs,bias),lastNormal));
+        if(_mm_movemask_ps(_mm_castsi128_ps(exceptional)))return detail::scanPositionsScalar(data,count,stride,low,high);
+        const auto p=_mm_castsi128_ps(bits);
         // MINPS/MAXPS select the second operand on equality. Keep the prior
         // bound second to preserve std::min/max's signed-zero tie behavior.
         lo=_mm_min_ps(p,lo);hi=_mm_max_ps(p,hi);

@@ -38,5 +38,17 @@ int main(int argc, char** argv) {
     recorder.join();
     renderer.join();
     require(capture && replay && on.CompositeAfterEffects(), "capture and replay share a working module");
-    std::cout << "PASS missing, incompatible, disabled and concurrent enabled water startup\n";
+    WaterHostWorldFrame world{};
+    world.mapId=0;world.zoneId=1497;
+    world.values.viewport={0,0,800,600,0.f,1.f};
+    world.values.cameraRelativeView[0]=world.values.cameraRelativeView[5]=world.values.cameraRelativeView[10]=world.values.cameraRelativeView[15]=1.f;
+    world.values.glProjection[0]=world.values.glProjection[5]=1.f;
+    world.values.glProjection[10]=1.01f;world.values.glProjection[11]=1.f;world.values.glProjection[14]=-0.2f;
+    const auto* api=on.Module().API();
+    for(const auto size:{uint32_t(sizeof(world.values)),uint32_t(sizeof(world))}){
+        auto* frame=api->copy_frame(&world.values,size);
+        require(frame!=nullptr,"both original and extended frame layouts are accepted");
+        api->release_frame(frame);
+    }
+    std::cout << "PASS Tideglass startup and both frame layouts\n";
 }

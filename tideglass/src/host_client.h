@@ -1,4 +1,5 @@
 #pragma once
+#include "host_scenery_pose.h"
 #include "host_api.h"
 #include "host_diagnostics.h"
 #include "host_capture.h"
@@ -52,12 +53,26 @@ public:
         auto getTrace=reinterpret_cast<WaterHostGetTraceAPIFn>(reinterpret_cast<void*>(GetProcAddress(module,"WaterHostGetTraceAPI")));
         m_trace=getTrace?getTrace(kWaterTraceABI,sizeof(WaterHostTraceAPI)):nullptr;
         if(m_trace&&(m_trace->abi!=kWaterTraceABI||m_trace->size!=sizeof(WaterHostTraceAPI)))m_trace=nullptr;
+        m_poseRequests=reinterpret_cast<PoseRequestsFn>(reinterpret_cast<void*>(GetProcAddress(module,"WaterHostSceneryPoses")));
         auto getEnvironment=reinterpret_cast<WaterHostGetEnvironmentAPIFn>(reinterpret_cast<void*>(GetProcAddress(module,"WaterHostGetEnvironmentAPI")));
         m_environment=getEnvironment?getEnvironment(kWaterEnvironmentABI,sizeof(WaterHostEnvironmentAPI)):nullptr;
-        if(m_environment&&(m_environment->abi!=kWaterEnvironmentABI||m_environment->size!=sizeof(WaterHostEnvironmentAPI)||!m_environment->set_environment||!m_environment->surface_status))m_environment=nullptr;
+        if(!m_environment&&getEnvironment)m_environment=getEnvironment(3,sizeof(WaterHostEnvironmentAPI));
+        if(!m_environment&&getEnvironment)m_environment=getEnvironment(2,sizeof(WaterHostEnvironmentAPI));
+        if(m_environment&&((m_environment->abi!=kWaterEnvironmentABI&&m_environment->abi!=3&&m_environment->abi!=2)||m_environment->size!=sizeof(WaterHostEnvironmentAPI)||!m_environment->set_environment||!m_environment->surface_status))m_environment=nullptr;
         auto getLiquid=reinterpret_cast<WaterHostGetLiquidAPIFn>(reinterpret_cast<void*>(GetProcAddress(module,"WaterHostGetLiquidAPI")));
         m_liquid=getLiquid?getLiquid(kWaterLiquidABI,sizeof(WaterHostLiquidAPI)):nullptr;
-        if(m_liquid&&(m_liquid->abi!=kWaterLiquidABI||m_liquid->size!=sizeof(WaterHostLiquidAPI)||
+        if(m_liquid&&(m_liquid->abi!=kWaterLiquidABI||m_liquid->size!=sizeof(WaterHostLiquidAPI)||!m_liquid->finish_masked_world||!m_liquid->composite_masked_water))m_liquid=nullptr;
+        if(!m_liquid&&getLiquid){
+            const auto prefix=offsetof(WaterHostLiquidAPI,finish_masked_world);
+            m_liquid=getLiquid(10,prefix);
+            if(m_liquid&&(m_liquid->abi!=10||m_liquid->size!=prefix||!m_liquid->composite_masked_water))m_liquid=nullptr;
+        }
+        if(!m_liquid&&getLiquid){
+            const auto prefix=offsetof(WaterHostLiquidAPI,composite_masked_water);
+            m_liquid=getLiquid(9,prefix);
+            if(m_liquid&&(m_liquid->abi!=9||m_liquid->size!=prefix))m_liquid=nullptr;
+        }
+        if(m_liquid&&(
             !m_liquid->classify||!m_liquid->observe||!m_liquid->before_surface||!m_liquid->effects_mask||!m_liquid->after_surface||!m_liquid->composite||!m_liquid->capture_client||!m_liquid->observe_draw||!m_liquid->scene_before))m_liquid=nullptr;
         m_module = module;
         m_api = api;
@@ -70,10 +85,12 @@ public:
         if (!m_module) return true;
         if (!m_api->can_unload()) return false;
         if (!FreeLibrary(m_module)) return false;
-        m_module = nullptr;
+        m_module = nullptr;m_poseRequests=nullptr;
         m_api = nullptr;m_capture=nullptr;m_diagnostics=nullptr;m_trace=nullptr;m_environment=nullptr;m_liquid=nullptr;
         return true;
     }
+    using PoseRequestsFn=WaterSceneryPoseRequests* (__cdecl*)(WaterHostContext*,uint32_t,uint32_t);
+    PoseRequestsFn PoseRequests() const {return m_poseRequests;}
     const WaterHostEnvironmentAPI* Environment()const{return m_environment;}
     const WaterHostLiquidAPI* Liquid()const{return m_liquid;}
     const WaterHostCaptureAPI* CaptureAPI()const{return m_capture;}
@@ -84,7 +101,14 @@ public:
     { return m_api ? WaterHostFrameRef(m_api,m_liquid?m_liquid->capture_client(&camera,map,context):m_api->capture_client(&camera)) : WaterHostFrameRef(); }
     WaterHostFrameRef Copy(const WaterFrameValues& values) const
     { return m_api ? WaterHostFrameRef(m_api, m_api->copy_frame(&values, sizeof(values))) : WaterHostFrameRef(); }
+    WaterHostFrameRef Copy(const WaterHostWorldFrame& world) const
+    {
+        if (!m_api) return {};
+        if (auto* frame = m_api->copy_frame(&world.values, sizeof(world))) return {m_api, frame};
+        return Copy(world.values);
+    }
 private:
+    PoseRequestsFn m_poseRequests=nullptr;
     HMODULE m_module = nullptr;
     const WaterHostAPI* m_api = nullptr;
     const WaterHostDiagnosticsAPI* m_diagnostics=nullptr;

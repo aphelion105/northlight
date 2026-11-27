@@ -1,6 +1,54 @@
 {
   "version": 1,
+  "wmo_point_omissions": {
+    "Azeroth": [
+      {
+        "model": "world\\wmo\\dungeon\\md_mountaincave\\md_icecave03.wmo",
+        "asset_sha256": "4cfe238823b89e7d9ab440f94db44460ef9de09490a633f856f8b641c02ba694",
+        "placement": 350747,
+        "sources": [0, 1],
+        "basis": "At this Dun Morogh entrance the two MOLT points are suspended about 28 to 30 yards above cave geometry directly underneath. The 8.33-yard points leave the ice and stalactites unchanged. The second creates a detached green patch above the entrance that persists with WorldFog disabled."
+      }
+    ],
+    "HyjalPast": [
+      {
+        "model": "world\\wmo\\kalimdor\\buildings\\classicalelfruins\\classicalelfruin10.wmo",
+        "asset_sha256": "be5c26df7bc8b683e40beb17edddb3991f858272e4fa7acc611cad161bd0c5a8",
+        "placement": 665954,
+        "sources": [0, 1],
+        "basis": "The two MOLT points are 561 and 563 yards from this ruin. Their ranges of 36 and 66 yards leave both lights detached from the structure."
+      }
+    ]
+  },
   "native_anchors": {
+    "world\\expansion01\\doodads\\hellfirepeninsula\\lamppost\\ancient_drainei_lamppost.m2": {
+      "model_sha256": "042db1ba762afd6d3af1ef207b1a4310bb3f9e810bcb6a06b613a5b406bb91ed",
+      "skin_sha256": "cb7424d4f2cb96b6bd95d5ca3eb8c2ddd76adda01a9607b9b5d0f4a005885b31",
+      "source": 0,
+      "position": [0.72992239, 0.05983199, 1.29999848],
+      "basis": "At the outward edge of the pink lower crystal. The native point sat inside the opaque housing and darkened nearby surfaces. This position opens the lens side and retains the shadow below the housing in both tested placements."
+    },
+    "world\\generic\\orc\\passive doodads\\firepits\\largefirepit01.m2": {
+      "model_sha256": "106968b38aebdd3946d7aac5dc91f029d637d2542c0f3f5ff5afe86090af7d22",
+      "skin_sha256": "09a9c0ddafa4826751866feba9353a3b07e3e27ce49b5ed463298ccb0c7bafb7",
+      "source": 0,
+      "position": [0.009, -0.011, 1.38],
+      "basis": "Lower part of the visible flame above the firewood. Raising the native point lets warm light reach paving in Shadowmoon Valley and soil, plants, and crates in Ashenvale. The fire pit still occludes the ground beneath it."
+    },
+    "world\\generic\\dwarf\\passive doodads\\lampposts\\anvilmarlamppost.m2": {
+      "model_sha256": "7c85a27936f38420e1b542488f1514356bec48e7c695bfc01cc15ddf30eab8f9",
+      "skin_sha256": "56b55dd1e66c49cd94130d7cf927f701b8188486e611954abfa7e42e88167bb2",
+      "source": 0,
+      "position": [0.044, 0.001, 2.36],
+      "basis": "Inside the visible flame just above the stone cup. Raising the native point by 0.41 model yards lets light reach the snow and nearby fence while the stone pedestal still blocks light underneath."
+    },
+    "world\\expansion02\\doodads\\generic\\northrend fires\\northrendgeneraltorch01.m2": {
+      "model_sha256": "251454966ebdfc378b75740889ca4520402a85525c8b964d807d9f0eab1efaeb",
+      "skin_sha256": "d4ccd12473ce7f791fb21597a42364780ab5754ffcba3a6504fcaf974340382e",
+      "source": 0,
+      "position": [0.003, -0.011, 2.56],
+      "basis": "Upper flame of the installed replacement torch. The native point lies inside the opaque head, which projects an oversized shadow. Raising the point into the visible flame keeps the fixture's warm spill and compact ground shadow."
+    },
     "world\\generic\\human\\passive doodads\\hanginglanterns\\generalhanginglantern01.m2": {
       "model_sha256": "9eb75149139e8ad185eb73deb0841a72e851dab673794734d63d71969c4af1ce",
       "skin_sha256": "d5aa38426fc55118e652e56af1bffd3270d5985e3b558ef477d53d44f2e46d96",
@@ -9,7 +57,848 @@
       "basis": "Center of the additive glow batch inside the rigid lantern, at the tip of the modeled flame. The native light is below the entire replacement mesh."
     }
   },
+  "native_placement_ranges": {
+    "Azeroth": [
+      {
+        "model": "world\\generic\\passivedoodads\\lights\\candle01.m2",
+        "asset_sha256": "14f5c0800af4c804f2085c23ce68177503805e4481c43b261a6d6191e7e3dfda",
+        "placements": [507720968962888, 507720968962889, 507720968962890, 507720968962894, 507720968962909, 507720968962927],
+        "end": 4.5,
+        "basis": "Booty Bay fireworks stockroom. Shorter reach keeps the warm glow around each candle and preserves the rocket colours and crate detail."
+      },
+      {
+        "model": "world\\generic\\passivedoodads\\lights\\candle02.m2",
+        "asset_sha256": "6f7b16aa6141616b7711255352740466bb5ece9f53579c273130ed1601e6b941",
+        "placements": [507720968962891, 507720968962892, 507720968962893, 507720968962919, 507720968962921, 507720968962926],
+        "end": 4.5,
+        "basis": "In the same Booty Bay stockroom. This range reduces overlap between neighbouring candles while keeping the wooden stands lit."
+      }
+    ],
+    "Northrend": [
+      {
+        "model": "world\\expansion02\\doodads\\boreantundra\\magnatauritems\\snobold_candle01.m2",
+        "asset_sha256": "d29492f21cbb1c3bac5a121488401ea14f60b3d0c7d209e12b7f1cc532970d06",
+        "placements": [8150984639381558],
+        "end": 6,
+        "basis": "Snobold cave meal alcove in Borean Tundra. The shorter reach preserves warm light near the plate and limits overlapping spill on the surrounding stone."
+      },
+      {
+        "model": "world\\expansion02\\doodads\\boreantundra\\magnatauritems\\snobold_candle02.m2",
+        "asset_sha256": "3cce30006cc56d17881433d9c9c90f290afddc40d88ddd2b9e2f2fc4bf3cf9cc",
+        "placements": [8150984639381559, 8150984639381566],
+        "end": 6,
+        "basis": "Snobold cave meal alcove in Borean Tundra. The shorter reach preserves warm light near the plate and limits overlapping spill on the surrounding stone."
+      },
+      {
+        "model": "world\\expansion02\\doodads\\boreantundra\\magnatauritems\\snobold_candle03.m2",
+        "asset_sha256": "9700e9f4caf3f8d83b4598ad16d2cee9d03e3f847fcd99d70383f4057cc17f1b",
+        "placements": [8150984639381560],
+        "end": 6,
+        "basis": "Snobold cave meal alcove in Borean Tundra. The shorter reach preserves warm light near the plate and limits overlapping spill on the surrounding stone."
+      },
+      {
+        "model": "world\\expansion02\\doodads\\boreantundra\\magnatauritems\\snobold_candle04.m2",
+        "asset_sha256": "41167ba83ab478850537cf89024d6c6ba2484f97e5a9c79a169aa86672290416",
+        "placements": [8150984639381561],
+        "end": 6,
+        "basis": "Snobold cave meal alcove in Borean Tundra. The shorter reach preserves warm light near the plate and limits overlapping spill on the surrounding stone."
+      },
+      {
+        "model": "world\\expansion02\\doodads\\boreantundra\\magnatauritems\\snobold_candle_group01.m2",
+        "asset_sha256": "0af1f141278d59d7eb1992c1aafd49f5283d1e8ead80008690d78f927b3cf682",
+        "placements": [8150984639381562],
+        "end": 6,
+        "basis": "Snobold cave meal alcove in Borean Tundra. The shorter reach preserves warm light near the plate and limits overlapping spill on the surrounding stone."
+      },
+      {
+        "model": "world\\expansion02\\doodads\\boreantundra\\magnatauritems\\snobold_candle_group02.m2",
+        "asset_sha256": "5058e5b6f14beb912afdffaf911ef82bb36854b1c906ee55ff03d97131b877a5",
+        "placements": [8150984639381563],
+        "end": 6,
+        "basis": "Snobold cave meal alcove in Borean Tundra. The shorter reach preserves warm light near the plate and limits overlapping spill on the surrounding stone."
+      }
+    ],
+    "UtgardePinnacle": [
+      {
+        "model": "world\\generic\\passivedoodads\\lights\\candle01.m2",
+        "asset_sha256": "14f5c0800af4c804f2085c23ce68177503805e4481c43b261a6d6191e7e3dfda",
+        "placements": [6066155974296179, 6066155974296180],
+        "end": 6,
+        "basis": "Alongside the long rug. This reach keeps the warm spill around the candle cluster."
+      },
+      {
+        "model": "world\\generic\\passivedoodads\\lights\\candle02.m2",
+        "asset_sha256": "6f7b16aa6141616b7711255352740466bb5ece9f53579c273130ed1601e6b941",
+        "placements": [6066155974296181],
+        "end": 6,
+        "basis": "In the candle cluster alongside the long rug."
+      },
+      {
+        "model": "world\\generic\\passivedoodads\\lights\\candle03.m2",
+        "asset_sha256": "35455896dc6bd98cabc601d78a6353a40fc46fc10fb0368336b12d23175e88fe",
+        "placements": [6066155974296182, 6066155974296183, 6066155974296184],
+        "end": 6,
+        "basis": "At the foot of the long rug. The closer falloff keeps the edge lit with less spill across the cloth."
+      }
+    ]
+  },
   "profiles": {
+    "world\\expansion01\\doodads\\generic\\holograms\\hologram_doomguard.m2": {
+      "asset_sha256": "0e43dc3771bf733398abc1466aefee4bf22c434d784ab9d8dd0ee2f419eb289f",
+      "family": "wotlk_energy",
+      "position_basis": "Place the two magenta points above the pedestal so the nearby stone receives a short spill. The hologram does not cast an opaque shadow.",
+      "position": [-0.279806, 0.230769, 1.029568],
+      "rgb": [0.92, 0.29, 1.0],
+      "intensity": 0.25,
+      "start": 0.227881,
+      "end": 2.743015,
+      "casts_shadows": false,
+      "merge_emitters": false,
+      "emitters": [
+        {"position": [-0.279806, 0.230769, 1.029568], "rgb": [0.92, 0.29, 1.0], "intensity": 0.25, "start": 0.227881, "end": 2.743015, "casts_shadows": false},
+        {"position": [-0.180955, 0.151078, 1.691348], "rgb": [0.92, 0.29, 1.0], "intensity": 0.14, "start": 0.227881, "end": 2.743015, "casts_shadows": false}
+      ]
+    },
+    "world\\expansion01\\doodads\\generic\\draenei\\glow\\dr_rays_blue.m2": {
+      "asset_sha256": "5e4613938842528a09ab511257bb40dc78be9c76f6688085a88079510c2075c8",
+      "family": "wotlk_energy",
+      "position_basis": "Keep the measured glow centroids and use the cool spill checked on the nearby arch and crystal in the Exodar.",
+      "position": [-7.100554957696716, 0.05242113899468109, 1.8019526392607952],
+      "rgb": [0.3, 0.55, 1.0],
+      "intensity": 1.3,
+      "start": 1.0,
+      "end": 20.0,
+      "casts_shadows": false,
+      "merge_emitters": false,
+      "emitters": [
+        {"position": [-7.100554957696716, 0.05242113899468109, 1.8019526392607952], "rgb": [0.3, 0.55, 1.0], "intensity": 1.3, "start": 1.0, "end": 20.0, "casts_shadows": false},
+        {"position": [7.100552999637416, -0.0524170442882552, 1.8019520224049979], "rgb": [0.3, 0.55, 1.0], "intensity": 1.3, "start": 1.0, "end": 20.0, "casts_shadows": false}
+      ]
+    },
+    "world\\expansion01\\doodads\\generic\\draenei\\glow\\dr_rays_orange.m2": {
+      "asset_sha256": "561d071c5fd23922178c66b50f1148afd566549fd4e65bebcb7a0a4d6340c7f6",
+      "family": "wotlk_energy",
+      "position_basis": "Keep the measured glow centroids and use the warm, lower-energy spill checked at both Exodar placements.",
+      "position": [-7.100554957696716, 0.05242113899468109, 1.8019526392607952],
+      "rgb": [1.0, 0.53, 0.19],
+      "intensity": 1.3,
+      "start": 1.0,
+      "end": 20.0,
+      "casts_shadows": false,
+      "merge_emitters": false,
+      "emitters": [
+        {"position": [-7.100554957696716, 0.05242113899468109, 1.8019526392607952], "rgb": [1.0, 0.53, 0.19], "intensity": 1.3, "start": 1.0, "end": 20.0, "casts_shadows": false},
+        {"position": [7.100552999637416, -0.0524170442882552, 1.8019520224049979], "rgb": [1.0, 0.53, 0.19], "intensity": 1.3, "start": 1.0, "end": 20.0, "casts_shadows": false}
+      ]
+    },
+    "world\\expansion02\\doodads\\generic\\forsaken\\fk_signpost.m2": {
+      "asset_sha256": "6643eb45117854a4ec6e41ee10e60a9029e716b77ef229adcec9559bab548d7d",
+      "family": "wotlk_energy",
+      "position_basis": "Place a warm point on each side of the amber lantern glass. The lantern body, post and nearby railings cast point shadows.",
+      "position": [-0.68, 0.0, 3.84],
+      "rgb": [1.0, 0.56, 0.15],
+      "intensity": 0.31,
+      "start": 0.55,
+      "end": 6.7,
+      "casts_shadows": true,
+      "merge_emitters": false,
+      "emitters": [
+        {"position": [-0.68, 0.0, 3.84], "rgb": [1.0, 0.56, 0.15], "intensity": 0.31, "start": 0.55, "end": 6.7, "casts_shadows": true},
+        {"position": [0.68, 0.0, 3.84], "rgb": [1.0, 0.56, 0.15], "intensity": 0.31, "start": 0.55, "end": 6.7, "casts_shadows": true}
+      ]
+    },
+    "world\\expansion02\\doodads\\generic\\inscription\\inscription_quill_phoenix.m2": {
+      "asset_sha256": "c36ad683232f714cdca1b5c0ac976a6c5c9461f840bf9935da8f6764ccbfd599",
+      "family": "wotlk_fire",
+      "position_basis": "Center the light in the visible orange feather above the inkwell. Keep the warm spill on the near tabletop and let the desk and its contents cast point shadows.",
+      "position": [0.035, 0.43, 0.89],
+      "rgb": [1.0, 0.48, 0.125],
+      "intensity": 0.32,
+      "start": 0.37,
+      "end": 2.65,
+      "casts_shadows": true
+    },
+    "world\\expansion02\\doodads\\grizzlyhills\\trappers\\trappersignpost.m2": {
+      "asset_sha256": "b0fb8f59b3693e8b7dc6a575e835a78819cbffe1b72838d8d9dca667e50c4198",
+      "family": "wotlk_fire",
+      "position_basis": "Place a compact warm point at the edge of the visible lantern opening. It lights open soil on that side while the post and lantern body mask spill onto the opposite side of the path.",
+      "position": [0.25, 0.29, 3.60],
+      "rgb": [1.0, 0.57, 0.19],
+      "intensity": 0.55,
+      "start": 0.53,
+      "end": 6.0,
+      "casts_shadows": true
+    },
+    "world\\expansion02\\doodads\\ulduar\\ul_war_machine01.m2": {
+      "asset_sha256": "9cb76b79cc7d0bc00c790a2c6e5ea34498bb3c7e2acc4440db905c7b02b29cdd",
+      "family": "wotlk_energy",
+      "position_basis": "Preserve the near light on the ring and adjacent metal. Shorten the main radius on the scaled machine so it no longer lights the rear wall and pillars. Keep the three secondary sources at their measured settings.",
+      "position": [
+        0.9864432484111708,
+        -0.030371836807947306,
+        2.2733875118496134
+      ],
+      "rgb": [
+        0.7846608032989006,
+        0.8852261755120648,
+        1.0
+      ],
+      "intensity": 1.5119254403829971,
+      "start": 1.0,
+      "end": 5.449479445786136,
+      "casts_shadows": false,
+      "merge_emitters": false,
+      "emitters": [
+        {
+          "position": [
+            0.9864432484111708,
+            -0.030371836807947306,
+            2.2733875118496134
+          ],
+          "rgb": [
+            0.7846608032989006,
+            0.8852261755120648,
+            1.0
+          ],
+          "intensity": 1.5119254403829971,
+          "start": 1.0,
+          "end": 5.449479445786136
+        },
+        {
+          "position": [
+            1.1531638739042973,
+            1.065054525382705,
+            1.0665400591479235
+          ],
+          "rgb": [
+            1.0,
+            0.9980070073406937,
+            0.9912490796029574
+          ],
+          "intensity": 0.04385446282574547,
+          "start": 0.5235364291631569,
+          "end": 2.0941457166526276
+        },
+        {
+          "position": [
+            1.1670543250514742,
+            -1.1133572018190743,
+            1.0633500300174077
+          ],
+          "rgb": [
+            1.0,
+            0.9980070073406934,
+            0.9912490796029572
+          ],
+          "intensity": 0.0438545797626577,
+          "start": 0.5235371271615897,
+          "end": 2.094148508646359
+        },
+        {
+          "position": [
+            2.1684406913036165,
+            -0.002665132651630479,
+            6.7294541780145405
+          ],
+          "rgb": [
+            0.5585365294635088,
+            0.8145681889861912,
+            1.0
+          ],
+          "intensity": 0.10426536380990709,
+          "start": 0.8072536923495112,
+          "end": 3.2290147693980447
+        }
+      ]
+    },
+    "world\\expansion02\\doodads\\daggercap\\burningship\\howlingfjord_burningship.m2": {
+      "asset_sha256": "4a3bb5018212b94dad88021690e2893062822b8d8abbe72ca4862643f1c911a4",
+      "family": "wotlk_energy",
+      "position_basis": "Steady spill beside the active lower flames. The offset reaches exposed planks while the thick rails keep the wood behind them in shadow in both Howling Fjord and Utgarde Pinnacle.",
+      "position": [
+        -22.84165574589828,
+        -22.83442432481956,
+        -17.23275722896478
+      ],
+      "rgb": [
+        1,
+        0.4895833333333333,
+        0.14375
+      ],
+      "intensity": 0.48,
+      "start": 0.5752809026088925,
+      "end": 7.080380339801754,
+      "casts_shadows": true
+    },
+    "world\\expansion02\\doodads\\dalaran\\dalaran_fountain_02.m2": {
+      "asset_sha256": "6b958f2bf5a085719705db3f6a2ddc0bf7ff5f51ae4718ac54c5288751acd318",
+      "family": "wotlk_energy",
+      "position_basis": "Place the point above the basin and close to the water, with the stone surround occluding spill onto the wall.",
+      "position": [
+        0.131649449467659,
+        2.1,
+        0.44
+      ],
+      "rgb": [
+        0.8941177068972121,
+        0.9972601273490914,
+        1.0
+      ],
+      "intensity": 1.1,
+      "start": 0.8,
+      "end": 8.5,
+      "casts_shadows": true
+    },
+    "world\\expansion02\\doodads\\dalaran\\dalaran_mageportal_01.m2": {
+      "asset_sha256": "eb9eb82ac108678c539e39aa498bd9140da6e6b8281af9ec317c61bf3665650a",
+      "family": "wotlk_energy",
+      "position_basis": "Raise the portal point to the sill and retain a bounded blue footprint on the floor in both Dalaran placements.",
+      "position": [
+        -0.26625007607939477,
+        -3.5515365059531523,
+        -0.1
+      ],
+      "rgb": [
+        0.200439828030504,
+        0.5213696509282716,
+        1.0
+      ],
+      "intensity": 1.22,
+      "start": 0.8,
+      "end": 10.0,
+      "casts_shadows": false
+    },
+    "world\\expansion02\\doodads\\generic\\vrykul\\signs\\vr_signpost_snow01.m2": {
+      "asset_sha256": "e764a8615545cb06b9f0d354cd8793bcea72725aecbefeb13f66c7ce41e682b3",
+      "family": "wotlk_energy",
+      "position_basis": "At the outer lip of the lamp cage. The retained cage shadow bounds warm spill on the post and nearby trim.",
+      "position": [
+        1.17,
+        0.23,
+        9.24
+      ],
+      "rgb": [
+        1.0,
+        0.54,
+        0.16
+      ],
+      "intensity": 0.85,
+      "start": 0.8,
+      "end": 11.5,
+      "casts_shadows": true
+    },
+    "world\\expansion02\\doodads\\generic\\oracle\\o_lampwall_01.m2": {
+      "asset_sha256": "859afa5a8ed127819e51bd2a186f6efca8730542ebcdade34d471df4866df6ed",
+      "family": "wotlk_energy",
+      "position": [1.65, -0.11, 0.26],
+      "position_basis": "At the lower opening of the crystal mount. The offset lights the nearby trunk and masonry in Sholazar Basin, with the bracket occluding spill into the fixture.",
+      "rgb": [0.29, 0.85, 1.0],
+      "intensity": 0.86,
+      "start": 0.66,
+      "end": 7.8,
+      "max_world_end": 6.5,
+      "casts_shadows": true
+    },
+    "world\\expansion02\\doodads\\generic\\oracle\\o_lamppost_01.m2": {
+      "asset_sha256": "6ea28be0ad2577d1ac1941493f8eaa8ace2b6dd00db664e1a682e2ab161ee90c",
+      "family": "wotlk_energy",
+      "position": [-0.34, 0.01, 1.93],
+      "position_basis": "Just outside the glowing crystal at the height of its lower face. In Sholazar Basin it lights nearby grass, ground and wood while the pole and shelter occlude spill.",
+      "rgb": [0.30, 0.86, 1],
+      "intensity": 0.78,
+      "start": 0.78,
+      "end": 9,
+      "max_world_end": 7.5,
+      "casts_shadows": true
+    },
+    "world\\expansion02\\doodads\\grizzlyhills\\trappers\\trapperlamppost_01.m2": {
+      "asset_sha256": "b3a42dc6933d4e304654147e490c619edfc89602b4d56ce262e9f6b07c1ed4d9",
+      "family": "wotlk_lantern",
+      "position": [-0.014, -0.009, 2.34],
+      "position_basis": "Upper part of the visible glow inside the lantern. This point reaches the trail and nearby fence rails in Grizzly Hills and Drak'Tharon Keep while the post and rails block spill.",
+      "rgb": [1, 0.66, 0.17],
+      "intensity": 0.86,
+      "start": 0.75,
+      "end": 5.4,
+      "max_world_end": 9.2,
+      "casts_shadows": true
+    },
+    "world\\expansion02\\doodads\\generic\\forsaken\\fk_chemistrytube_04.m2": {
+      "asset_sha256": "1ef7ffc0960d1b34b50a9d5593a197ec9738eccc28bf583e535670e7ac15b9db",
+      "family": "wotlk_energy",
+      "position": [-0.026, 0, 0.41],
+      "position_basis": "Centre of the additive liquid inside the flask. The shadowed point lights the nearby stone in Dalaran and the tabletop in Utgarde Pinnacle while the table blocks spill underneath.",
+      "rgb": [0.17, 1, 0.075],
+      "intensity": 0.68,
+      "start": 0.5,
+      "end": 3.6,
+      "max_world_end": 4.2,
+      "casts_shadows": true
+    },
+    "world\\expansion02\\doodads\\generic\\irondwarf\\id_lantern.m2": {
+      "asset_sha256": "6cc2f9201c968204db9f284356a786a90d73f2ec092c6f3975ec44f64b4dd602",
+      "family": "wotlk_energy",
+      "position": [-0.151, 0, 0.145],
+      "position_basis": "Two points sit just beyond the opaque blue panels at the height of the visible glow. At night in the Storm Peaks, they light the table and chair while the underside stays in shadow.",
+      "rgb": [0.13, 0.64, 1],
+      "intensity": 0.44,
+      "start": 0.5,
+      "end": 3.6,
+      "max_world_end": 4.5,
+      "casts_shadows": true,
+      "merge_emitters": false,
+      "emitters": [
+        {"position": [-0.151, 0, 0.145], "rgb": [0.13, 0.64, 1], "intensity": 0.44, "start": 0.5, "end": 3.6},
+        {"position": [0.155, 0, 0.145], "rgb": [0.13, 0.64, 1], "intensity": 0.44, "start": 0.5, "end": 3.6}
+      ]
+    },
+    "world\\expansion02\\doodads\\nexus\\nexus_blueenergywell.m2": {
+      "asset_sha256": "875649cdb5fc8e0e39ff81385d838fb45f01c7b50f7732291895918d13d46cc5",
+      "family": "wotlk_energy",
+      "position": [-0.003073544936760816, -0.00043131465050020283, 12.073616120940263],
+      "position_basis": "Two points follow the measured upper and lower beam centers. Reduce the lower point and cap scaled reach to preserve stone detail while keeping blue spill in the Nexus and the Oculus.",
+      "rgb": [0.026220637511206273, 0.44210920219549366, 1],
+      "intensity": 0.7257875642376002,
+      "start": 1,
+      "end": 8.519316664132166,
+      "max_world_end": 14,
+      "casts_shadows": false,
+      "emitters": [
+        {"position": [-0.003073544936760816, -0.00043131465050020283, 12.073616120940263], "rgb": [0.026220637511206273, 0.44210920219549366, 1], "intensity": 0.7257875642376002, "start": 1, "end": 8.519316664132166},
+        {"position": [-0.0030735200077945204, -0.00043129735203043277, 6.390657111191075], "rgb": [0.02622063751120627, 0.44210920219549354, 1], "intensity": 2.011701574088493, "start": 1, "end": 15.475408964857198}
+      ]
+    },
+    "world\\generic\\activedoodads\\instanceportal\\instanceportal_purpledifficulty.m2": {
+      "asset_sha256": "d006229fe866495d4bac993d1467edbf67d1623c50ee64e4b3fa47a13c6c0294",
+      "family": "wotlk_energy",
+      "position": [0, 0, 2.7368576245212872],
+      "position_basis": "Keep the measured glow center inside the portal. A placement range cap reduces spill on surrounding stone in Sunwell Plateau and Magisters' Terrace while preserving the nearby magenta effect.",
+      "rgb": [1, 0.11799588288495906, 0.9702753512807162],
+      "intensity": 0.5762212255290476,
+      "start": 1,
+      "end": 7.590923695631827,
+      "max_world_end": 14,
+      "casts_shadows": false
+    },
+    "world\\expansion01\\doodads\\generic\\naga\\distiller\\na_distiller.m2": {
+      "asset_sha256": "d3ab34d9666efb3372e19d8e3535cb10a04c221a8126e88b4ed73ab465a8c094",
+      "family": "wotlk_energy",
+      "position": [1.62, 1.56, 1.62],
+      "position_basis": "Just outside the four lower violet inserts. The Serpentshrine Cavern check shows light on the bronze housing and nearby floor, with shadow from the frame.",
+      "rgb": [0.76, 0.1, 1],
+      "intensity": 0.47,
+      "start": 0.45,
+      "end": 5.2,
+      "max_world_end": 5.2,
+      "casts_shadows": true,
+      "emitters": [
+        {"position": [1.62, 1.56, 1.62], "rgb": [0.76, 0.1, 1], "intensity": 0.47, "start": 0.45, "end": 5.2},
+        {"position": [1.62, -1.52, 1.62], "rgb": [0.76, 0.1, 1], "intensity": 0.47, "start": 0.45, "end": 5.2},
+        {"position": [-1.64, 1.56, 1.62], "rgb": [0.76, 0.1, 1], "intensity": 0.47, "start": 0.45, "end": 5.2},
+        {"position": [-1.64, -1.52, 1.62], "rgb": [0.76, 0.1, 1], "intensity": 0.47, "start": 0.45, "end": 5.2}
+      ]
+    },
+    "world\\expansion01\\doodads\\generic\\bloodelf\\cookpot\\be_cookpot01.m2": {
+      "asset_sha256": "ac3fb4d68eb92f2c319c553ebe7e8c312c9e527133679fd0cc63c29842882646",
+      "family": "wotlk_energy",
+      "position": [-0.02, -0.011, 0.25],
+      "position_basis": "Inside the blue crystal below the bowl. The close point lights the floor around the feet and preserves the white steam above the bowl.",
+      "rgb": [0.28, 0.77, 1],
+      "intensity": 0.32,
+      "start": 0.3,
+      "end": 4.2,
+      "max_world_end": 4.6,
+      "casts_shadows": true
+    },
+    "world\\expansion01\\doodads\\generic\\draenei\\tempestkeep\\narru_crystal_corrupted_no_lightning.m2": {
+      "asset_sha256": "442b1b5c4a5d7e2d8c75b9b2f03c470fc859cad1cdb9005a13c3e6290b915668",
+      "family": "wotlk_energy",
+      "position": [0, -0.067, -3.2],
+      "position_basis": "Two fill points follow the crystal axis. The shadowed point sits outside the near face, preserving red light at the base and reducing spill on the far stone in The Eye.",
+      "rgb": [1, 0.262, 0.262],
+      "intensity": 0.79,
+      "start": 1,
+      "end": 6.2,
+      "max_world_end": 23,
+      "casts_shadows": false,
+      "emitters": [
+        {
+          "position": [0, -0.067, -3.2],
+          "rgb": [1, 0.262, 0.262],
+          "intensity": 0.79,
+          "start": 1,
+          "end": 6.2,
+          "casts_shadows": false
+        },
+        {
+          "position": [0, 0.95, -1.4],
+          "rgb": [1, 0.262, 0.262],
+          "intensity": 1.16,
+          "start": 0.8,
+          "end": 5.8,
+          "casts_shadows": true
+        },
+        {
+          "position": [0, 0.15, 2.25],
+          "rgb": [1, 0.262, 0.262],
+          "intensity": 0.60,
+          "start": 0.8,
+          "end": 5.2,
+          "casts_shadows": false
+        }
+      ]
+    },
+    "world\\expansion01\\doodads\\silvermyst\\crystals\\silvermystcrystalsmall02.m2": {
+      "asset_sha256": "c1b5355ed29c7472f5f2ab99d46c5c1f44e8875db2830c1668d562ffd00e1a6e",
+      "family": "wotlk_energy",
+      "position": [-0.22, 0.08, 1.78],
+      "position_basis": "At the bright upper edge of the crystal. The Arcatraz capture retains the crystal color and lights the nearby wall while the housing blocks the lower spill.",
+      "rgb": [0.76, 0.27, 1],
+      "intensity": 0.68,
+      "start": 0.38,
+      "end": 5.2,
+      "max_world_end": 8.5,
+      "casts_shadows": true
+    },
+    "world\\expansion01\\doodads\\generic\\draenei\\tubes\\draenei_tubes.m2": {
+      "asset_sha256": "1a78d91233e80d1ff8ba372ba982db56256569926c9babcd3cf401000ee23051",
+      "family": "wotlk_energy",
+      "position": [-0.85, -17.7, -0.03],
+      "position_basis": "Two points inside the illuminated tube mouths. The Botanica captures preserve the white-magenta current while stone and collar geometry interrupt its spill.",
+      "rgb": [1, 0.70, 0.995],
+      "intensity": 3.25,
+      "start": 0.65,
+      "end": 18,
+      "max_world_end": 12,
+      "casts_shadows": true,
+      "emitters": [
+        {
+          "position": [-0.85, -17.7, -0.03],
+          "rgb": [1, 0.70, 0.995],
+          "intensity": 3.25,
+          "start": 0.65,
+          "end": 18
+        },
+        {
+          "position": [-0.85, 20.34, -0.03],
+          "rgb": [1, 0.57, 0.93],
+          "intensity": 3.50,
+          "start": 0.65,
+          "end": 18.7
+        }
+      ]
+    },
+    "world\\expansion01\\doodads\\hellfirecitadel\\demonwing\\passivedoodads\\lantern\\hf_demonwing_lantern.m2": {
+      "asset_sha256": "cb5256f1e32b6d07438ae5b9c10b25bfeb257bc4ab7d06ca16169fb3bb3fcf1a",
+      "family": "wotlk_energy",
+      "position": [-0.02, 0.73, 0.20],
+      "position_basis": "Inside the colored glass near the opening. Blood Furnace captures show yellow-green spill on the stone and a shadow from the lantern housing and its support.",
+      "rgb": [0.76, 1, 0.10],
+      "intensity": 0.65,
+      "start": 0.55,
+      "end": 7.2,
+      "max_world_end": 11,
+      "casts_shadows": true
+    },
+    "world\\expansion01\\doodads\\hellfirecitadel\\passivedoodads\\braizers\\hellfire_floorbraizer_purple.m2": {
+      "asset_sha256": "946173ec1ca11829bb5690ac81da093778f512ae2c80bf1081ab2ecab3f6e8c1",
+      "family": "wotlk_fire",
+      "position": [0.10, 0.14, -3.65],
+      "position_basis": "Within the lower plume above the lip. In the Blood Furnace it gives a violet spill on nearby stone, with the bowl and feet occluding the floor.",
+      "rgb": [0.92, 0.45, 1],
+      "intensity": 1.18,
+      "start": 0.7,
+      "end": 9,
+      "max_world_end": 12,
+      "casts_shadows": true
+    },
+    "world\\expansion01\\doodads\\hellfirecitadel\\passivedoodads\\braizers\\hellfire_standingbraizer_purple.m2": {
+      "asset_sha256": "79168fec34e12b3b43c2d189a4945f34ad9d61e83dcd5a02fca5b2d044c10685",
+      "family": "wotlk_fire",
+      "position": [0.10, 0.14, -3.65],
+      "position_basis": "Inside the violet flame just above the metal bowl. Blood Furnace captures show violet spill on the adjacent rock and shadow from the bowl and pedestal on the nearby tiles.",
+      "rgb": [0.94, 0.36, 1],
+      "intensity": 1.20,
+      "start": 0.75,
+      "end": 10,
+      "max_world_end": 14,
+      "casts_shadows": true
+    },
+    "world\\expansion01\\doodads\\hellfirecitadel\\passivedoodads\\braizers\\hellfire_hangingbraizer_purpleflame.m2": {
+      "asset_sha256": "125c35dbb961b8185bc911e2b0f25234907465c6fbe9055ceee6035db5421fef",
+      "family": "wotlk_fire",
+      "position": [0.10, 0.14, -3.10],
+      "position_basis": "Above the lower bowl and inside the violet flame. Blood Furnace captures verify violet spill on the side walls and occlusion from the bowl and suspension.",
+      "rgb": [0.98, 0.35, 1],
+      "intensity": 1.28,
+      "start": 0.85,
+      "end": 15.2,
+      "max_world_end": 18,
+      "casts_shadows": true
+    },
+    "world\\expansion01\\doodads\\hellfirecitadel\\passivedoodads\\torches\\hellfire_gastorch01.m2": {
+      "asset_sha256": "1296d498ac0d3d49a0f7b300c122d297656276d1c4483369a762c355ce6ca720",
+      "family": "wotlk_fire",
+      "position": [-0.0011720091570168734, -1.5262620449066162, 1.7491426467895508],
+      "position_basis": "At the base of the blue jet. Paired Shattered Halls captures verify cool light on the stone beside the nozzle and preserve the flame colour.",
+      "rgb": [0.13, 0.56, 1],
+      "intensity": 0.60,
+      "start": 1,
+      "end": 6.6,
+      "max_world_end": 6.6,
+      "casts_shadows": true
+    },
+    "world\\expansion02\\doodads\\generic\\scourge\\sc_brazier1_long_orange.m2": {
+      "asset_sha256": "deca4107a2d3759d21d0d7aceeaed454f5fbfbf3b2e38e8ea30f89b635d79f91",
+      "family": "wotlk_fire",
+      "position": [0, 0, 3.9],
+      "position_basis": "Inside the flame above the coals and below the upper chain junction. Forge of Souls game captures show warm spill on the nearest stone and occlusion near the ceiling mount.",
+      "rgb": [1, 0.44, 0.15],
+      "intensity": 1.05,
+      "start": 0.85,
+      "end": 11.5,
+      "max_world_end": 14,
+      "casts_shadows": true
+    },
+    "world\\expansion02\\doodads\\generic\\scourge\\sc_brazier2_orange.m2": {
+      "asset_sha256": "71ccd3ecba005a7d6a8806457ac8d279e91ca1aa71a0a201554e2a5e5b7da22f",
+      "family": "wotlk_fire",
+      "position": [0, 0, 1.9],
+      "position_basis": "In the main flame above the metal rim. Forge of Souls captures show warm spill on adjacent stone and the bowl and legs casting a shadow on the paving.",
+      "rgb": [1, 0.47, 0.18],
+      "intensity": 0.72,
+      "start": 0.6,
+      "end": 6,
+      "max_world_end": 11,
+      "casts_shadows": true
+    },
+    "world\\expansion02\\doodads\\generic\\scourge\\sc_warmachine_01.m2": {
+      "asset_sha256": "55c6d470177b57b021d3a6d31a2ed81781ae24d31e2edeb334abd0eae9a91a64",
+      "family": "wotlk_energy",
+      "position": [-1.1, 0, 6.8],
+      "position_basis": "Above the glowing furnace rim, inside the orange plume. Forge of Souls captures show warm spill on the adjoining ledge and the chassis occluding light between the wheels.",
+      "rgb": [1, 0.48, 0.16],
+      "intensity": 0.86,
+      "start": 0.65,
+      "end": 10.8,
+      "max_world_end": 14,
+      "casts_shadows": true
+    },
+    "world\\expansion02\\doodads\\generic\\vrykul\\lights\\vr_hanginglight_01.m2": {
+      "asset_sha256": "c089805327e6c0875fc79a50249e12943c2d776396cad6fa9cc1df65d09c8123",
+      "family": "wotlk_energy",
+      "position": [1.4, 0.03, -1.2],
+      "position_basis": "In the upper opening of the cage. Utgarde Pinnacle captures show amber spill on the adjacent stone and a wall shadow from the metal housing.",
+      "rgb": [1, 0.62, 0.2],
+      "intensity": 0.85,
+      "start": 0.55,
+      "end": 6.6,
+      "max_world_end": 17,
+      "casts_shadows": true
+    },
+    "world\\expansion02\\doodads\\generic\\vrykul\\lights\\vr_standinglight_purple_01.m2": {
+      "asset_sha256": "2c6b3d558919a1005eb67822ce050727fc3ea410ff66666bc959413de0e720b7",
+      "family": "wotlk_energy",
+      "position": [0, 0, 7.35],
+      "position_basis": "At the flame above the solid middle band. Utgarde Pinnacle captures show violet spill on the stone ledge and occlusion behind the metal frame.",
+      "rgb": [0.65, 0.22, 1],
+      "intensity": 0.82,
+      "start": 0.7,
+      "end": 10.5,
+      "max_world_end": 16,
+      "casts_shadows": true
+    },
+    "world\\expansion02\\doodads\\generic\\vrykul\\lights\\vr_hanginglight_purple_01.m2": {
+      "asset_sha256": "0f772bd1d8a27af67698d987841e106e6c7c1dcb91c9108baa8de9b31e6efa4f",
+      "family": "wotlk_energy",
+      "position": [1.4, 0.03, -1.2],
+      "position_basis": "In the upper cage opening. Utgarde Pinnacle stair captures show violet spill on the balustrade and occlusion from the brackets.",
+      "rgb": [0.65, 0.22, 1],
+      "intensity": 1.15,
+      "start": 0.6,
+      "end": 9.5,
+      "max_world_end": 15,
+      "casts_shadows": true
+    },
+    "world\\expansion02\\doodads\\generic\\vrykul\\brazier\\vr_brazier_01.m2": {
+      "asset_sha256": "95ed786dfa2c3ecefa8e7878579c9a3678682d4e0f6c33ec12fb309cb4d2cc79",
+      "family": "wotlk_fire",
+      "position": [0, 0, 4],
+      "position_basis": "In the upper flame above the metal rim. Utgarde Pinnacle captures show warm spill on the ledges and a shadow on the floor beneath the bowl.",
+      "rgb": [1, 0.52, 0.2],
+      "intensity": 0.82,
+      "start": 0.85,
+      "end": 9.5,
+      "max_world_end": 15.6,
+      "casts_shadows": true
+    },
+    "world\\expansion02\\doodads\\zuldrak\\decorations\\zuldrak_hanging_light_01.m2": {
+      "asset_sha256": "c676cede112cc785a57702571a1dda908721c1ebbfbfb7e5181198c4f4aaa1d7",
+      "family": "wotlk_energy",
+      "position": [0, 0, -2.5],
+      "position_basis": "At the lower rune openings. DrakTheronKeep game captures show warm spill on nearby stone and occlusion on the ledge.",
+      "rgb": [1, 0.67, 0.25],
+      "intensity": 0.52,
+      "start": 0.45,
+      "end": 4.8,
+      "max_world_end": 14,
+      "casts_shadows": true
+    },
+    "world\\expansion02\\doodads\\azjol-nerub\\azjol_brazier_01.m2": {
+      "asset_sha256": "ea09ea0e45310875408c9b4443716fcbd0106cca0807a6b0ba1dc5218a0a9a8f",
+      "family": "wotlk_fire",
+      "position": [0, 0.0044, 2.51],
+      "position_basis": "Above the blue core and between the metal prongs. Azjol-Nerub captures show cool spill on the platform and the bowl and prongs blocking it underneath.",
+      "rgb": [0.30, 0.74, 1],
+      "intensity": 0.88,
+      "start": 0.85,
+      "end": 8.6,
+      "max_world_end": 22,
+      "casts_shadows": true
+    },
+    "world\\expansion02\\doodads\\stratholme_past\\ld_stratholmestreetlamp01.m2": {
+      "asset_sha256": "2e3014794d8188d267502dc68a921b267172c731d873290ffc7d6877c27a99f7",
+      "family": "wotlk_compact_source",
+      "position": [0.28, 0, 3.94],
+      "position_basis": "Just below the luminous glass and past the supporting shaft. In Stratholme the offset lets warm light reach nearby masonry while the housing and shaft still occlude it.",
+      "rgb": [1, 0.72, 0.26],
+      "intensity": 0.65,
+      "start": 0.8,
+      "end": 7.5,
+      "casts_shadows": true
+    },
+    "world\\generic\\human\\passive doodads\\stoves\\potbellystovewall.m2": {
+      "asset_sha256": "9287bcc50fb209a97b60d0be87af36fcb93b7cf7305dd547cdae2e5f660de372",
+      "family": "wotlk_energy",
+      "position": [0.49, 0, 0.59],
+      "position_basis": "At the height of the center firebox opening, just ahead of the metal face. In Blackrock Depths the floor is lit and the stove body blocks the light behind it.",
+      "rgb": [1, 0.42, 0.12],
+      "intensity": 0.38,
+      "start": 0.35,
+      "end": 4.2,
+      "variants": {
+        "53896f3968c801b060e93c2f534addf8a9e3869c8c9a805fe095869315a619a7": {
+          "position": [0.42, 0, 0.96],
+          "rgb": [1, 0.47, 0.14],
+          "intensity": 0.24,
+          "start": 0.37,
+          "end": 3.4,
+          "position_basis": "Just ahead of the stock firebox grate. Verified with stock geometry, including a control with point shadows disabled, in Blackrock Depths."
+        }
+      },
+      "casts_shadows": true
+    },
+    "world\\azeroth\\karazahn\\passivedoodads\\burningbooks\\booksonfire.m2": {
+      "asset_sha256": "a6fa3459c3f3712605760884aba593ca0e3c5e8de81223414f171b0ed9e3f9e8",
+      "family": "wotlk_fire",
+      "position": [0.88, -0.72, 1.45],
+      "position_basis": "Fixed within the lower flame, above and outside the book pile that blocks light from the measured particle origin. Verified against disabled and unshadowed captures in Karazhan.",
+      "rgb": [1, 0.41, 0.12],
+      "intensity": 1.15,
+      "start": 0.65,
+      "end": 8.5,
+      "casts_shadows": true
+    },
+    "world\\azeroth\\karazahn\\passivedoodads\\sconces\\karazahnsconce02.m2": {
+      "asset_sha256": "e0038d2bf10220c44b62c7b429ca02f6126fba635e01c612daf8798eaece0e5c",
+      "family": "wotlk_fire",
+      "position": [0.05, 1.33, 2.27],
+      "position_basis": "Fixed flame anchor raised 0.10 above the measured luminous centroid. In Karazhan the flame lights the stone and the sconce body blocks the light below it.",
+      "rgb": [1, 0.57, 0.23],
+      "intensity": 0.65,
+      "start": 1.0,
+      "end": 12.0,
+      "casts_shadows": true
+    },
+    "world\\expansion02\\doodads\\generic\\scourge\\sc_brazier1_long.m2": {
+      "asset_sha256": "0d7c095b7556de2ee18cea379319cac966eafd757ef0596c7f3dd88ec8b72d54",
+      "family": "wotlk_fire",
+      "position": [0.052, 0.003, 2.4],
+      "position_basis": "One point above the coals in the blue flame. Halls of Reflection captures show a short cool spill on the upper stone and shadow from the bowl and its supports.",
+      "rgb": [0.22, 0.72, 1],
+      "intensity": 0.88,
+      "start": 0.8,
+      "end": 9.0,
+      "casts_shadows": true
+    },
+    "world\\expansion02\\doodads\\generic\\scourge\\sc_brazier2.m2": {
+      "asset_sha256": "9ca115b2f48007d962da293cb32a9f320988fd96d53da973e3f4057a8e77a3e8",
+      "family": "wotlk_fire",
+      "position": [0, 0, 1.77],
+      "position_basis": "One point in the blue flame above the bowl. In Halls of Reflection it lights the surrounding stone while the bowl blocks downward light and the columns occlude the spill.",
+      "rgb": [0.14, 0.66, 1],
+      "intensity": 0.90,
+      "start": 1.0,
+      "end": 12.0,
+      "casts_shadows": true
+    },
+    "world\\expansion02\\doodads\\generic\\scourge\\sc_brazier2_long.m2": {
+      "asset_sha256": "69a84c43da00bb8bc6caa5ede6a41121937a8ac6b3bcea8bd681c5caf09bd37c",
+      "family": "wotlk_fire",
+      "position": [0, 0.06, 2.31],
+      "position_basis": "Raised 0.20 above the measured blue flame centroid. In Halls of Reflection the hanging bowl and its supports occlude the local light.",
+      "rgb": [0.14, 0.66, 1],
+      "intensity": 1.05,
+      "start": 1.0,
+      "end": 12.0,
+      "casts_shadows": true
+    },
+    "world\\expansion02\\doodads\\generic\\scourge\\sc_brazier2_short.m2": {
+      "asset_sha256": "8d7bc5d861cfb60f0b980b6eda4ca2f1e8a70aca54ed55c5c415526c890f7a24",
+      "family": "wotlk_fire",
+      "position": [0, 0.06, 2.31],
+      "position_basis": "Raised 0.20 above the measured blue flame centroid. In Icecrown Citadel the chains and the bowl block the light at the fixture.",
+      "rgb": [0.55, 0.81, 1],
+      "intensity": 1.05,
+      "start": 1.0,
+      "end": 14.0,
+      "casts_shadows": true
+    },
+    "world\\expansion02\\doodads\\icecrown\\lights\\icecrown_wallsconce_01.m2": {
+      "asset_sha256": "c1e77d9b1abfa715a190a4704e71a077f7c6da789274e2ee43caa323554e22f4",
+      "family": "wotlk_compact_source",
+      "position": [-0.04, 0.59, 0.43],
+      "position_basis": "Point between the claws toward the opening. The measured flare and glowball tint limits color changes, and the short reach keeps light off distant stone. The housing shadows the spill behind it.",
+      "rgb": [0.727, 0.944, 1],
+      "intensity": 0.34,
+      "start": 0.65,
+      "end": 4.5,
+      "casts_shadows": true
+    },
+    "world\\expansion02\\doodads\\azjol-nerub\\saronite\\saronite_node_01.m2": {
+      "asset_sha256": "2d7016e0a684f06f2e7faa1e4972335f1fe13e868a5b36644523c96066b576f8",
+      "family": "wotlk_crystal",
+      "position": [-0.34, 0.05, 0.92],
+      "position_basis": "Point among the unlit crystal tips above the dark rock base. The short cyan spill catches nearby stone while the no-shadow control avoids self-shadowing by the surrounding shards.",
+      "rgb": [0.2, 0.91, 0.73],
+      "intensity": 0.21,
+      "start": 0.45,
+      "end": 4.0,
+      "max_world_end": 6.1,
+      "casts_shadows": false
+    },
+    "world\\generic\\darkirondwarf\\passive doodads\\lamps\\darkironhanginglamp02.m2": {
+      "asset_sha256": "8de543073128173004d462aeefdde20308e25da21ccaf6e680f8966982b2f13f",
+      "family": "wotlk_compact_source",
+      "position": [0, 0, -14.45],
+      "position_basis": "Shared point just below the opaque shades. The center of the fixture traps the light. In Blackrock Depths the lower point reaches the room while the shades and chains block the upward spill.",
+      "rgb": [1, 0.39, 0.10],
+      "intensity": 0.85,
+      "start": 1.0,
+      "end": 12.0,
+      "casts_shadows": true
+    },
+    "world\\kalimdor\\silithus\\passivedoodads\\ahnqiraj\\torch\\ahnqirajwalltorch01.m2": {
+      "asset_sha256": "5d9902203e980d1fcec5c014cb517709b6a97aa0eda311df7c5763097463069d",
+      "family": "wotlk_fire",
+      "position": [0, 0, 0.96],
+      "position_basis": "Centered in the flame above the additive centroid. In Trial of the Champion the metal basket breaks up the warm light on the wall below the flame.",
+      "rgb": [1, 0.51, 0.16],
+      "intensity": 0.62,
+      "start": 1.0,
+      "end": 12.0,
+      "casts_shadows": true
+    },
     "world\\kalimdor\\kalidar\\passivedoodads\\moonwellwater\\moowellwaterfx.m2": {
       "family": "blue_moonwell",
       "asset_sha256": "179771b482774588d8e3266e5a3ce383e499b179e7c5d8634d6a2d61edc8ccca",
@@ -647,6 +1536,7 @@
     },
     "world\\expansion01\\doodads\\generic\\draenei\\lampposts\\dr_lamppost_01.m2": {
       "injected_sha256": "f28c120f12611fb164541e5a8094830b8f898bf44a7c570f17ba4aaafddc2e1b",
+      "max_world_end": 16,
       "variants": {
         "f28c120f12611fb164541e5a8094830b8f898bf44a7c570f17ba4aaafddc2e1b": {
           "position": [
@@ -1506,19 +2396,19 @@
     "world\\expansion01\\doodads\\generic\\ancientorc\\lampost\\ao_lamppost01.m2": {
       "position": [
         0.405986487865448,
-        -0.06674955785274506,
-        2.126300096511841
+        0.25325044214725495,
+        2.1763000965118406
       ],
       "rgb": [
         1.0,
         0.2535327807007748,
         0.04314876438526913
       ],
-      "intensity": 1.15,
-      "start": 1.0,
-      "end": 14.0,
+      "intensity": 0.897,
+      "start": 0.62,
+      "end": 8.68,
       "family": "wotlk_fire",
-      "position_basis": "v264 additive flame: item\\objectcomponents\\weapon\\flamelicksmall.blp",
+      "position_basis": "The visible opening of the hanging fire basket. In-game comparison shows warm light on the nearby timber and ground with the opaque housing still casting a shadow.",
       "asset_sha256": "ce61116ea7ac12568828dbbae22f9792894e2659c29ff4bcadf0fe7103b4520a",
       "variants": {
         "62219bb05e15ff22e718811ef47b4527a8bdf97ac2ce3a39db40e7330282fccc": {
@@ -1544,19 +2434,19 @@
     "world\\expansion01\\doodads\\generic\\ancientorc\\lampost\\ao_lamppost02.m2": {
       "position": [
         -0.005758028011769056,
-        -0.03400803357362747,
-        0.28749680519104004
+        0.28599196642637253,
+        0.33749680519104003
       ],
       "rgb": [
         1.0,
         0.2535327807007748,
         0.04314876438526913
       ],
-      "intensity": 1.15,
-      "start": 1.0,
-      "end": 14.0,
+      "intensity": 0.897,
+      "start": 0.62,
+      "end": 8.68,
       "family": "wotlk_fire",
-      "position_basis": "v264 additive flame: item\\objectcomponents\\weapon\\flamelicksmall.blp",
+      "position_basis": "The visible opening of the hanging fire basket. In-game comparison shows warm light on the nearby timber and ground with the opaque housing still casting a shadow.",
       "asset_sha256": "99da6ca8d9f1b7f5ad63a20b219173d324ec36869a92711af540f8c93a4111c2",
       "variants": {
         "82db2f22a5c504f317d5221a04a2acc90879310b3802b16c9ceb2c921d531276": {
@@ -1963,7 +2853,7 @@
       "position": [
         0.0,
         0.0294630266726017,
-        -0.2854060232639313
+        6.8
       ],
       "rgb": [
         0.6766168640579403,
@@ -1972,9 +2862,10 @@
       ],
       "intensity": 1.15,
       "start": 1.0,
-      "end": 14.0,
+      "end": 17.5,
+      "max_world_end": 14.0,
       "family": "wotlk_fire",
-      "position_basis": "v264 additive flame: world\\kalimdor\\mauradon\\passivedoodads\\satyrhangingbraziers\\fire1white.blp",
+      "position_basis": "Inside the visible flame near the upper edge of the bowl, verified with point shadows in Shadowmoon Valley.",
       "asset_sha256": "c68f8e06baf891f98030be7662b1b2591ac23e1f77ba5a0e7f09045daba8c2d9",
       "variants": {
         "d1094477f4c75b9df538250828d274b42614027ab145b101040b2deddd0338ff": {
@@ -2075,9 +2966,9 @@
     },
     "world\\expansion02\\doodads\\generic\\irondwarf\\id_lamppost.m2": {
       "position": [
-        0.04,
-        -0.003,
-        3.805
+        -0.54,
+        -0.61,
+        3.7
       ],
       "rgb": [
         0.4553191547158506,
@@ -2086,9 +2977,9 @@
       ],
       "intensity": 1.15,
       "start": 1.0,
-      "end": 10.0,
+      "end": 8.8,
       "family": "wotlk_lantern",
-      "position_basis": "v264 unlit additive skin batch: spells\\genericglow64.blp",
+      "position_basis": "At the outer corner of the lower glass. Halls of Lightning and Northrend captures show blue spill on the snow and occlusion by the metal post.",
       "asset_sha256": "6b2325ac001f29eafa962e1b8b55afa60d71c91ea6bed122d96ad936f37cdb06",
       "variants": {
         "1cee9e63cd5c2d201614e714c5174d3c2a9ca61e8fa8acd21fb603491f4e3352": {
@@ -2151,7 +3042,7 @@
     },
     "world\\expansion02\\doodads\\generic\\irondwarf\\id_wall_lamp.m2": {
       "position": [
-        0.825,
+        0.625,
         -0.037,
         -0.197
       ],
@@ -2417,20 +3308,21 @@
     },
     "world\\expansion02\\doodads\\zuldrak\\decorations\\zuldrak_torch_02.m2": {
       "position": [
-        -0.07094783335924149,
-        0.3063293397426605,
-        0.1827845573425293
+        -0.071,
+        0.34,
+        0.32
       ],
       "rgb": [
         1.0,
-        0.2933669301839246,
-        0.087286947898109
+        0.38,
+        0.16
       ],
-      "intensity": 1.15,
-      "start": 1.0,
-      "end": 14.0,
+      "intensity": 0.76,
+      "start": 0.55,
+      "end": 8.2,
+      "max_world_end": 16.0,
       "family": "wotlk_fire",
-      "position_basis": "v264 additive flame: creature\\infernal\\flame01.blp",
+      "position_basis": "GunDrak and DrakTheronKeep game captures: upper flame, local stone spill and base shadow",
       "asset_sha256": "62c742eb8bf042fcf202df56e412e3f46957770ecb7847ee8c66420eb735abd1",
       "variants": {
         "a90e43a480c27d6848856408653776db5eb43ff7240363de845e5055379658c9": {
@@ -2643,11 +3535,30 @@
       "injected_sha256": "8e9ddbf197ed913b779dbb7291b79d93b4817fd4e608f66eb091c1c1e0b3628e",
       "casts_shadows": true
     },
+    "world\\generic\\human\\passive doodads\\lamps\\plaguelandslamp.m2": {
+      "position": [
+        0.23,
+        -0.1,
+        0.76
+      ],
+      "rgb": [
+        0.38,
+        1.0,
+        0.151059893785
+      ],
+      "intensity": 0.13904613775,
+      "start": 0.5,
+      "end": 2.0,
+      "family": "green_fire",
+      "asset_sha256": "989483275a5af4ee6fe89193131bb73b2cb3fab72caf180366e52f8ff572dbab",
+      "position_basis": "Open side of the green flame beside the holder. The short green reach on the floor and the holder shadow were checked in Naxxramas.",
+      "casts_shadows": true
+    },
     "world\\generic\\human\\passive doodads\\lamps\\westernplaguelandslampost01.m2": {
       "position": [
         -0.1,
         0.377,
-        4.349
+        3.849
       ],
       "rgb": [
         0.37,
@@ -2658,7 +3569,7 @@
       "start": 1.0,
       "end": 10.0,
       "family": "wotlk_lantern",
-      "position_basis": "v264 unlit additive skin batch: world\\generic\\human\\passive doodads\\lamps\\glowgreen32.blp",
+      "position_basis": "Scholomance controls verify that a light point below the glazing reaches the ground while the lantern frame and post keep their shadows.",
       "asset_sha256": "12e9cc58667dbd98a186ce7467b9bf8e1d05b33b4f8b3edb57659091c23d8f15",
       "variants": {
         "0b99217505432df0d391d13abdb891ac13830004013d30f903c92640cef3620b": {
@@ -2685,7 +3596,7 @@
       "position": [
         -0.059,
         -0.046,
-        4.367
+        3.867
       ],
       "rgb": [
         0.37,
@@ -2696,7 +3607,7 @@
       "start": 1.0,
       "end": 10.0,
       "family": "wotlk_lantern",
-      "position_basis": "v264 unlit additive skin batch: world\\generic\\human\\passive doodads\\lamps\\glowgreen32.blp",
+      "position_basis": "Scholomance controls verify that a light point below the glazing reaches the road and the wooden facade while the lantern keeps its shadow.",
       "asset_sha256": "4cb9d2c0765608eab1e0668bd91fcd610bb993486c926007a894b15db58b4085",
       "variants": {
         "3cb64a64dc928402137a1257e2c0209e31e9ca0bdd9675c5f1d827fdec645b76": {
@@ -2907,6 +3818,25 @@
         }
       },
       "injected_sha256": "e88824c4144408ac153e5ecb6eb799cd3b5a1b061a114fb23a3eb4fa69bd2dd7",
+      "casts_shadows": true
+    },
+    "world\\generic\\orc\\passive doodads\\stonebrazier\\wailingstonebrazier.m2": {
+      "position": [
+        -0.5148659678121675,
+        -0.008849760712816415,
+        2.36
+      ],
+      "rgb": [
+        1.0,
+        0.19711277798022353,
+        0.09813509320139539
+      ],
+      "intensity": 0.24,
+      "start": 1.0,
+      "end": 5.0,
+      "family": "wotlk_fire",
+      "position_basis": "Wailing Caverns game capture: warm spill at the outer edge of the flame, with the stone bowl still casting a floor shadow.",
+      "asset_sha256": "67d6efa2c083841ccc3c7ff350783cbc1f7536babaea49ec77faa3970f83ce48",
       "casts_shadows": true
     },
     "world\\generic\\orc\\passive doodads\\voodoostuff\\skullcandle01.m2": {
@@ -3407,7 +4337,7 @@
       "position": [
         0.03273192048072815,
         0.15236081182956696,
-        0.6645243167877197
+        1.23
       ],
       "rgb": [
         0.037088866335792545,
@@ -3417,8 +4347,9 @@
       "intensity": 1.15,
       "start": 1.0,
       "end": 14.0,
+      "max_world_end": 11.0,
       "family": "wotlk_fire",
-      "position_basis": "v264 additive flame: world\\goober\\flamelicksmallmagicgreen.blp",
+      "position_basis": "Green flame above the bowl. A capped point lights the nearby surfaces in Nagrand and Shadowmoon Valley while the bowl keeps its floor shadow.",
       "asset_sha256": "ae206bf7510eac6e0e1384a7952a69df03f319a038bfa86011cd9c7df4ae5da2",
       "variants": {
         "1b2312e61b1c68477eca040e9ebb7d901215be204ea19b4305f392855366f119": {
@@ -3785,20 +4716,20 @@
     },
     "world\\kalimdor\\mauradon\\passivedoodads\\satyrfloorbraziers\\satyrfloorbrazierblue01.m2": {
       "position": [
-        -0.0022187698632478714,
-        -0.29786451160907745,
-        2.5136998891830444
+        0.25,
+        0.0,
+        3.06
       ],
       "rgb": [
         0.14010637793966232,
         0.5996808299819731,
         1.0
       ],
-      "intensity": 1.15,
+      "intensity": 0.78,
       "start": 1.0,
-      "end": 14.0,
+      "end": 9.0,
       "family": "wotlk_fire",
-      "position_basis": "v264 additive flame: world\\kalimdor\\mauradon\\passivedoodads\\satyrhangingbraziers\\fire10020blue.blp; v264 additive flame: world\\kalimdor\\mauradon\\passivedoodads\\satyrhangingbraziers\\fire1white.blp",
+      "position_basis": "At the visible base of the flame above the bowl rim, verified in Mauradon from matched point-shadow captures.",
       "asset_sha256": "6113642c6fe6b29cb6726e34a7d3f4872aff8fbaed27e618a177434248c76691",
       "variants": {
         "822a470380652fb2bc368776f76e91dd8dea4bbe1f5a5761415b92b1433113bd": {
@@ -3823,20 +4754,20 @@
     },
     "world\\kalimdor\\mauradon\\passivedoodads\\satyrfloorbraziers\\satyrfloorbraziergreen01.m2": {
       "position": [
-        -0.0022187710274010897,
-        -0.2392762079834938,
-        2.5136998891830444
+        0.25,
+        0.0,
+        3.06
       ],
       "rgb": [
         0.2573319051257403,
         1.0,
         0.5508539633083537
       ],
-      "intensity": 1.15,
+      "intensity": 0.48,
       "start": 1.0,
-      "end": 14.0,
+      "end": 7.0,
       "family": "wotlk_fire",
-      "position_basis": "v264 additive flame: world\\kalimdor\\mauradon\\passivedoodads\\satyrhangingbraziers\\fire10020blue.blp; v264 additive flame: world\\kalimdor\\mauradon\\passivedoodads\\satyrhangingbraziers\\fire1white.blp",
+      "position_basis": "At the visible base of the flame above the bowl rim, verified in Mauradon from matched point-shadow captures.",
       "asset_sha256": "bda729b246e12c69ef9b36e1aa4a8cdaec0c71913bbb94fee3f86299ae63ca31",
       "variants": {
         "717d464145af7322a2d106c982a32926aa526b9209ffba8eaa6a1bfecb0b587c": {
@@ -3861,20 +4792,20 @@
     },
     "world\\kalimdor\\mauradon\\passivedoodads\\satyrfloorbraziers\\satyrfloorbrazierpurple01.m2": {
       "position": [
-        -0.0022187710274010897,
-        -0.2392762079834938,
-        2.5136998891830444
+        0.25,
+        0.0,
+        3.06
       ],
       "rgb": [
         0.4178032173557162,
         0.2179633791170315,
         1.0
       ],
-      "intensity": 1.15,
+      "intensity": 0.58,
       "start": 1.0,
-      "end": 14.0,
+      "end": 8.0,
       "family": "wotlk_fire",
-      "position_basis": "v264 additive flame: world\\kalimdor\\mauradon\\passivedoodads\\satyrhangingbraziers\\fire10020blue.blp; v264 additive flame: world\\kalimdor\\mauradon\\passivedoodads\\satyrhangingbraziers\\fire1white.blp",
+      "position_basis": "At the visible base of the flame above the bowl rim, verified in Mauradon from matched point-shadow captures.",
       "asset_sha256": "22f4f901237614a0a45d02d14f7b75c1e89e5a7e0f8139ee51389e26e33dba47",
       "variants": {
         "1007b70a26eb6f073c2512cc82112e7cb94e943fe9b19fc817ee59a76b05f407": {
@@ -3901,7 +4832,7 @@
       "position": [
         0.0018082228489220142,
         0.0035014683380723,
-        1.7893112897872925
+        2.1793112897872926
       ],
       "rgb": [
         1.0,
@@ -3912,7 +4843,7 @@
       "start": 1.0,
       "end": 14.0,
       "family": "wotlk_fire",
-      "position_basis": "v264 additive flame: world\\generic\\human\\activedoodads\\doors\\flame0001.blp",
+      "position_basis": "Scholomance controls verify that raising the point to the flame lights the stone wall and tiles while the brazier retains its shadow.",
       "asset_sha256": "5a67e822092540f37c5c3ea835cd678531155a32027f65cec91083e6e2ae05e9",
       "variants": {
         "d4a6716b84692a7b9c0ff18a2749b08c54c2461d78a264f4c687d4da709a1565": {
@@ -3936,21 +4867,13 @@
       "casts_shadows": true
     },
     "world\\lordaeron\\scholomance\\passivedoodads\\candles\\floorcandlescorner01.m2": {
-      "position": [
-        -0.279,
-        0.07150000000000001,
-        2.7119999999999997
-      ],
-      "rgb": [
-        1.0,
-        0.5279220742476816,
-        0.0858225108119407
-      ],
-      "intensity": 0.7,
+      "position": [0.25, 0.07, 1.8],
+      "rgb": [1, 0.42, 0.13],
+      "intensity": 0.43,
       "start": 1.0,
       "end": 5.0,
       "family": "wotlk_candle",
-      "position_basis": "v264 unlit additive skin batch: world\\generic\\human\\passive doodads\\candelabras\\glowwhite32.blp; v264 unlit additive skin batch: world\\lordaeron\\scholomance\\passivedoodads\\candles\\candleflameorange.blp",
+      "position_basis": "One point in the center of the lower candle cluster. In Scholomance it adds a short falloff on the floor and nearby wall. The flames have several distinct positions, so their combined light uses no point-shadow cube.",
       "asset_sha256": "5eb7d6fad55c4c0645ab378ab81a5724fd4f6c5134fd5f67ed9e1145fce97c56",
       "variants": {
         "8111504f8ca804ee082c89557efdd233ee5fe8f9f4a000f3620b21e726ebdc0e": {
@@ -3967,11 +4890,12 @@
           "intensity": 0.7,
           "start": 1.0,
           "end": 5.0,
-          "position_basis": "v264 unlit additive skin batch: world\\generic\\human\\passive doodads\\candelabras\\glowwhite32.blp; v264 unlit additive skin batch: world\\lordaeron\\scholomance\\passivedoodads\\candles\\candleflameorange.blp"
+          "position_basis": "v264 unlit additive skin batch: world\\generic\\human\\passive doodads\\candelabras\\glowwhite32.blp; v264 unlit additive skin batch: world\\lordaeron\\scholomance\\passivedoodads\\candles\\candleflameorange.blp",
+          "casts_shadows": true
         }
       },
       "injected_sha256": "8111504f8ca804ee082c89557efdd233ee5fe8f9f4a000f3620b21e726ebdc0e",
-      "casts_shadows": true
+      "casts_shadows": false
     },
     "world\\lordaeron\\scholomance\\passivedoodads\\candles\\floorcandlescorner01green.m2": {
       "position": [
@@ -3980,15 +4904,15 @@
         2.7119999999999997
       ],
       "rgb": [
+        0.43,
         1.0,
-        0.8531250385916782,
-        0.04213068197826491
+        0.14
       ],
-      "intensity": 0.7,
-      "start": 1.0,
-      "end": 5.0,
+      "intensity": 0.43,
+      "start": 0.65,
+      "end": 3.7,
       "family": "wotlk_candle",
-      "position_basis": "v264 unlit additive skin batch: world\\generic\\human\\passive doodads\\candelabras\\glowwhite32.blp; v264 unlit additive skin batch: world\\lordaeron\\scholomance\\passivedoodads\\candles\\candleflameorange.blp",
+      "position_basis": "Fixed additive-region center. Scholomance on/off captures verify the shorter yellow-green spill on the wall beside the green candles.",
       "asset_sha256": "124ccec9a599ee0d1f6e21aba80f770a6a27c8490cb2b266ae424a3a239409f5",
       "variants": {
         "7e6883b482229393412d014dd9359311ae29ecb57691429a81ba65776d0496ab": {
@@ -4398,15 +5322,15 @@
         4.411
       ],
       "rgb": [
+        0.57,
         1.0,
-        0.3558441484953631,
-        0.0016450216238814042
+        0.18
       ],
-      "intensity": 0.7,
+      "intensity": 0.58,
       "start": 1.0,
       "end": 5.0,
       "family": "wotlk_candle",
-      "position_basis": "v264 unlit additive skin batch: world\\generic\\human\\passive doodads\\candelabras\\glowwhite32.blp",
+      "position_basis": "Scholomance RGB controls verify yellow-green spill on the adjacent wood from the green candles.",
       "asset_sha256": "ded909d82dcef14aec50c2143bb7eb3f3097b14e1abaa8beeda83b1256bc655f",
       "variants": {
         "ec79944a114f83ac647400eae378ddb02e7230c31e36a92deda57516dd824028": {
@@ -4436,15 +5360,15 @@
         4.466
       ],
       "rgb": [
+        0.57,
         1.0,
-        0.3558441484953631,
-        0.0016450216238814042
+        0.18
       ],
-      "intensity": 0.7,
+      "intensity": 0.58,
       "start": 1.0,
       "end": 5.0,
       "family": "wotlk_candle",
-      "position_basis": "v264 unlit additive skin batch: world\\generic\\human\\passive doodads\\candelabras\\glowwhite32.blp",
+      "position_basis": "Scholomance RGB controls verify yellow-green spill on the nearby floor from the green candles.",
       "asset_sha256": "39f0adea5b7d2c7966331c340fef211f0de1f9a77e540d6df9ee5f72df73f6d5",
       "variants": {
         "dddce6cec93f446998fff10e8bf6b15e7d27bed9b2b2a23b81d2a3d467ebb575": {
@@ -4474,15 +5398,15 @@
         5.723
       ],
       "rgb": [
+        0.57,
         1.0,
-        0.3558441484953631,
-        0.0016450216238814042
+        0.18
       ],
-      "intensity": 0.7,
-      "start": 1.0,
-      "end": 5.0,
+      "intensity": 0.5,
+      "start": 0.65,
+      "end": 4.5,
       "family": "wotlk_candle",
-      "position_basis": "v264 unlit additive skin batch: world\\generic\\human\\passive doodads\\candelabras\\glowwhite32.blp",
+      "position_basis": "Fixed glow-batch center. Scholomance on/off captures verify a bounded yellow-green spill on the adjacent stone.",
       "asset_sha256": "7afa433332cb3e6242c01c8ab9ffe4b778bafe40897f38da771d0c50a953321e",
       "variants": {
         "b527de126ef861f616f3ad5a16edc0d710f0f746ac17037d561836efb306da03": {
@@ -5467,38 +6391,38 @@
     },
     "world\\expansion02\\doodads\\azjol-nerub\\azjol_sconce_01.m2": {
       "position": [
-        -0.0747385513710065,
-        -0.002098016958269808,
-        -0.07295671508957942
+        0.185,
+        0,
+        -0.061
       ],
       "rgb": [
-        0.0784313753247261,
-        0.988235354423523,
-        1.0
+        0.32,
+        0.87,
+        1
       ],
-      "intensity": 1.15,
-      "start": 1.0,
-      "end": 10.0,
+      "intensity": 0.92,
+      "start": 0.26,
+      "end": 1.7,
       "emitters": [
         {
           "position": [
-            -0.0747385513710065,
-            -0.002098016958269808,
-            -0.07295671508957942
+            0.185,
+            0,
+            -0.061
           ],
           "rgb": [
-            0.0784313753247261,
-            0.988235354423523,
-            1.0
+            0.32,
+            0.87,
+            1
           ],
-          "intensity": 1.15,
-          "start": 1.0,
-          "end": 10.0
+          "intensity": 0.92,
+          "start": 0.26,
+          "end": 1.7
         }
       ],
       "family": "wotlk_compact_source",
       "asset_sha256": "1d0efaca3326292e501930fa1a7608fc051e5cfbeeb2e483c35e5a51087fba8d",
-      "position_basis": "static weighted unlit additive island spells\\genericglow64.blp; static weighted unlit additive island spells\\genericglow64.blp; static weighted unlit additive island spells\\genericglow64.blp; static weighted unlit additive island spells\\genericglow64.blp; static weighted unlit additive island spells\\genericglow64.blp; static weighted unlit additive island spells\\genericglow64.blp; static weighted unlit additive island spells\\genericglow64.blp; static weighted unlit additive island spells\\genericglow64.blp; static weighted unlit additive island spells\\genericglow64.blp",
+      "position_basis": "Point just ahead of the crystal and within the tips of the fixture on the placed model. Checked at two large placements in Azjol-Nerub for cyan spill and bracket shadows on nearby stone.",
       "injected_sha256": "ef1c9e4237ab7fa37f6871592141b3c211a25ecaf9a50ed83c294f16c372676b",
       "variants": {
         "ef1c9e4237ab7fa37f6871592141b3c211a25ecaf9a50ed83c294f16c372676b": {
@@ -6667,38 +7591,38 @@
     },
     "world\\expansion02\\doodads\\generic\\scarletonslaught\\scarleto_brazier_lit.m2": {
       "position": [
-        -0.046810150146484375,
-        -0.03149932622909546,
-        2.2693906277418137
+        0.0,
+        -0.92,
+        4.12
       ],
       "rgb": [
         1.0,
         0.22276150592491517,
         0.01987447748037477
       ],
-      "intensity": 1.15,
+      "intensity": 0.85,
       "start": 1.0,
-      "end": 14.0,
+      "end": 11.0,
       "emitters": [
         {
           "position": [
-            -0.046810150146484375,
-            -0.03149932622909546,
-            2.2693906277418137
+            0.0,
+            -0.92,
+            4.12
           ],
           "rgb": [
             1.0,
             0.22276150592491517,
             0.01987447748037477
           ],
-          "intensity": 1.15,
+          "intensity": 0.85,
           "start": 1.0,
-          "end": 14.0
+          "end": 11.0
         }
       ],
       "family": "wotlk_compact_source",
       "asset_sha256": "966ba628b476fa59a4babe6584d15a31fbefce2e81b32aeb22db39f2ea6d840c",
-      "position_basis": "static weighted unlit additive island world\\expansion02\\doodads\\howlingfjord\\firefx\\t_vfx_fire_anim02_128_full_desat.blp; static weighted unlit additive island world\\expansion02\\doodads\\howlingfjord\\firefx\\t_vfx_fire_anim02_128_full_desat.blp",
+      "position_basis": "The opening above the front of the bowl clears the opaque logs. In-game comparisons at two placements show warm light on the nearby stone while the bowl still casts a shadow.",
       "injected_sha256": "bd15d39147bd764c90dc12a9d3b8434e977411eea9f096f7c80102877e94f542",
       "variants": {
         "bd15d39147bd764c90dc12a9d3b8434e977411eea9f096f7c80102877e94f542": {
@@ -7459,9 +8383,9 @@
     },
     "world\\expansion02\\doodads\\generic\\wolvar\\wolvar_cookpot_dragonblight.m2": {
       "position": [
-        -0.055767640471458435,
+        0.32423235952854155,
         0.01945510506629944,
-        0.3098064512014389
+        0.2598064512014389
       ],
       "rgb": [
         1.0,
@@ -7474,9 +8398,9 @@
       "emitters": [
         {
           "position": [
-            -0.055767640471458435,
+            0.32423235952854155,
             0.01945510506629944,
-            0.3098064512014389
+            0.2598064512014389
           ],
           "rgb": [
             1.0,
@@ -7490,7 +8414,7 @@
       ],
       "family": "wotlk_compact_source",
       "asset_sha256": "066b37b1e74d80ef4e9f3f73264b6165398105556aa47dbd500bc91590e9f66b",
-      "position_basis": "static weighted unlit additive island world\\expansion01\\doodads\\zangar\\mushroom\\glowball02.blp",
+      "position_basis": "Point moved toward the edge of the ember bed. It lights the nearby ground while the pot and its supports cast shadows.",
       "injected_sha256": "b72d93c5a19184c82b1b5b0403cc4fd6bb077e9f05d7cff1b46af179828ae020",
       "variants": {
         "b72d93c5a19184c82b1b5b0403cc4fd6bb077e9f05d7cff1b46af179828ae020": {

@@ -40,6 +40,12 @@ int main(){
  }
  assert(!NorthlightUnlitReceiver::shader(nullptr,0,true));
  using namespace NorthlightUnlitReceiver;
+ // This gate intentionally has no skinned flag. Both M2 layouts use the same
+ // native room-bank proof, while menus and non-M2 draws do not request a level.
+ assert(modelRoomBank(false,3)&&!modelRoomBank(true,3)&&!modelRoomBank(false,2));
+ assert(receiverMaskKind(false,false,0)==3&&receiverMaskKind(true,false,0)==4);
+ assert(receiverMaskKind(false,true,0)==5&&receiverMaskKind(false,true,3)==4);
+ assert(receiverMaskKind(false,true,RoomSharedTint)==5+RoomSharedTint);
  // The equation must be in live RGB, use native constants and a normalized normal.
  std::vector<Word> room={0xfffe0300,0x0200001f,0x80000003,0x900f0001,
   0x0200001f,0x8000000a,0xe00f0001,0x02000024,0x80070000,0x90e40001,

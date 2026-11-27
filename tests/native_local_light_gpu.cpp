@@ -312,6 +312,17 @@ int main(int argc,char** argv){
         must(d->GetVertexShader(&active));assert(active==vs);active->Release();
         std::printf("NATIVE_SHADER_WARMUP_PASS originalWhilePending=1 patchedAfterWarmup=1 noRecreation=1 restored=1\n");
     }
+    if(two){
+        NorthlightNativeLocalLighting warmup(d);
+        warmup.setShaderWarmup(10000);
+        auto other=light;other.slot=1;
+        unsigned submissions=0;
+        const auto once=[&]{++submissions;return S_OK;};
+        must(warmup.draw(light,vs,ps,once,&other));
+        ++light.rendererFrame;
+        must(warmup.draw(light,vs,ps,once,&other));
+        assert(submissions==2&&warmup.coldPairs==1&&warmup.draws==0&&warmup.warmupDeferrals==2);
+    }
 #ifndef NORTHLIGHT_NATIVE_DUPLICATE_BASELINE
     if(std::getenv("NORTHLIGHT_TEST_SHARING_FAULTS"))nativeLocalCreationFallback(d,light,vs,ps,two);
 #endif

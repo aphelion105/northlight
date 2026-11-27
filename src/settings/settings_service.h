@@ -42,7 +42,7 @@ class Service {
     Loaded load(){
         Loaded l;l.images=store.readLenient(l.problem);l.docs=documents(l.images);l.revision=Store::revision(l.images);Documents base;
         {std::lock_guard<std::mutex> lock(mutex);l.runtime=*active;base=initial;l.profile=hdrProfile;}
-        l.fields=schema(l.docs,base,l.runtime,legacy,backends(),l.profile,store.hasWaterCore());return l;
+        l.fields=schema(l.docs,base,l.runtime,legacy,backends(),l.profile,store.hasWaterCore(),directory);return l;
     }
     static std::string text(const std::vector<Change>& changes){
         std::string out;for(const auto& c:changes){
@@ -75,11 +75,11 @@ class Service {
         Status s;
         if(job.clear){bool was;{std::lock_guard<std::mutex> lock(mutex);was=previewing;}
             if(!was)return s;
-            auto l=load();auto config=configOf(l.docs,legacy,false,l.profile);auto runtime=effective(l.runtime,config);
+            auto l=load();auto config=configOf(l.docs,legacy,false,l.profile,directory);auto runtime=effective(l.runtime,config);
             publish(std::move(config),l.revision,std::move(runtime),false);s.message="Preview cleared";return s;}
         auto l=load();std::vector<Change> live;std::map<std::string,const Field*> known;for(const auto& f:l.fields)known[f.id()]=&f;
         for(const auto& c:job.draft){auto at=known.find(c.id);if(at!=known.end()&&(at->second->apply=="F"&&at->second->available))live.push_back(c);} // "R" and unknown ids are not previewable
-        auto next=applyChanges(l.docs,l.fields,text(live));auto config=configOf(next,legacy,true,l.profile);auto runtime=effective(l.runtime,config);
+        auto next=applyChanges(l.docs,l.fields,text(live));auto config=configOf(next,legacy,true,l.profile,directory);auto runtime=effective(l.runtime,config);
         uint64_t seq;{std::lock_guard<std::mutex> lock(mutex);seq=++previewSeq;}
         publish(std::move(config),l.revision+"+preview"+std::to_string(seq),std::move(runtime),true);s.message="Preview applied";return s;
     }
@@ -87,13 +87,13 @@ class Service {
         auto l=load();
         if(!l.problem.empty())throw std::runtime_error(blocked(l.problem));
         if(job.base!=l.revision)throw std::runtime_error("INI files changed externally; refresh before saving");
-        auto next=applyChanges(l.docs,l.fields,text(job.changes));auto config=configOf(next,legacy,true,l.profile);auto after=l.images;
+        auto next=applyChanges(l.docs,l.fields,text(job.changes));auto config=configOf(next,legacy,true,l.profile,directory);auto after=l.images;
         for(unsigned i=0;i<FileCount;++i){auto bytes=next[i].bytes();if(bytes!=l.images[i].raw)after[i]={true,std::move(bytes)};}
         auto runtime=effective(l.runtime,config);const auto revision=Store::revision(after);
         store.commit(l.images,after); // throws before anything is published; on failure the files are unchanged
         publish(config,revision,runtime,false);
         Documents base;{std::lock_guard<std::mutex> lock(mutex);base=initial;}
-        publishSnapshot(revision,revision,schema(next,base,*runtime,legacy,backends(),l.profile,store.hasWaterCore()));
+        publishSnapshot(revision,revision,schema(next,base,*runtime,legacy,backends(),l.profile,store.hasWaterCore(),directory));
         Status s;s.state=Status::State::Saved;{std::lock_guard<std::mutex> lock(mutex);s.message=restart?"Saved; some changes apply after a restart":"Saved";}return s;
     }
     void work(){
@@ -107,7 +107,7 @@ class Service {
              busy=true;}
             Status result;
             try{
-                if(profileChanged){auto l=load();auto config=configOf(l.docs,legacy,false,l.profile);auto runtime=effective(l.runtime,config);
+                if(profileChanged){auto l=load();auto config=configOf(l.docs,legacy,false,l.profile,directory);auto runtime=effective(l.runtime,config);
                     publish(std::move(config),l.revision+"+display:"+l.profile,std::move(runtime),false);}
                 result=commit?doCommit(*commit):preview?doPreview(*preview):doSnapshot();
             }
@@ -126,7 +126,7 @@ public:
     // A (re)created device reads the INIs afresh: re-baseline what "running" means and drop any draft aimed at the previous device.
     void attach(){
         Images images;std::string leg;try{images=store.readUnlocked();leg=NorthlightQuality::narrow(readImage(directory/"shadow-experiment.ini").raw);}catch(...){images={};}
-        Documents docs;Config config;try{docs=documents(images);config=configOf(docs,leg);}catch(...){docs=documents(Images{});config=configOf(docs,leg);}
+        Documents docs;Config config;try{docs=documents(images);config=configOf(docs,leg,false,"",directory);}catch(...){docs=documents(Images{});config=configOf(docs,leg);}
         // The host switch is read once per process, even if a new D3D device attaches.
         if(waterAtStartup){
             const std::string enabled=*waterAtStartup?"1":"0";
