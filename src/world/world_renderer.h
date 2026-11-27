@@ -3434,8 +3434,7 @@ public:
     // the capture's inverse view. False: not a palette program, or the rows cannot be read.
     bool drawRoot(IDirect3DVertexShader9* shader,float* root,const NorthlightActorDeformation::Program** used=nullptr){
         float rows[12];const auto* program=paletteRows(shader,rows);if(!program)return false;if(used)*used=program;
-        float bank[4*256];std::memcpy(bank+4*program->paletteBase,rows,sizeof rows);
-        return NorthlightActorDeformation::rootWorld(*program,bank,context.inverseView,root);
+        return NorthlightActorDeformation::rootWorldFromPaletteRows(rows,context.inverseView,root);
     }
     // 0.3.172 near capture reserve (near_reserve.h): asked only for a skinned draw the budget is
     // about to turn away for bytes. The anchor is taken once per capture frame, at the first ask

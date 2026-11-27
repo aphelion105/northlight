@@ -786,6 +786,17 @@ def raw_frame_intervals():
     assert [row['present'] for row in timing['worst']] == [117, 237, 120, 240, 118]
     assert timing['slow_frames']['60']['frames_over_budget'] == 240
     assert timing['slow_frames']['30']['fraction'] == 6 / 240
+    end_first = 80_000
+    anchored = [dict(first, lastQpc=str(end_first)), dict(second, lastQpc=str(end_first + sum(ticks)))]
+    timing = runner.frame_timing.summarize(anchored)
+    assert [row['last_qpc'] for row in timing['windows']] == [end_first, end_first + sum(ticks)]
+    for end_qpc in (sum(ticks) - 1, end_first + sum(ticks) + 1):
+        try:
+            runner.frame_timing.summarize([anchored[0], dict(anchored[1], lastQpc=str(end_qpc))])
+        except ValueError:
+            pass
+        else:
+            raise AssertionError('Invalid QPC anchor was accepted')
     background = [dict(row, focus='0') for row in (first, second)]
     timing = runner.frame_timing.summarize(background, background=True)
     assert timing['window_mode'] == 'background' and timing['samples'] == 240
