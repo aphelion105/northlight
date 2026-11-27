@@ -778,7 +778,11 @@ public:
         return SUCCEEDED(d->GetDepthStencilSurface(activeDepth.out()))&&activeDepth.p==hybridDepth;
     }
     template<class Draw,class Prove> HRESULT hybridDraw(Draw submit,IDirect3DVertexShader9* original,Prove prove,bool& written){
-        if(!hybridDepth||!nativeMrt.acceptingHybrid()||bad||!hybridDepthMatches())return submit();
+        if(!hybridDepth||!nativeMrt.acceptingHybrid()||bad)return submit();
+        D3DVIEWPORT9 viewport{};bool matches=false;
+        const bool known=drawStateSource&&drawStateSource->constantMirror()->heldByThisThread()&&
+            drawStateSource->knownFrameViewport(frameTarget,matches,viewport,hybridDepth);
+        if(known){++knownTargets;if(!matches)return submit();}
         ++hybridAttempts;
         // Replays compare against the live depth without changing it. Finish
         // earlier fallback draws before the next native write to preserve depth ties.
@@ -786,7 +790,7 @@ public:
             [](void* owner){return static_cast<NorthlightModelNormals*>(owner)->finishCaptures();},
             drawStateSource?+[](void* owner,unsigned slot,IDirect3DSurface9* target){
                 return static_cast<NorthlightModelNormals*>(owner)->drawStateSource->releaseAuxiliaryTarget(slot,target,true);
-            }:nullptr);
+            }:nullptr,hybridDepth,known?&viewport:nullptr);
         if(result.written){written=true;++hybridWritten;++nativeCommittedPackets;++draws;}
         return result.hr;
     }

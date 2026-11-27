@@ -1261,6 +1261,13 @@ static void captureDrawState(){
  assert(SUCCEEDED(view.SetRenderTarget(0,a))&&SUCCEEDED(view.SetViewport(&vp)));observe();
  assert(view.knownFrameViewport(a,same,out)&&same&&out.X==1&&out.Width==30);
  assert(view.knownFrameViewport(b,same,out)&&!same);
+ assert(!view.knownFrameViewport(a,same,out,b));
+ assert(SUCCEEDED(view.SetDepthStencilSurface(b)));
+ IDirect3DSurface9* currentDepth=nullptr;assert(SUCCEEDED(view.GetDepthStencilSurface(&currentDepth)));currentDepth->Release();
+ const auto attachmentReads=backend.gets;
+ assert(view.knownFrameViewport(a,same,out,b)&&same);
+ assert(view.knownFrameViewport(a,same,out,a)&&!same);
+ assert(backend.gets==attachmentReads);
  struct Probe {ExtensionDevice& device;IDirect3DSurface9* target;IDirect3DPixelShader9* pixel;};
  auto* ps=new Object<IDirect3DPixelShader9>;
  Probe probe{view,b,ps};backend.callbackContext=&probe;

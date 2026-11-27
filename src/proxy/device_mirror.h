@@ -750,14 +750,16 @@ public:
                     NorthlightConstantEpoch::sameWords(expected,mirror->constantEpoch.live());
             });
     }
-    // Compare the retained target and copy its viewport under one gate. No
-    // borrowed COM reference escapes and a target write can reset the viewport.
-    bool knownFrameViewport(IDirect3DSurface9* retained,bool& matches,D3DVIEWPORT9& viewport){
+    // Compare the retained attachments and copy the viewport under one gate.
+    // No borrowed COM reference escapes a target write.
+    bool knownFrameViewport(IDirect3DSurface9* retained,bool& matches,D3DVIEWPORT9& viewport,
+                            IDirect3DSurface9* retainedDepth=nullptr){
         MirrorGuard lock(m->gate,MirrorSite::Device);
         if(!kMirrorBorrowedPeek||!m->active()||m->targetWrites||m->viewportWrites||!m->targetKnown[0]||!m->viewportKnown)return false;
-        matches=m->targets[0]==retained;
+        if(retainedDepth&&!m->depthKnown)return false;
+        matches=m->targets[0]==retained&&(!retainedDepth||m->depth==retainedDepth);
         viewport=m->viewport;
-        m->answered+=2;
+        m->answered+=retainedDepth?3:2;
         return true;
     }
     struct MaterialCaptureState {

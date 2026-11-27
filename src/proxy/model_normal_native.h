@@ -169,7 +169,8 @@ public:
     template<class Draw,class Prove> Result draw(Draw submit,IDirect3DSurface9* target,IDirect3DSurface9* color,UINT width,UINT height,
                                               IDirect3DVertexShader9* original,bool receiver,Prove prove,bool terrain=false,
                                               void* hybridOwner=nullptr,bool(*prepareHybrid)(void*)=nullptr,
-                                              HRESULT(*releaseHybridTarget)(void*,unsigned,IDirect3DSurface9*)=nullptr){
+                                              HRESULT(*releaseHybridTarget)(void*,unsigned,IDirect3DSurface9*)=nullptr,
+                                              IDirect3DSurface9* requiredDepth=nullptr,const D3DVIEWPORT9* knownViewport=nullptr){
         const bool hybrid=prepareHybrid!=nullptr;
         auto fallback=[&](HybridRefusal cause){if(hybrid){reason=refusalNames[cause];++hybridRefusals[cause];}else cancel(refusalNames[cause]);return Result{submit(),false,false};};
         if(!enabled||!capable||refused||(!hybrid&&!complete))return {submit(),false,false};
@@ -207,15 +208,22 @@ public:
             }
         }
         Ref<IDirect3DSurface9> rt,depth;D3DVIEWPORT9 vp{};
-        if(FAILED(d->GetRenderTarget(0,&rt.p))||!rt.p||FAILED(d->GetDepthStencilSurface(&depth.p))||!depth.p||
-           FAILED(d->GetViewport(&vp)))return fallback(TargetState);
-        if(rt.p!=color||(describedColor&&describedColor!=color))return fallback(TargetState);
+        auto* activeDepth=requiredDepth;
+        if(knownViewport&&requiredDepth){
+            vp=*knownViewport;
+        }else{
+            if(FAILED(d->GetRenderTarget(0,&rt.p))||!rt.p||rt.p!=color||
+               FAILED(d->GetDepthStencilSurface(&depth.p))||!depth.p||(requiredDepth&&depth.p!=requiredDepth)||
+               FAILED(d->GetViewport(&vp)))return fallback(TargetState);
+            activeDepth=depth.p;
+        }
+        if(describedColor&&describedColor!=color)return fallback(TargetState);
         // The owner retains frameTarget. Surface dimensions/format/sample count
         // are immutable; current RT/DS/viewport ownership is still proved above.
         if(!describedColor){if(FAILED(color->GetDesc(&colorDescription)))return fallback(TargetState);describedColor=color;}
         const auto& desc=colorDescription;
         if(vp.X||vp.Y||vp.Width!=width||vp.Height!=height||desc.Width!=width||desc.Height!=height||
-           desc.MultiSampleType!=D3DMULTISAMPLE_NONE||(sceneDepth&&sceneDepth!=depth.p)||
+           desc.MultiSampleType!=D3DMULTISAMPLE_NONE||(sceneDepth&&sceneDepth!=activeDepth)||
            (desc.Format!=D3DFMT_A16B16G16R16F&&!(caps.PrimitiveMiscCaps&D3DPMISCCAPS_MRTINDEPENDENTBITDEPTHS)))return fallback(TargetMsaa);
         Ref<IDirect3DPixelShader9> oldPS;if(FAILED(d->GetPixelShader(&oldPS.p))||!oldPS.p)return fallback(FixedPixel);
         Pixel* p=nullptr;try{p=pixel(oldPS.p);}catch(const std::bad_alloc&){return fallback(Allocation);}if(!p||!p->valid)return fallback(PixelProgram);
@@ -245,7 +253,7 @@ public:
         if(hybrid&&v&&hybridWarmup.count()&&std::max(v->ready[variant],p->ready[variant][slot-1])>frameTime)
             return fallback(ShaderWarmup);
         ++probes;
-        if(!sceneDepth){sceneDepth=depth.p;sceneDepth->AddRef();}
+        if(!sceneDepth){sceneDepth=activeDepth;sceneDepth->AddRef();}
         if(!hybrid&&!allowed){const auto hr=submit();if(FAILED(hr)){cancel("native-submit");return {hr,false,false};}return {hr,true,false};}
         if(hybrid){if(!prepareHybrid(hybridOwner))return fallback(PendingReplay);}
         else if(!started){if(!clear(target)){refused=true;return fallback(ClearFailed);}started=true;}
