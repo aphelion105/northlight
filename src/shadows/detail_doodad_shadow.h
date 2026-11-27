@@ -4,6 +4,7 @@
 #include "replay_bounds.h"
 #include "shader_tags.h"
 #include "patch_shadow_shader.h"
+#include "position_bounds_scan.h"
 
 // Stock 3.3.5a DetailDoodad VS2/VS3, six lighting permutations each.
 // The complete bytecode identities are distinct from Terrain. Their c4..7
@@ -131,9 +132,8 @@ inline bool bounds(const NorthlightActorDeformation::Program& program,const Nort
     if(!position||position->Stream!=0||position->Type!=D3DDECLTYPE_FLOAT3||position->Method!=D3DDECLMETHOD_DEFAULT)return false;
     const auto& stream=mesh.streams[0];
     if(unsigned(position->Offset)+12>stream.stride||stream.bytes.size()<size_t(mesh.vertexCount)*stream.stride)return false;
-    float low[3]={INFINITY,INFINITY,INFINITY},high[3]={-INFINITY,-INFINITY,-INFINITY};
-    for(unsigned i=0;i<mesh.vertexCount;++i){float xyz[3];std::memcpy(xyz,stream.bytes.data()+size_t(i)*stream.stride+position->Offset,12);
-        for(unsigned axis=0;axis<3;++axis){if(!std::isfinite(xyz[axis]))return false;low[axis]=std::min(low[axis],xyz[axis]);high[axis]=std::max(high[axis],xyz[axis]);}}
+    float low[3],high[3];
+    if(!NorthlightPositionBounds::scanPositions(stream.bytes.data()+position->Offset,mesh.vertexCount,stream.stride,low,high))return false;
     NorthlightReplayBounds::detail::Vector inputs[16]={},view;
     for(unsigned axis=0;axis<3;++axis){const float middle=float((double(low[axis])+high[axis])*.5);
         inputs[0][axis]={middle,std::max(double(middle)-low[axis],double(high[axis])-middle)};}

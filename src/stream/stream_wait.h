@@ -17,7 +17,23 @@
 
 namespace NorthlightStream {
 constexpr std::uint32_t kWaitInfinite=0xFFFFFFFFu;
-inline std::uint64_t nowNs(){return (std::uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();}
+inline std::uint64_t nowNs(){
+#ifdef _WIN32
+    // libc++'s Windows steady clock uses the same QPC epoch. An integral
+    // conversion (100 ns per tick on the usual 10 MHz clock) avoids x86
+    // 64-bit division on every render and query-poll timestamp.
+    static const unsigned nsPerTick=[]{
+        LARGE_INTEGER frequency{};
+        constexpr std::uint64_t nsPerSecond=1000000000;
+        if(!QueryPerformanceFrequency(&frequency)||frequency.QuadPart<=0||
+           nsPerSecond%std::uint64_t(frequency.QuadPart))return 0u;
+        return unsigned(nsPerSecond/std::uint64_t(frequency.QuadPart));
+    }();
+    LARGE_INTEGER count{};
+    if(nsPerTick&&QueryPerformanceCounter(&count))return std::uint64_t(count.QuadPart)*nsPerTick;
+#endif
+    return std::uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count());
+}
 
 // True while this thread is inside waitPumped(): a recorder entry made from there (a message handler that DXVK's pump
 // dispatched) is nested and must never block on the replay thread (see runSync in command_stream.inl).

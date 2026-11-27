@@ -509,6 +509,18 @@ public:
     const NorthlightStream::Counters* streamStats=nullptr; // task 45: the command stream's counters (null without CommandStream), read-only for the CPU budget
 private:
     IDirect3DQuery9* latencyQuery=nullptr;bool latencyPending=false,latencyFailed=false;std::uint64_t latencyWaits=0;double latencyWaitMs=0;double latencyLastMs=0; /* task 45: the last Present's wait, not reset by logging */
+    bool earlySceneSubmit=false;
+    unsigned earlySceneSubmits=0;
+    void submitSceneBeforeEffects(){
+        if(!earlySceneSubmit||!latencyPending||!latencyQuery||latencyQuery->GetData(nullptr,0,0)!=S_OK)return;
+        // Previous-frame pacing has already been satisfied. Reuse the query for
+        // a nonblocking submit hint before the depth resolve and effects.
+        latencyPending=false;
+        if(SUCCEEDED(latencyQuery->Issue(D3DISSUE_END))){
+            (void)latencyQuery->GetData(nullptr,0,D3DGETDATA_FLUSH);
+            ++earlySceneSubmits;
+        }
+    }
     void waitPreviousFrameGpu(){
         latencyLastMs=0;
         if(!latencyPending||!latencyQuery)return;latencyPending=false;
@@ -3357,9 +3369,18 @@ public:
         gpuScene=std::make_shared<NorthlightGpuScene::Scene>(ext,shareMaterialCapacity);
         world=std::make_unique<WorldRenderer>(ext,gpuScene);world->setEffectsBuckets(&effectsBuckets);world->setMaterialProfiler(materialProfile.get());
 #ifndef NORTHLIGHT_REPLAY_STAND
-        if(presentation.dxvk&&presentation.stream&&NorthlightStream::dxvk311EventPayload.load(std::memory_order_relaxed)){
+        const bool dxvk311Stream=presentation.dxvk&&presentation.stream&&
+            NorthlightStream::dxvk311EventPayload.load(std::memory_order_relaxed);
+        const bool dxvkX86=sizeof(void*)==4&&dxvk311Stream&&
+            !GetProcAddress(GetModuleHandleW(L"ntdll.dll"),"wine_get_version");
+        earlySceneSubmit=dxvkX86;
+        mirrorState.dxvkResolvePointSize=dxvkX86;
+        // DXVK's command thread can wait in convertIr() when the first draw
+        // uses a shader that its background compiler is still converting.
+        const unsigned x86ShaderWarmupMs=150;
+        if(dxvk311Stream){
             const char* override=std::getenv("NORTHLIGHT_DXVK_NATIVE_SHADER_GRACE");
-            const unsigned warmupMs=override&&std::strcmp(override,"0")==0?0:50;
+            const unsigned warmupMs=override&&std::strcmp(override,"0")==0?0:dxvkX86?x86ShaderWarmupMs:50;
             world->setNativeLightShaderWarmup(warmupMs);
             logf("NATIVE_DIRECT shader warmup ms=%u",warmupMs);
         }
@@ -3386,11 +3407,8 @@ public:
         const char* grace=std::getenv("NORTHLIGHT_X64_M2_MRT_SHADER_GRACE");
         modelNormals->enableHybridMrt(hybrid,std::chrono::milliseconds(hybrid&&(!grace||std::strcmp(grace,"0"))?50:0));
 #elif !defined(NORTHLIGHT_REPLAY_STAND)
-        const bool dxvkX86=presentation.dxvk&&presentation.stream&&
-            NorthlightStream::dxvk311EventPayload.load(std::memory_order_relaxed)&&
-            !GetProcAddress(GetModuleHandleW(L"ntdll.dll"),"wine_get_version");
         world->setStaggerColdCaptures(dxvkX86);
-        modelNormals->enableHybridMrt(dxvkX86,std::chrono::milliseconds(dxvkX86?50:0));
+        modelNormals->enableHybridMrt(dxvkX86,std::chrono::milliseconds(dxvkX86?x86ShaderWarmupMs:0));
 #endif
         autoBump=std::make_unique<NorthlightAutoBump>(ext,gpuScene);if(rootPath[0])autoBump->setPersistentCache(std::filesystem::path(rootPath)/L"Cache"/L"Northlight"/L"Materials-v1",NorthlightBackend::name(selectedBackend),materialCacheBackendIdentity.c_str(),materialCacheAsyncReadback);autoBump->setGeometryTracking(&NorthlightTrackedBuffers::identity,&NorthlightTrackedBuffers::version,&NorthlightTrackedBuffers::captureMetadata);autoBump->configure(world->surfaceSettings());
         modelNormals->setDrawStateSource(*ext);
@@ -3803,7 +3821,7 @@ public:
             const unsigned before=gpuBudget.level;world->setGpuBudgetLevel(gpuBudget.update(float(budget),float(ms),dt,gpuLimited));
             if(gpuBudget.level!=before&&(gpuBudget.changes<=32||diagnostics()))
                 logf("GPUBUDGET level %u -> %u smoothed=%.3f budget=%u changes=%u",before,gpuBudget.level,double(gpuBudget.smoothed),budget,gpuBudget.changes);}
-        if(limitGpuLatency&&sampled()&&NorthlightRenderThreadProbe::profiling()){logf("CSTREAM GPU latency waits=%llu waitMs=%.1f",(unsigned long long)latencyWaits,latencyWaitMs);latencyWaits=0;latencyWaitMs=0;}
+        if(limitGpuLatency&&sampled()&&NorthlightRenderThreadProbe::profiling()){logf("CSTREAM GPU latency waits=%llu waitMs=%.1f earlySceneSubmits=%u",(unsigned long long)latencyWaits,latencyWaitMs,earlySceneSubmits);latencyWaits=0;latencyWaitMs=0;earlySceneSubmits=0;}
         if(sampled()&&NorthlightRenderThreadProbe::profiling())logf("GPUBUDGET ms=%.3f smoothed=%.3f budget=%.1f level=%u gpuWait=%.2f gpuBound=%d eventWait=%.2f scope=deferred-captures-and-effects inSceneCaptureIncluded=0 cpuGpuAdditive=0",gpuBudgetLastMs,double(gpuBudget.smoothed),double(budget),gpuBudget.level,double(gpuBound.smoothed),boundKnown?int(gpuBound.bound()):-1,double(eventGpuMs));
     }
     // task 45: ActorShadowCpuMs. The effects span of this frame (renderEffects from the applied check to its return: the world render incl. the actor shadow replay,

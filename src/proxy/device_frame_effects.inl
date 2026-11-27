@@ -45,7 +45,9 @@
         D3DSURFACE_DESC desc;
         const bool sceneSplit=gpuSceneProfile&&!gpuSceneSplit;
         if(sceneSplit)gpuSceneProfile->mark("GameScene");
-        if (!fullViewport(desc) || !resources(desc.Width, desc.Height, desc.Format) || !resolveDepth()) return;
+        if (!fullViewport(desc) || !resources(desc.Width, desc.Height, desc.Format)) return;
+        submitSceneBeforeEffects();
+        if (!resolveDepth()) return;
         if(sceneSplit)gpuSceneProfile->mark("DepthResolve");
         SavedState saved(ext,&stateBlocks);
         if (!saved.ok) return;

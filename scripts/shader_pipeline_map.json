@@ -178,7 +178,7 @@
     },
     "scene-inputs": {
       "owner": "Device::renderEffects / NorthlightSceneDepth::copy",
-      "code": {"src/proxy/renderer.cpp": ["bool resolveDepth()", "NorthlightSceneDepth::copy(ext,stateBlocks,worldDepth,target,"], "src/proxy/device_frame_effects.inl": ["|| !resolveDepth()) return;"], "src/proxy/scene_depth_resolve.h": ["SavedState saved(ext,&stateBlocks)", "0x7fa05000), \"RESZ\""]},
+      "code": {"src/proxy/renderer.cpp": ["bool resolveDepth()", "NorthlightSceneDepth::copy(ext,stateBlocks,worldDepth,target,"], "src/proxy/device_frame_effects.inl": ["if (!resolveDepth()) return;"], "src/proxy/scene_depth_resolve.h": ["SavedState saved(ext,&stateBlocks)", "0x7fa05000), \"RESZ\""]},
       "reads": ["native-scene-color", "native-world-depth"],
       "writes": {"native-scene": "Current scene copy/resolve", "scene-depth": "Current RESZ snapshot before effects"},
       "fallback": "Invalid projection, viewport or failed resolve blocks the screen-effects route.",

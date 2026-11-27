@@ -55,6 +55,7 @@ struct DeviceMirror {
     MirrorGate gate; /* 0.3.180 (D0): the recursive mutex plus the owner thread and the census */
     NorthlightConstantEpoch::Clock constantEpoch;
     bool enabled=true,recording=false;
+    bool dxvkResolvePointSize=false;
     SyncedSlots* synced=nullptr; // the spell layer's 'Model equals the device' bits (synced_slots.h): every setter below clears the slot it writes, invalidate() clears all
     std::size_t rawDepth=0; // Gate-protected; suspends caching across private extension work.
     const char* disableReason=nullptr;
@@ -347,7 +348,12 @@ public:
         if(m->synced)m->synced->renderState(unsigned(type));const std::uint64_t serial=m->mutations+1;HRESULT hr=real->SetRenderState(type,value);const bool slot=unsigned(type)<DeviceMirror::RenderStates;
         if(slot)m->renderStateKnown[type]=false;
         // Vendor command states (RESZ/ATOC etc.) may have implicit side effects.
-        const bool vendor=type==D3DRS_POINTSIZE||type==D3DRS_ADAPTIVETESS_Y;if(vendor)m->invalidate();
+        const bool vendor=type==D3DRS_POINTSIZE||type==D3DRS_ADAPTIVETESS_Y;
+        // The audited DXVK path only changes point size or copies the bound
+        // depth to texture zero. Neither operation changes other bindings.
+        const bool knownResolve=type==D3DRS_POINTSIZE&&m->dxvkResolvePointSize&&!m->recording&&
+            (value==0x3f800000||value==0x7fa05000);
+        if(vendor&&!knownResolve)m->invalidate();
         if(accepted(hr)&&slot&&!vendor){m->renderStates[type]=value;const unsigned id=DeviceMirror::RenderStateSlot+unsigned(type);m->renderStateKnown[type]=m->written(id,serial,m->isProven(DeviceMirror::pair(id,value)));}
         else if(slot)m->forget(DeviceMirror::RenderStateSlot+unsigned(type));
         if(particleSlot)m->particleDraw.blend(particleSlot,value,m->renderStateKnown[type]);return hr;
