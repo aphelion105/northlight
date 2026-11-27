@@ -9,7 +9,8 @@
 #include "lighting_pair_timing.h"
 
 struct PipelineOffTest {
-    static void layeredRoom(Device& device,const std::vector<DWORD>& words,unsigned width,unsigned height,bool model=false,bool skinned=true){
+    static void layeredRoom(Device& device,const std::vector<DWORD>& words,unsigned width,unsigned height,
+                            bool model=false,bool skinned=true,bool preserveRigidRoomLight=true){
         IDirect3DVertexShader9* shader=nullptr;IDirect3DSurface9* depth=nullptr;
         screenOk(device.CreateVertexShader(words.data(),&shader));
         screenOk(device.CreateDepthStencilSurface(width,height,D3DFMT_D24S8,D3DMULTISAMPLE_NONE,0,FALSE,&depth,nullptr));
@@ -20,6 +21,8 @@ struct PipelineOffTest {
         device.terrain=device.projectionValid=true;device.applied=false;device.menuScene=false;
         device.nameMask.cleared=true;device.aoActorOn=false;
         auto& world=*device.world;lighting(world,true);world.legacyFogKnown=true;
+        const auto previousPreserve=world.quality.giPreserveRigidRoomLight;
+        world.quality.giPreserveRigidRoomLight=preserveRigidRoomLight;
         const float room[]={.43921572f,.41960788f,.47450984f,0,0,0,0,0};
         const float playerRoom[]={.50588214f,.53333312f,.65882325f,0,.28235301f,.29803929f,.36862752f,0};
         const float innRoom[]={.659f,.604f,.612f,0,.376f,.345f,.349f,0};
@@ -49,9 +52,7 @@ struct PipelineOffTest {
             // shares the WMO INVSRCALPHA/ONE layer admission.
             assert(receiver.wmo==!skinned);worldBlendPair=receiver.wmo;
         }
-        // Posed models use the probe-aware room level. Rigid doodads keep the
-        // authored room fill, exactly like the WMO surfaces around them.
-        const bool probeRoom=model&&skinned;
+        const bool probeRoom=model&&(skinned||!preserveRigidRoomLight);
         D3DVIEWPORT9 vp{0,0,width,height,0,.94f};screenOk(device.SetViewport(&vp));
         screenOk(device.SetRenderState(D3DRS_ZENABLE,TRUE));screenOk(device.SetRenderState(D3DRS_ZFUNC,D3DCMP_LESSEQUAL));
         screenOk(device.SetRenderState(D3DRS_STENCILENABLE,FALSE));
@@ -81,9 +82,10 @@ struct PipelineOffTest {
         }
         screenOk(device.SetVertexShader(nullptr));screenOk(device.SetDepthStencilSurface(nullptr));
         drop(device.worldDepth);depth->Release();shader->Release();
-        std::puts(probeRoom?"TOWER_PLAYER_ROOM_ADMISSION_PASS posedM2=1 probeMask=1 outdoorUnchanged=1":
-            model?"RIGID_M2_ROOM_ADMISSION_PASS rigidM2=1 authoredFill=1 outdoorUnchanged=1":
-            "ROOM_LAYER_ADMISSION_PASS capturedBlendPair=1 scopedStates=1 negativeControls=5");
+        world.quality.giPreserveRigidRoomLight=previousPreserve;
+        if(model&&!skinned)std::printf("RIGID_M2_ROOM_ADMISSION_PASS preserve=%d probeMask=%d\n",preserveRigidRoomLight,probeRoom);
+        else std::puts(model?"TOWER_PLAYER_ROOM_ADMISSION_PASS posedM2=1 probeMask=1 outdoorUnchanged=1":
+                             "ROOM_LAYER_ADMISSION_PASS capturedBlendPair=1 scopedStates=1 negativeControls=5");
     }
     static __attribute__((noinline)) bool receiver(WorldRenderer& world,IDirect3DVertexShader9* shader,bool model){return world.authoredReceiver(shader,model);}
     static bool prelit(Device& device,const std::vector<DWORD>& words){
@@ -171,6 +173,7 @@ int main(int argc,char** argv){
         PipelineOffTest::overrideRegistration(*device,readShader(std::string(argv[3])+"/model.bin"),true);
         PipelineOffTest::overrideRegistration(*device,readShader(std::string(argv[3])+"/rigid-model.bin"),true);
         PipelineOffTest::layeredRoom(*device,readShader(std::string(argv[3])+"/rigid-model.bin"),W,H,true,false);
+        PipelineOffTest::layeredRoom(*device,readShader(std::string(argv[3])+"/rigid-model.bin"),W,H,true,false,false);
         if(std::ifstream(std::string(argv[3])+"/captured-model.bin").good()){
             PipelineOffTest::overrideRegistration(*device,readShader(std::string(argv[3])+"/captured-model.bin"),true);
             std::puts("CAPTURED_M2_ROOM_REGISTRATION_PASS");

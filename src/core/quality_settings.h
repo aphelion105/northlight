@@ -29,6 +29,7 @@ struct Settings {
     unsigned gi=1,giRays=64,giBounces=3,giProbeMoveStep=8,giDynamicProbes=1,giThreads=1,giFastBVH=1;
     // 60 retains the legacy half blend; 120 replaces native ambient, 240 doubles the correction.
     unsigned giStrength=120,giPrelitMix=100,auroraStrength=100;
+    unsigned giPreserveRigidRoomLight=1;
     unsigned celestialStyle=0; // 0 = native placement/size; 1 = Forever orbit and size curves.
     unsigned celestialEffects=1,godrays=1; // Sky replacement and directional fog scattering have independent owners.
     unsigned treeCanopy=1,treeCrown=1;
@@ -160,7 +161,7 @@ struct Settings {
     unsigned autoBumpModels=1,autoModelDisplacementStrength=25,autoModelDisplacementDistance=8,autoModelDisplacementDetail=2;
     unsigned autoHeightPolarity=0,autoHeightDetails=75,autoHeightBalance=50;
     unsigned autoNormalFilter=1;
-    char origin[131]={'d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d'};
+    char origin[132]={'d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d'};
 };
 struct Key {
     const char* name;unsigned Settings::*field=nullptr;int Settings::*signedField=nullptr;
@@ -298,6 +299,7 @@ inline const Key Keys[]={
     {"AuroraStrength",&Settings::auroraStrength,0,200,{100,100,100}},
     {"GIChunkRadius",&Settings::giChunkRadius,1,3,{1,1,1}},
     {"GIPrelitMix",&Settings::giPrelitMix,0,100,{100,100,100}},
+    {"GIPreserveRigidRoomLight",&Settings::giPreserveRigidRoomLight,0,1,{1,1,1}},
     {"CelestialEffects",&Settings::celestialEffects,0,1,{1,1,1}},
     {"Godrays",&Settings::godrays,0,1,{1,1,1}},
     {"TreeCanopy",&Settings::treeCanopy,0,1,{1,1,1}},

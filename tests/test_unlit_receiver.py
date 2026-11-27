@@ -40,11 +40,11 @@ int main(){
  }
  assert(!NorthlightUnlitReceiver::shader(nullptr,0,true));
  using namespace NorthlightUnlitReceiver;
- // Only posed (skinned) M2s request a probe-attenuated room level. Rigid
- // doodads keep their authored room fill like the WMO room around them; menus
- // and non-M2 draws do not request a level.
- assert(modelRoomBank(false,3,true)&&!modelRoomBank(false,3,false));
- assert(!modelRoomBank(true,3,true)&&!modelRoomBank(false,2,true));
+ for(bool preserve:{false,true}){
+  assert(modelRoomBank(false,3,true,preserve));
+  assert(modelRoomBank(false,3,false,preserve)==!preserve);
+  assert(!modelRoomBank(true,3,true,preserve)&&!modelRoomBank(false,2,true,preserve));
+ }
  assert(receiverMaskKind(false,false,0)==3&&receiverMaskKind(true,false,0)==4);
  assert(receiverMaskKind(false,true,0)==5&&receiverMaskKind(false,true,3)==4);
  assert(receiverMaskKind(false,true,RoomSharedTint)==5+RoomSharedTint);

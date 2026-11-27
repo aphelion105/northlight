@@ -32,12 +32,17 @@ Authored WMO room banks were already exempt for this reason. See
 
 ## Change
 
-Only skinned M2s request a probe-attenuated room level. This keeps the
+By default, only skinned M2s request a probe-attenuated room level. This keeps the
 [Wintergarde player](wintergarde-player-shadow-20261118.md) behaviour for posed
 characters. Rigid doodads now mark the plain authored room stencil, as the WMO
 surfaces around them do, and keep their native room fill. Rigid doodad programs
 also pass the WMO coordinate proof, so they keep the WMO `INVSRCALPHA/ONE` layer
 admission.
+
+**Lighting & AO → Global illumination → Preserve baked room light on static
+props** controls this behaviour. Clearing the checkbox admits probe occlusion
+on rigid M2s according to the baked lighting blend. The setting applies live
+and uses the resident probes.
 
 `tests/test_unlit_receiver.py` checks the gate.
 `tests/test_prelit_receiver_gpu.py` runs the production draw admission on D3D9,
