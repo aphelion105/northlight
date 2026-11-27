@@ -6,8 +6,9 @@ assets and alpha textures. Models are in bind pose; animated entities, liquids,
 particle effects and additive/translucent surfaces are excluded and reported.
 """
 from __future__ import annotations
-import argparse, collections, functools, hashlib, json, math, os, re, struct, sys, time
+import argparse, collections, itertools, functools, hashlib, json, math, os, re, struct, sys, time
 from pathlib import Path
+from array import array as typed_array   # array() below is the chunk-array reader
 
 HERE=Path(__file__).resolve().parent
 sys.path[:0]=[str(HERE.parent),str(HERE)]   # repo root and renderer/: also under python -I
@@ -122,6 +123,22 @@ def srgb_to_linear(value):
     return value/12.92 if value<=.04045 else ((value+.055)/1.055)**2.4
 
 SRGB8_TO_LINEAR=tuple(srgb_to_linear(value/255) for value in range(256))
+
+# The fixed topology of an MCNK: 145 vertices in alternating rows of 9 outer and 8 inner ones, their
+# offsets from the chunk's north-west corner, and the 4 triangles (around the inner vertex) of each of
+# the 64 cells with the hole bit (4x4 holes per chunk) that removes the cell.
+MCNK_ROWS=[(row,col) for row in range(17) for col in range(8 if row&1 else 9)]
+MCNK_OFFSETS=[(row*UNIT*.5,(col+.5*(row&1))*UNIT) for row,col in MCNK_ROWS]
+def _mcnk_cells():
+    grid={rc:i for i,rc in enumerate(MCNK_ROWS)};cells=[]
+    for row in range(8):
+        for col in range(8):
+            a,b=grid[(row*2,col)],grid[(row*2,col+1)]
+            c,d=grid[(row*2+2,col)],grid[(row*2+2,col+1)]
+            center=grid[(row*2+1,col)]
+            cells.append((1<<((row//2)*4+col//2),((a,b,center),(b,d,center),(d,c,center),(c,a,center))))
+    return cells
+MCNK_CELLS=_mcnk_cells()
 
 def matmul(a,b):return tuple(tuple(sum(a[i][k]*b[k][j] for k in range(3)) for j in range(3)) for i in range(3))
 def matvec(a,v):return tuple(sum(a[i][j]*v[j] for j in range(3)) for i in range(3))
@@ -575,31 +592,27 @@ class Builder:
         heights=unpack('<145f',child(20,'MCVT'));layers=child(28,'MCLY')
         texture_id=unpack('<I',layers)[0] if layers else 0
         material=self.material(textures[texture_id] if texture_id<len(textures) else '',0,True)
-        base=len(self.vertices);positions=[];grid={};i=0
-        for row in range(17):
-            for col in range(8 if row&1 else 9):
-                # MCNK x/y are the game-world north/west corner (z is altitude).
-                p=(px-row*UNIT*.5,py-(col+.5*(row&1))*UNIT,pz+heights[i]);i+=1
-                positions.append(p);grid[(row,col)]=len(positions)-1
-        local_triangles=[]
-        for row in range(8):
-            for col in range(8):
-                if holes & (1<<((row//2)*4+col//2)):continue
-                a,b=grid[(row*2,col)],grid[(row*2,col+1)]
-                c,d=grid[(row*2+2,col)],grid[(row*2+2,col+1)]
-                center=grid[(row*2+1,col)]
-                local_triangles.extend(((a,b,center),(b,d,center),(d,c,center),(c,a,center)))
-        normal=[[0.,0.,0.] for p in positions]
-        for a,b,c in local_triangles:
-            pa,pb,pc=positions[a],positions[b],positions[c]
-            u=tuple(pb[i]-pa[i] for i in range(3));v=tuple(pc[i]-pa[i] for i in range(3))
-            n=(u[1]*v[2]-u[2]*v[1],u[2]*v[0]-u[0]*v[2],u[0]*v[1]-u[1]*v[0])
-            if n[2]<0:n=tuple(-x for x in n)
-            for index in (a,b,c):
-                for j in range(3):normal[index][j]+=n[j]
-            self.triangles.append((base+a,base+b,base+c,material))
-        self.vertices.extend(p+normalize(normal[i])+(0.,0.) for i,p in enumerate(positions))
-        self.tile_stats['terrain_chunks']+=1;self.tile_stats['terrain_triangles']+=len(local_triangles)
+        # MCNK x/y are the game-world north/west corner (z is altitude). The arithmetic below is the
+        # original per-vertex code unrolled: every float is computed in the same order, so the output is
+        # bit-identical (the terrain is most of a full build's time).
+        base=len(self.vertices);triangles=self.triangles
+        positions=[(px-ox,py-oy,pz+h) for (ox,oy),h in zip(MCNK_OFFSETS,heights)]
+        nx=[0.]*145;ny=[0.]*145;nz=[0.]*145;count=0
+        for bit,cell in MCNK_CELLS:
+            if holes&bit:continue
+            for a,b,c in cell:
+                pa,pb,pc=positions[a],positions[b],positions[c]
+                u0,u1,u2=pb[0]-pa[0],pb[1]-pa[1],pb[2]-pa[2];v0,v1,v2=pc[0]-pa[0],pc[1]-pa[1],pc[2]-pa[2]
+                n0,n1,n2=u1*v2-u2*v1,u2*v0-u0*v2,u0*v1-u1*v0
+                if n2<0:n0,n1,n2=-n0,-n1,-n2
+                nx[a]+=n0;ny[a]+=n1;nz[a]+=n2;nx[b]+=n0;ny[b]+=n1;nz[b]+=n2;nx[c]+=n0;ny[c]+=n1;nz[c]+=n2
+                triangles.append((base+a,base+b,base+c,material))
+            count+=4
+        vertices=self.vertices
+        for p,x,y,z in zip(positions,nx,ny,nz):
+            length=math.sqrt(sum((x*x,y*y,z*z)))   # normalize(), inlined: sum() (compensated since Python 3.12), not +
+            vertices.append(p+((x/length,y/length,z/length) if length>1e-8 else (0.,0.,1.))+(0.,0.))
+        self.tile_stats['terrain_chunks']+=1;self.tile_stats['terrain_triangles']+=count
     def parse(self,mapname,x,y):
         """Read the ADT: terrain into vertices/triangles, placed M2/WMO through add_mesh."""
         self.reset();name=f'world\\maps\\{mapname}\\{mapname}_{x}_{y}.adt'
@@ -633,21 +646,28 @@ class Builder:
         return self.finish(mapname,x,y,destination)
     def finish(self,mapname,x,y,destination):
         self.write_scene(destination)
+        xs,ys,zs=list(zip(*self.vertices))[:3]
         return {'map':mapname,'tile':[x,y],'vertices':len(self.vertices),'triangles':len(self.triangles),
                 'materials':len(self.materials),'bytes':destination.stat().st_size,'geometry':dict(self.tile_stats),
                 'sha256':hashlib.sha256(destination.read_bytes()).hexdigest(),
-                'bounds':[[min(v[i] for v in self.vertices) for i in range(3)],[max(v[i] for v in self.vertices) for i in range(3)]]}
+                'bounds':[[min(xs),min(ys),min(zs)],[max(xs),max(ys),max(zs)]]}
     def write_scene(self,destination):
+        """FGS2: header, vertices (8 float32), triangles (4 uint32), materials. Vertices and triangles are
+        packed in bulk; every value is still checked (a value float32 cannot hold counts as nonfinite)."""
+        nv,nt,nm=len(self.vertices),len(self.triangles),len(self.materials)
+        vertices=typed_array('f',itertools.chain.from_iterable(self.vertices))
+        if len(vertices)!=8*nv:raise ValueError('Invalid output vertex')
+        if not all(map(math.isfinite,vertices)):raise ValueError('Nonfinite vertex')
+        if nt and (max(max(t[:3]) for t in self.triangles)>=nv or max(t[3] for t in self.triangles)>=nm):
+            raise ValueError('Invalid output triangle')
+        triangles=typed_array('I',itertools.chain.from_iterable(self.triangles))
+        if len(triangles)!=4*nt:raise ValueError('Invalid output triangle')
+        if sys.byteorder!='little':vertices.byteswap();triangles.byteswap()
         destination.parent.mkdir(parents=True,exist_ok=True)
         temp=destination.with_suffix(f'.{os.getpid()}.tmp')
         with temp.open('wb') as f:
-            f.write(struct.pack('<4s4I',b'FGS2',2,len(self.vertices),len(self.triangles),len(self.materials)))
-            for vertex in self.vertices:
-                if not all(math.isfinite(v) for v in vertex):raise ValueError('Nonfinite vertex')
-                f.write(struct.pack('<8f',*vertex))
-            for triangle in self.triangles:
-                if max(triangle[:3])>=len(self.vertices) or triangle[3]>=len(self.materials):raise ValueError('Invalid output triangle')
-                f.write(struct.pack('<4I',*triangle))
+            f.write(struct.pack('<4s4I',b'FGS2',2,nv,nt,nm))
+            f.write(vertices.tobytes());f.write(triangles.tobytes())
             for color,w,h,cutoff,rgba in self.materials:
                 f.write(struct.pack('<3fIIfI',*color,w,h,cutoff,len(rgba)));f.write(rgba)
         retry(temp.replace,destination)
@@ -655,8 +675,10 @@ class Builder:
 
 class InstancedBuilder(Builder):
     """FGS3 tile instance lists referencing shared FGS2 meshes."""
-    def __init__(self,assets,output):
-        self.output=output;self.exported={};self.instances=[];self.model_triangles={}
+    def __init__(self,assets,output,release_exported=False):
+        """release_exported: replace a model's cached mesh by a stub once its FGS2 is written (the command line's
+        builds; a caller that reads builder.meshes or m2()/wmo() results after building tiles keeps the default)."""
+        self.output=output;self.exported={};self.instances=[];self.model_triangles={};self.release_exported=release_exported
         super().__init__(assets)
     def reset(self):
         super().reset();self.instances=[]
@@ -676,6 +698,12 @@ class InstancedBuilder(Builder):
             temporary.write_scene(self.output/'models'/(key.hex()+'.fgs'))
             bounds=tuple(tuple(fn(v[i] for v in compact[0]) for i in range(3)) for fn in (min,max))
             self.exported[name]=(key,bounds);self.model_triangles[key]=len(triangles)
+        cached=self.meshes.get(name)
+        if self.release_exported and cached is not None and cached[0] is mesh[0] and mesh[0]:
+            # Later placements need only the key, bounds and triangle count: keep a stub in the cache instead of the
+            # parsed vertices and triangles (most of a builder's memory). A WMO keeps its root and doodad refs.
+            stub=[];del self.mesh_names[id(mesh[0])];self.mesh_names[id(stub)]=name
+            self.meshes[name]=(stub,range(len(mesh[1])),*cached[2:])
         key,(lo,hi)=self.exported[name]
         corners=[tuple(p[i]+translation[i] for i in range(3)) for x in (lo[0],hi[0]) for y in (lo[1],hi[1]) for z in (lo[2],hi[2])
                  for p in (matvec(matrix,(x,y,z)),)]
@@ -752,6 +780,12 @@ def plan_map(assets,mapname):
     wdt=instance_maps.read_wdt(assets.read(instance_maps.wdt_path(mapname)))
     return ('global',wdt) if wdt['global_wmo'] else ('adt',wdt['tiles'])
 
+def band_tiles(tiles,band,count):
+    """Part `band` of `count` contiguous parts of equal tile count (tiles sorted by x, then y): neighbouring tiles
+    share most of their models, so a part parses only its own region's models. Together the parts cover every tile once."""
+    tiles=sorted(tiles)
+    return tiles[len(tiles)*band//count:len(tiles)*(band+1)//count]
+
 def built_global(output,mapname):
     """True when an earlier run's report for a global-WMO map lists tiles that are all still there (a global map
     has no tile list before it is built, so a resumed run cannot tell from the files alone)."""
@@ -764,7 +798,10 @@ def built_global(output,mapname):
 def main():
     p=argparse.ArgumentParser();p.add_argument('--map',nargs='+',default=['Azeroth'],help='one or more maps (Map.dbc directory names)');p.add_argument('--tiles',nargs=4,type=int,metavar=('X0','Y0','X1','Y1'))
     p.add_argument('--all-continents',action='store_true');p.add_argument('--output',type=Path,help='default: <client>/world-cache');p.add_argument('--force',action='store_true');p.add_argument('--instanced',action='store_true')
-    client_archives.add_arguments(p);args=p.parse_args();assets=Assets.from_args(args);args.output=args.output or assets.client/'world-cache';builder=InstancedBuilder(assets,args.output) if args.instanced else Builder(assets);start=time.time()
+    p.add_argument('--band',nargs=2,type=int,metavar=('K','N'),help='build only part K (0..N-1) of N equal parts of each map\'s tiles (parallel builder processes)')
+    client_archives.add_arguments(p);args=p.parse_args()
+    if args.band and not 0<=args.band[0]<args.band[1]:p.error('--band K N needs 0 <= K < N')
+    assets=Assets.from_args(args);args.output=args.output or assets.client/'world-cache';builder=InstancedBuilder(assets,args.output,release_exported=True) if args.instanced else Builder(assets);start=time.time()
     maps=CONTINENTS if args.all_continents else list(dict.fromkeys(args.map))
     for warning in assets.warnings():print(json.dumps({'archive_warning':warning}),flush=True)   # install_world_cache shows these at once
     try:
@@ -774,6 +811,10 @@ def main():
             except (ValueError,FileNotFoundError) as exc:plan_errors[mapname]=str(exc)
             if mapname in plans and args.tiles and plans[mapname][0]=='adt':
                 plans[mapname]=('adt',[(x,y) for x,y in plans[mapname][1] if args.tiles[0]<=x<=args.tiles[2] and args.tiles[1]<=y<=args.tiles[3]])
+            if args.band and args.band[0] and (mapname in plan_errors or plans[mapname][0]=='global'):
+                plan_errors.pop(mapname,None);plans[mapname]=('adt',[])   # band 0 alone builds a global-WMO map and reports a plan error
+            if args.band and mapname in plans and plans[mapname][0]=='adt':
+                plans[mapname]=('adt',band_tiles(plans[mapname][1],*args.band))
         # one progress total for the process: a global-WMO map counts as one unit (its tile list is known only once built)
         print(json.dumps({'tiles_total':sum(len(v) if kind=='adt' else 1 for kind,v in plans.values()),'maps':maps}),flush=True)
         limitations=['Static M2 bind pose; animated characters absent.','Terrain albedo is first-layer texture mean; terrain geometry is exact including 4x4 holes.',

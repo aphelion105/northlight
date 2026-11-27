@@ -198,5 +198,33 @@ with tempfile.TemporaryDirectory() as tmp:
     fake_report = json.loads(next((out / 'cache').glob('build-Fake-*.json')).read_text())
     assert fake_report['generated'] and not fake_report['failures'] and fake_report['global_wmo']['wmo_uid'] == UID
     assert not any(t['map'] != 'Fake' for t in fake_report['generated']), 'a report holds one map'
+
+# d) main() --band K N: the parts split an ADT map's tiles; only part 0 builds a global-WMO map and reports a map
+#    whose plan failed (no WDT), so the parts' reports together hold each tile, the global map and the failure once.
+with tempfile.TemporaryDirectory() as tmp:
+    out = Path(tmp)
+    fake = FakeAssets(files)
+    fake.client, fake.providers, fake.warnings = out, {}, lambda: []
+    fake.paths, fake.fingerprint, fake.close = [], lambda: {}, lambda: None
+    wsb.Assets.from_args = classmethod(lambda cls, args: fake)
+    totals, done = [], []
+    for band in ('0', '1'):
+        sys.argv = ['world_scene_builder.py', '--instanced', '--map', 'Tiled', 'Fake', 'Missing', '--band', band, '2',
+                    '--output', str(out / ('cache' + band))]
+        printed = []
+        wsb.print = lambda *a, **k: printed.append(a[0])
+        try:
+            wsb.main()
+        finally:
+            del wsb.print
+        events = [json.loads(p) for p in printed if p.startswith('{')]
+        totals.append(events[0]['tiles_total'])
+        done.append([e['tile'] for e in events if 'tile' in e])
+    assert totals == [2, 1] and done == [['Tiled/1_1', 'Fake/global'], ['Tiled/1_2']], (totals, done)
+    reports = [json.loads(p.read_text()) for p in out.glob('cache*/build-*.json')]
+    missing = [f for r in reports for f in r['failures']]
+    assert [(f['map'], f['tile']) for f in missing] == [('Missing', None)], missing
+    assert sum(len(r['generated']) for r in reports if r['generated'] and r['generated'][0]['map'] == 'Tiled') == 1
+    assert sum(len(r['empty_source_tiles']) for r in reports) == 1
 print('instance_scene: global WMO in every overlapping tile with one uid, zero-offset frame, bad group skipped, '
-      'holed tiles with/without objects, per-map reports OK')
+      'holed tiles with/without objects, per-map reports, --band parts OK')

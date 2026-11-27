@@ -275,6 +275,42 @@ assert iwc.admit(needs[1:], 6.5 * GB, 1, 4, 12 * GB) == 0                      #
 assert iwc.admit(needs[2:], 11 * GB, 2, 4, 12 * GB) is None                    # nothing else fits
 assert iwc.admit(needs[2:], 4.5 * GB, 1, 4, 9 * GB) == 0 and iwc.admit(needs[3:], 4.5 * GB, 1, 1, 99 * GB) is None
 assert iwc.admit([6.5 * GB, 3.5 * GB], 4.5 * GB, 1, 4, 8.5 * GB) == 1           # a smaller one fills the gap
+# Parts: one per map on few cores, up to MAX_MAP_PARTS on many; a part's budget is its share, at least
+# PART_MEMORY_SHARE of its map's; --job-memory-gb stays per process; the parts of a map stay together, largest map first.
+assert [iwc.map_parts(iwc.MAPS, j) for j in (1, 3, 4, 5, 7, 15, 63)] == [1, 1, 1, 2, 2, 4, iwc.MAX_MAP_PARTS]
+assert iwc.map_parts(['Kalimdor'], 3) == 3 and iwc.map_parts([], 8) == iwc.MAX_MAP_PARTS
+assert iwc.scene_jobs(iwc.MAPS, 1) == [(m, 0, need) for m, need in iwc.map_jobs(iwc.MAPS)]
+jobs4 = iwc.scene_jobs(iwc.MAPS, 4)
+assert [(m, k) for m, k, _ in jobs4[:5]] == [('Northrend', 0), ('Northrend', 1), ('Northrend', 2), ('Northrend', 3), ('Azeroth', 0)]
+share = max(1 / 4, iwc.PART_MEMORY_SHARE)
+assert all(need == iwc.MAP_MEMORY_GB[m] * GB * share for m, _, need in jobs4) and len(jobs4) == 16
+assert all(need == 2 * GB for _, _, need in iwc.scene_jobs(iwc.MAPS, 4, 2))
+assert iwc.human({'event': 'start', 'step': 'scene', 'map': 'Northrend', 'part': '2/4'}) == 'Northrend (part 2/4): started'
+assert iwc.human({'event': 'start', 'step': 'scene', 'map': 'Northrend'}) == 'Northrend: started'
+assert 'in 4 parts each, up to 15 builder processes' in iwc.human({'event': 'plan', 'mode': 'full', 'maps': iwc.MAPS, 'jobs': 15,
+                                                                    'parts': 4, 'total_memory_gb': 32})
+# The parts of a map share one progress count (a later part's tiles never make the percentage go back), and their
+# reports' tile failures add up.
+parts_dir = out / 'parts'
+shutil.rmtree(parts_dir, ignore_errors=True); parts_dir.mkdir()
+script = parts_dir / 'part.py'
+script.write_text('import json, sys\nn = int(sys.argv[1])\nprint(json.dumps({"tiles_total": n}), flush=True)\n'
+                  'for i in range(n):\n    print(json.dumps({"tile": f"Kalimdor/{n}_{i}"}), flush=True)\n'
+                  'open(sys.argv[2] + f"/build-Kalimdor-1-{__import__(\'os\').getpid()}.json", "w").write('
+                  'json.dumps({"failures": [{"tile": [n, 0], "error": "x"}]}))\n')
+buffer = io.StringIO()
+iwc.PROGRESS = 'human'
+with contextlib.redirect_stdout(buffer):
+    ran = iwc.run_parallel([('scene', [script, n, parts_dir], parts_dir / f'scene-Kalimdor-{k + 1}.log', 'Kalimdor', 1, f'{k + 1}/2')
+                            for k, n in enumerate((20, 20))], 2)
+iwc.PROGRESS = 'json'
+lines = buffer.getvalue().splitlines()
+assert sorted(l for l in lines if 'started' in l) == ['Kalimdor (part 1/2): started', 'Kalimdor (part 2/2): started'], lines
+percents = [int(l.split(': ')[1].split('%')[0]) for l in lines if '% (' in l]
+assert percents == sorted(percents) and len(percents) == len(set(percents)) and percents[-1] == 100, lines
+assert 'Kalimdor: 100% (40/40 tiles)' in lines, lines
+assert sorted(s.record()['part'] for s in ran) == ['1/2', '2/2'] and all(s.proc.returncode == 0 for s in ran)
+assert sorted(f['tile'][0] for f in iwc.scene_failures(parts_dir, ran)['Kalimdor']) == [20, 20]
 assert iwc.memory_refusal('partial', 4 * GB) is None and iwc.memory_refusal('full', 7.2 * GB) is None
 assert '8 GB' in iwc.memory_refusal('full', 6.9 * GB)
 if sys.platform == 'darwin':                                                     # installed RAM, hw.memsize
