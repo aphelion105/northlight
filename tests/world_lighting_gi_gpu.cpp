@@ -23,9 +23,14 @@ int main(int argc,char** argv){
  auto gi=shader(d,root+"/WorldGI.bin");IDirect3DQuery9 *a=nullptr,*b=nullptr,*hz=nullptr;for(auto p:{&a,&b})ok(d->CreateQuery(D3DQUERYTYPE_TIMESTAMP,p));ok(d->CreateQuery(D3DQUERYTYPE_TIMESTAMPFREQ,&hz));const auto get=[&](IDirect3DQuery9* q){UINT64 v=0;HRESULT hr;while((hr=q->GetData(&v,sizeof v,D3DGETDATA_FLUSH))==S_FALSE)SwitchToThread();ok(hr);return v;};
  auto quad=[&]{const Vertex v[]={{-.5f,-.5f,0,1,0,0},{float(W)-.5f,-.5f,0,1,1,0},{-.5f,float(H)-.5f,0,1,0,1},{float(W)-.5f,float(H)-.5f,0,1,1,1}};ok(d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,v,sizeof v[0]));};
  auto image=[&](IDirect3DSurface9* s){ok(d->GetRenderTargetData(s,back));D3DLOCKED_RECT lock{};ok(back->LockRect(&lock,nullptr,D3DLOCK_READONLY));std::vector<uint16_t> out(size_t(W)*H*4);for(unsigned y=0;y<H;++y)std::memcpy(out.data()+size_t(y)*W*4,(char*)lock.pBits+y*lock.Pitch,W*8);ok(back->UnlockRect());return out;};
- unsigned cases=0,prelitCases=0,darkPixels=0;float maximum=0;std::array<std::vector<uint16_t>,16> noMix,halfMix,ordinary;
+ unsigned cases=0,prelitCases=0,darkPixels=0,shelteredChannels=0;float maximum=0;std::array<std::vector<uint16_t>,16> noMix,halfMix,ordinary;
  {const unsigned soft=0;const std::string name="WorldLightingUnshadowed";auto old=shader(d,root+"/"+name+".bin"),fused=shader(d,proto+"/"+name+"GI.bin");
- for(unsigned blend=0;blend<(timing?1u:3u);++blend)for(unsigned test=0;test<(timing?2u:16u);++test){c[66][0]=blend*.5f;const unsigned sources=1+test%2;c[20][1]=(test%4)*2.f/3;c[66][1]=float(int(test%4)-1);c[18][3]=test%3*.2f;c[24][2]=test%5==2?2.f:0.f;c[20][3]=test%6!=3;c[24][3]=timing?6.f:5.f+float(test%4)*.15f;c[30][0]=!timing&&test%7==4?1.f:0.f;ok(d->SetPixelShaderConstantF(0,c[0],128));std::vector<uint16_t> reference,baseline,prelitReference;
+ for(unsigned blend=0;blend<(timing?1u:3u);++blend)for(unsigned test=0;test<(timing?2u:16u);++test){c[66][0]=blend*.5f;const unsigned sources=1+test%2;c[20][1]=(test%4)*2.f/3;c[66][1]=float(int(test%4)-1);c[18][3]=test%3*.2f;c[24][2]=test%5==2?2.f:0.f;c[20][3]=test%6!=3;c[24][3]=timing?6.f:5.f+float(test%4)*.15f;c[30][0]=!timing&&test%7==4?1.f:0.f;
+ // Test 1 has nonzero probes below the outdoor ambient level, with no direct sun or night boost.
+ const bool sheltered=!timing&&test==1;
+ for(unsigned channel=0;channel<3;++channel)c[18][channel]=sheltered?.6f:.2f+channel*.1f;
+ if(sheltered)c[18][3]=0;
+ ok(d->SetPixelShaderConstantF(0,c[0],128));std::vector<uint16_t> reference,baseline,prelitReference;
  for(unsigned pass=0;pass<(timing?12u:2u);++pass){const bool merge=timing?(pass%4==1||pass%4==2):pass!=0;
  ok(hz->Issue(D3DISSUE_END));ok(a->Issue(D3DISSUE_END));const auto start=std::chrono::steady_clock::now();ok(d->BeginScene());ok(d->SetRenderTarget(0,light));D3DVIEWPORT9 vp{0,0,W,H,0,1};ok(d->SetViewport(&vp));ok(d->SetRenderState(D3DRS_COLORWRITEENABLE,15));ok(d->SetRenderState(D3DRS_COLORWRITEENABLE1,15));
  ok(d->SetRenderTarget(2,prelit));ok(d->SetRenderState(D3DRS_COLORWRITEENABLE2,15));
@@ -35,6 +40,7 @@ int main(int argc,char** argv){
  for(size_t i=0;i<prelitOut.size();++i){const float v=half(prelitOut[i]),ref=half(prelitReference[i]);assert(std::isfinite(v)&&std::fabs(v-ref)<=.002f+.002f*std::max(std::fabs(v),std::fabs(ref)));
   if(test%2&&(!blend||!c[20][3]))assert(v==0); // No roof visibility proof: no sunlight leak into authored interiors.
   if(i%4==3){assert(v>=0&&v<=1);if(!blend||!c[20][3])assert(v==0);darkPixels+=v>.01f;}
+  else if(sheltered&&blend==2)shelteredChannels+=v>.005f;
  }
  if(!blend){noMix[test]=prelitOut;ordinary[test]=out;}else{assert(ordinary[test]==out);if(blend==1)halfMix[test]=prelitOut;else for(size_t i=0;i<prelitOut.size();++i){const float midpoint=(half(noMix[test][i])+half(prelitOut[i]))*.5f;assert(std::fabs(half(halfMix[test][i])-midpoint)<.003f);}}
  ++prelitCases;++cases;}}
@@ -220,6 +226,6 @@ int main(int argc,char** argv){
   printf("GI_CREASE_PASS diagonal=1 silhouette=1 water=1 alphaExact=1 variantsExact=1 isolatedGI=1\n");
   printf("GI_DARK_ROOM_PASS cases=%u fullAmbientRemoval=1 mixedDirectional=1 receiverHistory=1 lampsPreserved=1\n",darkRoomCases);
  }
- assert(timing||darkPixels);printf("FUSED_GI_PASS cases=%u maxAbs=%.9f baselineAlphaExact=1 prelitCases=%u darkPixels=%u mix0_50_100=1 ordinaryUnaffected=1\n",cases,maximum,prelitCases,darkPixels);return 0;
+ assert(timing||(darkPixels&&shelteredChannels));printf("FUSED_GI_PASS cases=%u maxAbs=%.9f baselineAlphaExact=1 prelitCases=%u darkPixels=%u shelteredChannels=%u mix0_50_100=1 ordinaryUnaffected=1\n",cases,maximum,prelitCases,darkPixels,shelteredChannels);return 0;
 }
 

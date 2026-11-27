@@ -10,7 +10,7 @@
     "world_effects_temporal.hlsl": "d1dda3109674b86389ccdf2e48c3a9f5f59086ca173f3baf2c6765997e92e255",
     "world_effects_local_lighting.hlsl": "526de26b5d59493462278efb995bae7e0cc84cb59bc6e90dfe5abe7ac956248b",
     "world_effects_actor_shadows.hlsl": "4de52a0ed737310b5f0f12790a8af29a58e4a86731ef623f595df484fffd27c1",
-    "world_effects_lighting.hlsl": "dae88ce91373e84db2401f1a69a9c285187eefdc50324764259873180c51ed68",
+    "world_effects_lighting.hlsl": "61e1f5b126428677ebc7ac5423dd9b0efbe715ae2fb7e69ddb5e7afec5258ceb",
     "world_effects_shadow_sampling.hlsl": "1d37ab9a61ba537abc4c44e7f5a19275ade126027eba6d36e8966e14b22a9a4f",
     "world_effects_geometry.hlsl": "f01bcbac62d40279fafa7d6a6de1811ef3a152e712c95aea9a6cb98849ec7e12",
     "auto_bump_normal.hlsl": "98ac7cb40315531dce77643d808aac216e0b432a83360b2d1cb60b5011c9e4e0",

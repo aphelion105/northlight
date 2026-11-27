@@ -156,7 +156,10 @@ float3 worldGIValue(float3 p,float4 smoothNormal,uniform bool localOnly,out floa
     // Brightness adjusts added indirect light, not geometric occlusion.
     // In particular -100% must not turn every resident room probe opaque.
     float occlusion=saturate(1-dot(measured,float3(.2126,.7152,.0722))/max(dot(ambient,float3(.2126,.7152,.0722)),.0001));
-    prelitGI=float4(max(correction,0),occlusion)*(probe.a*GIResponse.x);
+    // The baked room already supplies its own base light. In sheltered
+    // areas, let measured bounce reach it below the outdoor ambient level.
+    float3 shelteredBounce=radiance*(GridInfo.y*smoothNormal.w*occlusion);
+    prelitGI=float4(max(correction,shelteredBounce),occlusion)*(probe.a*GIResponse.x);
     return correction;
 }
 LightingOutput worldLightingValue(float2 uv,bool soft,bool shadows,bool gi=false,bool separateActors=true) {
