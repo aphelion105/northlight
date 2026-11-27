@@ -45,6 +45,13 @@ static void queryPauseLifetime(){
 }
 int main(int argc,char** argv){
     queryPauseLifetime();
+    for(unsigned i=0;i<128;++i){
+        const auto before=std::chrono::steady_clock::now();
+        const auto actual=nowNs();
+        const auto after=std::chrono::steady_clock::now();
+        assert(std::uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(before.time_since_epoch()).count())<=actual);
+        assert(actual<=std::uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(after.time_since_epoch()).count()));
+    }
     {Queue idle;assert(!idle.nextTimed(0));assert(!idle.nextTimed(1));assert(get(idle.stats.consumerSleeps)==2);
      idle.interrupt();assert(!idle.nextTimed(10000));assert(get(idle.stats.consumerSleeps)==2);}
     WNDCLASSW wc{};wc.lpfnWndProc=windowProc;wc.lpszClassName=L"NorthlightQueueWaitTest";wc.hInstance=GetModuleHandleW(nullptr);

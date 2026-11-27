@@ -60,16 +60,20 @@ private:
     void* samplerContext=nullptr;bool(*samplerReader)(void*,DWORD,unsigned,DWORD*)=nullptr;
     unsigned warmFrame=~0u,coldAttempts=0,coldTraceCount=0;ColdTraceSink coldTraceSink=nullptr;void* coldTraceContext=nullptr;
     unsigned shaderWarmupMs=0;
-    Entry* usable(Entry* entry){
+    Entry* usable(Entry* entry,bool* warming=nullptr){
         if(!entry||!entry->ps)return nullptr;
         if(entry->readyAfter!=Clock::time_point{}){
-            if(Clock::now()<entry->readyAfter){++warmupDeferrals;return nullptr;}
+            if(Clock::now()<entry->readyAfter){
+                if(warming)*warming=true;
+                ++warmupDeferrals;
+                return nullptr;
+            }
             entry->readyAfter={};
         }
         return entry;
     }
-    Entry* acquire(IDirect3DVertexShader9* vs,IDirect3DPixelShader9* ps,unsigned slot,unsigned frame,const NorthlightNativeLocalDraw* second,const NorthlightNativeLocalDraw* third,const NorthlightNativePOM* pom,const NorthlightNativeDisplacement* displacement,const NorthlightEffectCoverage::NativePixel* coverage){
-        const Key key=pairKey(vs,ps,slot,second,third,pom,displacement);auto old=shaders.find(key);if(old!=shaders.end())return usable(old->second.get());
+    Entry* acquire(IDirect3DVertexShader9* vs,IDirect3DPixelShader9* ps,unsigned slot,unsigned frame,const NorthlightNativeLocalDraw* second,const NorthlightNativeLocalDraw* third,const NorthlightNativePOM* pom,const NorthlightNativeDisplacement* displacement,const NorthlightEffectCoverage::NativePixel* coverage,bool* warming){
+        const Key key=pairKey(vs,ps,slot,second,third,pom,displacement);auto old=shaders.find(key);if(old!=shaders.end())return usable(old->second.get(),warming);
         if(!vs||!ps||shaders.size()>=128)return nullptr;
         if(warmFrame!=frame){warmFrame=frame;coldAttempts=0;}
         const unsigned requestedCount=third?3:second?2:1;
@@ -176,7 +180,7 @@ private:
             if(!donor||!pixelDonor)entry->readyAfter=Clock::now()+std::chrono::milliseconds(shaderWarmupMs);
             else entry->readyAfter=std::max(donor->readyAfter,pixelDonor->readyAfter);
         }
-        return usable(entry);
+        return usable(entry,warming);
     }
 public:
     std::array<uint64_t,3> requestsByCount{},coldAttemptsByCount{},deferredByCount{},coldRejectedByCount{},successfulByCount{},legacyByCount{};
@@ -213,9 +217,18 @@ public:
             // A ready multi-light pair already contains the lower endpoints.
             // Keep the single-first cold policy only while that pair is absent.
             if(second){const auto ready=shaders.find(pairKey(vs,ps,light.slot,second,third,pom,displacement));if(ready!=shaders.end())shader=usable(ready->second.get());}
-            if(!shader){shader=acquire(vs,ps,light.slot,light.rendererFrame,nullptr,nullptr,pom,displacement,coverage);
-            if(second){auto* dual=acquire(vs,ps,light.slot,light.rendererFrame,second,nullptr,pom,displacement,coverage);if(dual)shader=dual;}
-            if(second&&third){auto* triple=acquire(vs,ps,light.slot,light.rendererFrame,second,third,pom,displacement,coverage);if(triple)shader=triple;}
+            if(!shader){
+                // While a lower variant warms on x86, defer another compile
+                // for the same pair. An unsupported lower variant can still
+                // fall through to the next recipe.
+                bool warming=false;
+                bool* waitForLower=sizeof(void*)==4?&warming:nullptr;
+                shader=acquire(vs,ps,light.slot,light.rendererFrame,nullptr,nullptr,pom,displacement,coverage,waitForLower);
+                if(second&&!warming){
+                    if(auto* dual=acquire(vs,ps,light.slot,light.rendererFrame,second,nullptr,pom,displacement,coverage,waitForLower))shader=dual;
+                    if(third&&!warming)
+                        if(auto* triple=acquire(vs,ps,light.slot,light.rendererFrame,second,third,pom,displacement,coverage,waitForLower))shader=triple;
+                }
             }
         }catch(const std::bad_alloc&){if(!shader){++fallbacks;return submit();}}
         if(shader&&shader->vertexInfo.count<3)third=nullptr;if(shader&&shader->vertexInfo.count<2)second=nullptr;
