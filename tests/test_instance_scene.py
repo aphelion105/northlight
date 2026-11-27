@@ -6,7 +6,9 @@
   17066.67 one; a WMO group with a non-finite vertex is skipped and reported, the rest is built;
 - an ADT whose terrain is fully holed: a tile with placed objects is written without the terrain record, one without
   objects is EmptyTile (empty by design), one whose objects failed to load is still an error;
-- several --map values: tiles_total once, one build report per map, a global map as one progress unit."""
+- several --map values: tiles_total once, one build report per map, a global map as one progress unit;
+- --claim DIR: processes sharing the claims folder build each map once, each counts all the maps (shared total);
+  --keep-models leaves an existing model file as it is and writes the same tiles."""
 import sys; from pathlib import Path; sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root
 import northlight_paths as fp; fp.use_source_modules()
 import collections, hashlib, json, math, struct, tempfile, types
@@ -198,5 +200,80 @@ with tempfile.TemporaryDirectory() as tmp:
     fake_report = json.loads(next((out / 'cache').glob('build-Fake-*.json')).read_text())
     assert fake_report['generated'] and not fake_report['failures'] and fake_report['global_wmo']['wmo_uid'] == UID
     assert not any(t['map'] != 'Fake' for t in fake_report['generated']), 'a report holds one map'
+
+# d) main() --band K N: the parts split an ADT map's tiles; only part 0 builds a global-WMO map and reports a map
+#    whose plan failed (no WDT), so the parts' reports together hold each tile, the global map and the failure once.
+with tempfile.TemporaryDirectory() as tmp:
+    out = Path(tmp)
+    fake = FakeAssets(files)
+    fake.client, fake.providers, fake.warnings = out, {}, lambda: []
+    fake.paths, fake.fingerprint, fake.close = [], lambda: {}, lambda: None
+    wsb.Assets.from_args = classmethod(lambda cls, args: fake)
+    totals, done = [], []
+    for band in ('0', '1'):
+        sys.argv = ['world_scene_builder.py', '--instanced', '--map', 'Tiled', 'Fake', 'Missing', '--band', band, '2',
+                    '--output', str(out / ('cache' + band))]
+        printed = []
+        wsb.print = lambda *a, **k: printed.append(a[0])
+        try:
+            wsb.main()
+        finally:
+            del wsb.print
+        events = [json.loads(p) for p in printed if p.startswith('{')]
+        totals.append(events[0]['tiles_total'])
+        done.append([e['tile'] for e in events if 'tile' in e])
+    assert totals == [2, 1] and done == [['Tiled/1_1', 'Fake/global'], ['Tiled/1_2']], (totals, done)
+    reports = [json.loads(p.read_text()) for p in out.glob('cache*/build-*.json')]
+    missing = [f for r in reports for f in r['failures']]
+    assert [(f['map'], f['tile']) for f in missing] == [('Missing', None)], missing
+    assert sum(len(r['generated']) for r in reports if r['generated'] and r['generated'][0]['map'] == 'Tiled') == 1
+    assert sum(len(r['empty_source_tiles']) for r in reports) == 1
+
+# e) main() --claim DIR --keep-models: two processes share the maps of one --map list (the first finds Fake claimed);
+#    a model already in <output>/models is not written again, and the tiles are those of a plain build.
+def run_main(*argv, maps=('Tiled', 'Fake', 'Missing')):
+    sys.argv = ['world_scene_builder.py', '--instanced', '--map', *maps, *map(str, argv)]
+    printed = []
+    wsb.print = lambda *a, **k: printed.append(a[0])
+    try:
+        wsb.main()
+    finally:
+        del wsb.print
+    return [json.loads(p) for p in printed if p.startswith('{')]
+
+
+def tiles_of(cache):
+    return {p.relative_to(cache).as_posix(): p.read_bytes() for p in cache.glob('*/*.fg3')}
+
+
+with tempfile.TemporaryDirectory() as tmp:
+    out = Path(tmp)
+    fake = FakeAssets(files)
+    fake.client, fake.providers, fake.warnings = out, {}, lambda: []
+    fake.paths, fake.fingerprint, fake.close = [], lambda: {}, lambda: None
+    wsb.Assets.from_args = classmethod(lambda cls, args: fake)
+    run_main('--output', out / 'plain')
+    wmo_key = next((out / 'plain/Fake').glob('*.fg3')).read_bytes()[12:44].hex()   # a global map's tile: the WMO first
+    assert (out / 'plain/models' / f'{wmo_key}.fgs').read_bytes()[:4] == b'FGS2'
+    (out / 'shared/models').mkdir(parents=True)
+    (out / 'shared/models' / f'{wmo_key}.fgs').write_bytes(b'the continent cache model')
+    (out / 'claims').mkdir()
+    (out / 'claims/Fake.claim').touch()                                           # another process has it
+    first = run_main('--claim', out / 'claims', '--keep-models', '--output', out / 'shared')
+    (out / 'claims/Fake.claim').unlink()                                          # ... and it is free again
+    second = run_main('--claim', out / 'claims', '--keep-models', '--output', out / 'shared')
+    assert first[0] == second[0] == {'tiles_total': 3, 'maps': ['Tiled', 'Fake', 'Missing'], 'shared': True}, (first[0], second[0])
+    assert [e['tile'] for e in first if 'tile' in e] == ['Tiled/1_1', 'Tiled/1_2'], first
+    assert [e['tile'] for e in second if 'tile' in e] == ['Fake/global'], second
+    names = sorted(p.name.rsplit('-', 2)[0] for p in (out / 'shared').glob('build-*.json'))
+    assert names == ['build-Fake', 'build-Missing', 'build-Tiled'], names                # one report per map
+    assert sorted(p.name for p in (out / 'claims').iterdir()) == ['Fake.claim', 'Missing.claim', 'Tiled.claim']
+    assert tiles_of(out / 'shared') == tiles_of(out / 'plain') and tiles_of(out / 'plain')
+    assert (out / 'shared/models' / f'{wmo_key}.fgs').read_bytes() == b'the continent cache model'
+    ordered = run_main('--claim', out / 'claims2', '--output', out / 'ordered', maps=('Fake', 'Missing', 'Tiled'))
+    assert [e['tile'] for e in ordered if 'tile' in e] == ['Tiled/1_1', 'Tiled/1_2', 'Fake/global'], 'largest map first'
+    written = {p.name for p in (out / 'shared/models').glob('*.fgs')}
+    assert written == {p.name for p in (out / 'plain/models').glob('*.fgs')}, 'other models are written as before'
+    assert all((out / 'shared/models' / n).read_bytes() == (out / 'plain/models' / n).read_bytes() for n in written - {f'{wmo_key}.fgs'})
 print('instance_scene: global WMO in every overlapping tile with one uid, zero-offset frame, bad group skipped, '
-      'holed tiles with/without objects, per-map reports OK')
+      'holed tiles with/without objects, per-map reports, --band parts, --claim and --keep-models OK')

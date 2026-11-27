@@ -275,6 +275,77 @@ assert iwc.admit(needs[1:], 6.5 * GB, 1, 4, 12 * GB) == 0                      #
 assert iwc.admit(needs[2:], 11 * GB, 2, 4, 12 * GB) is None                    # nothing else fits
 assert iwc.admit(needs[2:], 4.5 * GB, 1, 4, 9 * GB) == 0 and iwc.admit(needs[3:], 4.5 * GB, 1, 1, 99 * GB) is None
 assert iwc.admit([6.5 * GB, 3.5 * GB], 4.5 * GB, 1, 4, 8.5 * GB) == 1           # a smaller one fills the gap
+# Parts: one per map on few cores, up to MAX_MAP_PARTS on many; a part's budget is its share, at least
+# PART_MEMORY_SHARE of its map's; --job-memory-gb stays per process; the parts of a map stay together, largest map first.
+assert [iwc.map_parts(iwc.MAPS, j) for j in (1, 3, 4, 5, 7, 15, 63)] == [1, 1, 1, 2, 2, 4, iwc.MAX_MAP_PARTS]
+assert iwc.map_parts(['Kalimdor'], 3) == 3 and iwc.map_parts([], 8) == iwc.MAX_MAP_PARTS
+assert iwc.scene_jobs(iwc.MAPS, 1) == [(m, 0, need) for m, need in iwc.map_jobs(iwc.MAPS)]
+jobs4 = iwc.scene_jobs(iwc.MAPS, 4)
+assert [(m, k) for m, k, _ in jobs4[:5]] == [('Northrend', 0), ('Northrend', 1), ('Northrend', 2), ('Northrend', 3), ('Azeroth', 0)]
+share = max(1 / 4, iwc.PART_MEMORY_SHARE)
+assert all(need == iwc.MAP_MEMORY_GB[m] * GB * share for m, _, need in jobs4) and len(jobs4) == 16
+assert all(need == 2 * GB for _, _, need in iwc.scene_jobs(iwc.MAPS, 4, 2))
+assert iwc.human({'event': 'start', 'step': 'scene', 'map': 'Northrend', 'part': '2/4'}) == 'Northrend (part 2/4): started'
+assert iwc.human({'event': 'start', 'step': 'scene', 'map': 'Northrend'}) == 'Northrend: started'
+assert 'in 4 parts each, up to 15 builder processes' in iwc.human({'event': 'plan', 'mode': 'full', 'maps': iwc.MAPS, 'jobs': 15,
+                                                                    'parts': 4, 'total_memory_gb': 32})
+# The parts of a map share one progress count (a later part's tiles never make the percentage go back), and their
+# reports' tile failures add up.
+parts_dir = out / 'parts'
+shutil.rmtree(parts_dir, ignore_errors=True); parts_dir.mkdir()
+script = parts_dir / 'part.py'
+script.write_text('import json, sys\nn = int(sys.argv[1])\nprint(json.dumps({"tiles_total": n}), flush=True)\n'
+                  'for i in range(n):\n    print(json.dumps({"tile": f"Kalimdor/{n}_{i}"}), flush=True)\n'
+                  'open(sys.argv[2] + f"/build-Kalimdor-1-{__import__(\'os\').getpid()}.json", "w").write('
+                  'json.dumps({"failures": [{"tile": [n, 0], "error": "x"}]}))\n')
+buffer = io.StringIO()
+iwc.PROGRESS = 'human'
+with contextlib.redirect_stdout(buffer):
+    ran = iwc.run_parallel([('scene', [script, n, parts_dir], parts_dir / f'scene-Kalimdor-{k + 1}.log', 'Kalimdor', 1, f'{k + 1}/2')
+                            for k, n in enumerate((20, 20))], 2)
+iwc.PROGRESS = 'json'
+lines = buffer.getvalue().splitlines()
+assert sorted(l for l in lines if 'started' in l) == ['Kalimdor (part 1/2): started', 'Kalimdor (part 2/2): started'], lines
+percents = [int(l.split(': ')[1].split('%')[0]) for l in lines if '% (' in l]
+assert percents == sorted(percents) and len(percents) == len(set(percents)) and percents[-1] == 100, lines
+assert 'Kalimdor: 100% (40/40 tiles)' in lines, lines
+assert sorted(s.record()['part'] for s in ran) == ['1/2', '2/2'] and all(s.proc.returncode == 0 for s in ran)
+assert sorted(f['tile'][0] for f in iwc.scene_failures(parts_dir, ran)['Kalimdor']) == [20, 20]
+# Instance maps: as many scene processes as the memory budget fits (at least one), at most --jobs and one per map;
+# --parts overrides the budget. They share a fresh claims folder, the maps of all the groups and --keep-models.
+inf = float('inf')
+assert iwc.instance_workers(instance_maps.KEYS, 15, inf, GB) == 15
+assert iwc.instance_workers(instance_maps.KEYS, 15, 10.6 * GB, 1.5 * GB) == 7
+assert iwc.instance_workers(instance_maps.KEYS, 15, 1 * GB, 1.5 * GB) == 1
+assert iwc.instance_workers(['classic-raids'], 63, inf, GB) == len(instance_maps.maps_for(['classic-raids']))
+assert iwc.instance_workers(instance_maps.KEYS, 15, 3 * GB, 1.5 * GB, 8) == 8
+assert iwc.instance_workers(instance_maps.KEYS, 4, inf, GB, 8) == 4
+assert iwc.instance_workers([], 15, inf, GB) == 0
+(parts_dir / 'claims' / 'old').mkdir(parents=True)
+specs = iwc.instance_scene_specs(['wotlk-dungeons', 'classic-raids'], 3, ['--locale', 'enUS'], parts_dir, 7)
+assert not (parts_dir / 'claims').exists(), 'a resumed run claims its maps again'
+assert [(n, log.name, need, part) for n, _, log, _, need, part in specs] == [
+    ('instances scene', f'instances-scene-{k}.log', 7, f'{k}/3') for k in (1, 2, 3)]
+args = [str(a) for a in specs[0][1]]
+assert '--keep-models' in args and args[args.index('--claim') + 1] == str(parts_dir / 'claims')
+assert args[args.index('--map') + 1:args.index('--output')] == instance_maps.maps_for(['wotlk-dungeons', 'classic-raids'])
+assert args[args.index('--output') + 1:] == [str(parts_dir), '--locale', 'enUS'] and all(spec[1] == specs[0][1] for spec in specs)
+assert [(log.name, part) for _, _, log, _, _, part in iwc.instance_scene_specs(['tbc-raids'], 1, [], parts_dir, 7)] == [
+    ('instances-scene.log', None)]
+assert 'up to 15 builder processes' in iwc.human({'event': 'plan', 'mode': 'instances', 'groups': ['tbc-raids'], 'jobs': 15})
+# The scene processes each print all the maps' tile count (shared): the percentage is the tiles done of that count.
+script.write_text('import json, sys\nprint(json.dumps({"tiles_total": 40, "shared": True}), flush=True)\n'
+                  'for i in range(int(sys.argv[1])):\n    print(json.dumps({"tile": f"M{sys.argv[1]}/{i}_0"}), flush=True)\n')
+buffer = io.StringIO()
+iwc.PROGRESS = 'human'
+with contextlib.redirect_stdout(buffer):
+    ran = iwc.run_parallel([('instances scene', [script, n], parts_dir / f'instances-{k}.log', None, 1, f'{k + 1}/3')
+                            for k, n in enumerate((25, 0, 15))], 3)
+iwc.PROGRESS = 'json'
+lines = buffer.getvalue().splitlines()
+percents = [int(l.split(': ')[1].split('%')[0]) for l in lines if '% (' in l]
+assert percents == sorted(percents) and len(percents) == len(set(percents)) and percents[-1] == 100, lines
+assert 'instances scene: 100% (40/40 tiles)' in lines and all(s.proc.returncode == 0 for s in ran), lines
 assert iwc.memory_refusal('partial', 4 * GB) is None and iwc.memory_refusal('full', 7.2 * GB) is None
 assert '8 GB' in iwc.memory_refusal('full', 6.9 * GB)
 if sys.platform == 'darwin':                                                     # installed RAM, hw.memsize
@@ -394,32 +465,45 @@ SHARED = key_of('shared')                                                       
 
 
 class FakeStep:
-    def __init__(self, name, log):
+    def __init__(self, name, log, pid):
         self.name, self.log, self.map, self.seconds, self.peak_rss = name, log, None, 0.1, None
-        self.proc = type('P', (), {'returncode': 0})()
+        self.proc = type('P', (), {'returncode': 0, 'pid': pid})()
 
     def record(self):
         return {'step': self.name, 'exit': 0}
 
 
-built_groups, fail_group, called_steps = [], [], []
+built_groups, fail_group, called_steps, linked_models = [], [], [], set()
 
 
 def fake_run_parallel(specs, jobs, budget=float('inf')):
-    """Stand-ins for the builders: a tile and a unique model per map, a .fgl per map, a validation report."""
+    """Stand-ins for the builders: a tile and a unique model per map (each map once among the scene processes, which
+    share a claims folder; a model already staged is not written, --keep-models), a .fgl per map, a validation report."""
     steps = []
-    for name, args, log, _, _ in specs:
+    for pid, (name, args, log, _, _, *_) in enumerate(specs, 1000 + len(called_steps)):
         called_steps.append(name)
         args = [str(a) for a in args]
         staging = Path(args[args.index('--output') + 1]) if '--output' in args else None
-        if name.startswith('instances ') and name.split()[1] in instance_maps.KEYS:
-            key = name.split()[1]
-            built_groups.append(key)
+        if name == 'instances scene':
+            assert '--keep-models' in args
+            claims = Path(args[args.index('--claim') + 1])
+            claims.mkdir(parents=True, exist_ok=True)
             for m in args[args.index('--map') + 1:args.index('--output')]:
+                if (claims / f'{m}.claim').exists():
+                    continue
+                (claims / f'{m}.claim').touch()
+                key = next(k for k in instance_maps.KEYS if m in instance_maps.maps_for([k]))
+                built_groups.extend([key] if key not in built_groups else [])
                 (staging / m).mkdir(parents=True, exist_ok=True)
                 (staging / m / '1_1.fg3').write_bytes(tile(SHARED, key_of('unique-' + m)))
-                model_file(staging, SHARED), model_file(staging, key_of('unique-' + m)), model_file(staging, CONTINENT_ONLY)
-                (staging / f'build-{m}-100-1.json').write_text(json.dumps({
+                for model in (SHARED, key_of('unique-' + m), CONTINENT_ONLY):
+                    staged = staging / 'models' / (model.hex() + '.fgs')
+                    if staged.exists():   # linked from the continents' or written by another map (never written again)
+                        installed = icache / 'models' / staged.name
+                        linked_models.update([model] if installed.exists() and os.path.samefile(staged, installed) else [])
+                    else:
+                        model_file(staging, model)
+                (staging / f'build-{m}-100-{pid}.json').write_text(json.dumps({
                     'failures': [{'tile': [1, 1], 'error': 'x'}] if key in fail_group else [], 'empty_source_tiles': [],
                     'clamped_wmo_groups': [], 'archive_warnings': []}))
         elif name == 'instances lights':
@@ -434,7 +518,7 @@ def fake_run_parallel(specs, jobs, budget=float('inf')):
         elif name == 'instances validate':
             Path(args[args.index('--report') + 1]).write_text('{}')
             assert (Path(args[args.index('--cache') + 1]) / 'models' / (SHARED.hex() + '.fgs')).is_file()
-        steps.append(FakeStep(name, log))
+        steps.append(FakeStep(name, log, pid))
     return steps
 
 
@@ -482,6 +566,18 @@ assert (icache / 'models' / (SHARED.hex() + '.fgs')).read_text() == 'model ' + S
 assert (icache / 'models' / (CONTINENT_ONLY.hex() + '.fgs')).read_text() == 'model ' + CONTINENT_ONLY.hex()
 assert [m['map'] for m in json.loads((icache / 'lights' / iwc.INSTANCE_MANIFEST).read_text())['maps']] == raids
 assert (icache / 'instances-validation.json').is_file() and (icache / 'logs/instances-lights.log').parent.is_dir()
+assert linked_models == {SHARED, CONTINENT_ONLY}, 'the scene builders found the continents\' models linked in staging'
+# link_shared_models: the models of the tiles outside the excluded maps, as hard links; missing sources are skipped
+links = out / 'links'
+shutil.rmtree(links, ignore_errors=True)
+(links / 'out/Azeroth').mkdir(parents=True); (links / 'out/Shadowfang').mkdir()
+(links / 'out/Azeroth/1_1.fg3').write_bytes(tile(SHARED, key_of('missing')))
+(links / 'out/Shadowfang/1_1.fg3').write_bytes(tile(key_of('rebuilt')))
+model_file(links / 'out', SHARED), model_file(links / 'out', key_of('rebuilt'))
+assert iwc.link_shared_models(links / 'out', links / 'staging', {'Shadowfang'}) == 1
+assert [p.stem for p in (links / 'staging/models').iterdir()] == [SHARED.hex()]
+assert os.path.samefile(links / 'staging/models' / (SHARED.hex() + '.fgs'), links / 'out/models' / (SHARED.hex() + '.fgs'))
+assert iwc.link_shared_models(links / 'out', links / 'staging', {'Shadowfang'}) == 0   # a resumed run keeps its links
 assert all(f in sorted(p.relative_to(icache).as_posix() for p in icache.rglob('*') if p.is_file()) for f in continents)
 # the continents see no change: their plan stays up to date, the layer is not part of their digests
 recorded = json.loads((icache / 'install-manifest.json').read_text())
@@ -505,7 +601,8 @@ for with_steps in (False, True):
     (icache / iwc.INSTANCE_MANIFEST).write_text(json.dumps(stale))
     code, last = inst_run('classic-raids,wotlk-raids')
     assert (code, last['built'], last['kept']) == (0, ['classic-raids', 'wotlk-raids'], []), last
-    assert set(called_steps) == {'instances classic-raids', 'instances wotlk-raids', 'instances lights', 'instances validate'}, called_steps
+    assert set(called_steps) == {'instances scene', 'instances lights', 'instances validate'}, called_steps
+    assert sorted(built_groups) == ['classic-raids', 'wotlk-raids'], built_groups
 # --instances-plan is a dry run: it names what would be built and changes nothing
 before_plan = sorted(p.relative_to(icache).as_posix() for p in icache.rglob('*'))
 code, last = inst_run('classic-raids,tbc-raids', '--instances-plan')
@@ -599,6 +696,7 @@ assert inst_run('none')[1]['removed'] == ['classic-raids'] and not any((icache /
 fail_group.append('tbc-raids')
 code, last = inst_run('tbc-raids')
 assert (code, last['event']) == (1, 'failed') and any('tile failures' in p for p in last['problems']) and istaging.is_dir(), last
+assert last['logs'] == [str(istaging / 'logs/instances-scene-1.log')], last   # the process that built the failed maps
 assert not (icache / instance_maps.maps_for(['tbc-raids'])[0]).exists() and not (icache / iwc.INSTANCE_MANIFEST).exists()
 fail_group.clear()
 code, last = inst_run('tbc-raids')                                              # the digests match: the staging folder resumes

@@ -510,6 +510,7 @@ test_rigid_static_coverage.py
 test_rotation_wake.py
 test_saved_state.py
 test_scene_assembly.py
+test_scene_builder_bulk_terrain.py
 test_scene_entry_reclaim.py
 test_scene_entry_reclaim_inputs.py
 test_scene_source_cache.py

@@ -6,8 +6,9 @@ assets and alpha textures. Models are in bind pose; animated entities, liquids,
 particle effects and additive/translucent surfaces are excluded and reported.
 """
 from __future__ import annotations
-import argparse, collections, functools, hashlib, json, math, os, re, struct, sys, time
+import argparse, collections, itertools, functools, hashlib, json, math, os, re, struct, sys, time
 from pathlib import Path
+from array import array as typed_array   # array() below is the chunk-array reader
 
 HERE=Path(__file__).resolve().parent
 sys.path[:0]=[str(HERE.parent),str(HERE)]   # repo root and renderer/: also under python -I
@@ -122,6 +123,22 @@ def srgb_to_linear(value):
     return value/12.92 if value<=.04045 else ((value+.055)/1.055)**2.4
 
 SRGB8_TO_LINEAR=tuple(srgb_to_linear(value/255) for value in range(256))
+
+# The fixed topology of an MCNK: 145 vertices in alternating rows of 9 outer and 8 inner ones, their
+# offsets from the chunk's north-west corner, and the 4 triangles (around the inner vertex) of each of
+# the 64 cells with the hole bit (4x4 holes per chunk) that removes the cell.
+MCNK_ROWS=[(row,col) for row in range(17) for col in range(8 if row&1 else 9)]
+MCNK_OFFSETS=[(row*UNIT*.5,(col+.5*(row&1))*UNIT) for row,col in MCNK_ROWS]
+def _mcnk_cells():
+    grid={rc:i for i,rc in enumerate(MCNK_ROWS)};cells=[]
+    for row in range(8):
+        for col in range(8):
+            a,b=grid[(row*2,col)],grid[(row*2,col+1)]
+            c,d=grid[(row*2+2,col)],grid[(row*2+2,col+1)]
+            center=grid[(row*2+1,col)]
+            cells.append((1<<((row//2)*4+col//2),((a,b,center),(b,d,center),(d,c,center),(c,a,center))))
+    return cells
+MCNK_CELLS=_mcnk_cells()
 
 def matmul(a,b):return tuple(tuple(sum(a[i][k]*b[k][j] for k in range(3)) for j in range(3)) for i in range(3))
 def matvec(a,v):return tuple(sum(a[i][j]*v[j] for j in range(3)) for i in range(3))
@@ -331,7 +348,7 @@ def decode_blp(b,maximum=128):
 class Builder:
     def __init__(self,assets,resolve_fixture_emission=True):
         self.resolve_fixture_emission=resolve_fixture_emission
-        self.assets=assets;self.meshes={};self.mesh_names={};self.textures={};self.cutout_textures={};self.flat_colors={};self.skipped_groups=[];self.skip_bad_groups=False;self.reset()
+        self.assets=assets;self.meshes={};self.mesh_names={};self.textures={};self.cutout_textures={};self.flat_colors={};self.clamped=set();self.skipped_groups=[];self.skip_bad_groups=False;self.reset()
     def reset(self):
         self.vertices=[];self.triangles=[];self.materials=[];self.material_ids={};self.room_diffuse=[];self.tile_stats=collections.Counter();self.tile_errors=0
     def material(self,path='',blend=0,flat=False,point_glass=False,room_diffuse=(0.,0.,0.)):
@@ -519,7 +536,7 @@ class Builder:
                 try:_,glass=wmo_lamp_emission.analyze(rootBlob,groupBlob,self.assets.read,group,lampMaterials)
                 except (ValueError,FileNotFoundError,IndexError,KeyError,struct.error) as exc:
                     self.assets.unsupported.add('wmo_lamp:'+name+':'+str(exc))
-            if overrun:self.assets.clamped.add(name)
+            if overrun:self.assets.clamped.add(name);self.clamped.add(name)
             sub={}
             for tag,payload in chunks(g['MOGP'],68):sub.setdefault(tag,payload)
             group_flags=unpack('<I',g['MOGP'],8)[0]
@@ -586,31 +603,27 @@ class Builder:
         heights=unpack('<145f',child(20,'MCVT'));layers=child(28,'MCLY')
         texture_id=unpack('<I',layers)[0] if layers else 0
         material=self.material(textures[texture_id] if texture_id<len(textures) else '',0,True)
-        base=len(self.vertices);positions=[];grid={};i=0
-        for row in range(17):
-            for col in range(8 if row&1 else 9):
-                # MCNK x/y are the game-world north/west corner (z is altitude).
-                p=(px-row*UNIT*.5,py-(col+.5*(row&1))*UNIT,pz+heights[i]);i+=1
-                positions.append(p);grid[(row,col)]=len(positions)-1
-        local_triangles=[]
-        for row in range(8):
-            for col in range(8):
-                if holes & (1<<((row//2)*4+col//2)):continue
-                a,b=grid[(row*2,col)],grid[(row*2,col+1)]
-                c,d=grid[(row*2+2,col)],grid[(row*2+2,col+1)]
-                center=grid[(row*2+1,col)]
-                local_triangles.extend(((a,b,center),(b,d,center),(d,c,center),(c,a,center)))
-        normal=[[0.,0.,0.] for p in positions]
-        for a,b,c in local_triangles:
-            pa,pb,pc=positions[a],positions[b],positions[c]
-            u=tuple(pb[i]-pa[i] for i in range(3));v=tuple(pc[i]-pa[i] for i in range(3))
-            n=(u[1]*v[2]-u[2]*v[1],u[2]*v[0]-u[0]*v[2],u[0]*v[1]-u[1]*v[0])
-            if n[2]<0:n=tuple(-x for x in n)
-            for index in (a,b,c):
-                for j in range(3):normal[index][j]+=n[j]
-            self.triangles.append((base+a,base+b,base+c,material))
-        self.vertices.extend(p+normalize(normal[i])+(0.,0.) for i,p in enumerate(positions))
-        self.tile_stats['terrain_chunks']+=1;self.tile_stats['terrain_triangles']+=len(local_triangles)
+        # MCNK x/y are the game-world north/west corner (z is altitude). The arithmetic below is the
+        # original per-vertex code unrolled: every float is computed in the same order, so the output is
+        # bit-identical (the terrain is most of a full build's time).
+        base=len(self.vertices);triangles=self.triangles
+        positions=[(px-ox,py-oy,pz+h) for (ox,oy),h in zip(MCNK_OFFSETS,heights)]
+        nx=[0.]*145;ny=[0.]*145;nz=[0.]*145;count=0
+        for bit,cell in MCNK_CELLS:
+            if holes&bit:continue
+            for a,b,c in cell:
+                pa,pb,pc=positions[a],positions[b],positions[c]
+                u0,u1,u2=pb[0]-pa[0],pb[1]-pa[1],pb[2]-pa[2];v0,v1,v2=pc[0]-pa[0],pc[1]-pa[1],pc[2]-pa[2]
+                n0,n1,n2=u1*v2-u2*v1,u2*v0-u0*v2,u0*v1-u1*v0
+                if n2<0:n0,n1,n2=-n0,-n1,-n2
+                nx[a]+=n0;ny[a]+=n1;nz[a]+=n2;nx[b]+=n0;ny[b]+=n1;nz[b]+=n2;nx[c]+=n0;ny[c]+=n1;nz[c]+=n2
+                triangles.append((base+a,base+b,base+c,material))
+            count+=4
+        vertices=self.vertices
+        for p,x,y,z in zip(positions,nx,ny,nz):
+            length=math.sqrt(sum((x*x,y*y,z*z)))   # normalize(), inlined: sum() (compensated since Python 3.12), not +
+            vertices.append(p+((x/length,y/length,z/length) if length>1e-8 else (0.,0.,1.))+(0.,0.))
+        self.tile_stats['terrain_chunks']+=1;self.tile_stats['terrain_triangles']+=count
     def parse(self,mapname,x,y):
         """Read the ADT: terrain into vertices/triangles, placed M2/WMO through add_mesh."""
         self.reset();name=f'world\\maps\\{mapname}\\{mapname}_{x}_{y}.adt'
@@ -644,22 +657,29 @@ class Builder:
         return self.finish(mapname,x,y,destination)
     def finish(self,mapname,x,y,destination):
         self.write_scene(destination)
+        xs,ys,zs=list(zip(*self.vertices))[:3]
         return {'map':mapname,'tile':[x,y],'vertices':len(self.vertices),'triangles':len(self.triangles),
                 'materials':len(self.materials),'bytes':destination.stat().st_size,'geometry':dict(self.tile_stats),
                 'sha256':hashlib.sha256(destination.read_bytes()).hexdigest(),
-                'bounds':[[min(v[i] for v in self.vertices) for i in range(3)],[max(v[i] for v in self.vertices) for i in range(3)]]}
+                'bounds':[[min(xs),min(ys),min(zs)],[max(xs),max(ys),max(zs)]]}
     def write_scene(self,destination):
+        """FGS2: header, vertices, triangles, materials and the room diffuse table in version 3.
+        Pack vertices and triangles in bulk and validate their values before writing."""
+        nv,nt,nm=len(self.vertices),len(self.triangles),len(self.materials)
+        vertices=typed_array('f',itertools.chain.from_iterable(self.vertices))
+        if len(vertices)!=8*nv:raise ValueError('Invalid output vertex')
+        if not all(map(math.isfinite,vertices)):raise ValueError('Nonfinite vertex')
+        if nt and (max(max(t[:3]) for t in self.triangles)>=nv or max(t[3] for t in self.triangles)>=nm):
+            raise ValueError('Invalid output triangle')
+        triangles=typed_array('I',itertools.chain.from_iterable(self.triangles))
+        if len(triangles)!=4*nt:raise ValueError('Invalid output triangle')
+        if sys.byteorder!='little':vertices.byteswap();triangles.byteswap()
         destination.parent.mkdir(parents=True,exist_ok=True)
         temp=destination.with_suffix(f'.{os.getpid()}.tmp')
         has_room_diffuse=any(any(rgb) for rgb in self.room_diffuse)
         with temp.open('wb') as f:
-            f.write(struct.pack('<4s4I',b'FGS2',3 if has_room_diffuse else 2,len(self.vertices),len(self.triangles),len(self.materials)))
-            for vertex in self.vertices:
-                if not all(math.isfinite(v) for v in vertex):raise ValueError('Nonfinite vertex')
-                f.write(struct.pack('<8f',*vertex))
-            for triangle in self.triangles:
-                if max(triangle[:3])>=len(self.vertices) or triangle[3]>=len(self.materials):raise ValueError('Invalid output triangle')
-                f.write(struct.pack('<4I',*triangle))
+            f.write(struct.pack('<4s4I',b'FGS2',3 if has_room_diffuse else 2,nv,nt,nm))
+            f.write(vertices.tobytes());f.write(triangles.tobytes())
             for color,w,h,cutoff,rgba in self.materials:
                 f.write(struct.pack('<3fIIfI',*color,w,h,cutoff,len(rgba)));f.write(rgba)
             if has_room_diffuse:
@@ -669,8 +689,12 @@ class Builder:
 
 class InstancedBuilder(Builder):
     """FGS3 tile instance lists referencing shared FGS2 meshes."""
-    def __init__(self,assets,output):
-        self.output=output;self.exported={};self.instances=[];self.model_triangles={}
+    def __init__(self,assets,output,release_exported=False,keep_models=False):
+        """release_exported: replace a model's cached mesh by a stub once its FGS2 is written (the command line's
+        builds; a caller that reads builder.meshes or m2()/wmo() results after building tiles keeps the default).
+        keep_models: a model whose FGS2 already exists in <output>/models is not written again (no texture decode);
+        its placements are the same, the key and bounds coming from the parsed mesh as for a written one."""
+        self.output=output;self.exported={};self.instances=[];self.model_triangles={};self.release_exported=release_exported;self.keep_models=keep_models
         super().__init__(assets)
     def reset(self):
         super().reset();self.instances=[]
@@ -685,11 +709,19 @@ class InstancedBuilder(Builder):
             if not triangles:return
             used=sorted(set(i for triangle in triangles for i in triangle[:3]));remap={old:new for new,old in enumerate(used)}
             compact=([vertices[i] for i in used],[(remap[a],remap[b],remap[c],m) for a,b,c,m in triangles],materials)
-            temporary=Builder(self.assets);temporary.textures=self.textures;temporary.cutout_textures=self.cutout_textures;temporary.flat_colors=self.flat_colors
-            temporary.add_mesh(compact,((1,0,0),(0,1,0),(0,0,1)),(0,0,0),'model')
-            temporary.write_scene(self.output/'models'/(key.hex()+'.fgs'))
+            target=self.output/'models'/(key.hex()+'.fgs')
+            if not (self.keep_models and target.is_file()):
+                temporary=Builder(self.assets);temporary.textures=self.textures;temporary.cutout_textures=self.cutout_textures;temporary.flat_colors=self.flat_colors
+                temporary.add_mesh(compact,((1,0,0),(0,1,0),(0,0,1)),(0,0,0),'model')
+                temporary.write_scene(target)
             bounds=tuple(tuple(fn(v[i] for v in compact[0]) for i in range(3)) for fn in (min,max))
             self.exported[name]=(key,bounds);self.model_triangles[key]=len(triangles)
+        cached=self.meshes.get(name)
+        if self.release_exported and cached is not None and cached[0] is mesh[0] and mesh[0]:
+            # Later placements need only the key, bounds and triangle count: keep a stub in the cache instead of the
+            # parsed vertices and triangles (most of a builder's memory). A WMO keeps its root and doodad refs.
+            stub=[];del self.mesh_names[id(mesh[0])];self.mesh_names[id(stub)]=name
+            self.meshes[name]=(stub,range(len(mesh[1])),*cached[2:])
         key,(lo,hi)=self.exported[name]
         corners=[tuple(p[i]+translation[i] for i in range(3)) for x in (lo[0],hi[0]) for y in (lo[1],hi[1]) for z in (lo[2],hi[2])
                  for p in (matvec(matrix,(x,y,z)),)]
@@ -766,6 +798,12 @@ def plan_map(assets,mapname):
     wdt=instance_maps.read_wdt(assets.read(instance_maps.wdt_path(mapname)))
     return ('global',wdt) if wdt['global_wmo'] else ('adt',wdt['tiles'])
 
+def band_tiles(tiles,band,count):
+    """Part `band` of `count` contiguous parts of equal tile count (tiles sorted by x, then y): neighbouring tiles
+    share most of their models, so a part parses only its own region's models. Together the parts cover every tile once."""
+    tiles=sorted(tiles)
+    return tiles[len(tiles)*band//count:len(tiles)*(band+1)//count]
+
 def built_global(output,mapname):
     """True when an earlier run's report for a global-WMO map lists tiles that are all still there (a global map
     has no tile list before it is built, so a resumed run cannot tell from the files alone)."""
@@ -775,10 +813,22 @@ def built_global(output,mapname):
         if tiles and all((output/mapname/f'{x}_{y}.fg3').is_file() for x,y in tiles):return True
     return False
 
+def claim(path):
+    """True for the one process that creates `path`."""
+    try:os.close(os.open(path,os.O_CREAT|os.O_EXCL|os.O_WRONLY))
+    except FileExistsError:return False
+    return True
+
+
 def main():
     p=argparse.ArgumentParser();p.add_argument('--map',nargs='+',default=['Azeroth'],help='one or more maps (Map.dbc directory names)');p.add_argument('--tiles',nargs=4,type=int,metavar=('X0','Y0','X1','Y1'))
     p.add_argument('--all-continents',action='store_true');p.add_argument('--output',type=Path,help='default: <client>/world-cache');p.add_argument('--force',action='store_true');p.add_argument('--instanced',action='store_true')
-    client_archives.add_arguments(p);args=p.parse_args();assets=Assets.from_args(args);args.output=args.output or assets.client/'world-cache';builder=InstancedBuilder(assets,args.output) if args.instanced else Builder(assets);start=time.time()
+    p.add_argument('--band',nargs=2,type=int,metavar=('K','N'),help='build only part K (0..N-1) of N equal parts of each map\'s tiles (parallel builder processes)')
+    p.add_argument('--keep-models',action='store_true',help='with --instanced: do not write a model file that already exists in <output>/models')
+    p.add_argument('--claim',type=Path,metavar='DIR',help='build only the maps this process claims first (DIR/<map>.claim): parallel processes share the maps of one --map list')
+    client_archives.add_arguments(p);args=p.parse_args()
+    if args.band and not 0<=args.band[0]<args.band[1]:p.error('--band K N needs 0 <= K < N')
+    assets=Assets.from_args(args);args.output=args.output or assets.client/'world-cache';builder=InstancedBuilder(assets,args.output,release_exported=True,keep_models=args.keep_models) if args.instanced else Builder(assets);start=time.time()
     maps=CONTINENTS if args.all_continents else list(dict.fromkeys(args.map))
     for warning in assets.warnings():print(json.dumps({'archive_warning':warning}),flush=True)   # install_world_cache shows these at once
     try:
@@ -788,13 +838,22 @@ def main():
             except (ValueError,FileNotFoundError) as exc:plan_errors[mapname]=str(exc)
             if mapname in plans and args.tiles and plans[mapname][0]=='adt':
                 plans[mapname]=('adt',[(x,y) for x,y in plans[mapname][1] if args.tiles[0]<=x<=args.tiles[2] and args.tiles[1]<=y<=args.tiles[3]])
+            if args.band and args.band[0] and (mapname in plan_errors or plans[mapname][0]=='global'):
+                plan_errors.pop(mapname,None);plans[mapname]=('adt',[])   # band 0 alone builds a global-WMO map and reports a plan error
+            if args.band and mapname in plans and plans[mapname][0]=='adt':
+                plans[mapname]=('adt',band_tiles(plans[mapname][1],*args.band))
         # one progress total for the process: a global-WMO map counts as one unit (its tile list is known only once built)
-        print(json.dumps({'tiles_total':sum(len(v) if kind=='adt' else 1 for kind,v in plans.values()),'maps':maps}),flush=True)
+        # with --claim every process counts all the maps (shared: the processes' tile events add up to one total)
+        print(json.dumps({'tiles_total':sum(len(v) if kind=='adt' else 1 for kind,v in plans.values()),'maps':maps,**({'shared':True} if args.claim else {})}),flush=True)
         limitations=['Static M2 bind pose; animated characters absent.','Terrain albedo is first-layer texture mean; terrain geometry is exact including 4x4 holes.',
                 f'BLP2 selected mip up to 128px; alpha cutout threshold {ALPHA_KEY_CUTOFF} (game shadow pass: 128/255 at full resolution).','Additive/translucent batches excluded from opaque lighting geometry.',
                 'M2 active world geosets use first opaque/cutout material per submesh.','Cross-tile placed object duplicates may exist; runtime should deduplicate triangle geometry.']
-        args.output.mkdir(parents=True,exist_ok=True);totals=collections.Counter();seen=dict(stats=collections.Counter(),missing=set(),unsupported=set(),clamped=set())
+        args.output.mkdir(parents=True,exist_ok=True);totals=collections.Counter();seen=dict(stats=collections.Counter(),missing=set(),unsupported=set())
+        if args.claim:   # largest first (by planned tiles; a global-WMO map is one WMO, cheap), so no large map comes last
+            args.claim.mkdir(parents=True,exist_ok=True)
+            maps=sorted(maps,key=lambda m:-len(plans[m][1]) if m in plans and plans[m][0]=='adt' else 0)
         for mapname in maps:
+            if args.claim and not claim(args.claim/f'{mapname}.claim'):continue   # another process builds it (and writes its report)
             records=[];failures=[];deleted=[];empty=[];info=None
             if mapname in plan_errors:failures.append({'map':mapname,'tile':None,'error':plan_errors[mapname]})
             elif plans[mapname][0]=='global':
@@ -820,9 +879,10 @@ def main():
                         empty.append({'map':mapname,'tile':[x,y]});print(json.dumps({'tile':f'{mapname}/{x}_{y}','triangles':0,'MB':0.,'empty':True,'seconds':round(time.time()-start,1)}),flush=True)
                     except (ValueError,FileNotFoundError,IndexError,KeyError) as exc:
                         failures.append({'map':mapname,'tile':[x,y],'error':str(exc)});print('ERROR',failures[-1],flush=True)
-            # a report holds what this map added to the shared tallies
-            stats=assets.stats-seen['stats'];missing=assets.missing-seen['missing'];unsupported=assets.unsupported-seen['unsupported'];clamped=assets.clamped-seen['clamped']
-            seen=dict(stats=collections.Counter(assets.stats),missing=set(assets.missing),unsupported=set(assets.unsupported),clamped=set(assets.clamped))
+            # a report holds what this map added to the shared tallies, and every WMO group clamped while building it (also
+            # one clamped before in this process: which maps a process builds is not fixed, the map's report must be)
+            stats=assets.stats-seen['stats'];missing=assets.missing-seen['missing'];unsupported=assets.unsupported-seen['unsupported'];clamped=set(builder.clamped)
+            seen=dict(stats=collections.Counter(assets.stats),missing=set(assets.missing),unsupported=set(assets.unsupported));builder.clamped.clear()
             report={'format':'FGS3' if args.instanced else 'FGS2','generated':records,'failures':failures,'deleted_source_tiles':deleted,'empty_source_tiles':empty,'missing_assets':sorted(missing),
                 'unsupported_assets':sorted(unsupported),'clamped_wmo_groups':sorted(clamped),'archive_warnings':assets.warnings(),'statistics':dict(stats),'elapsed_seconds':time.time()-start,
                 'limitations':limitations,'archive_priority':[p.relative_to(assets.client).as_posix() for p in assets.paths],'archive_fingerprint':assets.fingerprint()}

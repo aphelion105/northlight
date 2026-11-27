@@ -107,6 +107,8 @@ For the shared world/actor visibility filter and the remaining fine-cascade work
 see [the shared directional shadow review](shared-directional-shadows-20261114.md).
 For the experimental common fine depth cascade and the complete old/new
 CPU/GPU comparison, see [the common-cascade experiment](common-near-cascade-experiment-20261114.md).
+For why the installer's world cache build was slow, the parallel continent parts and instance queue, the
+8 GB memory measurements and the next candidates, see [world cache build speed](world-cache-build-speed-20261127.md).
 
 ## Requirements
 
