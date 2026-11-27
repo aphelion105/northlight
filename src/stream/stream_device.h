@@ -13,6 +13,7 @@
 #include "game_snapshot.h"
 #include "shader_tags.h"
 #include "native_shadow_control_windows.h"
+#include "native_view_distance.h"
 #include "m2_draw_12340.h"
 #include "world_batch_12340.h"
 #include "replay_constants.h"
@@ -554,6 +555,7 @@ public:
         HRESULT result=D3D_OK;
         if(prev.seq){q.waitReplayed(prev.seq,WaitKind::Present);result=presentResult(prev);}   // framesAhead_ frames ahead: that frame's real HRESULT
         NorthlightNativeShadowControl::producerPresent();
+        NorthlightNativeViewDistance::producerPresent();
         const bool pressureAsked=core.memoryPressure.load(std::memory_order_relaxed)||NorthlightStream::memoryPressure.load(std::memory_order_relaxed);
         q.setPressure(pressureAsked);stormWatch(q,pressureAsked,nowAtPresent);
         frameEnd=nowNs();

@@ -31,7 +31,8 @@ inline bool liveQuality(const std::string& key){
     return restart.count(key)==0;
 }
 inline NorthlightQuality::Settings liveQualityUpdate(NorthlightQuality::Settings current,const NorthlightQuality::Settings& next){for(const auto& k:NorthlightQuality::Keys)if(liveQuality(k.name))k.set(current,k.get(next));current.preset=next.preset;return NorthlightQuality::effective(current);}
-struct Config{NorthlightQuality::Settings quality;NorthlightCelestialProfiles::Table celestial;std::array<float,NorthlightHdrSettingsContract::Count> hdr=NorthlightHdrSettingsContract::defaults();std::array<unsigned,2> nativeLightLimits{{8,8}};};
+inline constexpr char NativeFarClipOverride[]="NativeFarClipOverride";
+struct Config{NorthlightQuality::Settings quality;NorthlightCelestialProfiles::Table celestial;std::array<float,NorthlightHdrSettingsContract::Count> hdr=NorthlightHdrSettingsContract::defaults();std::array<unsigned,2> nativeLightLimits{{8,8}};bool extendedDrawDistance=false;};
 // Only these live inputs can change the worker's GI Request. Display settings
 // still apply immediately without cancelling an otherwise identical solve.
 inline bool giRequestChanged(const NorthlightQuality::Settings& before,const NorthlightQuality::Settings& after,
@@ -79,7 +80,9 @@ inline Config configOf(const Documents& d,const std::string& legacy,bool validat
     if(!NorthlightCelestialProfiles::parse(celestial,c.celestial,error)&&validate)throw std::runtime_error("Celestial: "+error);
     if(!applyAppearancePreset(c.celestial,directory,presets)&&validate)throw std::runtime_error("Selected appearance preset is unavailable");
     if(!NorthlightRegionalShadow::parse(shadow,ranges,error)&&validate)throw std::runtime_error("Shadow range: "+error);
-    auto renderer=d[1].values();const char* limits[]={"nativemodellightlimit","nativeterrainlightlimit"};
+    auto renderer=d[1].values();
+    c.extendedDrawDistance=renderer["renderer"][lower(NativeFarClipOverride)]=="1";
+    const char* limits[]={"nativemodellightlimit","nativeterrainlightlimit"};
     for(unsigned i=0;i<2;++i){unsigned n=8;const auto& raw=renderer["renderer"][limits[i]];
         if(!raw.empty()&&!NorthlightQuality::number(raw,n)){if(validate)throw std::runtime_error("Invalid native light limit");n=8;}
         if(validate&&(n<(i?3u:4u)||n>8))throw std::runtime_error("Native light limit out of range");c.nativeLightLimits[i]=std::clamp(n,i?3u:4u,8u);}
@@ -141,7 +144,7 @@ inline std::string canonicalOption(const std::string& value,const std::string& o
     std::istringstream s(options);std::string o;while(std::getline(s,o,','))if(lower(o)==lower(value))return o;return value;
 }
 inline std::vector<Field> schema(const Documents& docs,const Documents& initial,const Config& active,const std::string& legacy,const std::string& backendOptions="native,dxvk,dxvk2,legacy",const std::string& hdrProfile="",bool waterInstalled=false,const std::filesystem::path& directory={},
-                                 const NorthlightAppearancePresets::Catalog* catalog=nullptr){
+                                 const NorthlightAppearancePresets::Catalog* catalog=nullptr,bool drawDistanceSupported=true){
     auto factory=factoryDocuments();const auto available=","+backendOptions+",";
     const std::string factoryBackend=available.find(",dxvk,")!=available.npos?"dxvk":available.find(",dxvk2,")!=available.npos?"dxvk2":"native";factory[1].set("Renderer","Backend",&factoryBackend);
     const auto scanned=catalog||directory.empty()?NorthlightAppearancePresets::Catalog{}:NorthlightAppearancePresets::load(directory);
@@ -171,6 +174,9 @@ inline std::vector<Field> schema(const Documents& docs,const Documents& initial,
         if(f.key=="AOQuality"){f.kind="enum";f.saved=NorthlightQuality::aoQualityName(saved.quality.aoQuality);f.active=NorthlightQuality::aoQualityName(active.quality.aoQuality);f.factory=f.inherited="High";f.options="High,Medium,Low";}
         add(f);out.back().origin=std::string(1,saved.quality.origin[index++]);}
     Field b;b.file=1;b.section="Renderer";b.key="Backend";b.kind="enum";b.saved=lower(explicitValue(savedValues[1],b.section,b.key));if(b.saved=="~")b.saved="legacy";b.active=lower(explicitValue(initialValues[1],b.section,b.key));if(b.active=="~")b.active="legacy";b.factory=factoryBackend;b.inherited="legacy";b.options=backendOptions;add(b);
+    Field distance;distance.file=1;distance.section="Renderer";distance.key=NativeFarClipOverride;
+    distance.kind="check";distance.factory=distance.inherited="0";distance.apply="F";distance.available=drawDistanceSupported;
+    distance.saved=saved.extendedDrawDistance?"1":"0";distance.active=active.extendedDrawDistance?"1":"0";add(distance);
     Field lightStay;lightStay.file=1;lightStay.section="Renderer";lightStay.key="NativeLightStay";lightStay.kind="check";lightStay.factory=lightStay.inherited="1";
     lightStay.saved=explicitValue(savedValues[1],lightStay.section,lightStay.key);if(lightStay.saved=="~")lightStay.saved="1";
     lightStay.active=explicitValue(initialValues[1],lightStay.section,lightStay.key);if(lightStay.active=="~")lightStay.active="1";add(lightStay);

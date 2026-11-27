@@ -22,6 +22,11 @@ and recorded checks. Use `python scripts/plan_world_light_review.py --help` to
 plan capture batches and `python renderer/world_lights_builder.py --help` to
 rebuild the runtime cache from the current client assets.
 
+**Northlight → Renderer → Draw distance up to 10,000** changes the world far
+clip during play on supported x86 and x64 D3D9 clients. Turning it off restores
+the game's view-distance setting. The checkbox defaults to off. Save to keep
+the choice in `northlight-renderer.ini`.
+
 ## Layout
 
 | Path | Contents |

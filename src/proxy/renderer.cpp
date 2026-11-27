@@ -51,6 +51,7 @@
 #include "backend_loader.h"
 #include "blp_mip_guard.h"
 #include "native_shadow_control_windows.h"
+#include "native_view_distance.h"
 #include "glue_lighting_selection.h"
 #include "native_more_lights.h"
 #include "native_more_light_renderer.h"
@@ -3410,7 +3411,8 @@ public:
             logf("TIDEGLASS cooperative integration active.");
 #endif
         try{
-            settingsService=NorthlightSettings::acquire(std::filesystem::path(rootPath),waterAtStartup);
+            settingsService=NorthlightSettings::acquire(std::filesystem::path(rootPath),waterAtStartup,NorthlightNativeViewDistance::available());
+            NorthlightNativeViewDistance::request(settingsService->extendedDrawDistance());
             settingsRevision=settingsService->revision();if(!settingsRecovery.empty())logf("SETTINGS startup recovery incomplete: %s",settingsRecovery.c_str());
         }
         catch(const std::exception& e){logf("SETTINGS unavailable: %s",e.what());}
@@ -4132,6 +4134,7 @@ public:
             if(hdr.settings.requested!=(update->runtime->hdr[0]!=0)){hdr.settings.requested=update->runtime->hdr[0]!=0;hdrRequestChanged=true;}
             hdr.settings.apply(update->runtime->hdr);
             if(nativeMoreLights)nativeMoreLights->limits(update->runtime->nativeLightLimits[0],update->runtime->nativeLightLimits[1]);
+            NorthlightNativeViewDistance::request(update->runtime->extendedDrawDistance);
             reportHdrStatus();
             settingsRevision=update->revision;settingsService->acknowledge(*update);
             logf("SETTINGS frame %s revision=%s (creation-time changes require restart)",update->preview?"preview":"saved",settingsRevision.c_str());
@@ -4280,7 +4283,10 @@ public:
     HRESULT STDMETHODCALLTYPE EndScene() override { Guard mirrorLock(mirrorState.gate);nameMaskRunEnd();rainMrtUnbind(); /* 0.3.202 (rain mask MRT) */if(spellOn)spellFlush(NorthlightSpellLayer::Reason::Frame,false,NorthlightSpellLayer::InPlaceKind::None,"endscene");return GuardedMirrorDevice::EndScene(); }
     HRESULT STDMETHODCALLTYPE Present(const RECT* src,const RECT* dst,HWND wnd,const RGNDATA* dirty) override { Guard mirrorLock(mirrorState.gate);mirrorState.gate.noteFirst(mirrorState.gate.presentTid);rainMrtUnbind(); /* 0.3.202 (rain mask MRT) */
         PresentTicks ticks;const unsigned markerFrame=frame;finishFrame();ticks.finish();
-        if(!NorthlightStream::streamActive.load(std::memory_order_relaxed))NorthlightNativeShadowControl::producerPresent();
+        if(!NorthlightStream::streamActive.load(std::memory_order_relaxed)){
+            NorthlightNativeShadowControl::producerPresent();
+            NorthlightNativeViewDistance::producerPresent();
+        }
         if(frameMarkers)frameMarker(1,markerFrame);
         if(limitGpuLatency)waitPreviousFrameGpu();
         HRESULT hr;if(!presentHdr(src,dst,wnd,dirty,0,&hr))hr=ext->Present(src,dst,wnd,dirty);
@@ -4625,7 +4631,13 @@ public:
 
 static bool hdrGamePresentation(IDirect3DDevice9* owner,D3DPRESENT_PARAMETERS* out){return static_cast<Device*>(owner)->gamePresentation(out);}
 static bool hdrGameBackBuffer(IDirect3DDevice9* owner,unsigned index,IDirect3DSurface9** out){return static_cast<Device*>(owner)->gameBackBuffer(index,out);}
-static void finishDeviceFrame(IDirect3DDevice9* owner,bool implicitChain) {static_cast<Device*>(owner)->finishFrame(implicitChain);if(!NorthlightStream::streamActive.load(std::memory_order_relaxed))NorthlightNativeShadowControl::producerPresent();}
+static void finishDeviceFrame(IDirect3DDevice9* owner,bool implicitChain) {
+    static_cast<Device*>(owner)->finishFrame(implicitChain);
+    if(!NorthlightStream::streamActive.load(std::memory_order_relaxed)){
+        NorthlightNativeShadowControl::producerPresent();
+        if(implicitChain)NorthlightNativeViewDistance::producerPresent();
+    }
+}
 static void presentedDeviceFrame(IDirect3DDevice9* owner,const PresentTicks& ticks) {static_cast<Device*>(owner)->presented(ticks);}
 static void windowPresentedDeviceFrame(IDirect3DDevice9* owner,HWND window,HRESULT status,bool primary){static_cast<Device*>(owner)->windowPresented(window,status,primary);}
 static bool hdrPresentDeviceFrame(IDirect3DDevice9* owner,const RECT* src,const RECT* dst,HWND window,const RGNDATA* dirty,DWORD flags,HRESULT* result){return static_cast<Device*>(owner)->presentHdr(src,dst,window,dirty,flags,result);}

@@ -71,6 +71,7 @@ const std::map<std::string,const char*> Labels={
     {"CelestialStyle","Sky style"},
     {"CelestialEffects","Enhanced sun, moon & sky"},{"Godrays","Sun & moon godrays"},
     {"TreeCanopy","Canopy directional lighting"},{"TreeCrown","Crown backlighting"},
+    {"NativeFarClipOverride","Draw distance up to 10,000"},
     {"NativeLightStay","Keep off-screen lights"},
     {"NativeMoreLights","Expand native light slots"},{"NativeModelLightLimit","Lights per model / building"},{"NativeTerrainLightLimit","Lights per terrain chunk"},
     {"RainRivulets","Merge drops into rivulets"},{"SnowFrost","Frost at screen edges"},{"SnowFrostStrength","Frost strength (%)"},
@@ -168,6 +169,7 @@ const std::map<std::string,std::vector<const char*>> Help={
     {"HDRWideBloom",{"Adds a wider, softer glow around bright world light. Uses more GPU arithmetic and extra memory. Falls back to compact bloom if resources are unavailable. UI brightness is unchanged."}},
     {"HDRBloomStrength",{"Bloom reads unclipped HDR radiance. Setting 0 removes its halo while preserving the source's brightness."}},
     {"Backend",{"Which Direct3D 9 implementation the renderer runs on. Takes effect after a game restart."}},
+    {"NativeFarClipOverride",{"Sets the world's far clip to 10,000 yards. Off uses the game's view-distance setting. Increasing draw distance can increase terrain streaming and rendering work."}},
     {"NativeLightStay",{"Keeps nearby torch and lamp lighting when their models leave the view. Takes effect after a game restart."}},
     {"NativeMoreLights",{"Raises supported native shaders to eight point-light slots. Takes effect after a game restart."}},
     {"NativeModelLightLimit",{"Maximum native point lights affecting each model or building. Applies live. Separate from Northlight's total light and shadow budgets."}},
@@ -1048,7 +1050,10 @@ struct SettingsPanel::State {
     void rendererPage(){
         std::map<std::string,const Field*> byKey;for(const Field* f:fields(D::Renderer))byKey[f->key]=f;
         std::map<std::string,bool> used;
-        if(auto b=byKey.find("Backend");b!=byKey.end()){used["Backend"]=true;titled("Renderer",{b->second});}
+        std::vector<const Field*> renderer;
+        for(const auto* key:{"Backend","NativeFarClipOverride"})if(auto b=byKey.find(key);b!=byKey.end()){
+            used[key]=true;renderer.push_back(b->second);}
+        titled("Renderer",renderer);
         {std::vector<const Field*> native;for(const auto* key:{"NativeLightStay","NativeMoreLights","NativeModelLightLimit","NativeTerrainLightLimit"})if(auto b=byKey.find(key);b!=byKey.end()){used[key]=true;native.push_back(b->second);}titled("Native lighting",native);}
         if(const Section* s=qualitySection("rendering"))qualityPage(*s,true);
         for(const auto& g:HdrGroups)group(g,byKey,used);

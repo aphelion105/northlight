@@ -12,7 +12,8 @@ holds the offline asset builders (MPQ patches, world cache) and their validation
 The repository holds no game files: every tool that needs game data reads it from your own
 3.3.5a client. Licensed under the [MIT License](LICENSE).
 
-The changelog, release notes and validation records are not part of the public source.
+See [changelog](docs/changelog.md) for unreleased changes. Historical release notes
+and validation records are not part of the public source.
 
 Download this fork's releases: https://github.com/aphelion105/northlight/releases
 

@@ -28,6 +28,7 @@ class Service {
     std::filesystem::path directory;
     Store store;
     const std::optional<bool> waterAtStartup;
+    const bool drawDistanceSupported;
     std::string legacy;HdrStatus hdr;
     mutable std::mutex mutex;std::condition_variable wake;bool stopping=false,busy=false,snapshotJob=false;
     std::optional<Commit> commitJob;std::optional<PresetSave> presetSaveJob;std::optional<PresetDelete> presetDeleteJob;
@@ -47,7 +48,7 @@ class Service {
         {std::lock_guard<std::mutex> lock(mutex);l.runtime=*active;base=initial;l.profile=hdrProfile;}
         if(buildFields){
             l.presets=NorthlightAppearancePresets::load(directory);
-            l.fields=schema(l.docs,base,l.runtime,legacy,backends(),l.profile,store.hasWaterCore(),directory,&l.presets);
+            l.fields=schema(l.docs,base,l.runtime,legacy,backends(),l.profile,store.hasWaterCore(),directory,&l.presets,drawDistanceSupported);
         }
         return l;
     }
@@ -58,7 +59,8 @@ class Service {
     // Live part of a parsed config on top of what the renderer runs: "R" keys keep their running values.
     static std::shared_ptr<Config> effective(const Config& runtime,const Config& config){
         auto out=std::make_shared<Config>(runtime);out->quality=liveQualityUpdate(runtime.quality,config.quality);out->celestial=config.celestial;
-        out->hdr=config.hdr;out->nativeLightLimits=config.nativeLightLimits;return out;
+        out->hdr=config.hdr;out->nativeLightLimits=config.nativeLightLimits;
+        out->extendedDrawDistance=config.extendedDrawDistance;return out;
     }
     // Caller holds no lock. Publishes the update the renderer applies at its next frame boundary.
     void publish(Config config,std::string revision,std::shared_ptr<const Config> runtime,bool preview){
@@ -109,7 +111,7 @@ class Service {
         store.commit(l.images,after); // throws before anything is published; on failure the files are unchanged
         publish(config,revision,runtime,false);
         Documents base;{std::lock_guard<std::mutex> lock(mutex);base=initial;}
-        publishSnapshot(revision,revision,schema(next,base,*runtime,legacy,backends(),l.profile,store.hasWaterCore(),directory,&l.presets),l.presets.errors);
+        publishSnapshot(revision,revision,schema(next,base,*runtime,legacy,backends(),l.profile,store.hasWaterCore(),directory,&l.presets,drawDistanceSupported),l.presets.errors);
         Status s;s.state=Status::State::Saved;{std::lock_guard<std::mutex> lock(mutex);s.message=restart?"Saved; some changes apply after a restart":"Saved";}return s;
     }
     Status doSavePreset(const PresetSave& job){
@@ -186,8 +188,8 @@ class Service {
     }
 public:
     // No file access that can fail for good: the creation-time snapshot is read unlocked (the renderer's own loaders do the same).
-    explicit Service(const std::filesystem::path& root,std::optional<bool> water=std::nullopt)
-        :directory(root),store(root,2000,water.has_value()),waterAtStartup(water){
+    explicit Service(const std::filesystem::path& root,std::optional<bool> water=std::nullopt,bool supportsDrawDistance=true)
+        :directory(root),store(root,2000,water.has_value()),waterAtStartup(water),drawDistanceSupported(supportsDrawDistance){
         attach();worker=std::thread([this]{work();});
     }
     ~Service(){{std::lock_guard<std::mutex> lock(mutex);stopping=true;}wake.notify_one();if(worker.joinable())worker.join();}
@@ -210,6 +212,7 @@ public:
         if(profile!=(profileJob?*profileJob:hdrProfile)){profileJob=profile;wake.notify_one();}
     }
     HdrStatus hdrStatus()const{std::lock_guard<std::mutex> lock(mutex);return hdr;}
+    bool extendedDrawDistance()const{std::lock_guard<std::mutex> lock(mutex);return active->extendedDrawDistance;}
     std::string revision()const{std::lock_guard<std::mutex> lock(mutex);return activeRevision;}
     // false while any job is queued or running; the overlay retries next frame.
     bool requestSnapshot(){std::lock_guard<std::mutex> lock(mutex);if(busy||snapshotJob||commitJob||presetSaveJob||presetDeleteJob||previewJob||profileJob)return false;snapshotJob=true;wake.notify_one();return true;}
@@ -241,9 +244,9 @@ public:
 };
 inline std::mutex serviceMutex;
 inline std::weak_ptr<Service> activeService;
-inline std::shared_ptr<Service> acquire(const std::filesystem::path& root,std::optional<bool> water=std::nullopt){
+inline std::shared_ptr<Service> acquire(const std::filesystem::path& root,std::optional<bool> water=std::nullopt,bool drawDistanceSupported=true){
     std::lock_guard<std::mutex> lock(serviceMutex);auto s=activeService.lock();
-    if(s)s->attach();else{s=std::make_shared<Service>(root,water);activeService=s;}
+    if(s)s->attach();else{s=std::make_shared<Service>(root,water,drawDistanceSupported);activeService=s;}
     return s;
 }
 } // namespace NorthlightSettings

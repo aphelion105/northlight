@@ -215,31 +215,37 @@ int main(int argc,char** argv){
      auto find=[&](const std::shared_ptr<const Snapshot>& s,const char* key){for(const auto& f:s->fields)if(f.key==key)return f;assert(false);return Field{};};
      assert(find(snap,"Weather").apply=="F"&&find(snap,"CommandStream").apply=="R"&&find(snap,"EquipmentLights").apply=="F"&&find(snap,"AOMethod").apply=="F");
      // preview: no file writes; "R" and unknown ids are ignored; the latest draft wins
+     const auto distance=find(snap,NativeFarClipOverride);
+     assert(distance.kind=="check"&&distance.apply=="F"&&distance.saved=="0"&&distance.active=="0"&&distance.available);
+     assert(!service.extendedDrawDistance());
      const auto serial0=service.status().serial;
      std::vector<Change> d1={{"Q\tQuality\tWeather","1"},{"Q\tQuality\tCommandStream","0"},{"Q\tQuality\tNoSuchKey","1"}},d2={{"Q\tQuality\tWeather","0"}};
      assert(service.preview(d1));assert(service.preview(d2));
      assert(waitFor([&]{auto u=service.after("");return idle()&&service.status().serial>serial0&&u&&u->preview;}));
      auto u=service.after("");assert(u->preview&&u->config.quality.weather==0&&u->runtime->quality.commandStream==qualityOf(documents(diskBefore)[0],"").commandStream);
      assert(store.read()==diskBefore);assert(u->revision.rfind(snap->revision+"+preview",0)==0);
-     assert(service.preview({{"Q\tQuality\tWeather","1"},{"Q\tQuality\tCommandStream","0"}}));
+     assert(service.preview({{"Q\tQuality\tWeather","1"},{"Q\tQuality\tCommandStream","0"},{distance.id(),"1"}}));
      assert(waitFor([&]{auto v=service.after(u->revision);return idle()&&v&&v->preview&&v->config.quality.weather==1;}));
      auto v=service.after(u->revision);assert(v->config.quality.commandStream==qualityOf(documents(diskBefore)[0],"").commandStream); // "R" key not previewed
-     service.acknowledge(*v);assert(!service.after(v->revision));assert(service.revision()==snap->revision);
+     assert(v->runtime->extendedDrawDistance&&store.read()==diskBefore);
+     service.acknowledge(*v);assert(service.extendedDrawDistance()&&!service.after(v->revision));assert(service.revision()==snap->revision);
      // an invalid draft is an error, not a crash, and does not replace the active preview
      const auto serial1=service.status().serial;assert(service.preview({{"Q\tQuality\tWeather","9"}}));
      assert(waitFor([&]{return idle()&&service.status().serial>serial1;}));assert(service.status().state==Status::State::Error&&!service.status().message.empty()&&!service.after(v->revision));
      // clearPreview returns the renderer to the saved configuration under the real revision
      assert(service.clearPreview());assert(waitFor([&]{auto c=service.after(v->revision);return idle()&&c&&!c->preview;}));
      auto cleared=service.after(v->revision);assert(cleared->revision==snap->revision&&cleared->config.quality.weather==qualityOf(documents(diskBefore)[0],"").weather);service.acknowledge(*cleared);
+     assert(!service.extendedDrawDistance());
      const auto serial2=service.status().serial;assert(service.clearPreview());assert(waitFor([&]{return service.status().serial>serial2;}));assert(!service.after(cleared->revision)); // nothing previewed: no update
      // commit: transactional, then the live part reaches the renderer
      const int savedWeather=qualityOf(documents(diskBefore)[0],"").weather;const std::string flipped=savedWeather?"0":"1";
-     assert(service.commit(snap->revision,{{"Q\tQuality\tWeather",flipped},{"Q\tQuality\tCommandStream","0"}}));
+     assert(service.commit(snap->revision,{{"Q\tQuality\tWeather",flipped},{"Q\tQuality\tCommandStream","0"},{distance.id(),"1"}}));
      assert(waitFor([&]{return idle();}));
      if(service.status().state!=Status::State::Saved)std::cerr<<service.status().message<<std::endl;
      assert(service.status().state==Status::State::Saved);
      auto saved=service.after(cleared->revision);auto disk=store.read();assert(saved&&!saved->preview&&saved->revision==Store::revision(disk)&&saved->revision!=snap->revision);
      assert(saved->config.quality.weather==(flipped=="1")&&saved->config.quality.commandStream==0&&saved->runtime->quality.weather==(flipped=="1"));
+     assert(saved->runtime->extendedDrawDistance&&configOf(documents(disk),"").extendedDrawDistance);
      assert(saved->runtime->quality.commandStream==qualityOf(documents(diskBefore)[0],"").commandStream);
      assert(service.status().restartRequired&&service.status().message.find("restart")!=std::string::npos);
      auto after=service.snapshot();assert(after->revision==saved->revision&&find(after,"Weather").saved==flipped&&find(after,"CommandStream").saved=="0"&&find(after,"CommandStream").active!="0");
