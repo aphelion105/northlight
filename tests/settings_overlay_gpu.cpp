@@ -20,6 +20,7 @@ struct OverlayDevice:ForwardIDirect3DDevice9{
     explicit OverlayDevice(IDirect3DDevice9* d):ForwardIDirect3DDevice9(d){}
 };
 int main(int argc,char** argv){
+    std::setvbuf(stdout,nullptr,_IONBF,0);
     assert(argc==3||argc==4);const bool sdrOnly=argc==4&&!std::strcmp(argv[3],"--sdr-only");assert(argc==3||sdrOnly);constexpr unsigned W=1280,H=800;
     WNDCLASSW wc{};wc.lpfnWndProc=DefWindowProcW;wc.lpszClassName=L"NorthlightSettingsOverlayOracle";wc.hInstance=GetModuleHandleW(nullptr);assert(RegisterClassW(&wc));
     HWND window=CreateWindowExW(0,wc.lpszClassName,L"",WS_OVERLAPPED,0,0,W,H,nullptr,nullptr,wc.hInstance,nullptr);assert(window);
@@ -30,7 +31,10 @@ int main(int argc,char** argv){
     IDirect3DSurface9* readback=nullptr;ok(real->CreateOffscreenPlainSurface(W,H,D3DFMT_A16B16G16R16F,D3DPOOL_SYSTEMMEM,&readback,nullptr));
     {std::ofstream config(std::string(argv[2])+"/northlight-renderer.ini");config<<"[Renderer]\nExperimentalHDR=1\n";}
     {std::ofstream ranges(std::string(argv[2])+"/shadow-range-profiles.ini");ranges<<kSettingsFactoryShadowRange;}
-    auto service=std::make_shared<NorthlightSettings::Service>(argv[2]);service->setHdrStatus(true,0,"Private scRGB test target");
+    {std::ofstream profiles(std::string(argv[2])+"/celestial-profiles.ini");profiles<<kSettingsFactoryCelestial;}
+    // Presence is sufficient for the settings schema; this private host never loads the Tideglass core.
+    std::ofstream(std::string(argv[2])+"/water-core.dll").close();
+    auto service=std::make_shared<NorthlightSettings::Service>(argv[2],true);service->setHdrStatus(true,0,"Private scRGB test target");
     assert(service->requestSnapshot());
     for(unsigned attempt=0;attempt<500&&!service->snapshot();++attempt)Sleep(10);
     assert(service->snapshot());
@@ -58,7 +62,68 @@ int main(int argc,char** argv){
     ImGuiWindow* nav=nullptr;
     for(auto* child:parent->DC.ChildWindows)if(child->ChildId==parent->GetID("nav"))nav=child;
     assert(nav);
+    auto activePage=[&]{
+        for(auto* child:parent->DC.ChildWindows)if(child!=nav&&child->Active)return child;
+        return static_cast<ImGuiWindow*>(nullptr);
+    };
+    auto selectPage=[&](const char* section,const char* subpage){
+        ImGui::ActivateItemByID(nav->GetID(section));draw(0);draw(0);
+        if(subpage){
+            auto* page=activePage();assert(page);
+            ImGui::ActivateItemByID(page->GetID(subpage));draw(0);draw(0);
+        }
+        auto* content=activePage();assert(content);return content;
+    };
+    auto key=[&](ImGuiKey value){ImGui::GetIO().AddKeyEvent(value,true);draw(0);ImGui::GetIO().AddKeyEvent(value,false);draw(0);};
+    auto settleService=[&]{
+        unsigned idleFrames=0;
+        for(unsigned attempt=0;attempt<500&&idleFrames<3;++attempt){
+            draw(0);
+            idleFrames=service->status().state==NorthlightSettings::Status::State::Busy?0:idleFrames+1;
+            Sleep(10);
+        }
+        assert(idleFrames==3);
+    };
+    auto selectRegion=[&](const char* name,const char* section,const char* label){
+        const auto picker=ImHashStr("##region",0,parent->GetID("region-scope"));
+        ImGui::ActivateItemByID(picker);draw(0);draw(0);assert(GImGui->OpenPopupStack.Size>0);
+        auto* popup=GImGui->OpenPopupStack.back().Window;assert(popup);
+        const auto filter=popup->GetID("##region-search");
+        ImGui::ActivateItemByID(filter);draw(0);draw(0);
+        ImGui::GetIO().AddInputCharactersUTF8(name);draw(0);draw(0);
+        assert(ImGui::GetInputTextState(filter)&&std::string(ImGui::GetInputTextState(filter)->TextA.Data)==name);
+        ImGui::ClearActiveID();
+        ImGui::ActivateItemByID(ImHashStr(label,0,popup->GetID(section)));draw(0);draw(0);
+        if(GImGui->OpenPopupStack.Size!=0)std::fprintf(stderr,"Could not select region %s with query %s\n",section,name);
+        assert(GImGui->OpenPopupStack.Size==0);
+    };
+    auto typeSearch=[&](const char* query){
+        ImGui::ActivateItemByID(parent->GetID("##settings-search"));draw(0);draw(0);
+        ImGui::GetIO().AddInputCharactersUTF8(query);draw(0);draw(0);
+        const auto* input=ImGui::GetInputTextState(parent->GetID("##settings-search"));
+        assert(input&&std::string(input->TextA.Data)==query);
+        assert(!nav->Active);
+        auto* results=activePage();assert(results&&results->ChildId==parent->GetID("search-results"));
+        assert(results->Size.x>=parent->InnerRect.GetWidth()-2*parent->WindowPadding.x-4);
+    };
+    typeSearch("СТИЛЬ НЕБА");
+    {
+        ok(real->GetRenderTargetData(device.target,readback));D3DLOCKED_RECT lock{};ok(readback->LockRect(&lock,nullptr,D3DLOCK_READONLY));
+        std::ofstream image(std::filesystem::path(argv[2])/"search-results.fgr",std::ios::binary);
+        const uint32_t header[]={0x31524746,W,H,D3DFMT_A16B16G16R16F,8};image.write(reinterpret_cast<const char*>(header),sizeof header);
+        for(unsigned y=0;y<H;++y)image.write(static_cast<const char*>(lock.pBits)+y*lock.Pitch,W*8);
+        ok(readback->UnlockRect());
+    }
+    key(ImGuiKey_Enter);draw(0);
+    assert(nav->Active&&activePage());
+    const auto sky=ImHashStr("##value",0,ImHashStr("Q\tQuality\tCelestialStyle",0,activePage()->GetID("celestial-controls")));
+    ImGui::ActivateItemByID(sky);draw(0);draw(0);assert(GImGui->OpenPopupStack.Size>0);
+    key(ImGuiKey_Escape);
+    typeSearch("night_red_curve");key(ImGuiKey_Escape);draw(0);assert(nav->Active);
+    std::puts("SETTINGS_SEARCH_GPU_PASS wide=1 keyboard=1 ini_key=1 cyrillic=1 result_opened=1");
     const char* pages[]={"Materials & parallax","Lighting & AO","Renderer & HDR","Diagnostics","Performance","Performance","Shadow range","Shadow range","Sun & moon","Regional appearance","Colour grading"};
+    const char* categories[]={"Материалы","Свет и тени","Система","Система","Система","Система","Свет и тени","Свет и тени","Мир и погода","Мир и погода","Мир и погода"};
+    const char* subsections[]={nullptr,"Освещение и AO","Рендерер и HDR","Диагностика","Производительность","Производительность","Дальность теней","Дальность теней","Солнце и луна","Туман и контраст","Цветокоррекция"};
     for(unsigned page=0;page<sizeof(pages)/sizeof(pages[0]);++page){
       if(page==4){
         // Synthetic presentation data in the private test process only. The
@@ -70,26 +135,20 @@ int main(int argc,char** argv){
         Gpu gpu;gpu.managed=64*MiB;gpu.defaults=128*MiB;gpu.system=2*MiB;gpu.complete=true;gpu.staticDefaultLedger=32*MiB;gpu.replayDefaultLedger=16*MiB;store().gpu(gpu);
         Sleep(1100); // the menu reads cached snapshots at most once per second
       }
-      ImGui::ActivateItemByID(nav->GetID(pages[page]));draw(0);draw(0);
-      if(page==6||page==7){
-        ImGuiWindow* content=nullptr;for(auto* child:parent->DC.ChildWindows)if(child!=nav&&child->Active)content=child;assert(content);
-        ImGuiWindow* zones=nullptr;for(auto* child:content->DC.ChildWindows)if(child->ChildId==content->GetID("shadow-zones"))zones=child;assert(zones);
-        if(page==6)assert(zones->ScrollMax.y>0);
-        else{
+      auto* selectedPage=selectPage(categories[page],subsections[page]);
+      if(page==7){
+          auto* content=selectedPage;
           const ImGuiID defaultSlider=ImHashStr("##value",0,ImHashStr("S\tdefault\tterrain_radius",0,content->GetID("default-range")));
           ImGui::ActivateItemByID(defaultSlider);GImGui->NavNextActivateFlags=ImGuiActivateFlags_PreferInput;draw(0);draw(0);
           assert(ImGui::TempInputIsActive(defaultSlider));
           ImGui::GetIO().AddInputCharactersUTF8("3000");draw(0);
-          ImGui::GetIO().AddKeyEvent(ImGuiKey_Enter,true);draw(0);
-          ImGui::GetIO().AddKeyEvent(ImGuiKey_Enter,false);draw(0);draw(0);
+          key(ImGuiKey_Enter);draw(0);
           assert(NorthlightSettings::explicitValue(NorthlightSettings::Document(NorthlightSettings::readImage(std::filesystem::path(argv[2])/"shadow-range-profiles.ini").raw),"default","terrain_radius")=="~");
-          ImGui::ActivateItemByID(content->GetID("##shadow-search"));draw(0);draw(0);
-          ImGui::GetIO().AddInputCharactersUTF8("Westfall");draw(0);draw(0);
-          assert(ImGui::GetInputTextState(content->GetID("##shadow-search"))&&zones->ScrollMax.y==0);
-          ImGui::GetIO().AddKeyEvent(ImGuiKey_Enter,true);draw(0);ImGui::GetIO().AddKeyEvent(ImGuiKey_Enter,false);draw(0);
-          ImGui::GetIO().AddMousePosEvent(zones->Pos.x+60,zones->Pos.y+12);
-          for(unsigned hover=0;hover<4;++hover){Sleep(200);draw(0);}
-        }
+          selectRegion("Westfall","Azeroth:40","Westfall  (Azeroth:40)");
+          const auto zone=ImHashStr("##value",0,ImHashStr("S\tAzeroth:40\tterrain_radius",0,content->GetID("zone-range")));
+          ImGui::ActivateItemByID(zone);GImGui->NavNextActivateFlags=ImGuiActivateFlags_PreferInput;draw(0);draw(0);
+          assert(ImGui::TempInputIsActive(zone));key(ImGuiKey_Escape);
+          std::puts("SETTINGS_REGION_GPU_PASS shared_picker=1 zone_field=1");
       }
       if(page==5){
         ImGuiWindow* content=nullptr;for(auto* child:parent->DC.ChildWindows)if(child!=nav)content=child;assert(content);
@@ -112,9 +171,12 @@ int main(int argc,char** argv){
         assert(input&&std::string(input->TextA.Data)=="GPU look");
         for(unsigned wait=0;wait<500&&service->status().state==NorthlightSettings::Status::State::Busy;++wait){Sleep(10);draw(0);}
         ImGui::ClearActiveID();
+        const auto beforeSave=service->status().serial;
         ImGui::ActivateItemByID(modal->GetID("Save preset"));draw(0);draw(0);
         const auto path=std::filesystem::path(argv[2])/"appearance-presets"/"GPU look.ini";
-        for(unsigned wait=0;wait<500&&!std::filesystem::exists(path);++wait){Sleep(10);draw(0);}
+        auto saved=service->status();
+        for(unsigned wait=0;wait<500&&(saved.serial<=beforeSave||saved.state==NorthlightSettings::Status::State::Busy);++wait){Sleep(10);draw(0);saved=service->status();}
+        assert(saved.serial>beforeSave&&saved.state==NorthlightSettings::Status::State::Saved);
         const auto image=NorthlightSettings::readImage(path);
         NorthlightAppearancePresets::Table look;std::string error;
         if(!image.exists)std::fprintf(stderr,"Save preset status: %s\n",service->status().message.c_str());
@@ -155,6 +217,7 @@ int main(int argc,char** argv){
         assert(ranges.fallback==3000&&ranges.at("Azeroth",40)==3000&&ranges.at("Azeroth",12)==2048);
       }
       if(page==8){
+        settleService();
         ImGuiWindow* content=nullptr;for(auto* child:parent->DC.ChildWindows)if(child!=nav&&child->Active)content=child;assert(content);
         auto toggleTree=[&](const char* field,bool canopy,bool crown){
             const auto id=ImHashStr("##value",0,ImHashStr(field,0,content->GetID("celestial-controls")));
@@ -178,8 +241,17 @@ int main(int argc,char** argv){
         std::puts("TREE_MENU_PASS independent=1 livePreview=1 saved=1");
       }
     }
-    ImGui::ActivateItemByID(nav->GetID("Performance"));draw(0);draw(0);
-    ImGuiWindow* content=nullptr;for(auto* child:parent->DC.ChildWindows)if(child!=nav&&child->Active)content=child;assert(content);
+    auto* shadow=selectPage("Свет и тени","Дальность теней");
+    selectRegion("1497@inside","Azeroth:1497","Undercity  (Azeroth:1497)");
+    const auto undercity=ImHashStr("##value",0,ImHashStr("S\tAzeroth:1497\tterrain_radius",0,shadow->GetID("zone-range")));
+    ImGui::ActivateItemByID(undercity);GImGui->NavNextActivateFlags=ImGuiActivateFlags_PreferInput;draw(0);draw(0);
+    assert(ImGui::TempInputIsActive(undercity));key(ImGuiKey_Escape);
+    auto* water=selectPage("Вода",nullptr);
+    ImGui::SetScrollY(water,water->ScrollMax.y);draw(0);draw(0);
+    const auto slime=ImHashStr("##mode",0,ImHashStr("W\tRegionalSlime\t1497",0,water->GetID("regional-slime")));
+    ImGui::ActivateItemByID(slime);draw(0);draw(0);assert(GImGui->OpenPopupStack.Size>0);key(ImGuiKey_Escape);
+    typeSearch("night_red_curve");key(ImGuiKey_Enter);draw(0);assert(nav->Active&&activePage());
+    auto* content=selectPage("Система","Производительность");
     ImGui::SetScrollY(content,0);draw(0);draw(0);
     ImGui::ActivateItemByID(content->GetID("Show compact HUD while settings are closed (this session)"));draw(0);draw(0);
     toggle();assert(overlay->visible());

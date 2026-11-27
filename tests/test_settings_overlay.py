@@ -48,7 +48,7 @@ for define in ['IMGUI_DISABLE_DEMO_WINDOWS', 'IMGUI_DISABLE_WIN32_FUNCTIONS', 'I
 
 # Nothing in the overlay reads, writes, patches or calls the game client.
 for name in OVERLAY:
-    text = uncomment(fp.src(name).read_text())
+    text = uncomment(fp.src(name).read_text(encoding='utf-8'))
     for banned in ['ReadProcessMemory', 'WriteProcessMemory', 'VirtualProtect', 'VirtualAlloc', 'GetModuleHandle', 'GetProcAddress', 'Detour']:
         check(banned not in text, f'{name}: {banned}')
     check(re.search(r'cvar', text, re.I) is None, f'{name}: refers to a CVar')
@@ -120,11 +120,14 @@ check((fp.REPO / 'licenses/imgui.txt').is_file() and 'Omar Cornut' in (fp.REPO /
 check("tree.add('LICENSES/Dear-ImGui.txt', fp.REPO / 'licenses/imgui.txt')" in (fp.RENDERER / 'build_packages.py').read_text(), 'build_packages.py ships the ImGui licence')
 check('97428e8ac99e339ce05eee531cf55b77b29ea709' in (fp.SRC / 'imgui' / 'README.md').read_text(), 'src/imgui/README.md records the upstream commit')
 
-# Sidebar pages in the old menu's order (renaming or reordering one is a deliberate UI change: update this pin).
-panel = uncomment(fp.src('settings_panel.cpp').read_text())
+# The search index and navigation share these pages.
+panel = uncomment(fp.src('settings_panel.cpp').read_text(encoding='utf-8'))
 titles = re.findall(r'\{Page::\w+,"([^"]+)"', panel)
 check(titles == ['Overview', 'Lighting & AO', 'Materials & parallax', 'Shadows', 'Atmosphere & weather', 'Water', 'Regional appearance', 'Colour grading', 'Sun & moon', 'Shadow range',
-                 'Spells & names', 'Renderer & HDR', 'Performance', 'Diagnostics'], f'settings_panel.cpp: sidebar pages {titles}')
+                 'Spells & names', 'Renderer & HDR', 'Performance', 'Diagnostics'], f'settings_panel.cpp: pages {titles}')
+sections = panel.split('constexpr MenuSection MenuSections[]=', 1)[1].split('\n};', 1)[0]
+check(re.findall(r'\{"([^"]+)",\{Page::', sections) == ['Обзор', 'Свет и тени', 'Материалы', 'Мир и погода', 'Вода', 'Заклинания и имена', 'Система'],
+      'settings_panel.cpp: seven approved menu sections')
 
 # The embedded font: generated header present and loaded first; its licence ships.
 font_header = fp.GENERATED / 'overlay_font_roboto.h'

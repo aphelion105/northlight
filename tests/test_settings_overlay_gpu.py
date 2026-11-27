@@ -2,7 +2,7 @@
 # northlight-test: requires=windows-gpu,zig,client
 """Actual settings panel rendering on private SDR/scRGB GPU targets, without the game."""
 from pathlib import Path
-import argparse,hashlib,importlib.util,json,os,subprocess,sys
+import argparse,hashlib,importlib.util,json,os,shutil,subprocess,sys
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 import northlight_paths as fp
 parser=argparse.ArgumentParser(__doc__);parser.add_argument('--sdr-only',action='store_true',help='Validate the native SDR path without asserting unsupported native scRGB output')
@@ -10,6 +10,9 @@ parser.add_argument('--x64',action='store_true',help='Build an AMD64 host and us
 args=parser.parse_args()
 repo=fp.REPO
 out=fp.output_dir()/'overlay-gpu';out.mkdir(parents=True,exist_ok=False);(out/'settings').mkdir()
+presets=sorted((repo/'client-config'/'appearance-presets').glob('*.ini'))
+appearance=out/'settings'/'appearance-presets';appearance.mkdir()
+for preset in presets: shutil.copy2(preset,appearance/preset.name)
 spec=importlib.util.spec_from_file_location('overlay_guard',repo/'tests/validate_native_scene_trace.py');guard=importlib.util.module_from_spec(spec);spec.loader.exec_module(guard)
 backend=Path(os.environ['NORTHLIGHT_TEST_D3D9']) if os.environ.get('NORTHLIGHT_TEST_D3D9') else (
     Path(os.environ['SystemRoot'])/'System32/d3d9.dll' if args.x64 else fp.client_root()/'renderer-backends/dxvk/dxvk_d3d9.dll')
@@ -20,7 +23,7 @@ for key,name in [('TEMP','temp'),('TMP','temp'),('ZIG_LOCAL_CACHE_DIR','zig-loca
 env.update(DISABLE_VULKAN_OBS_CAPTURE='1',DXVK_CONFIG_FILE=str(out/'dxvk.conf'),DXVK_LOG_PATH=str(out))
 sha=lambda p:hashlib.sha256(p.read_bytes()).hexdigest()
 sources=['settings_overlay.cpp','settings_panel.cpp','imgui.cpp','imgui_draw.cpp','imgui_tables.cpp','imgui_widgets.cpp','imgui_impl_dx9.cpp']
-inputs={str(p):sha(p) for p in [fp.TESTS/'settings_overlay_gpu.cpp',*(fp.src(s) for s in sources),fp.src('hdr_compiled_shaders.h'),fp.src('settings_service.h'),backend]}
+inputs={str(p):sha(p) for p in [fp.TESTS/'settings_overlay_gpu.cpp',*(fp.src(s) for s in sources),fp.src('hdr_compiled_shaders.h'),fp.src('settings_service.h'),backend,*presets]}
 report={'pass':False,'inputs':inputs,'commands':[],'game_launched':False,'actual_menu':True,'private_render_target':True,'windows_hdr_output_tested':False,'sdr_only':args.sdr_only}
 def run(label,command):
     guard.processes();p=subprocess.run(list(map(str,command)),cwd=out,env=env,capture_output=True,text=True,timeout=240)

@@ -426,7 +426,7 @@ class Impl final : public Overlay {
         ImGuiIO& io=ImGui::GetIO();
         ImGui_ImplDX9_InvalidateDeviceObjects();   // the font texture is rebuilt by the next NewFrame
         io.Fonts->Clear();
-        static const ImWchar ranges[]={0x0020,0x00FF,0};
+        static const ImWchar ranges[]={0x0020,0x00FF,0x0400,0x045F,0};
         const float pixels=std::round(16.f*next);
         // The embedded Roboto first (the same text on Windows and under Wine, whose font folder may be empty); system fonts
         // only if it cannot be added; ImGui's bitmap font last.

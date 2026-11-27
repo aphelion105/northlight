@@ -9,9 +9,11 @@
 #include <cstdio>
 #include <cstdlib>
 #include <map>
+#include <set>
 #include <string>
 #include <vector>
 #include "imgui.h"
+#include "imgui_internal.h"
 #include "settings_service.h"
 #include "diagnostic_capture_request.h"
 #include "qa_scene_capture.h"
@@ -103,6 +105,9 @@ const std::map<std::string,const char*> Labels={
 };
 // Shorter row labels where the group title already gives the context.
 const std::map<std::string,const char*> ShortLabels={
+    {"CelestialStyle","Стиль неба"},{"ReflectionDistance","Дальность отражений"},{"ReflectionResolution","Разрешение отражений"},
+    {"ReflectionScenery","Объекты в отражениях"},{"ReflectionSceneryDetails","Мелкие объекты в отражениях"},
+    {"FineHighlights","Мелкие блики"},{"SurfaceBlur","Смягчение отражений"},
     {"GIStrength","GI influence"},{"GIBrightness","Brightness adjustment (%)"},{"GIPrelitMix","Baked lighting blend (%)"},{"AuroraStrength","Northrend aurora (%)"},{"GIDistance","GI distance (yd)"},{"GIBounces","Light bounces"},{"AOStrength","Strength (%)"},{"AORadius","Radius (0.01 yd)"},
     {"ActorShadowRadius","Distance (yd)"},{"ActorShadowDetail","Detailed shadows"},{"EquipmentLights","Equipment lights"},{"FogCloudDensity","Density (%)"},
     {"HDRMaxNits","Manual peak (nits)"},{"AutoBumpDistance","Relief distance (yd)"},
@@ -308,7 +313,7 @@ const std::vector<Section> QualitySections={
     {"atmosphere","Atmosphere & weather","WorldFog Godrays Weather AuroraStrength WeatherMemory RainFog RainLens RainLensStrength RainRivulets SnowLens SnowLensStrength SnowFrost SnowFrostStrength SandLens SandLensStrength SandLensSize WeatherWindDirection WeatherWindStrength WeatherCameraMotion FogClouds FogCloudDensity HorizonHaze HorizonHazeStart HorizonHazeBand HorizonHazeTerrain",{
         {"atmosphere","Atmospheric fog","WorldFog","Godrays",""},
         {"fog","Fog banks","FogClouds","FogCloudDensity",""},
-        {"weather","Weather","Weather","AuroraStrength RainFog","WeatherMemory"},
+        {"weather","Weather","Weather","AuroraStrength RainFog","WeatherMemory RainDropSize SnowFlakeSize"},
         {"rainlens","Rain on camera","RainLens","RainLensStrength RainLensSize RainRivulets",""},
         {"snowlens","Snow on camera","SnowLens","SnowLensStrength SnowLensSize",""},
         {"snowfrost","Frost at screen edges","SnowFrost","SnowFrostStrength",""},
@@ -345,8 +350,7 @@ constexpr std::array<NorthlightTone::HueBand,NorthlightTone::HueBandCount> HueBa
     NorthlightTone::HueBand::Green,NorthlightTone::HueBand::Cyan,NorthlightTone::HueBand::Blue,NorthlightTone::HueBand::Magenta};
 constexpr std::array<NorthlightTone::SelectiveProperty,3> SelectiveProperties={NorthlightTone::SelectiveProperty::HueShift,NorthlightTone::SelectiveProperty::Saturation,NorthlightTone::SelectiveProperty::Lightness};
 constexpr std::array<NorthlightTone::TimeStop,3> GradeTimes={NorthlightTone::TimeStop::Day,NorthlightTone::TimeStop::Dusk,NorthlightTone::TimeStop::Night};
-constexpr std::array<const char*,3> GradeTitles={"Daylight grade","Dusk grade","Night grade"};
-constexpr std::array<const char*,3> FogTitles={"Daylight fog","Dusk fog","Night fog"};
+constexpr std::array<const char*,3> TimeTitles={"День","Сумерки","Ночь"};
 
 enum class Page { Overview, Lighting, Materials, Shadows, Atmosphere, Water, Regional, Grading, Celestial, ShadowRange, Spells, Renderer, Performance, Diagnostics, Count };
 struct PageInfo { Page page; const char* title; const char* quality; };
@@ -358,6 +362,29 @@ const PageInfo Pages[]={
     {Page::Performance,"Performance",nullptr},{Page::Diagnostics,"Diagnostics","diagnostics"},
 };
 static_assert(sizeof(Pages)/sizeof(Pages[0])==std::size_t(Page::Count),"one entry per page");
+constexpr std::array<const char*,std::size_t(Page::Count)> PageLabels={
+    "Обзор","Освещение и AO","Материалы","Тени","Атмосфера и погода","Вода","Туман и контраст",
+    "Цветокоррекция","Солнце и луна","Дальность теней","Заклинания и имена","Рендерер и HDR","Производительность","Диагностика"};
+struct MenuSection { const char* title; std::array<Page,4> pages; unsigned count; };
+constexpr MenuSection MenuSections[]={
+    {"Обзор",{Page::Overview},1},
+    {"Свет и тени",{Page::Lighting,Page::Shadows,Page::ShadowRange},3},
+    {"Материалы",{Page::Materials},1},
+    {"Мир и погода",{Page::Atmosphere,Page::Regional,Page::Grading,Page::Celestial},4},
+    {"Вода",{Page::Water},1},
+    {"Заклинания и имена",{Page::Spells},1},
+    {"Система",{Page::Renderer,Page::Performance,Page::Diagnostics},3},
+};
+constexpr unsigned menuSection(Page page){
+    for(unsigned i=0;i<std::size(MenuSections);++i)for(unsigned j=0;j<MenuSections[i].count;++j)if(MenuSections[i].pages[j]==page)return i;
+    return 0;
+}
+static_assert([]{
+    std::array<unsigned,std::size_t(Page::Count)> occurrences{};
+    for(const auto& section:MenuSections)for(unsigned i=0;i<section.count;++i)++occurrences[unsigned(section.pages[i])];
+    for(unsigned count:occurrences)if(count!=1)return false;
+    return true;
+}(),"each settings page needs exactly one menu section");
 const Section* qualitySection(const char* id){if(id)for(const auto& s:QualitySections)if(std::string(s.id)==id)return &s;return nullptr;}
 // Every key a Quality section names (its key list and its groups).
 std::vector<std::string> sectionKeys(const Section& s){
@@ -521,8 +548,20 @@ int regionGroupOrder(const std::string& group){
     return 11;
 }
 std::string folded(std::string text){
-    std::transform(text.begin(),text.end(),text.begin(),[](unsigned char c){return char(std::tolower(c));});
+    for(std::size_t i=0;i<text.size();++i){
+        const auto c=static_cast<unsigned char>(text[i]);
+        if(c<128){text[i]=char(std::tolower(c));continue;}
+        if(i+1>=text.size())break;
+        const auto next=static_cast<unsigned char>(text[i+1]);
+        if(c==0xd0&&next>=0x90&&next<0xa0)text[++i]=char(next+0x20);
+        else if(c==0xd0&&next>=0xa0&&next<=0xaf){text[i]=char(0xd1);text[++i]=char(next-0x20);}
+        else if((c==0xd0&&next==0x81)||(c==0xd1&&next==0x91)){text[i]=char(0xd0);text[++i]=char(0xb5);}
+    }
     return text;
+}
+std::string searchWords(std::string text){
+    for(char& c:text){const auto byte=static_cast<unsigned char>(c);if(byte<128&&!std::isalnum(byte))c=' ';}
+    return folded(std::move(text));
 }
 std::string fieldLabel(const Field& f){
     if(f.file==NorthlightSettings::WaterHostFile)return "Use Tideglass";
@@ -613,12 +652,20 @@ struct SettingsPanel::State {
     char appearancePresetName[64]{};
     bool appearancePresetModal=false,appearancePresetDeleteModal=false,savingAppearancePreset=false;
     std::string appearancePresetToDelete;
-    std::string region="default",note;                 // note: a local message (a refused request), cleared by the next action
-    std::string waterRegion="default";
-    struct RegionChoice { std::string section,label,group,search; };
+    std::string region="default",note;                 // region: the selected key in the shared picker
+    struct RegionChoice { std::string key,appearance,shadow,slime,label,group,search; };
     const NorthlightSettings::Snapshot* regionChoicesSnapshot=nullptr;
-    std::vector<RegionChoice> regionChoices,waterRegionChoices;
-    std::array<char,128> regionFilter{},waterRegionFilter{};
+    std::vector<RegionChoice> regionChoices;
+    std::array<char,128> regionFilter{},searchText{};
+    int regionMap=0,editTime=0;
+    struct SearchEntry { Page page;std::string title,path,words,key;const Field* field=nullptr;const char* action=nullptr; };
+    std::vector<SearchEntry> searchEntries;
+    std::vector<std::size_t> searchResults;
+    const NorthlightSettings::Snapshot* searchSnapshot=nullptr;
+    std::string searchQuery,searchField;
+    const char* searchAction=nullptr;
+    int searchSelected=0;
+    bool searchUp=false,searchDown=false,searchEnter=false,searchScroll=false;
     enum class CurveDrag {None,Point,HandleIn,HandleOut};
     int curveChannel=0,selectedPoint=-1,selectedBand=0;
     CurveDrag curveDrag=CurveDrag::None;
@@ -630,8 +677,8 @@ struct SettingsPanel::State {
     bool compareRequested=false,comparing=false;
     mutable const NorthlightSettings::Snapshot* pageFieldsSnapshot=nullptr;
     mutable std::array<std::vector<const Field*>,std::size_t(Page::Count)> pageFieldCache;
-    char shadowSearch[96]={};int shadowMap=0;
     Page page=Page::Overview;                             // kept for the session
+    std::array<Page,std::size(MenuSections)> lastPages{Page::Overview,Page::Lighting,Page::Materials,Page::Regional,Page::Water,Page::Spells,Page::Renderer};
     NorthlightMemoryProfile::Snapshot memorySnapshot;
     uint64_t memoryReadAt=0;
     std::string presetChoice;bool presetCelestial=true,presetRange=true;   // the preset dialog
@@ -658,7 +705,7 @@ struct SettingsPanel::State {
             snapshot=latest;draft.bind(&snapshot->fields);
             if(moved){for(const auto& change:restore)for(const auto& field:snapshot->fields)if(field.id()==change.first){draft.set(field,change.second);break;}wantPreview=true;}
             if(awaitingSnapshot){draft.clear();live.clear();awaitingSnapshot=false;}
-            if(region!="default"&&!draft.field(D::Celestial,region,"sun_disc"))region="default";
+            refreshRegionChoices();
         }
         status=service->status();
         if(saving&&status.serial>commitSerial&&status.state!=NorthlightSettings::Status::State::Busy){
@@ -671,7 +718,7 @@ struct SettingsPanel::State {
         if(wantClear&&!saving&&service->clearPreview()){wantClear=false;previewing=false;}
         if(wantPreview&&!saving&&!wantClear){
             auto pending=changes();
-            if(comparing)if(const Field* strength=draft.field(D::Celestial,region,"tone_curve_strength")){
+            if(comparing)if(const Field* strength=draft.field(D::Celestial,appearanceRegion(),"tone_curve_strength")){
                 const auto id=strength->id();
                 pending.erase(std::remove_if(pending.begin(),pending.end(),[&](const auto& c){return c.id==id;}),pending.end());
                 pending.push_back({id,"0"});
@@ -757,7 +804,6 @@ struct SettingsPanel::State {
         ImGui::Spacing();
         if(f.apply=="S")ImGui::TextColored(Color::Good,"Takes effect when you save.");
         else if(f.apply=="R")ImGui::TextColored(Color::Restart,draft.restartPending(f)?"Requires a game restart: the running renderer still uses %s.":"Requires a game restart.%s",draft.restartPending(f)?f.active.c_str():"");
-        else ImGui::TextColored(Color::Good,"Applies live: previewed while you edit, kept when you save.");
         if(block==D::Block::Unavailable)ImGui::TextColored(Color::Bad,"Not available in this installation.");
         else if(block==D::Block::NeedsHdr)ImGui::TextColored(Color::Bad,"Enable HDR first.");
         else if(block==D::Block::NeedsManual)ImGui::TextColored(Color::Muted,"Choose Manual peak mode to edit this value.");
@@ -791,6 +837,15 @@ struct SettingsPanel::State {
             return;
         }
         if(f.kind=="check"){bool on=value=="1";if(ImGui::Checkbox("##value",&on))set(f,on?"1":"0");return;}
+        if(f.kind=="curve"){
+            std::array<char,513> curve{};std::snprintf(curve.data(),curve.size(),"%s",value.c_str());
+            if(ImGui::InputText("##value",curve.data(),curve.size(),ImGuiInputTextFlags_EnterReturnsTrue)){
+                std::array<float,NorthlightTone::CurveWords> points{};
+                if(const char* error=NorthlightTone::parseCurve(curve.data(),points))note=error;
+                else set(f,NorthlightTone::curveText(points.data()));
+            }
+            return;
+        }
         auto held=live.find(id);
         const float lo=float(number(f.low)),hi=float(number(f.high));
         if(f.kind=="rgb"){
@@ -819,9 +874,12 @@ struct SettingsPanel::State {
         marker(f);
         ImGui::AlignTextToFramePadding();
         const std::string name=label?label:rowLabel(f);
-        if(block!=D::Block::None)ImGui::TextDisabled("%s",name.c_str());
+        const bool hit=!searchField.empty()&&searchField==f.id();
+        if(hit)ImGui::TextColored(Color::Accent,"%s",name.c_str());
+        else if(block!=D::Block::None)ImGui::TextDisabled("%s",name.c_str());
         else if(draft.edited(f))ImGui::TextColored(Color::Edited,"%s",name.c_str());
         else ImGui::TextUnformatted(name.c_str());
+        if(hit)jumpTo(f);
         interact(f,block,missing);
         if(f.apply=="R"){ImGui::SameLine(0,ImGui::GetStyle().ItemInnerSpacing.x*2);ImGui::TextColored(draft.restartPending(f)?Color::Restart:Color::Muted,"R");interact(f,block,missing);}
         ImGui::TableSetColumnIndex(1);
@@ -855,6 +913,7 @@ struct SettingsPanel::State {
             ImGui::PushStyleColor(ImGuiCol_Text,draft.edited(*master)?Color::Edited:Color::Heading);
             bool on=draft.effective(*master)=="1";
             if(ImGui::Checkbox(g.title,&on))set(*master,on?"1":"0");
+            jumpTo(*master);
             ImGui::PopStyleColor();
             ImGui::EndDisabled();
             interact(*master,block,missing);
@@ -877,6 +936,7 @@ struct SettingsPanel::State {
         }
         if(!advanced.empty()){
             char title[64];std::snprintf(title,sizeof title,"Fine tuning (%u)",unsigned(advanced.size()));
+            if(searchScroll&&std::any_of(advanced.begin(),advanced.end(),[&](const auto* field){return field->id()==searchField;}))ImGui::SetNextItemOpen(true);
             if(ImGui::TreeNodeEx("fine",ImGuiTreeNodeFlags_SpanAvailWidth|ImGuiTreeNodeFlags_NoTreePushOnOpen,"%s",title)&&beginRows("advanced")){
                 for(const Field* f:advanced)row(*f);ImGui::EndTable();
             }
@@ -892,7 +952,7 @@ struct SettingsPanel::State {
     // ---- Pages ----
     // Quality keys without an assigned group stay accessible in Renderer fine tuning.
     std::vector<const Field*> unsortedQuality()const{
-        std::vector<std::string> known{"Preset","RainDropSize","SnowFlakeSize"};
+        std::vector<std::string> known{"Preset","Effects"};
         for(const char* key:CelestialQualityKeys)known.push_back(key);
         for(const auto& s:QualitySections)for(auto& k:sectionKeys(s))known.push_back(k);
         std::vector<const Field*> out;for(const Field* f:fields(D::Quality))if(std::find(known.begin(),known.end(),f->key)==known.end())out.push_back(f);
@@ -940,7 +1000,11 @@ struct SettingsPanel::State {
         for(const auto& g:sec.groups)group(g,mine,used);
         std::vector<const Field*> rest;for(const auto& k:words(sec.keys))if(mine.count(k)&&!used[k]){rest.push_back(mine[k]);used[k]=true;}
         titled(sec.title,rest);
-        if(withUnsorted){const auto extra=unsortedQuality();if(!extra.empty()&&ImGui::TreeNode("Other fine tuning")){titled("Other",extra);ImGui::TreePop();}}
+        if(withUnsorted){
+            const auto extra=unsortedQuality();
+            if(searchScroll&&std::any_of(extra.begin(),extra.end(),[&](const auto* field){return field->id()==searchField;}))ImGui::SetNextItemOpen(true);
+            if(!extra.empty()&&ImGui::TreeNode("Other fine tuning")){titled("Other",extra);ImGui::TreePop();}
+        }
     }
     void overviewPage(){
         ImGui::PushTextWrapPos(0);
@@ -955,6 +1019,7 @@ struct SettingsPanel::State {
             ImGui::BeginGroup();
             ImGui::AlignTextToFramePadding();
             if(here)ImGui::TextColored(Color::Accent,"%s  (current)",p.key);else ImGui::TextUnformatted(p.key);
+            if(here&&preset)jumpTo(*preset);
             ImGui::TextColored(Color::Muted,"%s",p.text);
             ImGui::EndGroup();
             ImGui::SameLine();alignRight(buttonWidth("Choose..."));
@@ -991,6 +1056,7 @@ struct SettingsPanel::State {
             ImGui::Text("Effective white: %.0f nits   UI: %.0f nits",hdr.paperWhite,hdr.uiWhite);
             if(ImGui::TreeNode("Output details")){ImGui::TextUnformatted(hdr.active?"RGBA16F / linear scRGB, Rec.709 primaries":"SDR output");ImGui::TextWrapped("Display profile: %s",hdr.profile.empty()?"Stable identity unavailable":hdr.profile.c_str());ImGui::Text("Reported peak: %.0f nits",hdr.detectedPeak);ImGui::Text("HDR frame / output payload: %.2f MiB",double(hdr.payloadBytes)/1048576);ImGui::TextWrapped("Payload excludes other renderer resources and driver allocations; it is not residency.");ImGui::TextUnformatted("Values describe application signals, not measured panel brightness.");ImGui::TreePop();}
             ImGui::BeginDisabled(!hdr.active||!calibrationDraw);ImGui::Checkbox("Show HDR calibration",&calibrationOpen);ImGui::EndDisabled();
+            jumpTo("hdr-calibration");
             if(ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip|ImGuiHoveredFlags_AllowWhenDisabled))ImGui::SetTooltip("Show brightness patches to compare ordinary white and peak highlights.\nRequires active HDR output. Does not change your saved display settings.");
             if(calibrationOpen&&hdr.active&&calibrationDraw){
                 ImGui::TextWrapped("Adjust white and UI brightness for comfortable ordinary content. Then compare the peak gradient. These patches bypass world exposure, contrast, bloom and the scene peak limit.");
@@ -1232,12 +1298,14 @@ struct SettingsPanel::State {
                 }
                 ImGui::EndCombo();
             }
+            if(showFields)jumpTo("water-preset");
             ImGui::EndDisabled();
             if(showFields)loose("water-performance",{scenery,resolution,distance,details,highlights,blur});
         }
     }
     void waterPage(){
         ImGui::TextWrapped("Save to apply water settings. Restart the game after switching Tideglass on or off.");
+        W::cardTitle("Общие настройки воды");
         titled("Renderer",fields(NorthlightSettings::WaterHostFile));
         waterPresetControl(true);
         auto waterRows=[&](const char* title,const char* keys){
@@ -1251,13 +1319,16 @@ struct SettingsPanel::State {
         waterRows("Reflections","Reflection NearReflection");
         waterRows("Clarity and underwater","Clarity Underwater UnderwaterVisibility UnderwaterScenery");
         waterRows("Other liquids","Slime Lava");
-        if(pickRegion(waterRegion,true)&&beginRows("regional-slime")){
-            if(const auto* field=draft.field(NorthlightSettings::WaterFile,"RegionalSlime",NorthlightSettings::liquidAreaKey(waterRegion)))
-                regionalRow(*field,"Regional slime");
-            ImGui::EndTable();
-        }
+        W::cardTitle("Слизь в выбранном регионе");
+        const auto* scope=selectedRegion();
+        const auto* slime=scope?draft.field(NorthlightSettings::WaterFile,"RegionalSlime",scope->slime):nullptr;
+        if(!slime)W::hint("Для этого профиля нет отдельной настройки слизи.");
+        else if(beginRows("regional-slime")){regionalRow(*slime,"Regional slime");ImGui::EndTable();}
     }
     void drawPage(){
+        W::cardTitle(PageLabels[unsigned(page)]);
+        if(page==Page::Regional||page==Page::Grading||page==Page::Celestial){pickRegion(page!=Page::Celestial);ImGui::Separator();}
+        const auto appearance=appearanceRegion();
         switch(page){
         case Page::Overview:overviewPage();break;
         case Page::Water:waterPage();break;
@@ -1269,11 +1340,13 @@ struct SettingsPanel::State {
                 W::hint("Default keeps Northlight's regional look and your own region edits. Another look replaces the base for the whole world; your region edits still apply on top.");
                 ImGui::BeginDisabled(locked());
                 if(ImGui::Button("Save as preset...")){appearancePresetName[0]='\0';appearancePresetModal=true;}
+                jumpTo("save-look");
                 ImGui::EndDisabled();
                 if(const Field* palette=draft.field(D::Celestial,"Appearance","Palette")){
                     const auto chosen=ownAppearancePreset(draft.effective(*palette));
                     ImGui::SameLine();ImGui::BeginDisabled(chosen.empty()||locked());
                     if(ImGui::Button("Delete preset...")){appearancePresetToDelete=chosen;appearancePresetDeleteModal=true;}
+                    jumpTo("delete-look");
                     ImGui::EndDisabled();
                     if(chosen.empty()&&ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))ImGui::SetTooltip("Looks that come with Northlight cannot be deleted.");
                 }
@@ -1282,51 +1355,35 @@ struct SettingsPanel::State {
             W::endCard();
             if(W::beginCard("regional-look")){
                 W::cardTitle("Fog and contrast");
-                if(pickRegion()){
+                if(!appearance.empty()){
                     if(beginRows("regional")){
-                        if(const Field* f=draft.field(D::Celestial,region,"shadow_contrast"))regionalRow(*f,rowLabel(*f).c_str());
+                        if(const Field* f=draft.field(D::Celestial,appearance,"shadow_contrast"))regionalRow(*f,rowLabel(*f).c_str());
                         ImGui::EndTable();
                     }
-                    if(ImGui::BeginTabBar("fog-times")){
-                        for(unsigned i=0;i<GradeTimes.size();++i)if(ImGui::BeginTabItem(FogTitles[i])){
-                            const std::string time=NorthlightTone::timeName(GradeTimes[i]);
-                            if(beginRows("fog")){
-                                if(const Field* f=draft.field(D::Celestial,region,time+"_fog_tint_strength"))regionalRow(*f,rowLabel(*f).c_str());
-                                for(const char* name:{"_fog_tint","_fog_brightness"})
-                                    if(const Field* f=draft.field(D::Celestial,region,time+name))row(*f);
-                                ImGui::EndTable();
-                            }
-                            ImGui::EndTabItem();
-                        }
-                        ImGui::EndTabBar();
+                    const std::string time=NorthlightTone::timeName(GradeTimes[editTime]);
+                    if(beginRows("fog")){
+                        if(const Field* f=draft.field(D::Celestial,appearance,time+"_fog_tint_strength"))regionalRow(*f,rowLabel(*f).c_str());
+                        for(const char* name:{"_fog_tint","_fog_brightness"})
+                            if(const Field* f=draft.field(D::Celestial,appearance,time+name))row(*f);
+                        ImGui::EndTable();
                     }
-                }
+                }else W::hint("Для этого региона нет отдельного профиля облика.");
                 W::hint("Fog tint colours the fog a region already has and brightness darkens or lifts it, each for Daylight, Dusk and Night; Dusk also shows at sunrise. Shadow contrast deepens dark detail at every hour. The region chosen here is the one Colour grading and Sun & moon edit too.");
             }
             W::endCard();
             break;
         case Page::Grading:
             if(W::beginCard("grading")){
-                if(pickRegion()){
-                    if(const Field* strength=draft.field(D::Celestial,region,"tone_curve_strength")){
-                        if(beginRows("strength")){regionalRow(*strength,"Tone curve strength");ImGui::EndTable();}
-                        if(number(draft.effective(*strength))==0)ImGui::TextWrapped("This region's grade is off while its strength is zero. Choose Tuned above to see your edits.");
-                        W::hint("Strength scales the whole grade; at zero the grade is off. Dusk is the 19:30 look, shown through sunset and again at sunrise; what it leaves unset follows the Daylight-to-Night blend.");
-                        if(ImGui::BeginTabBar("grades")){
-                            for(unsigned i=0;i<GradeTimes.size();++i)if(ImGui::BeginTabItem(GradeTitles[i])){
-                                ImGui::BeginDisabled(locked());
-                                gradeEditor(GradeTimes[i]);
-                                ImGui::EndDisabled();
-                                ImGui::EndTabItem();
-                            }
-                            ImGui::EndTabBar();
-                        }
-                    }
-                }
+                if(const Field* strength=draft.field(D::Celestial,appearance,"tone_curve_strength")){
+                    if(beginRows("strength")){regionalRow(*strength,"Tone curve strength");ImGui::EndTable();}
+                    if(number(draft.effective(*strength))==0)ImGui::TextWrapped("This region's grade is off while its strength is zero. Choose Tuned above to see your edits.");
+                    W::hint("Strength scales the whole grade; at zero the grade is off. Dusk is the 19:30 look, shown through sunset and again at sunrise; what it leaves unset follows the Daylight-to-Night blend.");
+                    ImGui::BeginDisabled(locked());gradeEditor(GradeTimes[editTime],appearance);ImGui::EndDisabled();
+                }else W::hint("Для этого региона нет отдельного профиля облика.");
             }
             W::endCard();
             break;
-        case Page::Celestial:celestialTab();break;
+        case Page::Celestial:celestialTab(appearance);break;
         case Page::ShadowRange:shadowRangeTab();break;
         case Page::Renderer:rendererPage();break;
         case Page::Performance:performanceMonitor();break;
@@ -1334,19 +1391,173 @@ struct SettingsPanel::State {
         default:if(const Section* s=qualitySection(Pages[unsigned(page)].quality))qualityPage(*s,false);break;
         }
     }
-    // Left column: the pages; amber dot = unsaved edits there, R = a restart-only change pending there.
+    void selectPage(Page next){
+        page=next;lastPages[menuSection(next)]=next;
+        searchField.clear();searchAction=nullptr;searchScroll=false;
+    }
     void sidebar(){
         const float h=ImGui::GetFrameHeight(),r=std::max(2.5f,h*0.14f);
-        for(const auto& info:Pages){
-            if(info.page==Page::Water&&!draft.field(NorthlightSettings::WaterHostFile,"WaterIntegration","Enable"))continue;
-            bool edited=false,restart=false;
-            for(const Field* f:pageFields(info.page)){edited|=draft.edited(*f);restart|=draft.restartPending(*f);}
-            if(ImGui::Selectable(info.title,page==info.page,0,ImVec2(0,h)))page=info.page;
+        for(unsigned i=0;i<std::size(MenuSections);++i){
+            const auto& section=MenuSections[i];
+            if(section.pages[0]==Page::Water&&!draft.field(NorthlightSettings::WaterHostFile,"WaterIntegration","Enable"))continue;
+            bool changed=false,restart=false;
+            for(unsigned j=0;j<section.count;++j)for(const Field* f:pageFields(section.pages[j])){
+                changed|=draft.edited(*f);restart|=draft.restartPending(*f);
+            }
+            if(ImGui::Selectable(section.title,menuSection(page)==i,0,ImVec2(0,h)))selectPage(lastPages[i]);
             const ImVec2 a=ImGui::GetItemRectMin(),b=ImGui::GetItemRectMax();
-            ImDrawList* dl=ImGui::GetWindowDrawList();float x=b.x-ImGui::GetStyle().ItemInnerSpacing.x-r;
-            if(edited){dl->AddCircleFilled(ImVec2(x,(a.y+b.y)*0.5f),r,u32(Color::Edited));x-=2*r+ImGui::GetStyle().ItemInnerSpacing.x;}
-            if(restart){const ImVec2 t=ImGui::CalcTextSize("R");dl->AddText(ImVec2(x-t.x*0.5f-r,(a.y+b.y-t.y)*0.5f),u32(Color::Restart),"R");}
+            auto* draw=ImGui::GetWindowDrawList();float x=b.x-ImGui::GetStyle().ItemInnerSpacing.x-r;
+            if(changed){draw->AddCircleFilled(ImVec2(x,(a.y+b.y)*0.5f),r,u32(Color::Edited));x-=2*r+ImGui::GetStyle().ItemInnerSpacing.x;}
+            if(restart){const ImVec2 t=ImGui::CalcTextSize("R");draw->AddText(ImVec2(x-t.x*0.5f-r,(a.y+b.y-t.y)*0.5f),u32(Color::Restart),"R");}
         }
+    }
+    void subpages(){
+        const auto& section=MenuSections[menuSection(page)];
+        if(section.count==1)return;
+        const float right=ImGui::GetCursorScreenPos().x+ImGui::GetContentRegionAvail().x;
+        for(unsigned i=0;i<section.count;++i){
+            const Page next=section.pages[i];
+            const char* label=PageLabels[unsigned(next)];
+            if(i&&ImGui::GetItemRectMax().x+ImGui::GetStyle().ItemSpacing.x+buttonWidth(label)<=right)ImGui::SameLine();
+            const bool active=page==next;
+            if(active)ImGui::PushStyleColor(ImGuiCol_Button,ImGui::GetStyleColorVec4(ImGuiCol_HeaderActive));
+            if(ImGui::Button(label))selectPage(next);
+            if(active)ImGui::PopStyleColor();
+        }
+        ImGui::Separator();
+    }
+    void refreshSearch(){
+        if(!snapshot||searchSnapshot==snapshot.get())return;
+        searchSnapshot=snapshot.get();searchEntries.clear();searchQuery.clear();searchResults.clear();
+        std::set<std::pair<unsigned,std::string>> seen;
+        auto add=[&](Page target,std::string title,const Field* field,const char* action,const char* aliases){
+            std::string path=MenuSections[menuSection(target)].title;
+            if(MenuSections[menuSection(target)].count>1)path+=" / "+std::string(PageLabels[unsigned(target)]);
+            const std::string key=field?searchWords(field->key):std::string{};
+            std::string terms=title+" "+path+" "+Pages[unsigned(target)].title+" "+aliases;
+            if(field){
+                terms+=" "+field->key+" "+fieldLabel(*field);
+                if(field->kind=="enum"||D::modeField(*field)){
+                    const auto options=D::modeField(*field)?D::modeOptions(*field):D::split(field->options);
+                    for(const auto& option:options)terms+=" "+optionLabel(*field,option);
+                }
+                if(field->key.rfind("day_",0)==0)path+=" / День";
+                if(field->key.rfind("dusk_",0)==0)path+=" / Сумерки";
+                if(field->key.rfind("night_",0)==0)path+=" / Ночь";
+                terms+=" "+path;
+            }
+            searchEntries.push_back({target,std::move(title),std::move(path),searchWords(std::move(terms)),key,field,action});
+        };
+        for(const auto& info:Pages)for(const Field* field:pageFields(info.page)){
+            if(info.page==Page::Overview&&field->key!="Preset"&&field->key!="Effects")continue;
+            const bool slime=field->file==NorthlightSettings::WaterFile&&field->section=="RegionalSlime";
+            if(!seen.emplace(field->file,slime?"RegionalSlime":field->key).second)continue;
+            const auto& key=field->key;
+            const char* aliases="";
+            if(key.rfind("Reflection",0)==0||key=="NearReflection"||key=="SurfaceBlur")aliases="отражения отражений отражен отражённый";
+            else if(key=="CelestialStyle")aliases="небо солнце луна Default Forever";
+            else if(key=="GI")aliases="глобальное освещение непрямой свет";
+            else if(key=="ContactAO")aliases="контактное затенение ambient occlusion";
+            const auto title=slime?std::string("Regional slime"):rowLabel(*field);
+            add(info.page,title,field,nullptr,slime?"региональная слизь каналы":aliases);
+        }
+        if(draft.field(NorthlightSettings::WaterHostFile,"WaterIntegration","Enable"))add(Page::Water,"Пресет воды",nullptr,"water-preset","Water preset Ultra Quality Balanced Performance");
+        add(Page::Regional,"Сохранить облик как пресет",nullptr,"save-look","Save as preset сохранить палитру");
+        add(Page::Regional,"Удалить пресет облика",nullptr,"delete-look","Delete preset удалить палитру");
+        add(Page::Renderer,"Калибровка HDR",nullptr,"hdr-calibration","Show HDR calibration Test peak Wide field");
+    }
+    void updateSearch(){
+        refreshSearch();
+        const auto query=searchWords(searchText.data());
+        if(query==searchQuery)return;
+        searchQuery=query;searchResults.clear();searchSelected=0;
+        auto tokens=words(query.c_str());
+        if(tokens.empty())return;
+        for(auto& token:tokens)if(token.rfind("отражени",0)==0)token="отражен";
+        std::vector<std::pair<int,std::size_t>> ranked;
+        for(std::size_t i=0;i<searchEntries.size();++i){
+            const auto& hit=searchEntries[i];
+            if(!std::all_of(tokens.begin(),tokens.end(),[&](const auto& token){return hit.words.find(token)!=std::string::npos;}))continue;
+            const auto title=searchWords(hit.title);
+            int rank=(hit.key==query?150:0)+(title==query?125:0)+(title.rfind(query,0)==0?50:0);
+            for(const auto& token:tokens)rank+=(title.find(token)!=std::string::npos?10:0)+(hit.key.find(token)!=std::string::npos?7:0);
+            ranked.emplace_back(-rank,i);
+        }
+        std::sort(ranked.begin(),ranked.end(),[&](const auto& a,const auto& b){
+            return a.first!=b.first?a.first<b.first:searchEntries[a.second].title<searchEntries[b.second].title;
+        });
+        for(const auto& item:ranked)searchResults.push_back(item.second);
+        searchScroll=true;
+    }
+    void openSearchHit(const SearchEntry& hit){
+        selectPage(hit.page);searchText[0]='\0';searchAction=hit.action;searchScroll=true;
+        if(!hit.field)return;
+        const auto& field=*hit.field;
+        const Field* target=&field;
+        const auto* scope=selectedRegion();
+        if(scope){
+            if(field.file==D::Celestial&&field.section!="Appearance")target=draft.field(field.file,scope->appearance,field.key);
+            if(field.file==D::ShadowRange)target=draft.field(field.file,scope->shadow.empty()?"default":scope->shadow,field.key);
+            if(field.file==NorthlightSettings::WaterFile&&field.section=="RegionalSlime")target=draft.field(field.file,"RegionalSlime",scope->slime);
+        }
+        if(target)searchField=target->id();
+        if(const auto i=NorthlightTone::gradeBindings().find(field.key);i!=NorthlightTone::gradeBindings().end()){
+            const auto& binding=i->second;
+            editTime=int(binding.time);curveChannel=int(binding.channel);selectedBand=int(binding.band);
+        }else{
+            if(field.key.rfind("day_",0)==0)editTime=0;
+            if(field.key.rfind("dusk_",0)==0)editTime=1;
+            if(field.key.rfind("night_",0)==0)editTime=2;
+        }
+    }
+    bool searchHeader(){
+        searchUp=searchDown=false;
+        ImGui::SetNextItemWidth(std::max(70.f,ImGui::GetContentRegionAvail().x-buttonWidth("Очистить")-ImGui::GetStyle().ItemSpacing.x));
+        const auto callback=[](ImGuiInputTextCallbackData* data){
+            auto& self=*static_cast<State*>(data->UserData);
+            self.searchUp=data->EventKey==ImGuiKey_UpArrow;self.searchDown=data->EventKey==ImGuiKey_DownArrow;return 0;
+        };
+        searchEnter=ImGui::InputTextWithHint("##settings-search","Найти настройку...",searchText.data(),searchText.size(),
+            ImGuiInputTextFlags_EscapeClearsAll|ImGuiInputTextFlags_EnterReturnsTrue|ImGuiInputTextFlags_CallbackHistory,callback,this);
+        ImGui::SameLine();ImGui::BeginDisabled(!searchText[0]);
+        if(ImGui::Button("Очистить"))searchText[0]='\0';
+        ImGui::EndDisabled();
+        return !words(searchWords(searchText.data()).c_str()).empty();
+    }
+    void drawSearch(){
+        ImGui::TextUnformatted("Результаты поиска");
+        if(!snapshot){W::hint("Загрузка настроек...");return;}
+        updateSearch();
+        if(searchResults.empty()){W::hint("Совпадений нет. Попробуйте название или ключ INI.");return;}
+        ImGui::TextColored(Color::Muted,"Найдено %zu",searchResults.size());
+        const auto size=int(searchResults.size());
+        if(searchUp||searchDown){searchSelected=(searchSelected+(searchUp?size-1:1))%size;searchScroll=true;}
+        if(searchEnter){openSearchHit(searchEntries[searchResults[searchSelected]]);return;}
+        ImGui::Separator();
+        const float line=ImGui::GetTextLineHeightWithSpacing();
+        ImGuiListClipper clipper;clipper.Begin(size,2*line+ImGui::GetStyle().ItemSpacing.y);
+        if(searchScroll)clipper.IncludeItemByIndex(searchSelected);
+        while(clipper.Step())for(int i=clipper.DisplayStart;i<clipper.DisplayEnd;++i){
+            const auto& hit=searchEntries[searchResults[i]];
+            const ImVec2 origin=ImGui::GetCursorScreenPos();
+            ImGui::PushID(i);
+            const bool clicked=ImGui::Selectable("##result",i==searchSelected,0,ImVec2(0,2*line));
+            ImGui::PopID();
+            auto* draw=ImGui::GetWindowDrawList();
+            draw->AddText(origin,ImGui::GetColorU32(ImGuiCol_Text),hit.title.c_str());
+            const auto path=hit.path+(hit.field?"  /  "+(hit.field->section=="RegionalSlime"?std::string("RegionalSlime"):hit.field->key):std::string{});
+            draw->AddText(ImVec2(origin.x,origin.y+line),u32(Color::Muted),path.c_str());
+            if(searchScroll&&i==searchSelected){ImGui::SetScrollHereY(.25f);searchScroll=false;}
+            if(clicked){openSearchHit(hit);return;}
+        }
+    }
+    bool jumpTo(const Field& field){
+        if(searchField.empty()||searchField!=field.id())return false;
+        if(searchScroll){ImGui::ScrollToItem(ImGuiScrollFlags_KeepVisibleCenterY);searchScroll=false;}
+        return true;
+    }
+    void jumpTo(const char* action){
+        if(searchScroll&&searchAction&&!std::strcmp(action,searchAction)){ImGui::ScrollToItem(ImGuiScrollFlags_KeepVisibleCenterY);searchScroll=false;}
     }
     std::vector<std::string> sections(unsigned file)const{
         std::vector<std::string> out;if(!snapshot)return out;
@@ -1361,84 +1572,93 @@ struct SettingsPanel::State {
     }
     void refreshRegionChoices(){
         if(!snapshot||regionChoicesSnapshot==snapshot.get())return;
-        regionChoices.clear();waterRegionChoices.clear();
-        std::set<std::string> waterAreaIds;
-        for(const auto& section:sections(D::Celestial)){
+        regionChoices.clear();
+        std::map<std::string,RegionChoice> choices;
+        const auto appearance=sections(D::Celestial);
+        const std::set<std::string> appearanceKeys(appearance.begin(),appearance.end());
+        for(const auto& section:sections(D::ShadowRange))choices[section].shadow=section;
+        for(const auto& section:appearance){
             if(section=="Appearance")continue;
-            RegionChoice choice{section,regionLabel(section),regionGroup(section),{}};
-            choice.search=folded(choice.label+" "+section);
-            regionChoices.push_back(choice);
-            if(mapDefaultSection(section))continue;
-            const auto id=section=="default"?section:NorthlightSettings::liquidAreaKey(section);
-            if(!draft.field(NorthlightSettings::WaterFile,"RegionalSlime",id)||!waterAreaIds.insert(id).second)continue;
-            if(section.find("@inside")!=section.npos){
-                const auto root=section.substr(0,section.size()-7);
-                if(const char* name=find(NorthlightSettings::Regions,root))choice.label=std::string(name)+"  ("+section+")";
-                choice.search=folded(choice.label+" "+section);
+            auto key=section;
+            if(section.size()>7&&section.compare(section.size()-7,7,"@inside")==0){
+                const auto area=section.substr(0,section.size()-7);
+                if(choices.count(area)&&!appearanceKeys.count(area))key=area;
             }
-            waterRegionChoices.push_back(std::move(choice));
+            auto& choice=choices[key];
+            choice.appearance=section;
+            if(!mapDefaultSection(section)){
+                const auto id=NorthlightSettings::liquidAreaKey(section);
+                if(draft.field(NorthlightSettings::WaterFile,"RegionalSlime",id))choice.slime=id;
+            }
+        }
+        for(auto& [key,choice]:choices){
+            choice.key=key;choice.label=regionLabel(key);choice.group=regionGroup(key);
+            choice.search=folded(choice.label+" "+key+" "+choice.appearance+" "+choice.group+" "+choice.slime);
+            regionChoices.push_back(std::move(choice));
         }
         const auto inGroupOrder=[](const RegionChoice& a,const RegionChoice& b){
             const int left=regionGroupOrder(a.group),right=regionGroupOrder(b.group);
             return left==right?a.label<b.label:left<right;
         };
         std::sort(regionChoices.begin(),regionChoices.end(),inGroupOrder);
-        std::sort(waterRegionChoices.begin(),waterRegionChoices.end(),inGroupOrder);
+        if(!choices.count(region))region="default";
         regionChoicesSnapshot=snapshot.get();
     }
-    bool pickRegion(std::string& selected,bool waterOnly=false){
-        refreshRegionChoices();
-        auto& regions=waterOnly?waterRegionChoices:regionChoices;
-        if(regions.empty())return false;
-        const bool hideInterior=page==Page::Celestial;
-        const auto visible=[&](const RegionChoice& choice){
-            return !hideInterior||choice.section.find("@inside")==choice.section.npos;
-        };
-        auto current=std::find_if(regions.begin(),regions.end(),
-            [&](const RegionChoice& choice){return choice.section==selected&&visible(choice);});
-        if(current==regions.end()){
-            current=std::find_if(regions.begin(),regions.end(),visible);
-            if(current==regions.end())return false;
-            selected=current->section;
-        }
-        auto& filter=waterOnly?waterRegionFilter:regionFilter;
-        ImGui::AlignTextToFramePadding();ImGui::TextUnformatted("Region");ImGui::SameLine();
-        ImGui::SetNextItemWidth(-FLT_MIN);
-        if(ImGui::BeginCombo(waterOnly?"##water-region":"##region",current->label.c_str(),
-                             ImGuiComboFlags_HeightLarge)){
+    const RegionChoice* selectedRegion()const{
+        const auto choice=std::find_if(regionChoices.begin(),regionChoices.end(),[&](const auto& item){return item.key==region;});
+        return choice==regionChoices.end()?nullptr:&*choice;
+    }
+    std::string appearanceRegion()const{
+        const auto* choice=selectedRegion();
+        return choice?choice->appearance:std::string{};
+    }
+    void pickRegion(bool time=false){
+        ImGui::PushID("region-scope");
+        const bool inlineTime=time&&ImGui::GetContentRegionAvail().x>=460*scale;
+        const auto* current=selectedRegion();
+        ImGui::AlignTextToFramePadding();ImGui::TextUnformatted("Регион");ImGui::SameLine();
+        ImGui::SetNextItemWidth(inlineTime?220*scale:-FLT_MIN);
+        if(ImGui::BeginCombo("##region",current?current->label.c_str():"All regions (default)",ImGuiComboFlags_HeightLarge)){
             ImGui::SetNextItemWidth(-FLT_MIN);
-            ImGui::InputTextWithHint(waterOnly?"##water-region-search":"##region-search",
-                                     "Search by region name or INI key",filter.data(),filter.size());
+            ImGui::InputTextWithHint("##region-search","Название, карта или ID",regionFilter.data(),regionFilter.size());
+            const char* maps[]={"","Azeroth:","Kalimdor:","Expansion01:","Northrend:"};
+            const char* labels[]={"Все карты","Eastern Kingdoms","Kalimdor","Outland","Northrend"};
+            ImGui::SetNextItemWidth(-FLT_MIN);ImGui::Combo("##region-map",&regionMap,labels,IM_ARRAYSIZE(labels));
             ImGui::Separator();
-            const std::string query=folded(filter.data());std::string visibleGroup;bool found=false;
-            for(const auto& choice:regions){
-                if(!visible(choice))continue;
+            const std::string query=folded(regionFilter.data());std::string visibleGroup;bool found=false;
+            for(const auto& choice:regionChoices){
+                if(regionMap&&choice.key!="default"&&choice.key.rfind(maps[regionMap],0)!=0)continue;
                 if(!query.empty()&&choice.search.find(query)==choice.search.npos)continue;
                 if(choice.group!=visibleGroup){
                     if(found)ImGui::Spacing();
                     ImGui::TextDisabled("%s",choice.group.c_str());visibleGroup=choice.group;
                 }
-                const bool active=choice.section==selected;
-                if(ImGui::Selectable(choice.label.c_str(),active)){selected=choice.section;filter[0]='\0';}
+                const bool active=choice.key==region;
+                ImGui::PushID(choice.key.c_str());
+                if(ImGui::Selectable(choice.label.c_str(),active)){region=choice.key;regionFilter[0]='\0';regionMap=0;searchField.clear();}
                 if(active)ImGui::SetItemDefaultFocus();found=true;
+                ImGui::PopID();
             }
-            if(!found)ImGui::TextDisabled("No matching regions.");
+            if(!found)ImGui::TextDisabled("Совпадений нет.");
             ImGui::EndCombo();
         }
-        return true;
+        if(time)for(unsigned i=0;i<TimeTitles.size();++i){
+            if(i||inlineTime)ImGui::SameLine();
+            if(ImGui::RadioButton(TimeTitles[i],editTime==int(i))){editTime=int(i);searchField.clear();}
+        }
+        ImGui::PopID();
     }
-    bool pickRegion(){return pickRegion(region);}
     // The curve graph: click an empty spot to add a point and drag it; the selected point has two handles that bend
     // the curve on either side; right-click removes a point, or a handle.
-    void gradeEditor(NorthlightTone::TimeStop time){
+    void gradeEditor(NorthlightTone::TimeStop time,const std::string& appearance){
         namespace T=NorthlightTone;
         ImGui::PushID(int(time));
         const char* channels[]={"Brightness","Red","Green","Blue"};
-        const Field* pointsField=draft.field(D::Celestial,region,T::pointsKey(time,curveChannel));
+        const Field* pointsField=draft.field(D::Celestial,appearance,T::pointsKey(time,curveChannel));
         const Field* levels[5]{};
         T::Curve saved;
         for(unsigned i=0;i<5;++i){
-            levels[i]=draft.field(D::Celestial,region,T::gradeKey(time,curveChannel,i));
+            levels[i]=draft.field(D::Celestial,appearance,T::gradeKey(time,curveChannel,i));
             if(!levels[i]||!pointsField){ImGui::PopID();return;}
             float lo,hi;
             *T::parameter(saved,i,lo,hi)=float(number(draft.effective(*levels[i])));
@@ -1569,7 +1789,21 @@ struct SettingsPanel::State {
         ImGui::Button("Hold to compare");
         if(ImGui::IsItemActive())compareRequested=true;
         ImGui::EndGroup();
-        if(const Field* f=draft.field(D::Celestial,region,NorthlightTone::vibranceKey(time)))
+        const bool revealCurve=searchScroll&&(searchField==pointsField->id()||std::any_of(std::begin(levels),std::end(levels),[&](const Field* field){return field->id()==searchField;}));
+        if(revealCurve)ImGui::SetNextItemOpen(true);
+        if(ImGui::TreeNode("Curve values and levels")){
+            if(draft.effective(*pointsField)!="levels"){
+                if(ImGui::Button("Use the level sliders"))set(*pointsField,"levels");
+            }
+            if(beginRows("curve-values")){
+                row(*pointsField,"Curve points");
+                const char* names[]={"Low input","Low bend","Shadows","Midtones","Highlights"};
+                for(unsigned i=0;i<std::size(levels);++i)row(*levels[i],names[i]);
+                ImGui::EndTable();
+            }
+            ImGui::TreePop();
+        }
+        if(const Field* f=draft.field(D::Celestial,appearance,NorthlightTone::vibranceKey(time)))
             loose("colour-grade",{f});
         // Colour ranges: choose one, then its three adjustments.
         ImGui::Spacing();
@@ -1591,7 +1825,7 @@ struct SettingsPanel::State {
             bool canReset=false,any=false;
             for(unsigned i=0;i<SelectiveProperties.size();++i){
                 const auto key=NorthlightTone::selectiveKey(time,band,SelectiveProperties[i]);
-                values[i]=draft.field(D::Celestial,region,key);
+                values[i]=draft.field(D::Celestial,appearance,key);
                 if(values[i]){any=true;canReset|=values[i]->available&&D::canInherit(*values[i]);}
             }
             if(!any)continue;
@@ -1619,7 +1853,9 @@ struct SettingsPanel::State {
         ImGui::PushID(f.id().c_str());
         ImGui::TableNextRow();ImGui::TableSetColumnIndex(0);
         marker(f);ImGui::AlignTextToFramePadding();
-        if(draft.edited(f))ImGui::TextColored(Color::Edited,"%s",title);else ImGui::TextUnformatted(title);
+        if(!searchField.empty()&&searchField==f.id())ImGui::TextColored(Color::Accent,"%s",title);
+        else if(draft.edited(f))ImGui::TextColored(Color::Edited,"%s",title);else ImGui::TextUnformatted(title);
+        jumpTo(f);
         ImGui::TableSetColumnIndex(1);
         const auto value=draft.effective(f);
         const std::string mode=!draft.overrides(f)?"Inherit":number(value)==0?"Off":"Tuned";
@@ -1641,17 +1877,17 @@ struct SettingsPanel::State {
         ImGui::EndDisabled();
         ImGui::PopID();
     }
-    void celestialTab(){
+    void celestialTab(const std::string& appearance){
         std::vector<const Field*> controls;
         appendCelestialQuality(controls);
         loose("celestial-controls",controls);
         ImGui::TextColored(Color::Muted,"Default: game placement and size. Forever: imported orbit and horizon size curves.");
         ImGui::Spacing();
-        if(!pickRegion())return;
-        std::map<std::string,const Field*> byKey;for(const Field* f:fields(D::Celestial,&region))byKey[f->key]=f;
+        if(appearance.empty()){W::hint("Для этого региона нет отдельного профиля облика.");return;}
+        std::map<std::string,const Field*> byKey;for(const Field* f:fields(D::Celestial,&appearance))byKey[f->key]=f;
         std::map<std::string,bool> used;
         for(const auto& key:NorthlightSettings::AppearanceKeys)used[key]=true;
-        ImGui::PushID(region.c_str());
+        ImGui::PushID(appearance.c_str());
         for(const auto& g:CelestialGroups)group(g,byKey,used);
         std::vector<const Field*> rest;for(auto& k:byKey)if(!used[k.first])rest.push_back(k.second);
         loose("rest",rest);
@@ -1668,32 +1904,11 @@ struct SettingsPanel::State {
         ImGui::TextColored(Color::Muted,"Zones without an override follow the default. Right-click a zone to restore it.");
         ImGui::PopTextWrapPos();
         ImGui::Spacing();
-        const float width=ImGui::GetContentRegionAvail().x;
-        ImGui::SetNextItemWidth(width*.52f);
-        ImGui::PushStyleColor(ImGuiCol_TextDisabled,Color::Muted);
-        ImGui::InputTextWithHint("##shadow-search","Search zones, maps or IDs...",shadowSearch,sizeof shadowSearch);
-        ImGui::PopStyleColor();
-        ImGui::SameLine();ImGui::SetNextItemWidth(-FLT_MIN);
-        const char* maps[]={"All maps","Azeroth","Kalimdor","Expansion01","Northrend"};
-        const char* names[]={"All maps","Eastern Kingdoms","Kalimdor","Outland","Northrend"};
-        ImGui::Combo("##shadow-map",&shadowMap,names,IM_ARRAYSIZE(names));
-        const auto regions=sections(D::ShadowRange);
-        const auto search=NorthlightSettings::lower(shadowSearch);
-        std::vector<const Field*> visible;
-        for(const auto& r:regions){
-            if(r=="default"||(shadowMap&&r.rfind(std::string(maps[shadowMap])+":",0)!=0))continue;
-            if(!search.empty()&&NorthlightSettings::lower(regionLabel(r)).find(search)==std::string::npos)continue;
-            if(const Field* f=draft.field(D::ShadowRange,r,"terrain_radius"))visible.push_back(f);
+        const auto* scope=selectedRegion();
+        if(!scope||scope->shadow.empty())W::hint("Для этого региона нет отдельной настройки дальности теней. Показано общее значение.");
+        else if(scope->shadow!="default")if(const auto* field=draft.field(D::ShadowRange,scope->shadow,"terrain_radius")){
+            if(beginRows("zone-range")){row(*field,scope->label.c_str());ImGui::EndTable();}
         }
-        ImGui::TextColored(Color::Muted,"%u zones",unsigned(visible.size()));
-        if(ImGui::BeginChild("shadow-zones",ImVec2(0,0))){
-            if(visible.empty()){ImGui::PushTextWrapPos(0);ImGui::TextColored(Color::Muted,"No zones match. Clear the search or choose All maps.");ImGui::PopTextWrapPos();}
-            else if(beginRows("ranges")){
-                for(const Field* f:visible){const char* name=find(NorthlightSettings::Regions,f->section);row(*f,name?name:f->section.c_str());}
-                ImGui::EndTable();
-            }
-        }
-        ImGui::EndChild();
     }
 
     // ---- Footer ----
@@ -1761,8 +1976,9 @@ struct SettingsPanel::State {
     void factoryDefaults(){
         auto targets=pageFields(page);
         if(page==Page::Celestial||page==Page::Regional||page==Page::Grading){
+            const auto appearance=appearanceRegion();
             targets.erase(std::remove_if(targets.begin(),targets.end(),[&](const Field* field){
-                return field->file==D::Celestial&&field->section!=region;
+                return field->file==D::Celestial&&field->section!=appearance;
             }),targets.end());
         }
         for(const Field* f:targets)if(f->available){draft.factory(*f);live.erase(f->id());edited(*f);}
@@ -1894,17 +2110,22 @@ bool SettingsPanel::draw(float scale){
     }
     const auto& style=ImGui::GetStyle();
     const float footer=ImGui::GetTextLineHeightWithSpacing()+ImGui::GetFrameHeightWithSpacing()+style.ItemSpacing.y*2+style.SeparatorTextBorderSize+2;
-    // Sidebar (fixed width, scaled) and the selected page; the footer below stays put on every page.
-    if(ImGui::BeginChild("nav",ImVec2(180*scale,-footer),ImGuiChildFlags_Borders))st.sidebar();
-    ImGui::EndChild();
-    ImGui::SameLine();
-    ImGui::PushID(int(st.page));
-    if(ImGui::BeginChild("page",ImVec2(0,-footer))){
-        if(!st.snapshot)ImGui::TextDisabled(st.service?"Loading settings...":"The settings service is not running.");
-        else st.drawPage();
+    if(st.searchHeader()){
+        if(ImGui::BeginChild("search-results",ImVec2(0,-footer)))st.drawSearch();
+        ImGui::EndChild();
+    }else{
+        if(st.snapshot&&(st.page==Page::Water||st.page==Page::ShadowRange)){st.pickRegion();ImGui::Separator();}
+        if(ImGui::BeginChild("nav",ImVec2(190*scale,-footer),ImGuiChildFlags_Borders))st.sidebar();
+        ImGui::EndChild();
+        ImGui::SameLine();
+        ImGui::PushID(int(st.page));
+        if(ImGui::BeginChild("page",ImVec2(0,-footer))){
+            if(!st.snapshot)ImGui::TextDisabled(st.service?"Loading settings...":"The settings service is not running.");
+            else{st.subpages();st.drawPage();}
+        }
+        ImGui::EndChild();
+        ImGui::PopID();
     }
-    ImGui::EndChild();
-    ImGui::PopID();
     st.footer();
     st.modals();
     ImGui::End();
