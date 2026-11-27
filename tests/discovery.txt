@@ -452,6 +452,7 @@ test_production_draw_timers.py
 test_progressive_gi_worker.py
 test_project_harness.py
 test_projected_draw_audit_gpu.py
+test_qa_scene.py
 test_quality_docs.py
 test_quality_settings.py
 test_quality_upgrade.py

@@ -13,6 +13,7 @@
 #include "imgui.h"
 #include "settings_service.h"
 #include "diagnostic_capture_request.h"
+#include "qa_scene_capture.h"
 #include "settings_draft.h"
 #include "memory_profile_snapshot.h"
 #include "performance_hardware.h"
@@ -759,6 +760,15 @@ struct SettingsPanel::State {
         ImGui::SameLine();if(ImGui::Button("Capture fog"))request(Fog);
         if(ImGui::Button("Capture weather"))request(Weather);
         ImGui::TextWrapped("Saves a compact capture in northlight-diagnostics. ZIP the entire session folder, including .capture-blobs. Repeated data is stored once. Capture frames are excluded from FPS statistics.");
+        using QaState=NorthlightQaScene::State;
+        const auto qa=NorthlightQaScene::state.load();
+        if(qa==QaState::Disabled)return;
+        ImGui::Separator();
+        ImGui::BeginDisabled(qa!=QaState::Recording);
+        if(ImGui::Button("Save last 15 seconds"))NorthlightQaScene::requestSave();
+        if(ImGui::IsItemHovered())ImGui::SetTooltip("Ctrl+Alt+F12");
+        ImGui::EndDisabled();
+        if(qa==QaState::Saved)ImGui::TextUnformatted("Scene marked. The QA launcher will close the game and finish the package.");
     }
     void frameGraph(bool compact){
         const auto& t=timing;const float font=ImGui::GetFontSize(),height=(compact?76.f:112.f)*scale;

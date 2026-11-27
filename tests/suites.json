@@ -31,6 +31,7 @@
       "test_capture_files.py",
       "test_native_replay_plan.py",
       "test_northrend_fixture.py",
+      "test_qa_scene.py",
       "test_gameplay_benchmark.py",
       "test_northrend_frame_parity.py",
       "test_release_live_contract.py"
