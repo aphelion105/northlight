@@ -2,6 +2,7 @@
 # northlight-test:
 """Check the gameplay benchmark's roster, timing and backend evidence gates."""
 from argparse import Namespace
+import ctypes
 from io import StringIO
 import math
 from pathlib import Path
@@ -116,6 +117,17 @@ class GameplayBenchmarkTests(unittest.TestCase):
         self.assertEqual(timing['low_sample_count'], 2)
         self.assertEqual(timing['low_0_1_fps'], 40.)
         self.assertEqual(timing['worst_ms'], 28.)
+
+    @unittest.skipUnless(sys.platform == 'win32', 'Windows performance counter required')
+    def test_benchmark_clock_uses_the_raw_renderer_qpc_epoch(self):
+        kernel = ctypes.windll.kernel32
+        frequency, before, after = (ctypes.c_int64() for _ in range(3))
+        self.assertTrue(kernel.QueryPerformanceFrequency(ctypes.byref(frequency)))
+        self.assertTrue(kernel.QueryPerformanceCounter(ctypes.byref(before)))
+        tick_ns = fixture.benchmark_clock_ns()
+        self.assertTrue(kernel.QueryPerformanceCounter(ctypes.byref(after)))
+        self.assertLessEqual(before.value * 1_000_000_000 // frequency.value, tick_ns)
+        self.assertLessEqual(tick_ns, after.value * 1_000_000_000 // frequency.value)
 
     def test_present_timing_measures_frames_between_the_addon_markers(self):
         lua, _ = bench.read_timing(events('valgarde'), 'valgarde')

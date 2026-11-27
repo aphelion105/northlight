@@ -13,8 +13,26 @@ import secrets
 import select
 import socket
 import struct
+import sys
 import threading
 import time
+
+
+# Benchmark markers must share the renderer's raw QPC epoch.
+if sys.platform == 'win32' and sys.version_info < (3, 10):
+    # Python 3.9 subtracts a process-specific offset from perf_counter_ns().
+    _kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
+    _qpc_frequency = ctypes.c_int64()
+    if not _kernel32.QueryPerformanceFrequency(ctypes.byref(_qpc_frequency)):
+        raise ctypes.WinError(ctypes.get_last_error())
+
+    def benchmark_clock_ns():
+        counter = ctypes.c_int64()
+        if not _kernel32.QueryPerformanceCounter(ctypes.byref(counter)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        return counter.value * 1_000_000_000 // _qpc_frequency.value
+else:
+    benchmark_clock_ns = time.perf_counter_ns
 
 
 ACCOUNT = b'NORTHLIGHT'
@@ -500,7 +518,7 @@ def world(sock, session, scene, crowd_size=DEFAULT_CROWD_SIZE, return_to_menu=No
                         benchmark_requested = True
                         arm_benchmark()
                     elif benchmark_armed and message in ('start', 'right', 'done'):
-                        print(f'BENCH phase={message} tick_ns={time.monotonic_ns()}', flush=True)
+                        print(f'BENCH phase={message} tick_ns={benchmark_clock_ns()}', flush=True)
                     elif benchmark_armed and message.startswith('effects:'):
                         print(f'BENCH_EFFECTS {message.removeprefix("effects:")}', flush=True)
                     elif benchmark_armed and (message.startswith(('header:', 'data:')) or message == 'complete'):

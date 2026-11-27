@@ -444,11 +444,11 @@ def measure(args, scene, output, client, report):
                         park_window(user, hwnd)
                     placed = hwnd
                     next_placement = now + 1
-                focus.append((time.monotonic_ns(), user.GetForegroundWindow() == hwnd,
+                focus.append((fixture.benchmark_clock_ns(), user.GetForegroundWindow() == hwnd,
                               live.window_extent(hwnd, client=True)))
                 live.advance_login(hwnd, events, actions, start, now, slow_login=True)
             elif spawned:
-                focus.append((time.monotonic_ns(), False, None))
+                focus.append((fixture.benchmark_clock_ns(), False, None))
             if 'BENCH_PAYLOAD complete' in events:
                 break
             time.sleep(.1)
