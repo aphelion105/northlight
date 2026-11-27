@@ -2086,6 +2086,9 @@ def replay(args):
     source = json.loads((capture / 'validation.json').read_text(encoding='utf-8'))
     if source.get('qa_transport') == 'd3d9-backend':
         return replay_backend_qa(args, capture, run, source)
+    if source.get('qa_transport') == 'vulkan-gfxr':
+        from qa_vulkan import replay as replay_vulkan
+        return replay_vulkan(args, capture, run, source)
     if source.get('qa_transport') == 'windows-apitrace':
         from qa_api_replay import replay as replay_api
         return replay_api(args, capture, run, source)
@@ -3246,6 +3249,12 @@ def indexed_draw_selector(value):
 def main():
     parser = argparse.ArgumentParser(__doc__)
     commands = parser.add_subparsers(required=True)
+    from qa_vulkan import record as record_vulkan
+    vulkan = commands.add_parser('record-vulkan', help='Capture a Vulkan scene from launch')
+    for name in ('client', 'tool-root', 'output'):
+        vulkan.add_argument('--' + name, type=Path, required=True)
+    vulkan.add_argument('--shaders', type=Path, help='Vulkan shader directory for the chosen client')
+    vulkan.set_defaults(action=record_vulkan)
     from qa_api_replay import RENDERERS, record as record_api
     graphics = commands.add_parser('record-api', help='Capture an x64 D3D9Ex, D3D11 or OpenGL scene')
     graphics.add_argument('--renderer', choices=RENDERERS, required=True)

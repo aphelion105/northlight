@@ -164,21 +164,24 @@ the recorded DXVK profile. It verifies the saved interval and renders three
 preview frames. Use the x86 capture above to feed game inputs back through a
 different Northlight build for A/B comparisons.
 
-### Windows API tracing
+### Native Vulkan and other Windows APIs
 
 Launch the stock x64 game with the appropriate tool. The separate QA window
 has the same **Save last 15 seconds** button. For `record-api`, exit the
 game normally after marking the interval.
 
 ```powershell
+python scripts/run_northrend_baseline.py record-vulkan --client <WowClient64.exe> --shaders <VulkanShaders> --tool-root <GFXReconstruct-Bin> --output <scene>
 python scripts/run_northrend_baseline.py record-api --renderer d3d11 --client <WowClient64.exe> --tool-root <apitrace-win64> --presentmon <PresentMon-x64.exe> --output <scene>
-python scripts/run_northrend_baseline.py replay --capture <extracted-scene> --tool-root <apitrace-win64> --output <replay-output>
+python scripts/run_northrend_baseline.py replay --capture <extracted-scene> --tool-root <GFXReconstruct-Bin-or-apitrace-win64> --output <replay-output>
 ```
 
+`record-vulkan` uses the [GFXReconstruct capture layer](https://vulkan.lunarg.com/doc/view/latest/windows/capture_tools.html).
 `record-api` accepts `d3d9ex`, `d3d11`, and `opengl` and requires an ETW-capable
 session with [PresentMon 2.6](https://github.com/GameTechDev/PresentMon/blob/main/README-ConsoleApplication.md).
 It publishes a package only when the API trace and PresentMon agree on the
-frame sequence. Use `--qa-visible` to show playback.
+frame sequence. Vulkan uses the timestamps at which writes become visible
+to the recorder to choose the interval. Use `--qa-visible` to show playback.
 
 ## Capture from launch
 

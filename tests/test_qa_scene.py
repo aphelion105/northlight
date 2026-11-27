@@ -2,6 +2,8 @@
 # northlight-test:
 """Check the QA scene mark and relocatable archive inputs."""
 import sys; from pathlib import Path; sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from collections import deque
+from io import BytesIO
 from zipfile import ZipFile
 import northlight_paths as fp
 
@@ -9,6 +11,7 @@ sys.path.insert(0, str(fp.SCRIPTS))
 from run_northrend_baseline import LOG, qa_archive, qa_selection
 from qa_d3d9_replay import dxvk_runtime, trace_window
 from qa_api_replay import present_window
+from qa_vulkan import BLOCK_HEADER, FILE_HEADER, FRAME_MARKER, frame_markers, recent_samples
 
 
 mark = 'QA_SCENE saved first=47 last=468 durationMs=15018'
@@ -58,6 +61,17 @@ profile = ('info:  Effective configuration:\ninfo:    d3d9.customVendorId = 1002
            'info:  Vulkan: 1.4\ninfo:  Creating device:\ninfo:  NVIDIA GeForce RTX 4090:\n')
 assert dxvk_runtime(profile) == {'device': 'NVIDIA GeForce RTX 4090', 'options': {'d3d9.customVendorId': '1002'}}
 
+header = FILE_HEADER.pack(b'GFXR', 0, 1, 0)
+blocks = [BLOCK_HEADER.pack(12, 1) + FRAME_MARKER.pack(2, frame) for frame in (1, 2, 3)]
+capture_data = header + b''.join(blocks)
+with BytesIO(capture_data) as stream:
+    offset, last = frame_markers(stream, len(capture_data) - 2)
+    assert offset == len(capture_data) - len(blocks[-1]) and last == 2
+    assert frame_markers(stream, len(capture_data), offset, last) == (len(capture_data), 3)
+samples = deque((frame, frame * 1_000_000_000) for frame in range(1, 21))
+assert recent_samples(samples, 20_000_000_000) == ((5, 5_000_000_000), (20, 20_000_000_000))
+stalled = deque((frame, tick * 1_000_000_000) for frame, tick in [(1, 3), (2, 11), (3, 20)])
+assert recent_samples(stalled, 20_000_000_000) == ((2, 11_000_000_000), (3, 20_000_000_000))
 assert present_window(list(range(1, 21)), list(range(101, 121)), 20, 1) == {
     'first_present': 5, 'last_present': 20, 'duration_ms': 15_000, 'preview_calls': [105, 112, 120]}
 try:

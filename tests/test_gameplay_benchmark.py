@@ -2,6 +2,7 @@
 # northlight-test:
 """Check the gameplay benchmark's roster, timing and backend evidence gates."""
 from argparse import Namespace
+from io import StringIO
 from pathlib import Path
 import struct
 import sys
@@ -127,7 +128,7 @@ class GameplayBenchmarkTests(unittest.TestCase):
         self.assertIsNone(fixture.gameplay_message(pan))
         self.assertEqual(fixture.ratchet_camera_marker(pan), 'left')
 
-    def test_render_profile_overrides_the_staged_quality_file(self):
+    def test_benchmark_overrides_the_staged_quality_file(self):
         with (TemporaryDirectory(dir=bench.live.fp.output_dir()) as temporary,
               patch.object(bench.live, 'stage_pe'), patch.object(bench.live, 'link_asset')):
             root = Path(temporary)
@@ -140,20 +141,55 @@ class GameplayBenchmarkTests(unittest.TestCase):
             for name in ('Wow.exe', 'd3d9.dll', 'northlight-assets.bin'):
                 (root / name).touch()
             template = root / 'northlight-quality.ini'
-            original = '[Quality]\nDiagnostics=0\nRenderProfile=1\nDiagReplayProbe=1\n'
+            original = '[Quality]\nEffects=0\nDiagnostics=0\nRenderProfile=1\nDiagReplayProbe=1\n'
             template.write_text(original, encoding='ascii')
             args = Namespace(case='x86-dxvk', client=root, data=data, runtime=root, backend=root / 'd3d9.dll')
-            for requested in (True, False):
-                with self.subTest(render_profile=requested):
-                    args.render_profile = requested
-                    client = root / str(requested)
+            for requested, effects in ((True, 1), (False, 0), (False, None)):
+                with self.subTest(render_profile=requested, effects=effects):
+                    args.render_profile, args.effects = requested, effects
+                    client = root / str(effects)
                     bench.stage(args, 'crowd8', client, {'runtime': {}})
                     settings = dict(line.split('=') for line in
                                     (client / template.name).read_text(encoding='ascii').splitlines()[1:])
                     self.assertEqual(settings['RenderProfile'], str(int(requested)))
+                    self.assertEqual(settings['Effects'], str(0 if effects is None else effects))
                     self.assertEqual(settings['Diagnostics'], str(int(requested)))
                     self.assertEqual(settings['DiagReplayProbe'], str(int(not requested)))
             self.assertEqual(template.read_text(encoding='ascii'), original)
+
+    def test_effect_options_require_a_supported_northlight_d3d9_case(self):
+        with patch.dict(bench.CASES, {'future-backend': bench.CASES['native-d3d9ex']}):
+            for case in ('stock-x86', 'native-vulkan', 'future-backend'):
+                for option in (('--effects', '0'), ('--effects', '1'), ('--render-profile',)):
+                    argv = ['benchmark_gameplay.py', '--case', case, '--output', 'unused', *option]
+                    with (self.subTest(case=case, option=option), patch.object(sys, 'argv', argv),
+                          patch.object(sys, 'stderr', new_callable=StringIO) as stderr):
+                        with self.assertRaises(SystemExit) as error:
+                            bench.main()
+                        self.assertEqual(error.exception.code, 2)
+                        self.assertIn(f'{option[0]} requires a Northlight D3D9 case', stderr.getvalue())
+
+    def test_effect_override_is_verified_against_the_renderer_log(self):
+        with TemporaryDirectory(dir=bench.live.fp.output_dir()) as temporary:
+            output = Path(temporary)
+            log = output / bench.live.LOG
+            factory = 'NORTHLIGHT native client: D3D9 factory attached\n'
+            wrapped = factory + 'D3D9 device wrapped.\n'
+            quality_off = 'QUALITY preset=Quality Effects=0(file)\n'
+            quality_on = 'QUALITY preset=Quality Effects=1(file)\n'
+            for effects, quality in ((0, quality_off), (1, quality_on)):
+                log.write_text(wrapped + quality, encoding='ascii')
+                args = Namespace(case='native-d3d9ex', effects=effects)
+                self.assertTrue(bench.backend_evidence(args, output)['renderer_active'])
+
+            args = Namespace(case='native-d3d9ex', effects=0)
+            for lines in (wrapped, wrapped + quality_on, factory + quality_off,
+                          wrapped + quality_off + 'SETTINGS applied device=1 key=Effects previous=0 value=1\n',
+                          wrapped + quality_off + 'EXTENSION fault frame=2\n'):
+                with self.subTest(log=lines):
+                    log.write_text(lines, encoding='ascii')
+                    with self.assertRaisesRegex(ValueError, 'Effects=0'):
+                        bench.backend_evidence(args, output)
 
     def test_native_sdr_reports_passthrough_and_hdr_requires_gpu_transfer(self):
         with TemporaryDirectory() as temporary:
