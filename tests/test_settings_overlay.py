@@ -112,7 +112,7 @@ check(overlay.count('checkpoint();') >= 4, 'frame(): checks for a recorded ImGui
 reset = renderer[renderer.index('HRESULT STDMETHODCALLTYPE Reset(D3DPRESENT_PARAMETERS* pp) override'):]
 check(reset.index('overlay->invalidate();') < reset.index('ext->Reset(pp)'), 'Reset(): overlay invalidated before the real Reset')
 dtor = renderer[renderer.index('    ~Device() {'):]
-check(dtor.index('overlay.reset();') < dtor.index('ext->Release();'), '~Device(): overlay destroyed before the extension device')
+check(dtor.index('overlay.reset();') < dtor.index('drop(ownedExtension.p);'), '~Device(): overlay destroyed before the extension device')
 check('Ctrl+Shift+F11 settings' in renderer and 'F11 unassigned' not in renderer, 'device wrapped line names the Ctrl+Shift+F11 settings')
 
 # Licence: shipped like licenses/ao-methods.txt.

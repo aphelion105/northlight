@@ -8,8 +8,12 @@
 #include "material_profile.h"
 #include "settings_schema.h"
 #include "surface_frame.h"
-#if defined(NORTHLIGHT_WATER) && defined(_WIN64)
-#include "frame_values.h"
+#ifdef NORTHLIGHT_WATER
+#include "host_scenery_pose.h"
+#include "water_environment.h"
+#ifdef _WIN64
+#include "host_api.h"
+#endif
 #endif
 #include "weather_shelter.h"
 #include "stream_hooks.h"
@@ -17,6 +21,7 @@
 #include "world_screen_fallbacks.h"
 #include "name_stencil.h"
 #include "world_context.h"
+#include "world_appearance.h"
 #include "effect_switches.h"
 #include "frame_requirements.h"
 #include "frame_parity_clock.h"
@@ -386,6 +391,8 @@ private:
     NorthlightRegionalShadow::Table shadowRanges;
     NorthlightCelestialProfiles::Transition paletteTransition;
     NorthlightCelestialProfiles::Profile framePalette;
+    NorthlightWorldAppearance appearance;
+    NorthlightTone::BakeKeys appearanceKeys{};
     bool paletteFrameValid=false;std::string paletteFrameMap;DWORD paletteLogAt=0;
 #if NORTHLIGHT_DEV_TUNING
     // Developer-only zone tuning (scripts/dev_tuning/zone_tuner.py), never compiled into a release build. Two files in the game root:
@@ -1607,6 +1614,8 @@ public:
         const bool foreverLoaded=foreverAtmosphere.load(root+"forever-atmosphere.bin");
         logf("FOREVER atmosphere loaded=%d lights=%zu keys=%zu outlines=%zu",foreverLoaded,foreverAtmosphere.lights.size(),foreverAtmosphere.keys.size(),foreverAtmosphere.zones.size());
         bool paletteLoaded=NorthlightCelestialProfiles::load(root+"celestial-profiles.ini",celestialProfiles,paletteError);
+        if(paletteLoaded&&!NorthlightSettings::applyAppearancePreset(celestialProfiles,std::filesystem::u8path(root)))
+            paletteError="selected appearance preset unavailable";
         logf("CELESTIAL profiles loaded=%d zones=%zu %s",paletteLoaded,celestialProfiles.zones.size(),paletteError.c_str());
 #if NORTHLIGHT_DEV_TUNING
         celestialShipped=celestialProfiles;
@@ -1642,6 +1651,7 @@ public:
     // them) is released as before. recover() and the destructor release the mesh as well; the CPU payload is gone by then, so
     // upload() asks the builder for a fresh generation.
     void releaseGPU(bool keepMesh=false){
+        appearance.reset();
         releaseFogVolume();
         screenGroups=geometryGroups=0;
         shadowReplayAlpha.reset();
@@ -2183,9 +2193,62 @@ public:
         const unsigned body=NorthlightGI::dot(sourceColors[1],sourceColors[1])>NorthlightGI::dot(sourceColors[0],sourceColors[0])?1:0;
         if(NorthlightGI::dot(rawSourceDirections[body],rawSourceDirections[body])>.5f){std::memcpy(frame.c[9],&sourceColors[body].x,12);}return true;
     }
+#ifdef NORTHLIGHT_WATER
+    bool tideglassEnvironment(WaterEnvironmentValues& values,WaterLampSamples& lamps,bool wantsLamps,float farZ){
+        if(!hasContext()||menuDomain||!lightSlotsValid||!celestialValid||!std::isfinite(farZ)||farZ<=1.f)return false;
+        const bool moon=celestial.moonWeight>celestial.sunWeight;
+        const auto& body=moon?celestial.moon:celestial.sun;
+        values.policy=WaterEnvironmentHostRetainsDistance;
+        values.encoding=WaterEnvironmentSurfaceCompositeRGB;
+        values.paletteKnown=1;
+        std::copy_n(lightSlots+3,6,values.palette);
+        values.environmentKey=std::hash<std::string>{}(lightSlotsMap);
+        values.light=water::NativeWaterLight(body.direction,lightSlots[NorthlightSunHue::SlotSun],moon,weatherEffects().discGain());
+        values.referenceDistance=farZ;
+        values.transmissionAtReference=1.f;
+
+        if(wantsLamps&&active&&quality.localLights&&quality.localLightLimit){
+            const V camera=vec(context.camera);
+            const unsigned limit=std::min(4u,unsigned(quality.localLightLimit));
+            const V delta=camera-tideglassLampCamera;
+            if(tideglassLampScene.lock()!=active||NorthlightGI::dot(delta,delta)>4.f||tideglassLampLimit!=limit){
+                tideglassLampScene=active;tideglassLampCamera=camera;tideglassLampLimit=limit;
+                tideglassLamps={};
+                const auto selected=NorthlightLocalLightSelection::select(active->localLights,context.camera,limit);
+                for(unsigned i=0;i<selected.count;++i){
+                    std::copy_n(selected.position[i].data(),4,tideglassLamps.positions[i]);
+                    std::copy_n(selected.color[i].data(),4,tideglassLamps.colours[i]);
+                }
+            }
+            lamps=tideglassLamps;
+        }
+        return true;
+    }
+private:
+    std::weak_ptr<const Snapshot> tideglassLampScene;
+    V tideglassLampCamera{};
+    unsigned tideglassLampLimit=0;
+    WaterLampSamples tideglassLamps{};
+public:
+#endif
 #if defined(NORTHLIGHT_WATER) && defined(_WIN64)
-    bool tideglassFrame(WaterFrameValues& input)const{
+    bool tideglassFrame(WaterHostWorldFrame& worldFrame){
         if(!hasContext()||menuDomain)return false;
+        auto& input=worldFrame.values;
+        if(paletteFrameValid){
+            if(paletteFrameMap=="Azeroth")worldFrame.mapId=0;
+            else if(paletteFrameMap=="Kalimdor")worldFrame.mapId=1;
+            else if(paletteFrameMap=="Expansion01")worldFrame.mapId=530;
+            else if(paletteFrameMap=="Northrend")worldFrame.mapId=571;
+            std::lock_guard<std::mutex> lock(mutex);
+            if(publishedPaletteRegion&&publishedPaletteRegion->map==paletteFrameMap)
+                worldFrame.zoneId=NorthlightRegionalFog::zoneAt(publishedPaletteRegion->region,context.camera[0],context.camera[1]);
+        }
+        worldFrame.modelMilliseconds=visualTime();
+        if(lightSlotsValid&&lightSlotsMap==paletteFrameMap){
+            worldFrame.skyPaletteKnown=1;
+            std::copy_n(lightSlots+3,6,worldFrame.skyPalette);
+        }
         std::copy_n(context.view,16,input.cameraRelativeView);
         std::fill_n(input.cameraRelativeView+12,3,0.f);
         std::copy_n(context.camera,3,input.cameraPosition);
@@ -2626,6 +2689,14 @@ public:
         return legacyFog;
     }
     bool hasOriginalFog()const{return legacyFogKnown;}
+    NorthlightTone::TimeWeights appearanceTime()const{
+        return NorthlightTone::clockWeights(celestialValid?celestial.dayFraction*24.f:-1.f);
+    }
+    template<class State,class Quad>
+    bool gradeScene(IDirect3DSurface9* target,IDirect3DSurface9* nameDepth,bool hdr,State state,Quad quad){
+        if(!paletteFrameValid||menuDomain)return false;
+        return appearance.draw(d,target,nameDepth,appearanceKeys,appearanceTime(),hdr,state,quad);
+    }
     const NorthlightCelestialProfiles::Profile& celestialPalette(const char* map,const float* camera){
         // Freeze once per frame: early disc, late halo, direct/GI and fog cannot
         // observe different worker publications or temporal transition states.
@@ -2635,8 +2706,9 @@ public:
 #if NORTHLIGHT_DEV_TUNING
         devPoll(map,camera,region&&region->map==map?NorthlightRegionalFog::zoneAt(region->region,camera[0],camera[1]):0);
 #endif
-        auto target=celestialProfiles.fallback;
+        auto target=celestialProfiles.fallbackFor(map);
         if(region&&region->map==map)target=NorthlightCelestialProfiles::sample(celestialProfiles,region->region,map,camera[0],camera[1]);
+        appearanceKeys=NorthlightTone::makeBakeKeys(target.grade,target.toneStrength);
         framePalette=paletteTransition.update(target,map,camera[0],camera[1],double(visualTime())*.001);
         paletteFrameMap=map;paletteFrameValid=true;
         DWORD now=GetTickCount();if(NorthlightDiagnostics::enabled()&&(!paletteLogAt||now-paletteLogAt>=10000)){paletteLogAt=now;
@@ -3430,6 +3502,54 @@ public:
         if(FAILED(d->GetVertexShaderConstantF(first,rows,3)))return nullptr;
         return program->second.get();
     }
+#ifdef NORTHLIGHT_WATER
+    void observeWaterPose(WaterSceneryPoseRequests& requests,INT base,UINT first,UINT vertices,UINT triangles){
+        const uint32_t tick=GetTickCount();
+        const auto end=requests.placements+requests.count;
+        auto* p=std::find_if(requests.placements,end,[&](const auto& q){
+            return q.status==WaterPosePlacement::Waiting && q.triangles==triangles && q.vertices==vertices && q.samples<4 &&
+                   (!q.samples || tick-q.observed[q.samples-1].tick>=320);
+        });
+        if(p==end || !hasContext())return;
+        IDirect3DVertexShader9* vs=nullptr;
+        if(FAILED(d->GetVertexShader(&vs)) || !vs)return;
+        float root[3];const NorthlightActorDeformation::Program* program=nullptr;
+        const bool known=drawRoot(vs,root,&program);vs->Release();
+        if(!known)return;
+        for(;p!=end;++p){
+            if(p->status!=WaterPosePlacement::Waiting || p->triangles!=triangles || p->vertices!=vertices || p->samples>=4 ||
+               (p->samples && tick-p->observed[p->samples-1].tick<320))continue;
+            float distance2=0;
+            for(unsigned a=0;a<3;++a){const float delta=root[a]-p->origin[a];distance2+=delta*delta;}
+            if(distance2>.25f || p->bones==0 || p->bones>kWaterPoseBones || program->paletteBase+3*p->bones>256)continue;
+            UINT offset=0,stride=0;IDirect3DVertexBuffer9* vb=nullptr;
+            if(FAILED(d->GetStreamSource(0,&vb,&offset,&stride)) || !vb)return;
+            const int64_t address=(int64_t(base)+first)*stride+offset;
+            D3DVERTEXBUFFER_DESC desc={};bool matches=false;
+            if(stride==sizeof(p->firstVertex) && address>=0 && SUCCEEDED(vb->GetDesc(&desc)) &&
+               uint64_t(address)+sizeof(p->firstVertex)<=desc.Size){
+                NorthlightReplayCopies::Reader<IDirect3DVertexBuffer9> reader(vb);void* bytes=nullptr;
+                if(SUCCEEDED(reader.lock(UINT(address),sizeof(p->firstVertex),&bytes))){
+                    matches=std::memcmp(bytes,p->firstVertex,sizeof(p->firstVertex))==0;
+                    reader.unlock();
+                }
+            }
+            vb->Release();
+            if(!matches)continue;
+            float rows[kWaterPoseBones][3][4];
+            if(FAILED(d->GetVertexShaderConstantF(UINT(program->paletteBase),&rows[0][0][0],p->bones*3)))return;
+            auto& sample=p->observed[p->samples];
+            for(unsigned axis=0;axis<3;++axis){
+                const auto length=[&](unsigned b){float sum=0;for(unsigned r=0;r<3;++r)sum+=rows[b][r][axis]*rows[b][r][axis];return std::sqrt(sum);};
+                const float rootLength=length(0);
+                if(!(rootLength>.00001f))return;
+                for(unsigned b=0;b<p->bones;++b){sample.scales[b][axis]=length(b)/rootLength;if(!std::isfinite(sample.scales[b][axis]))return;}
+            }
+            sample.tick=tick;++p->samples;
+            return;
+        }
+    }
+#endif
     // Palette root (bone 0 origin, world) of the draw about to be issued: paletteRows() through
     // the capture's inverse view. False: not a palette program, or the rows cannot be read.
     bool drawRoot(IDirect3DVertexShader9* shader,float* root,const NorthlightActorDeformation::Program** used=nullptr){

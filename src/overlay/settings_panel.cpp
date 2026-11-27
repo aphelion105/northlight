@@ -39,7 +39,7 @@ const std::map<std::string,const char*> Labels={
     {"WaveStrength","Wave strength"},{"WaveSpeed","Wave speed"},{"WaveCrestShape","Crest shape"},
     {"WaveCrestSharpness","Crest sharpness"},{"RippleStrength","Ripple strength"},
     {"FoamStrength","Foam strength"},{"OpenWaterCrestFoam","Foam on open-water crests"},
-    {"ReflectionScenery","Reflections"},{"ReflectionResolution","Reflection resolution"},{"ShortReflectionDistance","Reflection distance"},{"Clarity","Water clarity"},{"Reflection","Reflection strength"},{"NearReflection","Near reflection strength"},
+    {"ReflectionScenery","Reflections"},{"ReflectionResolution","Reflection resolution"},{"ReflectionDistance","Reflection distance"},{"ReflectionSceneryDetails","Nearby reflected scenery"},{"FineHighlights","Fine water and slime highlights"},{"Clarity","Water clarity"},{"SurfaceBlur","Depth blur"},{"Reflection","Reflection strength"},{"NearReflection","Near reflection strength"},
     {"Underwater","Underwater effects"},{"UnderwaterVisibility","Visibility (yards)"},{"UnderwaterScenery","Underwater scenery"},
     {"Slime","Slime surface"},{"Lava","Magma and fel magma surfaces"},
     {"CelestialStyle","Sky style"},
@@ -352,7 +352,7 @@ std::string regionLabel(const std::string& section){
 std::string optionLabel(const Field& f,const std::string& value){
     if(f.file==NorthlightSettings::WaterFile){
         if(f.key=="ReflectionScenery")return value=="0"?"Sky only":"Scenery + sky";
-        if(f.key=="ShortReflectionDistance")return value=="0"?"Standard":"Short";
+        if(f.key=="ReflectionDistance")return value=="2"?"Far":value=="1"?"Short":"Standard";
         if(f.key=="ReflectionResolution")return value+"%";
     }
     if(value=="HBAOPlus")return "HBAO+ (D3D9)";
@@ -700,6 +700,9 @@ struct SettingsPanel::State {
         ImGui::PopTextWrapPos();
         std::vector<const Field*> quick;for(auto& k:words(QuickKeys))if(const Field* f=draft.quality(k))quick.push_back(f);
         titled("Quick toggles",quick);
+        if(const auto* palette=draft.field(D::Celestial,"Appearance","Palette"))
+            if(beginRows("world-look")){row(*palette,"Whole-world appearance");ImGui::EndTable();}
+        waterPresetControl(false);
         ImGui::Spacing();ImGui::TextColored(Color::Heading,"Summary");ImGui::Separator();
         unsigned set=0;if(snapshot)for(const auto& f:snapshot->fields)if(f.overrideValue!="~")++set;
         ImGui::Text("%u setting%s set in the INI files, %u unsaved change%s.",set,set==1?"":"s",unsigned(draft.size()),draft.size()==1?"":"s");
@@ -918,27 +921,26 @@ struct SettingsPanel::State {
             ImGui::TreePop();
         }
     }
-    void waterPage(){
-        ImGui::TextWrapped("Save to apply water settings. Restart the game after switching Tideglass on or off.");
-        titled("Renderer",fields(NorthlightSettings::WaterHostFile));
-        auto waterRows=[&](const char* title,const char* keys){
-            std::vector<const Field*> rows;
-            for(const auto& key:words(keys)){
-                if(const Field* f=draft.field(NorthlightSettings::WaterFile,"Water",key))rows.push_back(f);
-            }
-            titled(title,rows);
-        };
+    void waterPresetControl(bool showFields){
         const auto water=[&](const char* key){return draft.field(NorthlightSettings::WaterFile,"Water",key);};
         const Field* scenery=water("ReflectionScenery");
         const Field* resolution=water("ReflectionResolution");
-        const Field* distance=water("ShortReflectionDistance");
-        if(scenery && resolution && distance){
-            struct Tier { const char* name; const char* scenery; const char* resolution; const char* distance; };
-            static constexpr Tier tiers[]={{"Quality","1","100","0"},{"Balanced","1","75","0"},{"Performance","0","50","1"}};
+        const Field* distance=water("ReflectionDistance");
+        const Field* details=water("ReflectionSceneryDetails");
+        const Field* highlights=water("FineHighlights");
+        const Field* blur=water("SurfaceBlur");
+        if(scenery && resolution && distance && details && highlights && blur){
+            struct Tier { const char* name; const char* scenery; const char* resolution; const char* distance; const char* details; const char* highlights; const char* blur; };
+            static constexpr Tier tiers[]={
+                {"Ultra","1","100","2","1","1","1"},{"Quality","1","100","0","0","0","1"},
+                {"Balanced","1","75","0","0","0","1"},{"Performance","0","50","1","0","0","0"},
+            };
             const char* current="Custom";
             for(const auto& tier:tiers)
                 if(draft.effective(*scenery)==tier.scenery && draft.effective(*resolution)==tier.resolution &&
-                   draft.effective(*distance)==tier.distance)current=tier.name;
+                   draft.effective(*distance)==tier.distance && draft.effective(*details)==tier.details &&
+                   draft.effective(*highlights)==tier.highlights &&
+                   std::strtod(draft.effective(*blur).c_str(),nullptr)==std::strtod(tier.blur,nullptr))current=tier.name;
             ImGui::TextColored(Color::Heading,"Performance");ImGui::Separator();
             ImGui::BeginDisabled(locked());
             if(ImGui::BeginCombo("Water preset",current)){
@@ -946,13 +948,26 @@ struct SettingsPanel::State {
                     const bool selected=std::string(current)==tier.name;
                     if(ImGui::Selectable(tier.name,selected)){
                         set(*scenery,tier.scenery);set(*resolution,tier.resolution);set(*distance,tier.distance);
+                        set(*details,tier.details);set(*highlights,tier.highlights);set(*blur,tier.blur);
                     }
                 }
                 ImGui::EndCombo();
             }
             ImGui::EndDisabled();
-            loose("water-performance",{scenery,resolution,distance});
+            if(showFields)loose("water-performance",{scenery,resolution,distance,details,highlights,blur});
         }
+    }
+    void waterPage(){
+        ImGui::TextWrapped("Save to apply water settings. Restart the game after switching Tideglass on or off.");
+        titled("Renderer",fields(NorthlightSettings::WaterHostFile));
+        waterPresetControl(true);
+        auto waterRows=[&](const char* title,const char* keys){
+            std::vector<const Field*> rows;
+            for(const auto& key:words(keys)){
+                if(const Field* f=draft.field(NorthlightSettings::WaterFile,"Water",key))rows.push_back(f);
+            }
+            titled(title,rows);
+        };
         waterRows("Waves and foam","WaveStrength WaveSpeed WaveCrestShape WaveCrestSharpness RippleStrength FoamStrength OpenWaterCrestFoam");
         waterRows("Reflections","Reflection NearReflection");
         waterRows("Clarity and underwater","Clarity Underwater UnderwaterVisibility UnderwaterScenery");
@@ -1001,7 +1016,8 @@ struct SettingsPanel::State {
         loose("celestial-controls",controls);
         ImGui::TextColored(Color::Muted,"Default: game placement and size. Forever: imported orbit and horizon size curves.");
         ImGui::Spacing();
-        const auto regions=sections(D::Celestial);
+        auto regions=sections(D::Celestial);
+        regions.erase(std::remove(regions.begin(),regions.end(),"Appearance"),regions.end());
         if(regions.empty()){ImGui::TextDisabled("No celestial profiles.");return;}
         if(std::find(regions.begin(),regions.end(),region)==regions.end())region=regions.front();
         ImGui::AlignTextToFramePadding();ImGui::TextUnformatted("Region");ImGui::SameLine();

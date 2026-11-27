@@ -48,6 +48,7 @@ public:
     }
     bool CapturePass(const char* name,bool after)
     { return Current()&&m_capture&&m_capture->pass(m_context,m_stamp,name,after?1:0); }
+    WaterSceneryPoseRequests* PoseRequests(WaterHostModule::PoseRequestsFn query) const {return m_context && query?query(m_context,1,sizeof(WaterSceneryPoseRequests)):nullptr;}
     bool Ready() const { return m_context != nullptr; }
     bool Draw(WaterHostPass pass, const WaterHostResources& resources, bool shade = true)
     { return Current() && m_api->draw(m_context, m_stamp, pass, &resources, shade); }
@@ -57,16 +58,44 @@ public:
         m_liquid = Draw(WaterHostBeforeLiquid, resources);
         return m_liquid;
     }
-    bool AfterLiquid(const WaterHostResources& resources, bool drewWater)
+    bool AfterLiquid(const WaterHostResources& resources, bool drewWater, uint32_t stencilBit = 0)
     {
         if (!m_liquid) return false;
         m_liquid = false;
+        if(drewWater && stencilBit && Current() && m_liquidAPI && m_liquidAPI->abi>=10)
+            return m_liquidAPI->composite_masked_water(m_context,m_stamp,&resources,stencilBit);
         return Draw(WaterHostCompositeWater, resources, drewWater);
     }
-    bool Environment(const WaterEnvironmentValues& values,IDirect3DTexture9* background){
+    bool FinishWorld(const WaterHostResources& resources, uint32_t stencilBit)
+    {
+        if(stencilBit && Current() && m_liquidAPI && m_liquidAPI->abi>=11)
+            return m_liquidAPI->finish_masked_world(m_context,m_stamp,&resources,stencilBit);
+        return Draw(WaterHostWorldDone,resources);
+    }
+    bool Environment(const WaterEnvironmentValues& values,IDirect3DTexture9* background,float viewOpticalDepth48=0,const WaterLampSamples& lamps={}){
         if(!Current()||!m_environment)return false;
+        if(m_environment->abi>=4){
+            const WaterHostLampEnvironment input={{{sizeof(WaterHostLampEnvironment),m_stamp,values,background},viewOpticalDepth48},lamps};
+            return m_environment->set_environment(m_context,m_stamp,&input.fog.base)!=0;
+        }
+        if(m_environment->abi>=3){
+            const WaterHostFogEnvironment input={{sizeof(WaterHostFogEnvironment),m_stamp,values,background},viewOpticalDepth48};
+            return m_environment->set_environment(m_context,m_stamp,&input.base)!=0;
+        }
         const WaterHostEnvironment input={sizeof(WaterHostEnvironment),m_stamp,values,background};
         return m_environment->set_environment(m_context,m_stamp,&input)!=0;
+    }
+    bool WantsEnvironment(bool& lamps){
+        lamps=false;
+        if(!Current()||!m_environment)return false;
+        if(m_environment->abi>=4){
+            WaterHostLampStatus status={{sizeof(WaterHostLampStatus),0,0,0},0};
+            if(!m_environment->surface_status(m_context,m_stamp,&status.base))return false;
+            lamps=status.wantsLamps!=0;
+            return status.base.fallback!=WaterEnvironmentDisabled;
+        }
+        WaterHostSurfaceStatus status={};
+        return SurfaceStatus(status)&&status.fallback!=WaterEnvironmentDisabled;
     }
     bool SurfaceStatus(WaterHostSurfaceStatus& status){
         status={sizeof(WaterHostSurfaceStatus),WaterHostSurfaceUnchanged,0,WaterEnvironmentNotProvided};
@@ -74,8 +103,13 @@ public:
     }
     bool Reflection(const WaterHostReflection& reflection)
     { return Current() && m_api->set_reflection(m_context, m_stamp, &reflection); }
-    bool Fog(bool ready)
-    { return Current() && m_api->set_fog(m_context, m_stamp, ready ? WaterHostFogCoversWater : WaterHostNativeFog); }
+    bool Fog(bool ready, bool spatialFog = false)
+    {
+        if (!Current()) return false;
+        // Older cores reject the optional hint and still receive their usual fog policy.
+        if (!ready && spatialFog && m_api->set_fog(m_context, m_stamp, WaterHostSpatialFog)) return true;
+        return m_api->set_fog(m_context, m_stamp, ready ? WaterHostFogCoversWater : WaterHostNativeFog);
+    }
     void End()
     {
         if (m_context) m_api->end_frame(m_context);

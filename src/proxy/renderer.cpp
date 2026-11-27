@@ -3854,6 +3854,9 @@ public:
              diagnosticId,frame,(unsigned long)GetTickCount(),int(mode),r.count,r.meanMs,r.p50Ms,r.p95Ms,r.maxMs,1000.0/r.meanMs,unsigned(effects.gi),unsigned(effects.shadows),unsigned(effects.fog),int(focused),reason,(unsigned long long)NorthlightStream::nowNs(),(long long)r.frequency,r.lastFrame,deltas.data());
     }
     void finishFrameImpl() {
+#ifdef NORTHLIGHT_WATER
+        if(cooperativeWaterEnabled)cooperativeWater.ExpireSceneryPoses();
+#endif
         nameMaskRunEnd(); /* 0.3.212 (task 32) */
         captureEffectDiagnostics();
         const auto frameEffects=effectKeys.settings;const bool frameEnabled=enabled;
@@ -4513,6 +4516,10 @@ public:
             ++timing->calls;timing->primitives+=count;
         }
         const auto drawStart=timing?NorthlightStream::nowNs():0;
+#endif
+#ifdef NORTHLIGHT_WATER
+        if(t==D3DPT_TRIANGLELIST&&world&&cooperativeWater.sceneryPoses&&cooperativeWater.sceneryPoses->waiting)
+            extensionWork("Tideglass scenery pose",[&]{world->observeWaterPose(*cooperativeWater.sceneryPoses,base,min,vertices,count);});
 #endif
         NorthlightAutoDisplacement::Args geometry{{t,base,min,vertices,start,count,true}};
         bool nativeSky=false,skyCaptured=false;

@@ -536,24 +536,31 @@ float3 SurfaceNormal(float2 p, float distance, float elevation, float footprint,
         largeFade = 1.0;
         slope += BroadSwellSlope(p, footprint);
     }
-    float2 crestSlope;
-    float2 ripple = SmallRippleSlope(p, footprint, crestSlope);
-    float2 sparkle = ResolvedOctave(p, float2x2(0.60, 0.80, -0.80, 0.60), 9.0, float2(-1.10, 0.85), 0.009, footprint) +
-                     ResolvedOctave(p, float2x2(-0.28, 0.96, -0.96, -0.28), 8.3, float2(0.95, 1.05), 0.008, footprint);
-#ifdef DEFERRED_SLIME
-    // Slime is too thick for the finest, fastest glints.
-    float sparkleFade = 0.0;
-#else
-    float sparkleFade = saturate(1.0 - distance / kSparkleFade) * saturate(elevation * kRippleGrazingFade);
-#endif
-    fineSlope = ripple * rippleFade * WaveStrength();
+    float2 ripple = float2(0.0, 0.0);
+    fineSlope = float2(0.0, 0.0);
+    [branch] if (rippleFade > 0.0)
+    {
+        float2 crestSlope;
+        ripple = SmallRippleSlope(p, footprint, crestSlope);
+        fineSlope = ripple * rippleFade * WaveStrength();
 #ifdef SURFACE_DETAIL_PASS
 #ifdef WATER_WAVE_MOMENT_DETAIL
-    if (shapeCrests)
+        if (shapeCrests)
 #endif
-        ripple += crestSlope * cWaveMomentSamples.y * saturate(1.0 - footprint * 5.0);
+            ripple += crestSlope * cWaveMomentSamples.y * saturate(1.0 - footprint * 5.0);
 #endif
-    slope = (slope * largeFade + ripple * rippleFade + sparkle * sparkleFade) * WaveStrength();
+    }
+    slope = slope * largeFade + ripple * rippleFade;
+#ifndef DEFERRED_SLIME
+    float sparkleFade = saturate(1.0 - distance / kSparkleFade) * saturate(elevation * kRippleGrazingFade);
+    [branch] if (sparkleFade > 0.0)
+    {
+        float2 sparkle = ResolvedOctave(p, float2x2(0.60, 0.80, -0.80, 0.60), 9.0, float2(-1.10, 0.85), 0.009, footprint) +
+                         ResolvedOctave(p, float2x2(-0.28, 0.96, -0.96, -0.28), 8.3, float2(0.95, 1.05), 0.008, footprint);
+        slope += sparkle * sparkleFade;
+    }
+#endif
+    slope *= WaveStrength();
 #ifdef WATER_WAVE_MOMENT_DETAIL
     return slope;
 #else
@@ -725,7 +732,7 @@ static const float kWaveLength = 3.0;
 static const float kWavePeriod = 4.0;
 static const float kFrontSharpness = 0.08;
 static const float kFrontTrail = 0.12;
-static const float kBreakDistance = 4.5;
+static const float kBreakDistance = 5.25;
 static const float kWashFade = 0.3;
 static const float kWashRise = 0.08;
 static const float kWashWidth = 0.7;
@@ -1113,6 +1120,8 @@ float FoamGrain(float2 p)
     return lerp(1.0, saturate(smoothstep(0.25, 0.75, grain) * 1.3), kFoamTexture);
 }
 
+#endif
+
 // Waves rolling in to the shore. The distance to the nearest dry ground (from the world's heights) lays wave fronts
 // along every coast; they travel inwards, their timing varying slowly along the shore so the fronts are not parallel
 // lines, grow foamy as they near the edge and break there, leaving a wash of foam at the waterline that fades as it
@@ -1125,6 +1134,57 @@ struct ShoreWaves
     float along;
     float2 toShore;
 };
+
+#ifdef DEFERRED_SLIME
+// Slime's waves are the sea's made shorter and slower: slow folds that lap up a bank. They run where slime is the
+// terrain's own liquid (Felwood's pools), from the ground map's shore as water's do. Slime in a building (a canal, a
+// room's pool) has no shore there and no waves. Measured in kSlimeLapScale times the yards, the sea's fronts fit a
+// pool.
+static const float kSlimeLapScale = 1.45;
+static const float kSlimeLapPace = 0.6;
+
+// How strong the laps are (the SlimeShoreWaves setting; 0 where no slime drawn this frame is the terrain's).
+float SlimeLaps() { return cLookingDown.z; }
+float ShoreSeconds() { return Seconds() * kSlimeLapPace; }
+
+bool ReadShoreWaves(float2 p, float surfaceHeight, out ShoreWaves waves)
+{
+    waves.known = 0.0;
+    waves.distance = kWaveReach;
+    waves.along = 0.0;
+    waves.toShore = 0.0;
+    float2 uv = RippleUv(p);
+    // (One return at the end: Microsoft's compiler mishandles early ones inside branches.)
+    bool found = false;
+    [branch] if (SlimeLaps() > 0.0 && InsideRippleArea(uv))
+    {
+        float4 heights = tex2Dlod(sSeabed, float4(uv, 0, 0));
+        // Only slime lying at the height the world gives its liquid here: a pool in a building over the same ground
+        // is not the terrain's, and the ground map's shore is not its edge.
+        float own = 1.0 - smoothstep(kSameWaterBody * 0.6, kSameWaterBody * 1.4, abs(heights.b - surfaceHeight));
+        float edge = saturate(min(min(uv.x, 1.0 - uv.x), min(uv.y, 1.0 - uv.y)) * kSeabedEdgeFade);
+        // On the slime's side of its edge only, as for water.
+        float known = saturate(heights.g) * edge * own * smoothstep(0.0, kFoamStartDepth, surfaceHeight - heights.r);
+        float distance = max(tex2Dlod(sShore, float4(uv, 0, 0)).r - kShoreCellOffset, 0.0) * kSlimeLapScale;
+        [branch] if (known > 0.0 && distance < kWaveReach)
+        {
+            float step = cRippleArea.z * GroundCellSize();
+            float2 slope = float2(tex2Dlod(sShore, float4(uv + float2(step, 0), 0, 0)).r -
+                                      tex2Dlod(sShore, float4(uv - float2(step, 0), 0, 0)).r,
+                                  tex2Dlod(sShore, float4(uv + float2(0, step), 0, 0)).r -
+                                      tex2Dlod(sShore, float4(uv - float2(0, step), 0, 0)).r);
+            waves.toShore = -slope / max(length(slope), 1.0e-4);
+            waves.distance = distance;
+            waves.known = known;
+            float2 q = p * kSlimeLapScale;
+            waves.along = ValueNoise(q * 0.07 + float2(ShoreSeconds() * 0.01, 0.0)) * 2.0 + ValueNoise(q * 0.19) * 0.8;
+            found = true;
+        }
+    }
+    return found;
+}
+#else
+float ShoreSeconds() { return Seconds(); }
 
 bool ReadShoreWaves(float2 p, float surfaceHeight, out ShoreWaves waves)
 {
@@ -1150,20 +1210,27 @@ bool ReadShoreWaves(float2 p, float surfaceHeight, out ShoreWaves waves)
     waves.along = ValueNoise(p * 0.07 + float2(Seconds() * 0.01, 0.0)) * 2.0 + ValueNoise(p * 0.19) * 0.8;
     return true;
 }
+#endif
 
 // Where a point is in the train of waves: whole numbers count the waves, the fraction is 0 at a front and grows
 // behind it, and fronts move towards the shore as time passes. The timing drifts a little so they do not arrive
 // like clockwork.
 float WavePhase(float distance, float along)
 {
-    float t = Seconds();
+    float t = ShoreSeconds();
     return distance / kWaveLength + t / kWavePeriod + along + kWaveTimingDrift * sin(t * 0.37 + along * 3.0);
 }
 
 // Each wave has its own size, so some come in bigger than others.
 float WaveSize(float phase, float along)
 {
-    return lerp(kSmallestWave, 1.0, Hash(float2(floor(phase), floor(along * 2.0))));
+    // Neighbouring stretches keep their own size. Blend across their shared edge
+    // so a single breaking crest can taper along its length.
+    float segment = along * 2.0 - 0.5;
+    float2 cell = float2(floor(phase), floor(segment));
+    float weight = smoothstep(0.25, 0.75, frac(segment));
+    float size = lerp(Hash(cell), Hash(cell + float2(0.0, 1.0)), weight);
+    return lerp(kSmallestWave, 1.0, size);
 }
 
 // A wave's cross-section: a steep face towards the shore and a gentle back. Far out it is a wide, low swell; it
@@ -1196,15 +1263,18 @@ float2 ShoreWaveSlope(float2 p, float surfaceHeight, float footprint = 0.0)
     return -waves.toShore * rise * strength;
 }
 
-// The line along the top of each shore wave (see CrestLine): the crest lies just behind the steep face, where the
-// wave's profile peaks, so how far p is from it comes straight from the wave's phase.
-float ShoreCrestLine(float2 p, float surfaceHeight, float footprint)
+#ifndef DEFERRED_SLIME
+// Foam from a breaking front and the wash behind it share the same shoreline samples and wave phase.
+void ShoreFoam(float2 p, float surfaceHeight, float footprint, out float density, out float crest, out float2 flow)
 {
+    density = 0.0;
+    crest = 0.0;
+    flow = 0.0;
     ShoreWaves waves;
-    float crest = 0.0;
     if (ReadShoreWaves(p, surfaceHeight, waves))
     {
         float phase = WavePhase(waves.distance, waves.along);
+        float waveSize = WaveSize(phase, waves.along);
         float behind = frac(phase);
         float open = saturate(waves.distance / kWaveReach);
         // The profile (WaveProfile) peaks at about seven eighths of the way up its face.
@@ -1213,33 +1283,22 @@ float ShoreCrestLine(float2 p, float surfaceHeight, float footprint)
         // opening it into two either side of the crest; taken to the nearest crest, this wave's or the next's.
         float fromCrest = behind - peak;
         float across = (fromCrest - floor(fromCrest + 0.5)) * kWaveLength;
-        float size = WaveSize(phase, waves.along) * saturate(1.0 - waves.distance / kWaveReach) * waves.known;
-        crest = CrestLine(p, across + CrestBend(p), size, kCrestLineWidth, footprint);
-    }
-    return crest;
-}
+        float size = waveSize * saturate(1.0 - waves.distance / kWaveReach) * waves.known;
+        crest = CrestLine(p, across + CrestBend(p), size, kCrestLineWidth * 1.40, footprint);
 
-// How thick the shore's foam is at p (0..1), and the axis it streams along (along the fronts; see FoamAxis).
-float ShoreFoam(float2 p, float surfaceHeight, out float2 flow)
-{
-    flow = 0.0;
-    ShoreWaves waves;
-    if (!ReadShoreWaves(p, surfaceHeight, waves))
-        return 0.0;
-    float phase = WavePhase(waves.distance, waves.along);
-    float front = WaveProfile(frac(phase), waves.distance) * WaveSize(phase, waves.along);
-    float crestFoam = front * saturate(1.0 - waves.distance / kBreakDistance);
-    // The wash: rises as a front reaches the waterline and drains away to nothing before the next one, so it never
-    // switches on at once (the timing varies along the shore, and a sudden switch drew a line moving along it).
-    float arriving = WavePhase(0.0, waves.along);
-    float sinceBreak = frac(arriving);
-    float drained = exp(-1.0 / kWashFade);
-    float wash = smoothstep(0.0, kWashRise, sinceBreak) * saturate((exp(-sinceBreak / kWashFade) - drained) / (1.0 - drained));
-    float washFoam = wash * kWashStrength * WaveSize(arriving - 1.0, waves.along) *
-                     exp(-waves.distance / (kWashWidth * (0.4 + wash)));
-    float mask = saturate(max(crestFoam, washFoam) * kFoamAmount) * waves.known;
-    flow = FoamAxis(float2(-waves.toShore.y, waves.toShore.x)) * mask;
-    return mask;
+        float front = WaveProfile(frac(phase), waves.distance) * waveSize;
+        float crestFoam = front * saturate(1.0 - waves.distance / kBreakDistance);
+        // The wash: rises as a front reaches the waterline and drains away to nothing before the next one, so it never
+        // switches on at once (the timing varies along the shore, and a sudden switch drew a line moving along it).
+        float arriving = WavePhase(0.0, waves.along);
+        float sinceBreak = frac(arriving);
+        float drained = exp(-1.0 / kWashFade);
+        float wash = smoothstep(0.0, kWashRise, sinceBreak) * saturate((exp(-sinceBreak / kWashFade) - drained) / (1.0 - drained));
+        float washFoam = wash * kWashStrength * WaveSize(arriving - 1.0, waves.along) *
+                         exp(-waves.distance / (kWashWidth * (0.4 + wash)));
+        density = saturate(max(crestFoam, washFoam) * kFoamAmount) * waves.known;
+        flow = FoamAxis(float2(-waves.toShore.y, waves.toShore.x)) * density;
+    }
 }
 #endif
 

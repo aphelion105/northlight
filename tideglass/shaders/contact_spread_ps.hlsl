@@ -10,15 +10,19 @@
 // the foam rises towards it over a few frames rather than at once (at once, it flickered with every small change in
 // what was marked, as a body moves and the camera with it).
 
-// x, y: one grid cell in uv, along the way taken (unused for the count); z: which pass, 0 to count the neighbours, 1 for
-// the first way, 2 for the last (which keeps the grid's state); w: one grid cell in uv.
+// x, y: one grid cell in uv, along the way taken (for the count, x is 1 where the grid remembers what it found, as
+// slime's does); z: which pass, 0 to count the neighbours, 1 for the first way, 2 for the last (which keeps the
+// grid's state); w: one grid cell in uv.
 float4 cSpread : register(c0);
 // x: for the last way, how much of the way to the new foam it rises this frame (0 when no time passed: the state kept
-// as it is).
+// as it is); y: 1 where it falls to less at the same pace (slime's glow, which lies along walls that do not move: left
+// to rise at once and fade in the ripple steps, as foam behind a swimmer does, it flickered with the frame rate).
 float4 cRise : register(c1);
 sampler2D sMarks : register(s0);
+// The grid's state: for the count, where slime keeps what it found before; for the last way, what it keeps.
 sampler2D sState : register(s1);
-// The last way: the crossings as counted, kept in the grid's a for the debug view (SeabedDebug 3).
+// The last way: the crossings as counted, kept in the grid's a: for the debug view (SeabedDebug 3) and, for slime, as
+// its edge where the camera has seen it, which the count carries on where it is out of sight.
 sampler2D sCounted : register(s2);
 
 // How far the foam reaches from a crossing: the Gaussian's width (cells, its standard deviation) and how far out it is
@@ -29,27 +33,44 @@ static const int kSpreadReach = 7;
 // cell half).
 static const float kCountGain = 2.0;
 
+// (Below nothing where a point of slime could not be looked at this frame, see contact_ps.)
 float MarkAt(float2 uv)
 {
-    return tex2Dlod(sMarks, float4(uv, 0, 0)).r;
+    return max(tex2Dlod(sMarks, float4(uv, 0, 0)).r, 0.0);
 }
 
 float4 main(float2 cell : VPOS) : COLOR0
 {
     float2 uv = (cell + 0.5) * cSpread.w;
     float step = cSpread.w;
-    float counted = (MarkAt(uv) * 4.0 +
-                     (MarkAt(uv + float2(step, 0)) + MarkAt(uv - float2(step, 0)) + MarkAt(uv + float2(0, step)) +
-                      MarkAt(uv - float2(0, step))) * 2.0 +
-                     MarkAt(uv + float2(step, step)) + MarkAt(uv - float2(step, step)) +
-                     MarkAt(uv + float2(step, -step)) + MarkAt(uv - float2(step, -step))) / 16.0;
-    float nearest = 0.0;
-    [unroll] for (int k = -kSpreadReach; k <= kSpreadReach; ++k)
-        nearest = max(nearest, MarkAt(uv + cSpread.xy * k) * exp(-0.5 * k * k / (kSpreadWidth * kSpreadWidth)));
-    float4 state = tex2Dlod(sState, float4(uv, 0, 0));
-    float foam = state.b + max(saturate(nearest) - state.b, 0.0) * cRise.x;
-    float4 kept = float4(state.rg, foam, tex2Dlod(sCounted, float4(uv, 0, 0)).r);
-    // (Selected rather than returned early: Microsoft's compiler mishandles an early return inside a branch.)
-    return cSpread.z > 1.5 ? kept : cSpread.z > 0.5 ? float4(nearest, 0.0, 0.0, 0.0)
-                                                    : float4(saturate(counted * kCountGain), 0.0, 0.0, 0.0);
+    float4 result;
+    // Every pixel in a draw uses the same pass. Keep each texture read inside
+    // its pass so the count and the two spreads only sample their own inputs.
+    [branch] if (cSpread.z < 0.5)
+    {
+        float counted = (MarkAt(uv) * 4.0 +
+                         (MarkAt(uv + float2(step, 0)) + MarkAt(uv - float2(step, 0)) + MarkAt(uv + float2(0, step)) +
+                          MarkAt(uv - float2(0, step))) * 2.0 +
+                         MarkAt(uv + float2(step, step)) + MarkAt(uv - float2(step, step)) +
+                         MarkAt(uv + float2(step, -step)) + MarkAt(uv - float2(step, -step))) / 16.0;
+        result = float4(saturate(counted * kCountGain), 0.0, 0.0, 0.0);
+        // Where the grid remembers, a point that was not looked at this frame keeps what was found there before.
+        [branch] if (cSpread.x > 0.5 && tex2Dlod(sMarks, float4(uv, 0, 0)).r < 0.0)
+            result.r = tex2Dlod(sState, float4(uv, 0, 0)).a;
+    }
+    else
+    {
+        float nearest = 0.0;
+        [unroll] for (int k = -kSpreadReach; k <= kSpreadReach; ++k)
+            nearest = max(nearest, MarkAt(uv + cSpread.xy * k) * exp(-0.5 * k * k / (kSpreadWidth * kSpreadWidth)));
+        result = float4(nearest, 0.0, 0.0, 0.0);
+        [branch] if (cSpread.z > 1.5)
+        {
+            float4 state = tex2Dlod(sState, float4(uv, 0, 0));
+            float change = saturate(nearest) - state.b;
+            float foam = state.b + (cRise.y > 0.5 ? change : max(change, 0.0)) * cRise.x;
+            result = float4(state.rg, foam, tex2Dlod(sCounted, float4(uv, 0, 0)).r);
+        }
+    }
+    return result;
 }

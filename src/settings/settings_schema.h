@@ -5,6 +5,7 @@
 #include "settings_store.h"
 #include "quality_settings.h"
 #include "celestial_profiles.h"
+#include "appearance_presets.h"
 #include "regional_shadow_range.h"
 #include "settings_defaults.h"
 #include "settings_regions.h"
@@ -59,9 +60,23 @@ inline std::string migrateLightLimits(const std::filesystem::path& root){
         auto after=before;after[0]={true,docs[0].bytes()};store.commit(before,after);return "";
     }catch(const std::exception& error){return std::string("Local light limit migration failed: ")+error.what();}
 }
-inline Config configOf(const Documents& d,const std::string& legacy,bool validate=false,const std::string& hdrProfile=""){
+inline bool applyAppearancePreset(NorthlightCelestialProfiles::Table& settings,const std::filesystem::path& directory){
+    if(directory.empty()||settings.palette.empty()||lower(settings.palette)=="default")return true;
+    const auto catalog=NorthlightAppearancePresets::loadSelected(directory,settings.palette);
+    const auto* selected=catalog.find(settings.palette);
+    if(!selected)return false;
+    NorthlightCelestialProfiles::Table defaults;
+    std::string error;
+    std::istringstream factory(kSettingsFactoryCelestial);
+    NorthlightCelestialProfiles::parse(factory,defaults,error);
+    settings=NorthlightAppearancePresets::compose(settings,selected->table,defaults);
+    return true;
+}
+inline Config configOf(const Documents& d,const std::string& legacy,bool validate=false,const std::string& hdrProfile="",
+                       const std::filesystem::path& directory={}){
     Config c;c.quality=qualityOf(d[0],legacy);std::string error;std::istringstream celestial(d[2].text()),shadow(d[3].text());NorthlightRegionalShadow::Table ranges;
     if(!NorthlightCelestialProfiles::parse(celestial,c.celestial,error)&&validate)throw std::runtime_error("Celestial: "+error);
+    if(!applyAppearancePreset(c.celestial,directory)&&validate)throw std::runtime_error("Selected appearance preset is unavailable");
     if(!NorthlightRegionalShadow::parse(shadow,ranges,error)&&validate)throw std::runtime_error("Shadow range: "+error);
     auto renderer=d[1].values();const char* limits[]={"nativemodellightlimit","nativeterrainlightlimit"};
     for(unsigned i=0;i<2;++i){unsigned n=8;const auto& raw=renderer["renderer"][limits[i]];
@@ -93,10 +108,10 @@ inline std::string canonicalOption(const std::string& value,const std::string& o
     if(options=="Manual,Auto"){float mode=0;if(NorthlightHdrSettingsContract::parse(value,mode)&&(mode==0||mode==1))return NorthlightHdrSettingsContract::modeName(mode);}
     std::istringstream s(options);std::string o;while(std::getline(s,o,','))if(lower(o)==lower(value))return o;return value;
 }
-inline std::vector<Field> schema(const Documents& docs,const Documents& initial,const Config& active,const std::string& legacy,const std::string& backendOptions="native,dxvk,dxvk2,legacy",const std::string& hdrProfile="",bool waterInstalled=false){
+inline std::vector<Field> schema(const Documents& docs,const Documents& initial,const Config& active,const std::string& legacy,const std::string& backendOptions="native,dxvk,dxvk2,legacy",const std::string& hdrProfile="",bool waterInstalled=false,const std::filesystem::path& directory={}){
     auto factory=factoryDocuments();const auto available=","+backendOptions+",";
     const std::string factoryBackend=available.find(",dxvk,")!=available.npos?"dxvk":available.find(",dxvk2,")!=available.npos?"dxvk2":"native";factory[1].set("Renderer","Backend",&factoryBackend);
-    const auto saved=configOf(docs,legacy,false,hdrProfile),defaults=configOf(factory,legacy);std::vector<Field> out;
+    const auto saved=configOf(docs,legacy,false,hdrProfile,directory),defaults=configOf(factory,legacy);std::vector<Field> out;
     std::array<Values,FileCount> savedValues,factoryValues,initialValues;
     for(unsigned i=0;i<FileCount;++i){savedValues[i]=docs[i].values();factoryValues[i]=factory[i].values();initialValues[i]=initial[i].values();}
     const auto legacyQuality=qualityOf(Document("[Quality]\nPreset=Quality\n"),legacy);
@@ -125,14 +140,42 @@ inline std::vector<Field> schema(const Documents& docs,const Documents& initial,
         f.active=number(active.hdr[hdrIndex]);
         if(NorthlightHdrSettingsContract::mode(key)){f.kind="enum";f.options="Manual,Auto";f.saved=NorthlightHdrSettingsContract::modeName(saved.hdr[hdrIndex]);f.active=NorthlightHdrSettingsContract::modeName(active.hdr[hdrIndex]);f.factory=f.inherited=NorthlightHdrSettingsContract::modeName(key.value);}
         ++hdrIndex;add(f);}
+    if(!directory.empty()){
+        const auto catalog=NorthlightAppearancePresets::load(directory);
+        Field f;f.file=2;f.section="Appearance";f.key="Palette";f.kind="enum";f.apply="F";
+        f.factory=f.inherited="Default";f.options="Default";
+        for(const auto& item:catalog.entries)
+            if(lower(item.name)!="default")f.options+=","+item.name;
+        f.saved=saved.celestial.palette.empty()?"Default":saved.celestial.palette;
+        f.active=active.celestial.palette.empty()?"Default":active.celestial.palette;
+        add(std::move(f));
+    }
     for(unsigned file=2;file<4;++file){std::set<std::string> sections{"default"};
         if(file==3)for(const auto& r:Regions)sections.insert(r.first);
-        for(const auto* v:std::array<const Values*,2>{&savedValues[file],&factoryValues[file]})for(const auto& s:*v)if(!s.first.empty()&&s.first!="default")sections.insert(regionName(s.first));
+        for(const auto* v:std::array<const Values*,2>{&savedValues[file],&factoryValues[file]})for(const auto& s:*v){
+            if(s.first.empty()||s.first=="default"||s.first=="appearance")continue;
+            if(file==2){
+                // Detailed map, interior and child sections retain their authored INI values.
+                try{sections.insert(regionName(s.first));}catch(const std::runtime_error&){}
+            }else sections.insert(regionName(s.first));
+        }
         for(const auto& section:sections){
             if(file==2){for(auto body:{"sun_","moon_"})for(auto name:CelestialNames){Field f;f.file=2;f.section=section;f.key=std::string(body)+name;f.apply="F";unsigned n=0;float lo=0,hi=0;NorthlightCelestialProfiles::Profile dummy;
                 NorthlightCelestialProfiles::keyTarget(dummy,f.key,n,lo,hi);f.kind=n==3?"rgb":"slider";f.low=number(lo);f.high=number(hi);f.step="0.01";
                 f.saved=profileValue(profile(saved.celestial,section),f.key);f.active=profileValue(profile(active.celestial,section),f.key);f.factory=profileValue(profile(defaults.celestial,section),f.key);f.inherited=profileValue(section=="default"?NorthlightCelestialProfiles::Profile{}:saved.celestial.fallback,f.key);add(f);
-            }}else{Field f;f.file=3;f.section=section;f.key="terrain_radius";f.low=number(NorthlightRegionalShadow::DefaultRadius);f.high=number(NorthlightRegionalShadow::MaximumRadius);
+            }
+                for(const auto& key:NorthlightAppearancePresets::keys()){
+                    Field f;f.file=2;f.section=section;f.key=key;f.apply="F";
+                    unsigned n=0;float lo=0,hi=0;NorthlightCelestialProfiles::Profile dummy;
+                    NorthlightCelestialProfiles::keyTarget(dummy,key,n,lo,hi);
+                    if(n!=1&&n!=3)continue;
+                    f.kind=n==3?"rgb":"slider";f.low=number(lo);f.high=number(hi);f.step="0.01";
+                    f.saved=profileValue(profile(saved.celestial,section),key);f.active=profileValue(profile(active.celestial,section),key);
+                    f.factory=profileValue(profile(defaults.celestial,section),key);
+                    f.inherited=profileValue(profile(saved.celestial,section),key);
+                    add(std::move(f));
+                }
+            }else{Field f;f.file=3;f.section=section;f.key="terrain_radius";f.low=number(NorthlightRegionalShadow::DefaultRadius);f.high=number(NorthlightRegionalShadow::MaximumRadius);
                 auto value=[&](const Values& v){auto s=explicitValue(v,section,f.key);if(s=="~"&&section!="default")s=explicitValue(v,"default",f.key);return s=="~"?f.low:s;};
                 f.saved=value(savedValues[3]);f.active=value(initialValues[3]);f.factory=value(factoryValues[3]);
                 auto base=explicitValue(savedValues[3],"default",f.key);f.inherited=section=="default"||base=="~"?f.low:base;add(f);}
@@ -146,7 +189,8 @@ inline std::vector<Field> schema(const Documents& docs,const Documents& initial,
             {"WaveStrength",1,0,4,.05f},{"WaveSpeed",1,0,10,.05f},
             {"WaveCrestShape",0,0,1,.05f},{"WaveCrestSharpness",0,0,1,.05f},
             {"RippleStrength",1.6f,0,5,.05f},{"FoamStrength",1,0,4,.05f},{"OpenWaterCrestFoam",1,0,1,.05f},
-            {"ReflectionResolution",100,50,100,25},{"ShortReflectionDistance",0,0,1,1},{"ReflectionScenery",0,0,1,1},{"Clarity",1,.05f,10,.05f},
+            {"ReflectionResolution",100,50,100,25},{"ReflectionDistance",0,0,2,1},{"ReflectionScenery",0,0,1,1},
+            {"ReflectionSceneryDetails",0,0,1,1},{"FineHighlights",0,0,1,1},{"Clarity",1,.05f,10,.05f},{"SurfaceBlur",1,0,4,.05f},
             {"Reflection",.7f,0,4,.05f},{"NearReflection",.55f,0,1,.05f},
             {"Underwater",1,0,1,1},{"UnderwaterVisibility",35,2,500,1},{"UnderwaterScenery",0,0,1,1},
             {"Slime",1,0,1,1},{"Lava",1,0,1,1},
@@ -157,7 +201,8 @@ inline std::vector<Field> schema(const Documents& docs,const Documents& initial,
             f.kind=control.high==1&&control.step==1?"check":"slider";
             f.apply=file==WaterFile?"S":"R";f.inherited=number(control.fallback);
             if(f.key=="ReflectionResolution"){f.kind="enum";f.options="100,75,50";}
-            if(f.key=="ShortReflectionDistance" || f.key=="ReflectionScenery"){f.kind="enum";f.options="0,1";}
+            if(f.key=="ReflectionDistance"){f.kind="enum";f.options="1,0,2";}
+            if(f.key=="ReflectionScenery"){f.kind="enum";f.options="0,1";}
             if(f.key=="ReflectionScenery" && explicitValue(savedValues[file],"Water","ReflectionProducer")=="3")f.inherited="1";
             auto value=[&](const Values& values){
                 auto raw=explicitValue(values,f.section,f.key);
@@ -167,6 +212,16 @@ inline std::vector<Field> schema(const Documents& docs,const Documents& initial,
             f.active=file==WaterFile?f.saved:value(initialValues[file]);
             const bool legacyOff=f.key=="ReflectionScenery" && explicitValue(savedValues[file],"Water","ScreenReflections")=="0";
             add(std::move(f));
+            if(out.back().key=="ReflectionDistance"&&out.back().overrideValue=="~"){
+                const auto legacy=explicitValue(savedValues[file],"Water","ShortReflectionDistance");
+                char* end=nullptr;
+                const long shortDistance=std::strtol(legacy.c_str(),&end,10);
+                if(end!=legacy.c_str()&&*end==0){
+                    auto& distance=out.back();
+                    distance.saved=distance.active=distance.overrideValue=shortDistance!=0?"1":"0";
+                    distance.origin="override";
+                }
+            }
             if(legacyOff){
                 Field& reflection=out.back();
                 reflection.saved=reflection.active=reflection.overrideValue="0";
@@ -196,6 +251,8 @@ inline Documents applyChanges(Documents docs,const std::vector<Field>& fields,co
         auto id=line.substr(0,at),value=line.substr(at+1);if(!known.count(id)||!changed.insert(id).second)throw std::runtime_error("Unknown or duplicate setting");const auto& f=*known.at(id);
         if(!f.available)throw std::runtime_error(f.key+" is not supported by this renderer build");
         if(value=="@factory")value=f.factoryOverride;validateValue(f,value);docs[f.file].set(f.section,f.key,value=="~"?nullptr:&value);
+        if(f.file==WaterFile&&f.key=="ReflectionDistance")
+            docs[WaterFile].set("Water","ShortReflectionDistance",nullptr);
         // A player who explicitly enables scenery can also restore it on older INIs
         // whose master reflection switch was off. Leave that key alone on unrelated saves.
         if(f.file==WaterFile && f.key=="ReflectionScenery" && (value=="1" || value=="~") &&

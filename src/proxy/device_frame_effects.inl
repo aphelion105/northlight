@@ -102,10 +102,14 @@
             prepareCooperativeWater(desc,saved.viewport,false);
 #endif
             if(cooperativeWater.Current()){
+                const DWORD waterNameStencil=nameMask.armed()&&nameMask.hasMarks()&&maskStencil&&worldDepth
+                    ?NorthlightNameStencil::kBit:0;
+                supplyTideglassEnvironment();
                 auto* liquidMask=cooperativeWater.Liquid()?tideglassCoverage(waterMask):nullptr;
                 const bool keepRain=liquidMask&&snapshotTideglassRain(saved.targets[0],rainMaskTex);
                 if(liquidMask){
-                    cooperativeWater.Composite(depthTex,liquidMask,worldDepth,nearZ,farZ,worldMinDepth,worldMaxDepth,false);
+                    cooperativeWater.Composite(depthTex,liquidMask,worldDepth,nearZ,farZ,worldMinDepth,worldMaxDepth,
+                                               false,nullptr,nullptr,false,waterNameStencil);
                     WaterHostSurfaceStatus status{};
                     const bool shaded=cooperativeWater.SurfaceStatus(status)&&status.outcome==WaterHostSurfaceShaded;
                     if(shaded&&keepRain)restoreTideglassRain(saved.targets[0],rainMaskTex);
@@ -122,7 +126,7 @@
                 }
                 // Tideglass takes encoded game colour. HDR decodes that result once.
                 if(hdr.active)
-                    hdrWaterFinalized=cooperativeWater.WorldDone(worldDepth,saved.targets[0],depthTex,&saved.viewport);
+                    hdrWaterFinalized=cooperativeWater.WorldDone(worldDepth,saved.targets[0],depthTex,&saved.viewport,waterNameStencil);
 #ifdef _WIN64
                 if(hdrWaterFinalized&&tideglassSubmerged())reportTideglassFeature(8,"underwater view drawn");
                 reportTideglassSurface();
@@ -286,7 +290,8 @@
         }
 #ifdef NORTHLIGHT_WATER
         if(!hdr.active&&cooperativeWater.Current()){
-            const bool tideglassDrawn=cooperativeWater.WorldDone(worldDepth,outputTarget,depthTex,&saved.viewport);
+            const bool tideglassDrawn=cooperativeWater.WorldDone(worldDepth,outputTarget,depthTex,&saved.viewport,
+                                                               maskOn?NorthlightNameStencil::kBit:0);
 #ifdef _WIN64
             if(tideglassDrawn&&tideglassSubmerged())reportTideglassFeature(8,"underwater view drawn");
             reportTideglassSurface();
@@ -295,6 +300,9 @@
 #endif
         }
 #endif
+        if(world&&debugMode==0&&worldDebug==0&&world->gradeScene(outputTarget,maskOn?worldDepth:nullptr,linearHdr,
+             [&]{effectState();},[&]{return quad(width,height);}))
+            gpuProfile->mark("WorldAppearance");
         if(maskOn&&nameMask.debug)nameMaskDebugView(outputTarget); /* 0.3.212 (task 32): the last effect pass, the mask itself */
         hdrSceneReady=linearHdr;
         if(atmosphereAudit){

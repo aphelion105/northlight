@@ -137,6 +137,11 @@
         const float hazeSunWeight=underwaterFade.scale()*sourceWeights[0];
         frame.haze=NorthlightHorizonHaze::constants(horizonHazeState,{quality.horizonHaze,quality.horizonHazeStart,quality.horizonHazeBand,quality.horizonHazeTerrain},
             farZ,frame.hazeZone,effects.fog&&!atmosphere.imported.valid,celestialValid,hazeSun,hazeSunWeight,hazeLift,wx.hazeTauScale());
+        if(debug==0&&!menuDomain){
+            const auto look=NorthlightCelestialProfiles::appearance(volumePalette,horizonHazeState.color,effects.fog,appearanceTime());
+            for(unsigned channel=0;channel<3;++channel)frame.haze.haze[channel]*=1.f+look[channel];
+            c[20][2]=std::min(1.f,c[20][2]*(1.f+look[3]));
+        }
         const auto& haze=frame.haze;
         c[57][1]=haze.shape[0];c[57][2]=haze.shape[1];c[57][3]=haze.shape[2];c[67][2]=haze.sun[0];c[67][3]=haze.sun[1];
         c[35][1]=haze.lift[0];c[35][2]=haze.lift[1];c[35][3]=haze.lift[2]; /* lift colour = the glow hue (WorldComposite reads c35.yzw) */
