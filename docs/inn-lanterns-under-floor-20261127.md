@@ -23,7 +23,7 @@ Omitted fields reuse the pin, including the skin hash, so the skin is still
 checked. This installed model is listed as a variant.
 `tests/test_world_fixture_emission.py` covers variant reuse, overrides and
 rejection of unlisted models or changed skins. Both the scene and light
-builders resolve this anchor, so the scene cache revision is now 3 and the next
+builders resolve this anchor, so the scene cache revision is now 4 and the next
 `install_world_cache.py` run rebuilds both.
 
 In a Northrend light build against that client, the variant moves 98 point
