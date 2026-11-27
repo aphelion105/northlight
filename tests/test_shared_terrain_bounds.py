@@ -102,6 +102,7 @@ namespace NorthlightAutoDisplacement {using Args=Geometry;using CaptureSource=No
 struct Bump {
  std::vector<std::string>* events;unsigned calls=0;bool hint=false,activeValue=true;
  bool active()const{return activeValue;}
+ void setSceneDepthScratch(bool,void*){}
  void allowNativeM2Fusion(bool,void*,float,bool=false){}
  template<class Draw>void capture(IDirect3DVertexShader9* vs,Draw draw,bool up,const Geometry* geometry,const NorthlightCaptureMetadata::PositionBounds* bounds,NormalSource* source,const std::shared_ptr<const NorthlightDrawSnapshot::Mesh>* batchSource=nullptr){
   assert(source&&!batchSource);source->captured=true;
@@ -131,7 +132,8 @@ struct Route {
  unsigned drawRenderState(unsigned)const{return 0;}
  bool enabled=true,applied=false,failed=false;unsigned frame=127;
  NorthlightBackend::Kind selectedBackend=NorthlightBackend::Kind::Dxvk;
- struct{bool active=false;}hdr{};bool indexedPairGate=false,particlePairGate=false;void* worldDepth=nullptr;float nearZ=.22f;
+ struct{bool active=false;}hdr{};bool indexedPairGate=false,particlePairGate=false;void* worldDepth=nullptr;
+ void* depthTex=nullptr;D3DFORMAT depthSnapshotFormat=D3DFMT_UNKNOWN;bool captured=false;float nearZ=.22f;
  template<class T>void captureWater(IDirect3DVertexShader9*,unsigned,T){events->push_back("water");}
  template<class Source>void noteIndexedPairSource(IDirect3DVertexShader9*,const Source&){}
  template<class Draw>std::shared_ptr<const NorthlightDrawSnapshot::Mesh> pendingIndexedSource(const Draw&,IDirect3DVertexShader9*){return {};}

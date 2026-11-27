@@ -71,6 +71,7 @@ struct World {
 };
 struct Bump {
  Env* e;bool active()const{return e->cfg.materialActive;}void beginDraw(){e->event(BeginBump);}void beforeNativeDraw(){e->event(BeforeNative);}
+ void setSceneDepthScratch(bool,void*){}
  void allowNativeM2Fusion(bool,void*,float,bool=false){}void endNativeMaterialDraw(){}
  template<class Draw>void capture(IDirect3DVertexShader9* vs,Draw draw,bool up,const NorthlightAutoDisplacement::Args* g,const NorthlightCaptureMetadata::PositionBounds* pos,NorthlightAutoDisplacement::CaptureSource* source,const std::shared_ptr<const NorthlightDrawSnapshot::Mesh>* hint=nullptr){
   assert(!hint);
@@ -113,7 +114,8 @@ struct Base {
  bool menuScene=false,enabled=true,applied=false,failed=false,modelNormalsNeeded=true,frameDrawGates=true,particleOn=false,spellOn=false,skyBandSeen=false,rainMrtBound=false,blobOriginal=false,shadowSwapOriginal=false,extensionFault=false;
  struct { unsigned left=0; } uiDrawDiagnostic;
  void captureUiDraw(){}
- unsigned worldDebug=0,drawCalls=0,frame=120;LONGLONG ticks=0;float worldMinDepth=0,worldMaxDepth=.9f,nearZ=.22f;void* worldDepth=nullptr;struct{bool active=false;}hdr;struct{bool valid=false;}waterPending;
+ unsigned worldDebug=0,drawCalls=0,frame=120;LONGLONG ticks=0;float worldMinDepth=0,worldMaxDepth=.9f,nearZ=.22f;void* worldDepth=nullptr;
+ void* depthTex=nullptr;D3DFORMAT depthSnapshotFormat=D3DFMT_UNKNOWN;bool captured=false;struct{bool active=false;}hdr;struct{bool valid=false;}waterPending;
  struct WaterState{bool bound=false;bool isMrtBound()const{return bound;}}waterStorage;WaterState* water=&waterStorage;
  struct {bool sky=true,blob=false;}drawGates;struct {Gate gate;bool textureKnown[1]={};const void* textures[1]={};bool viewportKnown=true;struct {float MinZ=0,MaxZ=1;}viewport={};}mirrorState{{&env}};
  struct {const void* hot=nullptr;NorthlightWeather::Kind hotKind=NorthlightWeather::Kind::None;bool mistArmed=false;}weatherDetect;struct {unsigned primitives=0,draws=0;}weatherSample;

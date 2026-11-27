@@ -53,14 +53,14 @@ struct Calls:ForwardIDirect3DDevice9 {
 };
 static void waitQuery(IDirect3DQuery9* q){ok(q->Issue(D3DISSUE_END));auto at=GetTickCount();HRESULT h;while((h=q->GetData(nullptr,0,D3DGETDATA_FLUSH))==S_FALSE){assert(GetTickCount()-at<30000);Sleep(0);}ok(h);}
 struct Fixture {
-    static constexpr unsigned W=321,H=201;
+    static constexpr unsigned W=321,H=201,SharedDepthCutout=34;
     Target scene,final;IDirect3DPixelShader9* consumer=nullptr;IDirect3DSurface9 *depth=nullptr,*msaaColor=nullptr;
     IDirect3DVertexShader9* vertex[2]={};IDirect3DPixelShader9* pixel=nullptr;
     IDirect3DVertexDeclaration9* declaration=nullptr;IDirect3DVertexBuffer9* vb=nullptr;IDirect3DIndexBuffer9* ib=nullptr;
     IDirect3DTexture9 *texture=nullptr,*unrelated=nullptr;
     std::vector<unsigned char> data;std::vector<WORD> indices;uint64_t revision=1;
     unsigned scenario;bool alpha,equal,blend,up,supported;
-    Fixture(unsigned kind,const char* rigid,const char* skin,const char* ps,const char* consume,bool expectBatch):scenario(kind),alpha(kind!=10&&kind!=23&&kind!=24),equal(kind!=6&&kind!=23&&kind!=24),blend(kind==7),up(kind==3||kind==11),supported(expectBatch){
+    Fixture(unsigned kind,const char* rigid,const char* skin,const char* ps,const char* consume,bool expectBatch):scenario(kind),alpha(kind!=10&&kind!=23&&kind!=24),equal(kind!=6&&kind!=23&&kind!=24&&kind!=SharedDepthCutout),blend(kind==7),up(kind==3||kind==11),supported(expectBatch){
         final=target(W,H,D3DFMT_A16B16G16R16F,8);consumer=::ps(consume);
         scene=target(W,H,kind==14?D3DFMT_A16B16G16R16F:D3DFMT_A8R8G8B8,kind==14?8:4);
         const auto samples=kind==12?D3DMULTISAMPLE_2_SAMPLES:D3DMULTISAMPLE_NONE;
@@ -75,13 +75,14 @@ struct Fixture {
     IDirect3DVertexShader9* vsCurrent()const{return vertex[scenario==3||scenario==11||scenario==23||scenario==24];}
     void geometry(){
         const float xy[6][2]={{-.9f,-.9f},{.9f,-.9f},{-.9f,.9f},{-.9f,.9f},{.9f,-.9f},{.9f,.9f}};
-        for(unsigned i=0;i<12;++i){auto* v=data.data()+48*i;const float z=i<6?(scenario==2?2.95f:3.f):(scenario==0?3.001f:scenario==2?3.01f:3.f);
+        const bool separated=scenario==2||scenario==SharedDepthCutout;
+        for(unsigned i=0;i<12;++i){auto* v=data.data()+48*i;const float z=i<6?(separated?2.95f:3.f):(scenario==0?3.001f:separated?3.01f:3.f);
             const float p[]={xy[i%6][0]*z,xy[i%6][1]*z,z},n[]={i<6?0.f:.3f,0,1},uv[]={(xy[i%6][0]+1)*.2f+(i<6?0:.6f),(xy[i%6][1]+1)*.5f};
             std::memcpy(v,p,12);v[12]=255;std::memcpy(v+20,n,12);std::memcpy(v+32,uv,8);const DWORD color=0xffffffff;std::memcpy(v+40,&color,4);indices[i]=WORD(i);
         }
     }
     void writeGeometry(){void* p=nullptr;ok(vb->Lock(0,0,&p,0));std::memcpy(p,data.data(),data.size());ok(vb->Unlock());ok(ib->Lock(0,0,&p,0));std::memcpy(p,indices.data(),24);ok(ib->Unlock());}
-    void writeTexture(bool changed){D3DLOCKED_RECT r{};ok(texture->LockRect(0,&r,nullptr,0));for(unsigned y=0;y<32;++y)for(unsigned x=0;x<32;++x){const unsigned a=(scenario==4||scenario==5)?126+(x%5):scenario==17?(x&1?255:0):192;
+    void writeTexture(bool changed){D3DLOCKED_RECT r{};ok(texture->LockRect(0,&r,nullptr,0));for(unsigned y=0;y<32;++y)for(unsigned x=0;x<32;++x){const unsigned a=(scenario==4||scenario==5||scenario==SharedDepthCutout)?126+(x%5):scenario==17?(x&1?255:0):192;
         reinterpret_cast<DWORD*>((char*)r.pBits+y*r.Pitch)[x]=D3DCOLOR_ARGB(a,(x*8+y*4+(changed?64:0))&255,(x*x+7*y)&255,(255-x*8)&255);}NorthlightMaterialTextures::cache().upload(texture,texture,32,32,0,D3DFMT_A8R8G8B8,r.pBits,size_t(r.Pitch)*32,r.Pitch,true,true,D3DPOOL_MANAGED);ok(texture->UnlockRect(0));}
     void bind(){
         ok(d->SetDepthStencilSurface(nullptr));for(unsigned i=1;i<4;++i)ok(d->SetRenderTarget(i,nullptr));ok(d->SetRenderTarget(0,msaaColor?msaaColor:scene.s));ok(d->SetDepthStencilSurface(depth));viewport(scene);
@@ -111,7 +112,7 @@ struct KnownState {
     static bool samplers(void* p,DWORD stage,unsigned mask,DWORD* v){assert(p==d&&active);auto& s=*active;assert(stage<16);for(unsigned i=0;i<13;++i)if(mask&(1u<<i))v[i]=s.sampler[stage][i+1];return true;}
 };
 static Result run(Calls& calls,Fixture& f,const std::vector<unsigned char>& vsBytes,const std::vector<unsigned char>& psBytes,unsigned phase,unsigned count,bool measure){
-    NorthlightAutoBump bump(d);auto s=NorthlightQuality::Settings{};s.autoBump=1;s.autoBumpModels=f.scenario==15?2:1;s.autoBumpTerrain=s.autoBumpWalls=s.autoBumpGrass=0;s.autoBumpStrength=75;s.autoBumpDistance=f.scenario==2?3:48;s.autoCavity=f.scenario==20;s.autoParallaxShadows=0;s.autoParallaxDepth=0;s.autoModelDisplacementStrength=0;
+    NorthlightAutoBump bump(d);auto s=NorthlightQuality::Settings{};s.autoBump=1;s.autoBumpModels=f.scenario==15?2:1;s.autoBumpTerrain=s.autoBumpWalls=s.autoBumpGrass=0;s.autoBumpStrength=75;s.autoBumpDistance=f.scenario==2?3:48;s.autoCavity=f.scenario==20||f.scenario==Fixture::SharedDepthCutout;s.autoParallaxShadows=0;s.autoParallaxDepth=0;s.autoModelDisplacementStrength=0;
     bump.configure(s);bump.setProjection(1,1,1);bump.setDeferredCapture(true,f.supported&&f.scenario!=22);bump.setTextureWriteGuard(f.scenario!=13);
     KnownState known;if(measure){KnownState::active=&known;bump.setRasterStateSource(d,&KnownState::states);bump.setSamplerStateSource(d,&KnownState::samplers);bump.setEmptyTargetSource(d,[](void* p){assert(p==d);return true;});}
     bump.setGeometryTracking([](void* p,bool){return uint64_t(reinterpret_cast<uintptr_t>(p));},[](void*,bool){return uint64_t(1);},nullptr);
@@ -121,9 +122,15 @@ static Result run(Calls& calls,Fixture& f,const std::vector<unsigned char>& vsBy
     IDirect3DQuery9 *begin=nullptr,*end=nullptr,*frequency=nullptr,*event=nullptr,*disjoint=nullptr;
     ok(d->CreateQuery(D3DQUERYTYPE_EVENT,&event));if(measure){ok(d->CreateQuery(D3DQUERYTYPE_TIMESTAMP,&begin));ok(d->CreateQuery(D3DQUERYTYPE_TIMESTAMP,&end));ok(d->CreateQuery(D3DQUERYTYPE_TIMESTAMPFREQ,&frequency));ok(d->CreateQuery(D3DQUERYTYPE_TIMESTAMPDISJOINT,&disjoint));}
     Result r;
+    IDirect3DTexture9* scratch=nullptr;
+    if(f.scenario==Fixture::SharedDepthCutout&&f.supported&&northlightReadOnlyPolicy==2){
+        const auto format=D3DFORMAT(MAKEFOURCC('D','F','2','4'));
+        ok(d->CreateTexture(Fixture::W,Fixture::H,1,D3DUSAGE_DEPTHSTENCIL,format,D3DPOOL_DEFAULT,&scratch,nullptr));
+    }
     // Prepare identical maps/resources on both policies. A cold run is checked
     // as well; measured frames always include the same fully active material.
     for(unsigned frame=0;frame<3;++frame){bump.endFrame();
+        if(scratch)bump.setSceneDepthScratch(true,scratch);
         if(frame==1&&phase){bump.setMemoryPressurePolicy(true,true);bump.trimMemory(true);}if(frame==2&&phase==2)bump.setMemoryPressurePolicy(false,false);
         f.writeTexture(false);f.bind();ok(d->Clear(0,nullptr,D3DCLEAR_TARGET|D3DCLEAR_ZBUFFER,0,1,0));
         ok(d->BeginScene());if(frame)MaterialCaptureStateTestAccess::warm(bump,f.texture);
@@ -133,6 +140,15 @@ static Result run(Calls& calls,Fixture& f,const std::vector<unsigned char>& vsBy
         auto start=std::chrono::steady_clock::now();
         for(unsigned i=0;i<count;++i){
             if(i==count/2&&f.scenario==8){bump.beforeDepthChange();ok(d->Clear(0,nullptr,D3DCLEAR_ZBUFFER,0,1,0));ok(d->SetRenderState(D3DRS_COLORWRITEENABLE,0));ok(d->SetRenderState(D3DRS_ZFUNC,D3DCMP_LESSEQUAL));ok(f.draw());ok(d->SetRenderState(D3DRS_COLORWRITEENABLE,15));ok(d->SetRenderState(D3DRS_ZFUNC,D3DCMP_EQUAL));}
+            if(i==count/2&&scratch){
+                bump.beforeSceneDepthWrite(scratch);
+                if(frame)assert(MaterialCaptureStateTestAccess::depthBarriers(bump)>0);
+                DWORD previousPoint=0;ok(d->GetRenderState(D3DRS_POINTSIZE,&previousPoint));
+                ::bind(0,scratch);ok(d->SetRenderState(D3DRS_POINTSIZE,0x3f800000));
+                ok(d->SetRenderState(D3DRS_POINTSIZE,0x7fa05000));
+                ::bind(0,f.texture);ok(d->SetRenderState(D3DRS_POINTSIZE,previousPoint));
+                bump.setSceneDepthScratch(true,nullptr);
+            }
             if(i==count/2&&f.scenario==9){bump.beforeTextureWrite(f.texture);f.writeTexture(true);}
             if(i==count/2&&f.scenario==18){auto before=MaterialCaptureStateTestAccess::queued(bump);bump.beforeTextureWrite(f.unrelated);assert(before==MaterialCaptureStateTestAccess::queued(bump));}
             if(f.scenario==10){ok(d->SetRenderState(D3DRS_ZFUNC,i%3==1?D3DCMP_LESSEQUAL:D3DCMP_EQUAL));ok(d->SetRenderState(D3DRS_ALPHATESTENABLE,i%3!=1));}
@@ -146,6 +162,10 @@ static Result run(Calls& calls,Fixture& f,const std::vector<unsigned char>& vsBy
         IDirect3DSurface9 *rt=nullptr,*ds=nullptr;ok(d->GetRenderTarget(0,&rt));ok(d->GetDepthStencilSurface(&ds));assert(rt==(f.msaaColor?f.msaaColor:f.scene.s)&&ds==f.depth);drop(rt);drop(ds);
         if(measure&&frame==2){UINT64 a=0,b=0,hz=0;BOOL invalid=TRUE;ok(begin->GetData(&a,sizeof a,0));ok(end->GetData(&b,sizeof b,0));ok(frequency->GetData(&hz,sizeof hz,0));ok(disjoint->GetData(&invalid,sizeof invalid,0));assert(!invalid&&hz&&b>=a);r.gpu=double(b-a)*1000/hz;}
         assert(bump.texture());auto normal=capturedPixels(bump.texture(),Fixture::W,Fixture::H);if(frame)assert(std::any_of(normal.begin(),normal.end(),[](unsigned char v){return v!=0;}));
+        if(frame&&f.scenario==Fixture::SharedDepthCutout){
+            assert(bump.occlusionTexture());
+            assert((r.queued>0)==(scratch!=nullptr));
+        }
         std::vector<unsigned char> occlusion;if(auto* t=bump.occlusionTexture()){Target target;target.t=t;target.w=Fixture::W;target.h=Fixture::H;target.bytes=4;target.format=D3DFMT_A8R8G8B8;ok(t->GetSurfaceLevel(0,&target.s));ok(d->CreateOffscreenPlainSurface(target.w,target.h,target.format,D3DPOOL_SYSTEMMEM,&target.read,nullptr));occlusion=pixels(target);drop(target.read);drop(target.s);}
         if(f.msaaColor)ok(d->StretchRect(f.msaaColor,nullptr,f.scene.s,nullptr,D3DTEXF_NONE));auto color=pixels(f.scene);
         std::vector<unsigned char> final;
@@ -163,6 +183,7 @@ static Result run(Calls& calls,Fixture& f,const std::vector<unsigned char>& vsBy
         if(f.scenario==8&&r.equal)assert(MaterialCaptureStateTestAccess::depthBarriers(bump)>0);
         if(f.scenario==9&&r.equal)assert(MaterialCaptureStateTestAccess::textureBarriers(bump)>0);
     }
+    if(scratch){bump.discardSceneDepthScratch(scratch);drop(scratch);}
     for(auto* q:{begin,end,frequency,event,disjoint})if(q)q->Release();return r;
 }
 int main(int argc,char** argv){assert(argc==6||argc==7);const bool negative=argc==7&&std::strcmp(argv[6],"negative")==0;const bool benchmark=argc==7&&!negative;const bool expectBatch=std::strstr(argv[1],"dxvk")!=nullptr;std::setvbuf(stdout,nullptr,_IONBF,0);
@@ -170,7 +191,7 @@ int main(int argc,char** argv){assert(argc==6||argc==7);const bool negative=argc
     D3DDISPLAYMODE display{};ok(api->GetAdapterDisplayMode(0,&display));if(FAILED(api->CheckDeviceFormat(0,D3DDEVTYPE_HAL,display.Format,D3DUSAGE_DEPTHSTENCIL,D3DRTYPE_TEXTURE,D3DFORMAT(MAKEFOURCC('D','F','2','4'))))){std::puts("MATERIAL_EQUAL_DEPTH_UNSUPPORTED_DF24: production seed cannot run; unchanged immediate fallback");api->Release();FreeLibrary(module);DestroyWindow(window);return 77;}
     D3DPRESENT_PARAMETERS pp{};pp.Windowed=TRUE;pp.hDeviceWindow=window;pp.BackBufferWidth=pp.BackBufferHeight=64;pp.BackBufferFormat=D3DFMT_X8R8G8B8;pp.SwapEffect=D3DSWAPEFFECT_DISCARD;pp.PresentationInterval=D3DPRESENT_INTERVAL_IMMEDIATE;IDirect3DDevice9* raw=nullptr;ok(api->CreateDevice(0,D3DDEVTYPE_HAL,window,D3DCREATE_HARDWARE_VERTEXPROCESSING|D3DCREATE_FPU_PRESERVE,&pp,&raw));
     {Calls calls(raw);d=&calls;DisplacementStateTestAccess::pendingProgress();NorthlightMaterialTextures::enabled.store(true);auto rigid=read(argv[2]),skin=read(argv[3]),pixel=read(argv[4]);unsigned checked=0;
-        for(unsigned scenario=0;scenario<(benchmark||negative?1:25);++scenario){Fixture fixture(scenario,argv[2],argv[3],argv[4],argv[5],expectBatch);
+        for(unsigned trial=0;trial<(benchmark||negative?1:26);++trial){const unsigned scenario=trial<25?trial:Fixture::SharedDepthCutout;Fixture fixture(scenario,argv[2],argv[3],argv[4],argv[5],expectBatch);
             if(negative)fixture.equal=false;
                 for(unsigned phase=0;phase<(negative?1u:3u);++phase)for(unsigned round=0;round<(benchmark?20u:1u);++round){Result results[2];for(unsigned turn=0;turn<2;++turn){const unsigned current=(turn+round)&1;northlightReadOnlyPolicy=current?(negative?1:2):0;results[current]=run(calls,fixture,scenario==3||scenario==11||scenario==23||scenario==24?skin:rigid,pixel,phase,benchmark?128u:8u,benchmark);}
                 const bool same=results[0].normal==results[1].normal&&results[0].occlusion==results[1].occlusion&&results[0].color==results[1].color&&results[0].final==results[1].final;

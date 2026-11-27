@@ -63,7 +63,7 @@ class NorthlightAutoBump {
         NorthlightCaptureMetadata::ReadLease guardedVertex{nullptr,nullptr},guardedIndex{nullptr,nullptr};
         NorthlightDrawSnapshot::Draw sourceDraw;
         UINT sourceOffset=0,sourceStride=0;
-        bool resident=false,borrowedPlacement=false,sourceReady=false;
+        bool resident=false,borrowedPlacement=false,sourceReady=false,splitDepth=false;
         // Only captured spans are consumed. The remaining constant banks need
         // no initialization, including on reuse after a completed flush.
         Deferred(){}
@@ -111,6 +111,8 @@ class NorthlightAutoBump {
     // A 1x batch starts with native depth, then reproduces its ordered writes.
     // Depth-changing captures need full opaque coverage; EQUAL is read-only.
     IDirect3DTexture9* singleDepth=nullptr;IDirect3DSurface9* singleDepthSurface=nullptr;
+    IDirect3DTexture9* depthScratch=nullptr; // Borrowed from the scene until its next resolve or replacement.
+    bool useSceneDepthScratch=false;
     bool singleSampleBatch=false,drawDeferred=false,nativeSubmitted=false;
     unsigned singleSampleQueued=0,equalDepthQueued=0,depthSeeds=0,depthBarriers=0,depthReadOnlySkips=0,singleDepthRetry=0;
 #ifdef NORTHLIGHT_MATERIAL_DEPTH_TEST
@@ -363,6 +365,16 @@ class NorthlightAutoBump {
     }
     bool seedSingleDepth(){
         if(singleDepthRetry)return false;
+        if(useSceneDepthScratch){
+            if(!depthScratch)return false;
+            if(singleDepth!=depthScratch){
+                drop(singleDepthSurface);drop(singleDepth);
+                D3DSURFACE_DESC desc{};
+                if(FAILED(depthScratch->GetLevelDesc(0,&desc))||desc.Width!=width||desc.Height!=heightPixels||
+                   FAILED(depthScratch->GetSurfaceLevel(0,&singleDepthSurface)))return false;
+                singleDepth=depthScratch;singleDepth->AddRef();
+            }
+        }
         if(!singleDepth){
             MEMORYSTATUSEX memory{};memory.dwLength=sizeof memory;const uint64_t bytes=uint64_t(width)*heightPixels*4;
             if(bytes>(64ull<<20)||!GlobalMemoryStatusEx(&memory)||memory.ullAvailVirtual<bytes+(128ull<<20)){singleDepthRetry=60;return false;}
@@ -481,6 +493,7 @@ class NorthlightAutoBump {
                 // Immediate 1x capture leaves native depth read-only; the private
                 // replay must reproduce the native draw's depth writes.
                 packet->states[0]=saved.states[0].value;
+                packet->splitDepth=useSceneDepthScratch&&saved.states[1].value&&packet->raster[2]==D3DCMP_LESSEQUAL;
                 if(deferred.empty()&&!seedSingleDepth())return false;
             }
             const auto slot=mesh?std::lower_bound(deferredMeshes.begin(),deferredMeshes.end(),mesh.get(),
@@ -544,6 +557,24 @@ public:
     bool pendingTextures()const{return !deferredTextures.empty();}
     bool samplesTexture(void* texture)const{return texture&&deferredTextures.count(texture);}
     void beforeTextureWrite(void* texture){if(texture&&deferredTextures.count(texture)){++textureBarriers;finishCaptures();}}
+    void setSceneDepthScratch(bool use,IDirect3DTexture9* texture){
+        if(useSceneDepthScratch!=use){
+            beforeDepthChange();
+            drop(singleDepthSurface);drop(singleDepth);
+            useSceneDepthScratch=use;
+        }
+        depthScratch=texture;
+    }
+    void beforeSceneDepthWrite(IDirect3DTexture9* texture){
+        if(useSceneDepthScratch&&singleDepth==texture)beforeDepthChange();
+    }
+    void discardSceneDepthScratch(IDirect3DTexture9* texture){
+        if(!useSceneDepthScratch)return;
+        if(depthScratch==texture)depthScratch=nullptr;
+        if(singleDepth!=texture)return;
+        beforeDepthChange();
+        drop(singleDepthSurface);drop(singleDepth);
+    }
     void beforeDepthChange(){if(singleSampleBatch&&!deferred.empty()){++depthBarriers;finishCaptures();}}
     void beforeNativeDraw(){
         if(!drawDeferred&&singleSampleBatch&&!deferred.empty()){
@@ -689,21 +720,40 @@ public:
             bool instanced=false;unsigned consumed=1;
             originalVertexState=true;
             if(SUCCEEDED(hr)){P::Scope draw(profile,P::CaptureDraw,packet->tag);
-                const auto batch=planMaterialPalette(at);
+                const auto batch=packet->splitDepth?MaterialPaletteDraw{}:planMaterialPalette(at);
                 if(batch.instances){
                     hr=drawMaterialPalette(at,batch,instanced);
                     if(instanced){consumed=batch.instances;originalVertexState=false;if(!packet->sourceReady)++residentDraws;}
                 }
                 draw.work(uint64_t(packet->sourceReady?packet->sourceDraw.primitives:mesh->primitiveCount)*consumed);
-                if(!instanced&&SUCCEEDED(hr)&&packet->sourceReady){
-                    const auto& source=packet->sourceDraw;
-                    ++sourceDraws;
-                    hr=d->DrawIndexedPrimitive(source.topology,source.base,source.minimum,source.vertices,source.start,source.primitives);
-                }
-                else if(!instanced&&SUCCEEDED(hr)&&resident){++residentDraws;hr=mesh->indexed?d->DrawIndexedPrimitive(mesh->topology,placement.baseVertex(),placement.minimumVertex(),mesh->vertexCount,placement.indexStart,mesh->primitiveCount):d->DrawPrimitive(mesh->topology,placement.vertexBase,mesh->primitiveCount);}
-                else if(!instanced&&SUCCEEDED(hr)){++uploadDraws;uploadDrawBytes+=mesh->byteSize();hr=mesh->indexed?d->DrawIndexedPrimitiveUP(mesh->topology,0,mesh->vertexCount,mesh->primitiveCount,mesh->indices.data(),D3DFMT_INDEX32,mesh->streams[0].bytes.data(),mesh->streams[0].stride):d->DrawPrimitiveUP(mesh->topology,mesh->primitiveCount,mesh->streams[0].bytes.data(),mesh->streams[0].stride);
-                    // Keep no binding assumptions across the UP fallback.
-                    frequencyKnown=viewportKnown=auxiliaryKnown=false;vertexKnown=indexKnown=false;auxiliaryWritesKnown=false;}}
+                if(!instanced&&SUCCEEDED(hr)){
+                    auto issue=[&]()->HRESULT {
+                        if(packet->sourceReady){
+                            const auto& source=packet->sourceDraw;
+                            ++sourceDraws;
+                            return d->DrawIndexedPrimitive(source.topology,source.base,source.minimum,source.vertices,source.start,source.primitives);
+                        }
+                        if(resident){
+                            ++residentDraws;
+                            return mesh->indexed?d->DrawIndexedPrimitive(mesh->topology,placement.baseVertex(),placement.minimumVertex(),mesh->vertexCount,placement.indexStart,mesh->primitiveCount):d->DrawPrimitive(mesh->topology,placement.vertexBase,mesh->primitiveCount);
+                        }
+                        ++uploadDraws;uploadDrawBytes+=mesh->byteSize();
+                        frequencyKnown=viewportKnown=auxiliaryKnown=false;vertexKnown=indexKnown=false;auxiliaryWritesKnown=false;
+                        return mesh->indexed?d->DrawIndexedPrimitiveUP(mesh->topology,0,mesh->vertexCount,mesh->primitiveCount,mesh->indices.data(),D3DFMT_INDEX32,mesh->streams[0].bytes.data(),mesh->streams[0].stride):d->DrawPrimitiveUP(mesh->topology,mesh->primitiveCount,mesh->streams[0].bytes.data(),mesh->streams[0].stride);
+                    };
+                    // The immediate material pass sees the depth before this draw.
+                    // Reapply the cutout's depth separately for the next packet.
+                    if(packet->splitDepth)step(d->SetRenderState(D3DRS_ZWRITEENABLE,FALSE));
+                    if(SUCCEEDED(hr))hr=issue();
+                    if(packet->splitDepth&&SUCCEEDED(hr)){
+                        step(d->SetRenderState(D3DRS_ZWRITEENABLE,packet->states[0]));
+                        step(d->SetRenderState(D3DRS_COLORWRITEENABLE,0));
+                        if(attachAuxiliary)step(d->SetRenderState(D3DRS_COLORWRITEENABLE1,0));
+                        if(SUCCEEDED(hr))hr=issue();
+                        step(d->SetRenderState(D3DRS_COLORWRITEENABLE,packet->states[4]));
+                        if(attachAuxiliary)step(d->SetRenderState(D3DRS_COLORWRITEENABLE1,stableAuxiliary?(packet->occlusion?15:0):packet->states[13]));
+                    }
+                }}
             if(FAILED(hr)){success=false;break;}
             previous=packet.get();flushed+=consumed;draws[packet->tag/4-1]+=consumed;
             if(consumed>1){if(packet->occlusion)nearCapturePackets+=consumed-1;else farCapturePackets+=consumed-1;}
@@ -809,7 +859,7 @@ public:
         if(batch){retirement.finish();logf("MATERIAL_RESET queuedCpuMiB=%.3f ownerThreadGpuRelease=1",double(retirement.queuedBytes())/1048576);}
     }
     ~NorthlightAutoBump(){reset();drop(fusedM2ClearPS);drop(fusedM2MergePS);drop(fusedM2PackedMergePS);for(auto& v:vertices){drop(v.second.patched);drop(v.second.shared);drop(v.second.pending);}for(auto*& p:shaders)drop(p);for(auto*& p:sharedShaders)drop(p);for(auto*& p:normalShaders)drop(p);for(auto& groups:nativeCaptures)for(auto& variants:groups)for(auto& n:variants){drop(n.second.shader);drop(n.second.source);}for(auto& formats:fusedM2Pixels)for(auto& variants:formats)for(auto& n:variants){drop(n.second.shader);drop(n.second.source);}}
-    void reset(NorthlightStreaming::CpuRetirementBatch* batch=nullptr,bool preserveCaptureSources=false){endNativeMaterialDraw();resetFusedM2Msaa();fusedM2PackedUnavailable=false;worldLightStamp=~std::uint64_t(0);drop(sceneColor.owner);drop(sceneDepth.owner);drop(singleDepthSurface);drop(singleDepth);captureStates.clear();clearDeferred();sparePackets.clear();deferredSnapshots.clearIndexCache(nullptr,batch,preserveCaptureSources);deferredDeclarations.clear();materialPalette.reset();deferredGPU.clear();sharedMaps[0]={};sharedMaps[1]={};sharedPOM.reset(batch);displacement.reset(batch,preserveCaptureSources);normals.reset();drop(captureDepth);drop(target);drop(height);drop(occlusionTarget);drop(occlusionMap);occlusionUnavailable=false;occlusionRetry=0;singleDepthRetry=0;width=heightPixels=0;cleared=privateDepthCleared=drawn=failed=occlusionCleared=occlusionDrawn=false;}
+    void reset(NorthlightStreaming::CpuRetirementBatch* batch=nullptr,bool preserveCaptureSources=false){endNativeMaterialDraw();resetFusedM2Msaa();fusedM2PackedUnavailable=false;worldLightStamp=~std::uint64_t(0);depthScratch=nullptr;drop(sceneColor.owner);drop(sceneDepth.owner);drop(singleDepthSurface);drop(singleDepth);captureStates.clear();clearDeferred();sparePackets.clear();deferredSnapshots.clearIndexCache(nullptr,batch,preserveCaptureSources);deferredDeclarations.clear();materialPalette.reset();deferredGPU.clear();sharedMaps[0]={};sharedMaps[1]={};sharedPOM.reset(batch);displacement.reset(batch,preserveCaptureSources);normals.reset();drop(captureDepth);drop(target);drop(height);drop(occlusionTarget);drop(occlusionMap);occlusionUnavailable=false;occlusionRetry=0;singleDepthRetry=0;width=heightPixels=0;cleared=privateDepthCleared=drawn=failed=occlusionCleared=occlusionDrawn=false;}
     void endFrame(){
         drop(sceneColor.owner);drop(sceneDepth.owner);
         deferredDiscarded+=unsigned(deferred.size());clearDeferred();
@@ -1134,7 +1184,10 @@ public:
         // Packaged DXVK preserves native depth across DS switches, including
         // Discard surfaces. Keep the old admission on other D3D9 backends.
         const bool equalDepth=equalDepthBatchAllowed&&zfunc==D3DCMP_EQUAL;
-        if(deferredSafe&&!multisampled&&domain==4&&modes[3]!=2&&(!alpha||equalDepth)&&!s[5].value){
+        const bool splitAlpha=useSceneDepthScratch&&equalDepthBatchAllowed&&zfunc==D3DCMP_LESSEQUAL&&
+            (!needsOcclusion||independentCaptureWrites);
+        if(deferredSafe&&!multisampled&&domain==4&&modes[3]!=2&&(!alpha||equalDepth||splitAlpha)&&
+           !s[5].value&&(!useSceneDepthScratch||depthScratch)){
             // EQUAL leaves depth unchanged, even within an overlapping alpha
             // draw. Range clipping changes only colour, as in immediate replay.
             float nearest=0;

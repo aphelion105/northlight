@@ -1267,6 +1267,7 @@ private:
     // otherwise it only returns false (the rain depth snapshot). RT1 is unbound first: SavedState would restore it under a different draw.
     bool resolveDepthInto(IDirect3DTexture9* target, bool fatal) {
         rainMrtUnbind();
+        if(autoBump&&target==depthTex&&target)autoBump->beforeSceneDepthWrite(target);
         if (!terrain || !worldDepth || !target || !projectionValid) return false;
 #if defined(_WIN64) || defined(NORTHLIGHT_X86_D3D9ON12)
         if(hdr.nativeOutput){
@@ -1739,6 +1740,11 @@ private:
 #endif
     template<NorthlightWaterRenderer::UserPointer UserPointer,class Raw,class Draw> void captureGameDraw(IDirect3DVertexShader9* vs,const NorthlightAutoDisplacement::Args& geometry,Raw raw,Draw draw){
         constexpr bool userMemory=UserPointer!=NorthlightWaterRenderer::NoUserPointer;
+        // DF24 is the normal post-effect snapshot. It is writable scratch until
+        // the first scene-depth resolve, which drains material work before copying.
+        const bool shareM2Depth=selectedBackend==NorthlightBackend::Kind::Dxvk&&depthTex&&
+            depthSnapshotFormat==D3DFORMAT(MAKEFOURCC('D','F','2','4'));
+        if(autoBump)autoBump->setSceneDepthScratch(shareM2Depth,shareM2Depth&&!captured?depthTex:nullptr);
 #ifdef NORTHLIGHT_PROFILE_BUILD
         static const bool fusedM2Enabled=[]{
             const auto* value=std::getenv("NORTHLIGHT_GAME_M2_FUSED_CAPTURE");
@@ -1748,9 +1754,9 @@ private:
         constexpr bool fusedM2Enabled=true;
 #endif
         if constexpr(!userMemory)if(autoBump&&fusedM2Enabled){
-            bool canFuse=!hdr.active;
+            bool canFuse=!hdr.active&&!shareM2Depth;
 #if defined(_WIN64) && !defined(NORTHLIGHT_REPLAY_STAND)
-            if(hdr.active&&hdr.dxvk&&hdr.stream&&!hdrUiPhase&&hdrLegacyBack&&
+            if(!shareM2Depth&&hdr.active&&hdr.dxvk&&hdr.stream&&!hdrUiPhase&&hdrLegacyBack&&
                hdr.logical.MultiSampleType==D3DMULTISAMPLE_NONE&&(!modelNormals||!modelNormals->hybridRequested())){
                 static const bool tryLegacyHdr=[]{
                     const char* option=std::getenv("NORTHLIGHT_X64_HDR_M2_FUSION");

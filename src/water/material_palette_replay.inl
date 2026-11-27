@@ -7,7 +7,7 @@
     };
 
     static bool sameMaterialCaptureState(const Deferred& a,const Deferred& b){
-        return a.tag==b.tag&&a.vertex==b.vertex&&a.pixel==b.pixel&&a.declaration==b.declaration&&
+        return !a.splitDepth&&!b.splitDepth&&a.tag==b.tag&&a.vertex==b.vertex&&a.pixel==b.pixel&&a.declaration==b.declaration&&
             a.vertexFirst==b.vertexFirst&&a.vertexCount==b.vertexCount&&
             a.vertexFloatOnly==b.vertexFloatOnly&&a.pixelFloatOnly==b.pixelFloatOnly&&
             (a.vertexFloatOnly||(!std::memcmp(a.vertexInt,b.vertexInt,sizeof a.vertexInt)&&!std::memcmp(a.vertexBool,b.vertexBool,sizeof a.vertexBool)))&&
