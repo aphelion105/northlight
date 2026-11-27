@@ -16,9 +16,12 @@ inline constexpr unsigned long RoomRef[]={AuthoredBit,AuthoredBit|PrelitBit,Auth
                                          AuthoredBit|PrelitBit|Bit,PrelitBit|Bit};
 inline constexpr float RoomAmbientShare[]={0.f,1.f/3.f,2.f/3.f,1.f,.25f,.8f};
 inline constexpr unsigned RoomLevelCount=sizeof(RoomRef)/sizeof(RoomRef[0]);
-// Rigid and skinned M2s can both carry a native room light bank.
-inline constexpr bool modelRoomBank(bool menuScene,unsigned family){
-    return !menuScene&&family==3;
+// Posed (skinned) M2s let measured probe occlusion attenuate their native room
+// bank. Rigid doodads keep it, like the authored WMO room around them: probes
+// cannot measure authored room fill and read nearly black inside, which left
+// props at a fraction of the walls' brightness.
+inline constexpr bool modelRoomBank(bool menuScene,unsigned family,bool skinned){
+    return !menuScene&&family==3&&skinned;
 }
 inline constexpr unsigned receiverMaskKind(bool prelit,bool authored,unsigned roomLevel){
     return prelit||(authored&&roomLevel==3)?4u:authored?5u+roomLevel:3u;
