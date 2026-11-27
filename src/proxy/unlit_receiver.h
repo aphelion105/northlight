@@ -16,9 +16,9 @@ inline constexpr unsigned long RoomRef[]={AuthoredBit,AuthoredBit|PrelitBit,Auth
                                          AuthoredBit|PrelitBit|Bit,PrelitBit|Bit};
 inline constexpr float RoomAmbientShare[]={0.f,1.f/3.f,2.f/3.f,1.f,.25f,.8f};
 inline constexpr unsigned RoomLevelCount=sizeof(RoomRef)/sizeof(RoomRef[0]);
-// Rigid and skinned M2s can both carry a native room light bank.
-inline constexpr bool modelRoomBank(bool menuScene,unsigned family){
-    return !menuScene&&family==3;
+// Posed M2s admit probe occlusion. Rigid M2s can keep their authored room bank.
+inline constexpr bool modelRoomBank(bool menuScene,unsigned family,bool skinned,bool preserveRigidRoomLight){
+    return !menuScene&&family==3&&(skinned||!preserveRigidRoomLight);
 }
 inline constexpr unsigned receiverMaskKind(bool prelit,bool authored,unsigned roomLevel){
     return prelit||(authored&&roomLevel==3)?4u:authored?5u+roomLevel:3u;

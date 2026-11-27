@@ -40,9 +40,11 @@ int main(){
  }
  assert(!NorthlightUnlitReceiver::shader(nullptr,0,true));
  using namespace NorthlightUnlitReceiver;
- // This gate intentionally has no skinned flag. Both M2 layouts use the same
- // native room-bank proof, while menus and non-M2 draws do not request a level.
- assert(modelRoomBank(false,3)&&!modelRoomBank(true,3)&&!modelRoomBank(false,2));
+ for(bool preserve:{false,true}){
+  assert(modelRoomBank(false,3,true,preserve));
+  assert(modelRoomBank(false,3,false,preserve)==!preserve);
+  assert(!modelRoomBank(true,3,true,preserve)&&!modelRoomBank(false,2,true,preserve));
+ }
  assert(receiverMaskKind(false,false,0)==3&&receiverMaskKind(true,false,0)==4);
  assert(receiverMaskKind(false,true,0)==5&&receiverMaskKind(false,true,3)==4);
  assert(receiverMaskKind(false,true,RoomSharedTint)==5+RoomSharedTint);

@@ -981,7 +981,10 @@ probe occlusion affect both terms, with removal capped at 80% of the native
 room light so materials remain legible where probes measure very little bounce.
 Different-coloured terms limit probe occlusion to the native ambient share.
 The original draw marks that share using the existing stencil bits, rounded
-down to one quarter, one third or two thirds across RGB.
+down to one quarter, one third or two thirds across RGB. Rigid M2 doodads and
+the WMO around them preserve their baked room light. The diffuse room term in
+the probes adds indirect light without representing the full baked room bank.
+[Inn props](inn-rigid-m2-room-fill-20261127.md)
 The prelit compositor handles only the grades present in the frame. GI brightness controls
 added indirect radiance independently of measured occlusion; current local and
 directional light remain separate. Missing probes and zero prelit mix preserve

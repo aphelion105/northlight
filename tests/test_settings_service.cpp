@@ -37,6 +37,13 @@ int main(int argc,char** argv){
          assert(next.quality.giStrength==config.quality.giStrength&&next.quality.giBrightness==config.quality.giBrightness);
          const Document reloaded(changed[0].bytes());assert(qualityOf(reloaded,"").giPrelitMix==next.quality.giPrelitMix);}
      fails([&]{applyChanges(docs,fields,f->id()+"\t101\n");});fails([&]{applyChanges(docs,fields,f->id()+"\t-1\n");});}
+    {const auto docs=factoryDocuments();const auto config=configOf(docs,"");const auto fields=schema(docs,docs,config,"");
+     const auto f=std::find_if(fields.begin(),fields.end(),[](const Field& value){return value.key=="GIPreserveRigidRoomLight";});
+     assert(f!=fields.end()&&f->kind=="check"&&f->saved=="1"&&f->apply=="F");
+     const auto changed=applyChanges(docs,fields,f->id()+"\t0\n");const auto next=configOf(changed,"");
+     assert(liveQualityUpdate(config.quality,next.quality).giPreserveRigidRoomLight==0);
+     assert(!giRequestChanged(config.quality,next.quality,config.celestial,next.celestial));
+     assert(qualityOf(Document(changed[0].bytes()),"").giPreserveRigidRoomLight==0);}
     {const auto initial=factoryDocuments();const auto config=configOf(initial,"");const auto fields=schema(initial,initial,config,"");
      for(const char* key:{"NativeMoreLights","NativeModelLightLimit","NativeTerrainLightLimit"}){
          auto f=std::find_if(fields.begin(),fields.end(),[&](const Field& value){return value.key==key;});assert(f!=fields.end());

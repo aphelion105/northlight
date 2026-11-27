@@ -126,8 +126,8 @@ old_resolution_inputs=dict(inputs,cache_versions=dict(iwc.CACHE_VERSIONS,scene=1
 assert iwc.plan(base,{'inputs':old_resolution_inputs,'maps_built':iwc.MAPS,'digests':iwc.step_digests(old_resolution_inputs)},cache,False,'z')==('full',iwc.POST)
 without_room_diffuse=dict(inputs,cache_versions=dict(iwc.CACHE_VERSIONS,scene=2))
 assert iwc.plan(base,{'inputs':without_room_diffuse,'maps_built':iwc.MAPS,'digests':iwc.step_digests(without_room_diffuse)},cache,False,'z')==('full',iwc.POST)
-without_anchor_variants=dict(inputs,cache_versions=dict(iwc.CACHE_VERSIONS,scene=3))
-assert iwc.plan(base,{'inputs':without_anchor_variants,'maps_built':iwc.MAPS,'digests':iwc.step_digests(without_anchor_variants)},cache,False,'z')==('full',iwc.POST)
+without_lantern_variant=dict(inputs,cache_versions=dict(iwc.CACHE_VERSIONS,scene=3))
+assert iwc.plan(base,{'inputs':without_lantern_variant,'maps_built':iwc.MAPS,'digests':iwc.step_digests(without_lantern_variant)},cache,False,'z')==('full',iwc.POST)
 old_fog_inputs=dict(inputs,cache_versions=dict(iwc.CACHE_VERSIONS,fog=1))
 assert iwc.plan(base,{'inputs':old_fog_inputs,'maps_built':iwc.MAPS,'digests':iwc.step_digests(old_fog_inputs)},cache,False,'z')==('partial',['fog'])
 assert 'expansion_atmosphere.h' in iwc.STEP_SOURCES['fog'] and 'expansion_atmosphere.h' in inputs['sources']

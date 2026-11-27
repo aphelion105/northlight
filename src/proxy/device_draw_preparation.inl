@@ -65,7 +65,8 @@
                 unsigned roomLevel=0;
                 const auto& receiver=classifyVs(vs);
                 // Native M2 light banks also contain ambient on rigid doodads.
-                const bool modelRoomLighting=NorthlightUnlitReceiver::modelRoomBank(menuScene,receiver.family);
+                const bool modelRoomLighting=NorthlightUnlitReceiver::modelRoomBank(
+                    menuScene,receiver.family,receiver.skinned,world->surfaceSettings().giPreserveRigidRoomLight!=0);
                 const bool authoredReceiver=receiver.authoredLighting&&!(receiver.entry&(kUnlitTag|kPrelitTag))&&
                     world->authoredReceiverLighting(receiver.family==3,modelRoomLighting?&roomLevel:nullptr);
                 if((nameMask.armed()&&drawUiHashVS)||nameMask.hasMarks()||unlitMarks||prelitMarks||authoredMarks||authoredReceiver||(receiver.entry&(kUnlitTag|kPrelitTag))){

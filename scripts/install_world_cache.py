@@ -90,8 +90,7 @@ FORMAT = 'northlight-world-cache-install/1'
 # the affected revision when generated data changes; source hashes below are
 # build provenance and support reading pre-versioned manifests only.
 # Scene v3 stores authored indoor diffuse lighting for GI probes.
-# Scene v4 resolves reviewed native-anchor model variants (hanging lantern
-# flame); lights follow the scene revision.
+# Scene v4 resolves reviewed native-anchor variants for the hanging lantern.
 # Fog v2 includes indoor exclusion bounds for the added expansion regions.
 CACHE_VERSIONS = {'scene': 4, 'lights': 2, 'fog': 2, 'celestial': 1, 'instances': 1, 'validation': 1}
 # Source provenance and legacy digest dependencies. New cache compatibility is

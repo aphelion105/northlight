@@ -93,6 +93,7 @@ const std::map<std::string,const char*> Labels={
     {"HDRExposureMode","Exposure mode"},{"HDRPeakMode","Peak mode"},{"HDRWideBloom","Wide soft bloom"},{"HDRBloomStrength","Bloom strength"},{"HDRLegacyExpansion","Legacy highlight expansion (EV)"},
     {"HDRAutoMinEV","Auto exposure minimum (EV)"},{"HDRAutoMaxEV","Auto exposure maximum (EV)"},{"HDRLightAdaptation","Bright adaptation T90 (s)"},{"HDRDarkAdaptation","Dark adaptation T90 (s)"},
     {"NightBrightness","Night brightness (%)"},{"EquipmentLights","Equipment and effect lights"},
+    {"GIPreserveRigidRoomLight","Preserve baked room light on static props"},
     {"ShadowRefreshCpuMs","Shadow map refresh target (ms)"},
     {"CaptureBudgetMiB","Capture memory (MiB)"},{"ActorShadowBudgetMiB","Character shadow memory (MiB)"},{"MinSkinnedTriangles","Minimum character triangles"},{"LocalLightLimit","Total local lights (0 = off)"},{"GpuBudgetMs","GPU effect budget (ms)"},{"ActorShadowCpuMs","Shadow CPU budget (ms)"},
     {"CommandStream","Separate render thread"},{"StreamFramesAhead","Buffered frames"},{"StreamFrameSkip","Skip delayed frames"},{"StreamOcclusionLocal","Local occlusion results"},{"ReplayJobs","Parallel effect preparation"},{"FrameDrawGates","Skip inactive draw work"},
@@ -176,6 +177,7 @@ const std::map<std::string,std::vector<const char*>> Help={
     {"GIStrength",{"Influence of measured sky light, bounced color and occlusion on terrain and objects. 120 fully replaces native ambient; 60 restores the old half blend; up to 240 strengthens the contrast. 0 suspends GI work."}},
     {"GIBrightness",{"Adjusts measured indirect light: negative values darken, positive values brighten. -100 removes it, 0 keeps it unchanged, +100 doubles it. Missing probes keep native lighting; direct sun and lamps are unchanged."}},
     {"GIPrelitMix",{"Blend GI with the game's authored building lighting. 0% preserves it; 100% applies resident-probe occlusion and bounce. Missing probes preserve the original. Direct sunlight, moonlight and lamps are unchanged."}},
+    {"GIPreserveRigidRoomLight",{"Keep the game's authored room lighting on rigid props such as paintings and shelves. Turn off to let GI probes darken that light according to the baked lighting blend."}},
     {"AuroraStrength",{"Scales all native Northrend aurora emission and its light: 0 turns it off, 100 is normal, 200 doubles it. Extra green/purple emission strengthens it between sunset and moonrise. Surface illumination requires GI and resident probes; roofs and walls occlude it. Independent of enhanced rain/snow and fog."}},
     {"GIRays",{"Samples the surroundings in more directions for each lighting probe. More rays improve indirect lighting stability and detail, but increase background CPU work."}},
     {"GIBounces",{"How many times indirect light can reflect between surfaces. More bounces carry light farther into enclosed spaces and cost more background CPU time."}},
@@ -289,8 +291,8 @@ const std::map<std::string,std::vector<const char*>> Help={
 struct Group { const char* id; const char* title; const char* master; const char* fields; const char* advanced; };
 struct Section { const char* id; const char* title; const char* keys; std::vector<Group> groups; bool open; };
 const std::vector<Section> QualitySections={
-    {"lighting","Lighting & AO","GI GIStrength GIBrightness GIPrelitMix GIRays GIBounces GIProbeMoveStep GIDynamicProbes GIThreads GIFastBVH GIDistance GIChunkRadius GIProbeAhead NightBrightness ContactAO AOMethod AOQuality AOStrength AORadius LocalLights LocalLightLimit EquipmentLights PointShadows PointShadowLimit PointShadowDistance PointShadowRefreshMs PointShadowFacesPerFrame PointShadowAdaptiveRefresh",{
-        {"gi","Global illumination","GI","GIStrength GIBrightness GIPrelitMix GIDistance GIChunkRadius GIBounces","GIRays GIProbeMoveStep GIDynamicProbes GIThreads GIFastBVH GIProbeAhead"},
+    {"lighting","Lighting & AO","GI GIStrength GIBrightness GIPrelitMix GIPreserveRigidRoomLight GIRays GIBounces GIProbeMoveStep GIDynamicProbes GIThreads GIFastBVH GIDistance GIChunkRadius GIProbeAhead NightBrightness ContactAO AOMethod AOQuality AOStrength AORadius LocalLights LocalLightLimit EquipmentLights PointShadows PointShadowLimit PointShadowDistance PointShadowRefreshMs PointShadowFacesPerFrame PointShadowAdaptiveRefresh",{
+        {"gi","Global illumination","GI","GIStrength GIBrightness GIPrelitMix GIPreserveRigidRoomLight GIDistance GIChunkRadius GIBounces","GIRays GIProbeMoveStep GIDynamicProbes GIThreads GIFastBVH GIProbeAhead"},
         {"ao","Ambient occlusion","ContactAO","AOMethod AOQuality AOStrength AORadius",""},
         {"ambient","Environment",nullptr,"NightBrightness",""},
         {"local","Local illumination","LocalLights","LocalLightLimit PointShadows PointShadowLimit EquipmentLights","PointShadowDistance PointShadowRefreshMs PointShadowFacesPerFrame PointShadowAdaptiveRefresh"}},true},
