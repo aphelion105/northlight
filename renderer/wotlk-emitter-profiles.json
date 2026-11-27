@@ -54,7 +54,12 @@
       "skin_sha256": "d5aa38426fc55118e652e56af1bffd3270d5985e3b558ef477d53d44f2e46d96",
       "source": 0,
       "position": [0.01142, 0, 0.38632],
-      "basis": "Center of the additive glow batch inside the rigid lantern, at the tip of the modeled flame. The native light is below the entire replacement mesh."
+      "basis": "Center of the additive glow batch inside the rigid lantern, at the tip of the modeled flame. The native light is below the entire replacement mesh.",
+      "variants": {
+        "858fc61d42958c6156f64f28fe184b085fab355784e067c53f10e1a6dc779681": {
+          "basis": "Same pinned skin; its additive glow batch is centered at (0.011, 0, 0.386), the reviewed flame tip. The native light remains at local z -5.93, below the mesh (Northrend inn capture, 2026-11-27)."
+        }
+      }
     }
   },
   "native_placement_ranges": {

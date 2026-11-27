@@ -23,7 +23,13 @@ def _native_anchors():
 def _reviewed_anchor(assets,path,blob,sources):
     """A reviewed replacement mesh can move a native bulb without changing its transport."""
     pin=_native_anchors().get(path.lower().replace('/','\\'))
-    if not pin or hashlib.sha256(blob).hexdigest()!=pin['model_sha256']:return {}
+    if not pin:return {}
+    sha=hashlib.sha256(blob).hexdigest()
+    if sha!=pin['model_sha256']:
+        # A reviewed variant of the same path; omitted fields are the pin's own.
+        variant=pin.get('variants',{}).get(sha)
+        if variant is None:return {}
+        pin={**pin,**variant}
     source=next((s for s in sources if s[4]==pin['source'] and s[5]==2 and s[6]==2),None)
     if source is None:return {}
     try:skin=assets.read(path[:-3]+'00.skin')
