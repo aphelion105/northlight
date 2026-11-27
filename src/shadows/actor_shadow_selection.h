@@ -530,16 +530,17 @@ inline Result choose(std::vector<Draw>& draws,Scratch& scratch,std::size_t budge
         a.search=!(e&&e->settled&&!(m>tuning.settledMove*tuning.settledMove))||diagnostics;anySearch=anySearch||a.search;}
     // Every sampled vertex of every non-rigid actor in a reach-sized xy grid.
     const float reach=AttachRadius*KeepReach;
-    auto cellOf=[&](float x,float y,int dx,int dy){
-        const auto cx=std::uint32_t(std::int32_t(std::floor(x/reach))+dx),cy=std::uint32_t(std::int32_t(std::floor(y/reach))+dy);
-        return std::uint64_t(cx)<<32|cy;};
+    const auto gridCoordinate=[reach](float position){
+        return std::uint32_t(std::int32_t(std::floor(position/reach)));
+    };
+    const auto cellOf=[](std::uint32_t x,std::uint32_t y){return std::uint64_t(x)<<32|y;};
     // A draw that reused its predecessor's sample (same group, shader and
     // declaration) adds the same point again: skipped, the searches are unchanged.
     if(anySearch)for(std::size_t n=0;n<actors.size();++n){const auto& a=actors[n];if(a.rigid)continue;
         for(std::size_t i=a.first;i<a.first+a.count;++i){const auto& d=draws[i];
             if(!(d.known&&std::isfinite(d.distanceSquared)&&d.distanceSquared>=0))continue;
             if(!points.empty()){const auto& p=points.back();if(p.actor==n&&p.x==d.at[0]&&p.y==d.at[1]&&p.z==d.at[2])continue;}
-            points.push_back({cellOf(d.at[0],d.at[1],0,0),d.at[0],d.at[1],d.at[2],n});}}
+            points.push_back({cellOf(gridCoordinate(d.at[0]),gridCoordinate(d.at[1])),d.at[0],d.at[1],d.at[2],n});}}
     std::sort(points.begin(),points.end(),[](const Point& a,const Point& b){return a.cell<b.cell||(a.cell==b.cell&&(a.x<b.x||(a.x==b.x&&a.actor<b.actor)));});
     auto& linkedBy=scratch.linkedBy;
     if(anySearch)linkedBy.assign(actors.size(),SIZE_MAX);
@@ -555,24 +556,33 @@ inline Result choose(std::vector<Draw>& draws,Scratch& scratch,std::size_t budge
             if(previousSample&&previousSample[0]==d.at[0]&&previousSample[1]==d.at[1]&&previousSample[2]==d.at[2])continue;
             previousSample=d.at;
             const Point* sameAt=nullptr;
-            // The three cells of a column are adjacent in the sorted points (one search)
-            // unless the row index wraps; the visiting order is the cell-by-cell order.
-            for(int dx=-1;dx<=1;++dx)for(int dy=-1;dy<=1;++dy){const auto cell=cellOf(d.at[0],d.at[1],dx,dy),last=cellOf(d.at[0],d.at[1],dx,1);
-                const bool column=dy==-1&&cell<last;if(dy>-1&&cellOf(d.at[0],d.at[1],dx,-1)<last)break;
-                auto it=std::lower_bound(points.begin(),points.end(),cell,[](const Point& p,std::uint64_t c){return p.cell<c;});
-                for(;it!=points.end()&&(column?it->cell<=last:it->cell==cell);++it){const float x=it->x-d.at[0],y=it->y-d.at[1],z=it->z-d.at[2],q=x*x+y*y+z*z;
-                    if(q>reach*reach)continue;
-                    // Both link consumers depend only on the first encounter
-                    // with a body, even when several samples reach it.
-                    if(q<=AttachRadius*AttachRadius&&linkedBy[it->actor]!=n){
-                        linkedBy[it->actor]=n;
-                        links.emplace_back(n,it->actor);
+            // Visit a column with one search unless the unsigned row wraps.
+            // Keep the original row order in that case for attachment ties.
+            const auto cx=gridCoordinate(d.at[0]),cy=gridCoordinate(d.at[1]);
+            const bool contiguous=cy!=0&&cy!=UINT32_MAX;
+            const int lastRowDelta=contiguous?-1:1;
+            for(int dx=-1;dx<=1;++dx){
+                const auto cellX=cx+std::uint32_t(dx);
+                for(int dy=-1;dy<=lastRowDelta;++dy){
+                    const auto cell=cellOf(cellX,cy+std::uint32_t(dy));
+                    const auto last=contiguous?cellOf(cellX,cy+1):cell;
+                    auto it=std::lower_bound(points.begin(),points.end(),cell,[](const Point& p,std::uint64_t c){return p.cell<c;});
+                    for(;it!=points.end()&&it->cell<=last;++it){const float x=it->x-d.at[0],y=it->y-d.at[1],z=it->z-d.at[2],q=x*x+y*y+z*z;
+                        if(q>reach*reach)continue;
+                        // Both link consumers depend only on the first encounter
+                        // with a body, even when several samples reach it.
+                        if(q<=AttachRadius*AttachRadius&&linkedBy[it->actor]!=n){
+                            linkedBy[it->actor]=n;
+                            links.emplace_back(n,it->actor);
+                        }
+                        if(e&&e->attachment&&same==SIZE_MAX&&actors[it->actor].key==e->bodyKey&&actors[it->actor].located&&
+                           (!sameAt||it->x<sameAt->x||(it->x==sameAt->x&&it->actor<sameAt->actor))){float b=0,c=0; /* c: moved with the camera (radius only) */
+                            for(unsigned k=0;k<3;++k){const float t=actors[it->actor].at[k]-e->bodyAt[k];b+=t*t;c+=(t-move[k])*(t-move[k]);}
+                            if(b<=IdentityTolerance*IdentityTolerance||(moved>0&&c<=IdentityTolerance*IdentityTolerance))sameAt=&*it;}
+                        if(q<best||(q==best&&inReach!=SIZE_MAX&&it->actor<inReach)){best=q;inReach=it->actor;}
                     }
-                    if(e&&e->attachment&&same==SIZE_MAX&&actors[it->actor].key==e->bodyKey&&actors[it->actor].located&&
-                       (!sameAt||it->x<sameAt->x||(it->x==sameAt->x&&it->actor<sameAt->actor))){float b=0,c=0; /* c: moved with the camera (radius only) */
-                        for(unsigned k=0;k<3;++k){const float t=actors[it->actor].at[k]-e->bodyAt[k];b+=t*t;c+=(t-move[k])*(t-move[k]);}
-                        if(b<=IdentityTolerance*IdentityTolerance||(moved>0&&c<=IdentityTolerance*IdentityTolerance))sameAt=&*it;}
-                    if(q<best||(q==best&&inReach!=SIZE_MAX&&it->actor<inReach)){best=q;inReach=it->actor;}}}
+                }
+            }
             if(sameAt)same=sameAt->actor;}
         a.rigidTracked=true;std::memcpy(a.anchor,a.at,sizeof a.anchor);
         const std::size_t tight=best<=AttachRadius*AttachRadius?inReach:SIZE_MAX; /* new attachments need the tight radius */
