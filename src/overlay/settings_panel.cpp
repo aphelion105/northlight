@@ -1,5 +1,6 @@
 // The settings window's contents. See settings_panel.h; the draft rules are in settings_draft.h.
 #include "settings_panel.h"
+#include <cctype>
 #include <deque>
 #include <algorithm>
 #include <array>
@@ -35,8 +36,30 @@ const ImVec4 Accent{0.40f,0.70f,1.00f,1.f},Edited{1.00f,0.74f,0.32f,1.f},Muted{0
     Bad{1.00f,0.48f,0.43f,1.f},Restart{1.00f,0.60f,0.26f,1.f},Heading{0.94f,0.81f,0.52f,1.f};
 }
 
+namespace W {
+void hint(const char* text){
+    ImGui::PushTextWrapPos(0);
+    ImGui::TextColored(Color::Muted,"%s",text);
+    ImGui::PopTextWrapPos();
+}
+
+bool beginCard(const char* id){
+    return ImGui::BeginChild(id,ImVec2(0,0),ImGuiChildFlags_AutoResizeY|ImGuiChildFlags_AlwaysUseWindowPadding,
+                             ImGuiWindowFlags_NoScrollbar|ImGuiWindowFlags_NoScrollWithMouse);
+}
+
+void endCard(){ImGui::EndChild();}
+
+void cardTitle(const char* title){
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextColored(Color::Heading,"%s",title);
+}
+}
+
 // ---- Words (from the retired Lua menu) ----
 const std::map<std::string,const char*> Labels={
+    {"Palette","Whole-world appearance"},{"day_vibrance","Vibrance"},{"dusk_vibrance","Vibrance"},{"night_vibrance","Vibrance"},{"tone_curve_strength","Tone curve strength"},{"day_shadow_level","Shadows (25%)"},{"day_midtone_level","Midtones (50%)"},{"day_highlight_level","Highlights (75%)"},
+    {"night_shadow_level","Shadows (25%)"},{"night_midtone_level","Midtones (50%)"},{"night_highlight_level","Highlights (75%)"},{"day_fog_tint","Fog colour"},{"day_fog_tint_strength","Fog tint strength"},{"day_fog_brightness","Fog brightness"},{"dusk_fog_tint","Fog colour"},{"dusk_fog_tint_strength","Fog tint strength"},{"dusk_fog_brightness","Fog brightness"},{"night_fog_tint","Fog colour"},{"night_fog_tint_strength","Fog tint strength"},{"night_fog_brightness","Fog brightness"},{"shadow_contrast","Shadow contrast"},
     {"WaveStrength","Wave strength"},{"WaveSpeed","Wave speed"},{"WaveCrestShape","Crest shape"},
     {"WaveCrestSharpness","Crest sharpness"},{"RippleStrength","Ripple strength"},
     {"FoamStrength","Foam strength"},{"OpenWaterCrestFoam","Foam on open-water crests"},
@@ -317,11 +340,20 @@ const Preset Presets[3]={{"Quality","Maximum effect detail."},{"Balanced","Quali
 const char* const QuickKeys="Effects GI WorldShadows WorldFog LocalLights ContactAO AutoBump Weather CelestialEffects Godrays ActorShadows FogClouds";
 const char* const CelestialQualityKeys[]={"CelestialEffects","CelestialStyle","TreeCanopy","TreeCrown"};
 // Sidebar pages, in order. quality: the QualitySections id a Quality page draws.
-enum class Page { Overview, Lighting, Materials, Shadows, Atmosphere, Water, Celestial, ShadowRange, Spells, Renderer, Performance, Diagnostics, Count };
+inline bool fogKey(const std::string& key,const std::string& name){return key=="day_"+name||key=="dusk_"+name||key=="night_"+name;}
+constexpr std::array<NorthlightTone::HueBand,NorthlightTone::HueBandCount> HueBands={NorthlightTone::HueBand::Red,NorthlightTone::HueBand::Orange,NorthlightTone::HueBand::Yellow,
+    NorthlightTone::HueBand::Green,NorthlightTone::HueBand::Cyan,NorthlightTone::HueBand::Blue,NorthlightTone::HueBand::Magenta};
+constexpr std::array<NorthlightTone::SelectiveProperty,3> SelectiveProperties={NorthlightTone::SelectiveProperty::HueShift,NorthlightTone::SelectiveProperty::Saturation,NorthlightTone::SelectiveProperty::Lightness};
+constexpr std::array<NorthlightTone::TimeStop,3> GradeTimes={NorthlightTone::TimeStop::Day,NorthlightTone::TimeStop::Dusk,NorthlightTone::TimeStop::Night};
+constexpr std::array<const char*,3> GradeTitles={"Daylight grade","Dusk grade","Night grade"};
+constexpr std::array<const char*,3> FogTitles={"Daylight fog","Dusk fog","Night fog"};
+
+enum class Page { Overview, Lighting, Materials, Shadows, Atmosphere, Water, Regional, Grading, Celestial, ShadowRange, Spells, Renderer, Performance, Diagnostics, Count };
 struct PageInfo { Page page; const char* title; const char* quality; };
 const PageInfo Pages[]={
     {Page::Overview,"Overview",nullptr},{Page::Lighting,"Lighting & AO","lighting"},{Page::Materials,"Materials & parallax","materials"},
-    {Page::Shadows,"Shadows","shadows"},{Page::Atmosphere,"Atmosphere & weather","atmosphere"},{Page::Water,"Water",nullptr},{Page::Celestial,"Sun & moon",nullptr},
+    {Page::Shadows,"Shadows","shadows"},{Page::Atmosphere,"Atmosphere & weather","atmosphere"},{Page::Water,"Water",nullptr},
+    {Page::Regional,"Regional appearance",nullptr},{Page::Grading,"Colour grading",nullptr},{Page::Celestial,"Sun & moon",nullptr},
     {Page::ShadowRange,"Shadow range",nullptr},{Page::Spells,"Spells & names","spells"},{Page::Renderer,"Renderer & HDR","rendering"},
     {Page::Performance,"Performance",nullptr},{Page::Diagnostics,"Diagnostics","diagnostics"},
 };
@@ -334,11 +366,163 @@ std::vector<std::string> sectionKeys(const Section& s){
     return out;
 }
 
+const std::map<std::string,const char*> MapLabels={
+    {"AhnQiraj", "Ruins of Ahn'Qiraj"},
+    {"AhnQirajTemple", "Ahn'Qiraj Temple"},
+    {"ArgentTournamentDungeon", "Trial of the Champion"},
+    {"ArgentTournamentRaid", "Trial of the Crusader"},
+    {"AuchindounDemon", "Auchindoun: Sethekk Halls"},
+    {"AuchindounDraenei", "Auchindoun: Auchenai Crypts"},
+    {"AuchindounEthereal", "Auchindoun: Mana-Tombs"},
+    {"AuchindounShadow", "Auchindoun: Shadow Labyrinth"},
+    {"Azeroth", "Eastern Kingdoms"},
+    {"Azjol_LowerCity", "Ahn'kahet: The Old Kingdom"},
+    {"Azjol_Uppercity", "Azjol-Nerub"},
+    {"Blackfathom", "Blackfathom Deeps"},
+    {"BlackrockDepths", "Blackrock Depths"},
+    {"BlackRockSpire", "Blackrock Spire"},
+    {"BlackTemple", "Black Temple"},
+    {"BlackwingLair", "Blackwing Lair"},
+    {"bladesedgearena", "Blade's Edge Arena"},
+    {"CavernsOfTime", "Opening of the Dark Portal"},
+    {"ChamberOfAspectsBlack", "The Obsidian Sanctum"},
+    {"ChamberofAspectsRed", "The Ruby Sanctum"},
+    {"CoilfangDraenei", "Coilfang: The Slave Pens"},
+    {"CoilfangMarsh", "Coilfang: The Underbog"},
+    {"CoilfangPumping", "Coilfang: The Steamvault"},
+    {"CoilfangRaid", "Coilfang: Serpentshrine Cavern"},
+    {"DalaranArena", "Dalaran Sewers"},
+    {"DalaranPrison", "Violet Hold"},
+    {"DeadminesInstance", "Deadmines"},
+    {"DeathKnightStart", "Ebon Hold"},
+    {"DeeprunTram", "Deeprun Tram"},
+    {"DireMaul", "Dire Maul"},
+    {"DrakTheronKeep", "Drak'Tharon Keep"},
+    {"Expansion01", "Outland"},
+    {"GnomeragonInstance", "Gnomeregan"},
+    {"GruulsLair", "Gruul's Lair"},
+    {"GunDrak", "Gundrak"},
+    {"HallsOfReflection", "Halls of Reflection"},
+    {"HellfireDemon", "Hellfire Citadel: The Blood Furnace"},
+    {"HellfireMilitary", "Hellfire Citadel: The Shattered Halls"},
+    {"HellfireRaid", "Magtheridon's Lair"},
+    {"HellfireRampart", "Hellfire Citadel: Ramparts"},
+    {"HillsbradPast", "The Escape From Durnholde"},
+    {"HyjalPast", "The Battle for Mount Hyjal"},
+    {"IcecrownCitadel", "Icecrown Citadel"},
+    {"IcecrownCitadel5Man", "The Forge of Souls"},
+    {"IsleofConquest", "Isle of Conquest"},
+    {"Kalimdor", "Kalimdor"},
+    {"Karazahn", "Karazhan"},
+    {"Mauradon", "Maraudon"},
+    {"MoltenCore", "Molten Core"},
+    {"MonasteryInstances", "Scarlet Monastery"},
+    {"NetherstormBG", "Eye of the Storm"},
+    {"Nexus70", "The Nexus"},
+    {"Nexus80", "The Oculus"},
+    {"NexusRaid", "The Eye of Eternity"},
+    {"Northrend", "Northrend"},
+    {"NorthrendBG", "Strand of the Ancients"},
+    {"OnyxiaLairInstance", "Onyxia's Lair"},
+    {"OrgrimmarArena", "The Ring of Valor"},
+    {"OrgrimmarInstance", "Ragefire Chasm"},
+    {"PVPLordaeron", "Ruins of Lordaeron"},
+    {"PVPZone01", "Alterac Valley"},
+    {"PVPZone03", "Warsong Gulch"},
+    {"PVPZone04", "Arathi Basin"},
+    {"PVPZone05", "Nagrand Arena"},
+    {"QuarryofTears", "Pit of Saron"},
+    {"RazorfenDowns", "Razorfen Downs"},
+    {"RazorfenKraulInstance", "Razorfen Kraul"},
+    {"SchoolofNecromancy", "Scholomance"},
+    {"Shadowfang", "Shadowfang Keep"},
+    {"StormwindJail", "Stormwind Stockade"},
+    {"Stratholme", "Stratholme"},
+    {"Stratholme Raid", "Naxxramas"},
+    {"StratholmeCOT", "The Culling of Stratholme"},
+    {"SunkenTemple", "Sunken Temple"},
+    {"Sunwell5ManFix", "Magister's Terrace"},
+    {"SunwellPlateau", "The Sunwell"},
+    {"TanarisInstance", "Zul'Farrak"},
+    {"TempestKeepArcane", "Tempest Keep: The Arcatraz"},
+    {"TempestKeepAtrium", "Tempest Keep: The Botanica"},
+    {"TempestKeepFactory", "Tempest Keep: The Mechanar"},
+    {"TempestKeepRaid", "Tempest Keep"},
+    {"Uldaman", "Uldaman"},
+    {"Ulduar70", "Halls of Stone"},
+    {"Ulduar80", "Halls of Lightning"},
+    {"UlduarRaid", "Ulduar"},
+    {"UtgardePinnacle", "Utgarde Pinnacle"},
+    {"Valgarde70", "Utgarde Keep"},
+    {"WailingCaverns", "Wailing Caverns"},
+    {"WintergraspRaid", "Vault of Archavon"},
+    {"Zul'gurub", "Zul'Gurub"},
+    {"ZulAman", "Zul'Aman"},
+};
+
 const char* find(const std::map<std::string,const char*>& m,const std::string& key){auto i=m.find(key);return i==m.end()?nullptr:i->second;}
 std::string celestialName(const std::string& key,std::string* body){
     for(const char* prefix:{"sun_","moon_"}){const std::string p=prefix;
         if(key.compare(0,p.size(),p)==0){if(body)*body=p=="sun_"?"Sun":"Moon";const char* name=find(CelestialLabels,key.substr(p.size()));return name?name:key.substr(p.size());}}
     return {};
+}
+bool mapDefaultSection(const std::string& section){
+    return section.size()>8&&section.compare(section.size()-8,8,":default")==0;
+}
+std::string mapDirectory(const std::string& section){
+    return mapDefaultSection(section)?section.substr(0,section.size()-8):std::string();
+}
+std::string mapGroup(const std::string& map){
+    if(map=="Azeroth")return "Eastern Kingdoms";
+    if(map=="Kalimdor")return "Kalimdor";
+    if(map=="Expansion01")return "Outland";
+    if(map=="Northrend")return "Northrend";
+    return {};
+}
+// Expansion01 also contains these verified Azeroth locations; unlisted area roots stay grouped as Outland.
+const std::map<std::string,const char*> ExpansionAreaGroups={
+    {"3430","Eastern Kingdoms"},{"3433","Eastern Kingdoms"},{"3455","Eastern Kingdoms"},
+    {"3487","Eastern Kingdoms"},{"4080","Eastern Kingdoms"},
+    {"3479","Kalimdor"},{"3524","Kalimdor"},{"3525","Kalimdor"},{"3557","Kalimdor"},
+};
+std::string expansionAreaGroup(const std::string& section){
+    const auto colon=section.find(':');
+    auto area=section.substr(colon+1);
+    if(const auto suffix=area.find_first_of("/@");suffix!=area.npos)area.resize(suffix);
+    if(const char* group=find(ExpansionAreaGroups,area))return group;
+    return "Outland";
+}
+std::string regionGroup(const std::string& section){
+    if(section=="default")return "All regions";
+    const auto colon=section.find(':');
+    if(colon==section.npos)return "Other profiles";
+    const auto map=section.substr(0,colon);
+    if(mapDefaultSection(section)){
+        if(const auto group=mapGroup(map);!group.empty())return group+" map defaults";
+        return "Instance map defaults";
+    }
+    if(map=="Expansion01")return expansionAreaGroup(section);
+    if(const auto group=mapGroup(map);!group.empty())return group;
+    if(find(MapLabels,map))return "Instance regions";
+    return "Other profiles";
+}
+int regionGroupOrder(const std::string& group){
+    if(group=="All regions")return 0;
+    if(group=="Eastern Kingdoms")return 1;
+    if(group=="Kalimdor")return 2;
+    if(group=="Outland")return 3;
+    if(group=="Northrend")return 4;
+    if(group=="Eastern Kingdoms map defaults")return 5;
+    if(group=="Kalimdor map defaults")return 6;
+    if(group=="Outland map defaults")return 7;
+    if(group=="Northrend map defaults")return 8;
+    if(group=="Instance regions")return 9;
+    if(group=="Instance map defaults")return 10;
+    return 11;
+}
+std::string folded(std::string text){
+    std::transform(text.begin(),text.end(),text.begin(),[](unsigned char c){return char(std::tolower(c));});
+    return text;
 }
 std::string fieldLabel(const Field& f){
     if(f.file==NorthlightSettings::WaterHostFile)return "Use Tideglass";
@@ -353,6 +537,10 @@ std::string rowLabel(const Field& f){
 }
 std::string regionLabel(const std::string& section){
     if(section=="default")return "All regions (default)";
+    if(mapDefaultSection(section)){
+        const auto map=mapDirectory(section);const char* name=find(MapLabels,map);
+        return std::string(name?name:map.c_str())+" (map default; "+section+")";
+    }
     if(const char* zone=find(NorthlightSettings::Regions,section))return std::string(zone)+"  ("+section+")";
     return section;
 }
@@ -421,8 +609,27 @@ struct SettingsPanel::State {
     std::map<std::string,std::vector<std::pair<std::string,std::string>>> displayDrafts;
     std::map<std::string,std::array<float,3>> live;   // a slider or colour being dragged: committed on release
     bool wantSnapshot=false,wantPreview=false,wantClear=false,previewing=false,saving=false,awaitingSnapshot=false;
-    std::uint64_t commitSerial=0;
+    std::uint64_t commitSerial=0,appearancePresetSerial=0;
+    char appearancePresetName[64]{};
+    bool appearancePresetModal=false,appearancePresetDeleteModal=false,savingAppearancePreset=false;
+    std::string appearancePresetToDelete;
     std::string region="default",note;                 // note: a local message (a refused request), cleared by the next action
+    std::string waterRegion="default";
+    struct RegionChoice { std::string section,label,group,search; };
+    const NorthlightSettings::Snapshot* regionChoicesSnapshot=nullptr;
+    std::vector<RegionChoice> regionChoices,waterRegionChoices;
+    std::array<char,128> regionFilter{},waterRegionFilter{};
+    enum class CurveDrag {None,Point,HandleIn,HandleOut};
+    int curveChannel=0,selectedPoint=-1,selectedBand=0;
+    CurveDrag curveDrag=CurveDrag::None;
+    NorthlightTone::PointList curvePoints;   // the curve under the mouse while it is dragged
+    std::string curveShown;                  // the curve the selection belongs to
+    ImVec2 curveDragOffset{};
+    bool curveDragged=false;
+    double nextCurvePreview=0;
+    bool compareRequested=false,comparing=false;
+    mutable const NorthlightSettings::Snapshot* pageFieldsSnapshot=nullptr;
+    mutable std::array<std::vector<const Field*>,std::size_t(Page::Count)> pageFieldCache;
     char shadowSearch[96]={};int shadowMap=0;
     Page page=Page::Overview;                             // kept for the session
     NorthlightMemoryProfile::Snapshot memorySnapshot;
@@ -437,7 +644,7 @@ struct SettingsPanel::State {
     std::array<std::string,6> monitorSummary;bool monitorBoardMemory=false;
     uint64_t monitorReadAt=0;bool monitoringHud=false;
 
-    bool locked()const{return saving||awaitingSnapshot||!snapshot;}
+    bool locked()const{return saving||awaitingSnapshot||savingAppearancePreset||!snapshot;}
     // ---- Service ----
     void poll(){
         if(!service)return;
@@ -458,20 +665,61 @@ struct SettingsPanel::State {
             saving=false;
             if(status.state==NorthlightSettings::Status::State::Saved){if(snapshot)displayDrafts.erase(snapshot->hdrProfile);awaitingSnapshot=true;wantSnapshot=true;previewing=false;wantPreview=false;}
         }
+        if(savingAppearancePreset&&status.serial>appearancePresetSerial&&status.state!=NorthlightSettings::Status::State::Busy){
+            savingAppearancePreset=false;note=status.message;
+        }
         if(wantClear&&!saving&&service->clearPreview()){wantClear=false;previewing=false;}
-        if(wantPreview&&!saving&&!wantClear&&service->preview(changes())){wantPreview=false;previewing=!draft.empty();}
+        if(wantPreview&&!saving&&!wantClear){
+            auto pending=changes();
+            if(comparing)if(const Field* strength=draft.field(D::Celestial,region,"tone_curve_strength")){
+                const auto id=strength->id();
+                pending.erase(std::remove_if(pending.begin(),pending.end(),[&](const auto& c){return c.id==id;}),pending.end());
+                pending.push_back({id,"0"});
+            }
+            if(service->preview(std::move(pending))){wantPreview=false;previewing=comparing||!draft.empty();}
+        }
     }
     std::vector<NorthlightSettings::Change> changes()const{
         std::vector<NorthlightSettings::Change> out;for(auto& c:draft.changes())out.push_back({c.first,c.second});return out;
     }
     void edited(const Field& f){note.clear();if(f.apply=="F")wantPreview=true;}
-    void set(const Field& f,const std::string& value){draft.set(f,value);edited(f);}
+    void set(const Field& f,const std::string& value){
+        if(f.section=="RegionalSlime"||fogKey(f.key,"fog_tint_strength")||f.key=="shadow_contrast"||f.key=="tone_curve_strength")draft.pin(f,value);
+        else draft.set(f,value);
+        edited(f);
+    }
     void inherit(const Field& f){if(!D::canInherit(f))return;draft.inherit(f);live.erase(f.id());edited(f);}
     void save(){
         if(!service||!snapshot||draft.empty()||locked())return;
         const auto serial=service->status().serial;
         if(service->commit(snapshot->revision,changes())){saving=true;commitSerial=serial;note.clear();}
         else note="The settings service is busy; try again in a moment.";
+    }
+    void saveAppearancePreset(){
+        if(!service||!snapshot||locked())return;
+        const std::string name=appearancePresetName;std::string error;
+        if(!NorthlightAppearancePresets::validName(name,error)){note=error;return;}
+        const auto serial=service->status().serial;
+        if(service->savePreset(name,snapshot->revision,changes(),!ownAppearancePreset(name).empty())){savingAppearancePreset=true;appearancePresetSerial=serial;note.clear();}
+        else{note="The settings service is busy; try again in a moment.";}
+    }
+    // The saved name of one of the player's own looks, matched without regard to letter case; empty if there is none.
+    std::string ownAppearancePreset(const std::string& name)const{
+        const Field* palette=draft.field(D::Celestial,"Appearance","Palette");
+        if(!palette||NorthlightAppearancePresets::packaged(name))return {};
+        const auto listed=NorthlightSettings::canonicalOption(name,palette->options);
+        std::istringstream options(palette->options);std::string option;
+        while(std::getline(options,option,','))if(option==listed)return listed;
+        return {};
+    }
+    void deleteAppearancePreset(){
+        if(!service||!snapshot||locked()||appearancePresetToDelete.empty())return;
+        // The service returns a saved choice to Default; an unsaved choice of this look is the draft's to give up.
+        if(const Field* palette=draft.field(D::Celestial,"Appearance","Palette"))
+            if(draft.edited(*palette)&&NorthlightSettings::lower(draft.effective(*palette))==NorthlightSettings::lower(appearancePresetToDelete)){draft.set(*palette,draft.saved(*palette));edited(*palette);}
+        const auto serial=service->status().serial;
+        if(service->deletePreset(appearancePresetToDelete,snapshot->revision)){savingAppearancePreset=true;appearancePresetSerial=serial;note.clear();}
+        else{note="The settings service is busy; try again in a moment.";}
     }
     void revert(){draft.clear();live.clear();wantPreview=false;wantClear=true;note.clear();}
     std::vector<const Field*> fields(unsigned file,const std::string* section=nullptr)const{
@@ -651,20 +899,35 @@ struct SettingsPanel::State {
         return out;
     }
     // The fields a page shows (Sun & moon: every region), for its sidebar markers and Defaults.
-    std::vector<const Field*> pageFields(Page p)const{
+    std::vector<const Field*> buildPageFields(Page p)const{
         if(p==Page::Water){
             auto rows=fields(NorthlightSettings::WaterHostFile);
             const auto tuning=fields(NorthlightSettings::WaterFile);
             rows.insert(rows.end(),tuning.begin(),tuning.end());return rows;
         }
         std::vector<const Field*> out;
-        if(p==Page::Overview){if(const Field* f=draft.quality("Preset"))out.push_back(f);for(auto& k:words(QuickKeys))if(const Field* f=draft.quality(k))out.push_back(f);return out;}
-        if(p==Page::Celestial){out=fields(D::Celestial);appendCelestialQuality(out);return out;}
+        if(p==Page::Overview){if(const Field* f=draft.field(D::Celestial,"Appearance","Palette"))out.push_back(f);if(const Field* f=draft.quality("Preset"))out.push_back(f);for(auto& k:words(QuickKeys))if(const Field* f=draft.quality(k))out.push_back(f);return out;}
+        if(p==Page::Celestial||p==Page::Regional||p==Page::Grading){
+            for(const Field* field:fields(D::Celestial)){
+                const bool grade=field->key=="tone_curve_strength"||NorthlightTone::gradeBindings().count(field->key)!=0;
+                const bool appearance=NorthlightAppearancePresets::visualKey(field->key)||field->section=="Appearance";
+                if(p==Page::Grading?grade:p==Page::Regional?appearance&&!grade:!appearance)out.push_back(field);
+            }
+            if(p==Page::Celestial)appendCelestialQuality(out);
+            return out;
+        }
         if(p==Page::ShadowRange)return fields(D::ShadowRange);
         if(p==Page::Renderer)out=fields(D::Renderer);
         if(const Section* s=qualitySection(Pages[unsigned(p)].quality))for(auto& k:sectionKeys(*s))if(const Field* f=draft.quality(k))out.push_back(f);
         if(p==Page::Renderer){auto extra=unsortedQuality();out.insert(out.end(),extra.begin(),extra.end());}
         return out;
+    }
+    const std::vector<const Field*>& pageFields(Page p)const{
+        if(pageFieldsSnapshot!=snapshot.get()){
+            for(const auto& info:Pages)pageFieldCache[unsigned(info.page)]=buildPageFields(info.page);
+            pageFieldsSnapshot=snapshot.get();
+        }
+        return pageFieldCache[unsigned(p)];
     }
     void titled(const char* title,const std::vector<const Field*>& rows){
         if(rows.empty())return;
@@ -705,11 +968,11 @@ struct SettingsPanel::State {
         ImGui::PushTextWrapPos(0);
         ImGui::TextColored(Color::Muted,"Choosing a preset resets your quality changes to the preset's values. You will be asked to confirm.");
         ImGui::PopTextWrapPos();
-        std::vector<const Field*> quick;for(auto& k:words(QuickKeys))if(const Field* f=draft.quality(k))quick.push_back(f);
-        titled("Quick toggles",quick);
         if(const auto* palette=draft.field(D::Celestial,"Appearance","Palette"))
             if(beginRows("world-look")){row(*palette,"Whole-world appearance");ImGui::EndTable();}
         waterPresetControl(false);
+        std::vector<const Field*> quick;for(auto& k:words(QuickKeys))if(const Field* f=draft.quality(k))quick.push_back(f);
+        titled("Quick toggles",quick);
         ImGui::Spacing();ImGui::TextColored(Color::Heading,"Summary");ImGui::Separator();
         unsigned set=0;if(snapshot)for(const auto& f:snapshot->fields)if(f.overrideValue!="~")++set;
         ImGui::Text("%u setting%s set in the INI files, %u unsaved change%s.",set,set==1?"":"s",unsigned(draft.size()),draft.size()==1?"":"s");
@@ -988,11 +1251,81 @@ struct SettingsPanel::State {
         waterRows("Reflections","Reflection NearReflection");
         waterRows("Clarity and underwater","Clarity Underwater UnderwaterVisibility UnderwaterScenery");
         waterRows("Other liquids","Slime Lava");
+        if(pickRegion(waterRegion,true)&&beginRows("regional-slime")){
+            if(const auto* field=draft.field(NorthlightSettings::WaterFile,"RegionalSlime",NorthlightSettings::liquidAreaKey(waterRegion)))
+                regionalRow(*field,"Regional slime");
+            ImGui::EndTable();
+        }
     }
     void drawPage(){
         switch(page){
         case Page::Overview:overviewPage();break;
         case Page::Water:waterPage();break;
+        case Page::Regional:
+            if(W::beginCard("world-look")){
+                W::cardTitle("Whole world");
+                if(const Field* palette=draft.field(D::Celestial,"Appearance","Palette"))loose("world-palette",{palette});
+                if(!snapshot->presetErrors.empty())W::hint(snapshot->presetErrors.front().c_str());
+                W::hint("Default keeps Northlight's regional look and your own region edits. Another look replaces the base for the whole world; your region edits still apply on top.");
+                ImGui::BeginDisabled(locked());
+                if(ImGui::Button("Save as preset...")){appearancePresetName[0]='\0';appearancePresetModal=true;}
+                ImGui::EndDisabled();
+                if(const Field* palette=draft.field(D::Celestial,"Appearance","Palette")){
+                    const auto chosen=ownAppearancePreset(draft.effective(*palette));
+                    ImGui::SameLine();ImGui::BeginDisabled(chosen.empty()||locked());
+                    if(ImGui::Button("Delete preset...")){appearancePresetToDelete=chosen;appearancePresetDeleteModal=true;}
+                    ImGui::EndDisabled();
+                    if(chosen.empty()&&ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))ImGui::SetTooltip("Looks that come with Northlight cannot be deleted.");
+                }
+                W::hint("A preset is the whole-world look as you see it now, saved under a name in appearance-presets. Its files can be shared.");
+            }
+            W::endCard();
+            if(W::beginCard("regional-look")){
+                W::cardTitle("Fog and contrast");
+                if(pickRegion()){
+                    if(beginRows("regional")){
+                        if(const Field* f=draft.field(D::Celestial,region,"shadow_contrast"))regionalRow(*f,rowLabel(*f).c_str());
+                        ImGui::EndTable();
+                    }
+                    if(ImGui::BeginTabBar("fog-times")){
+                        for(unsigned i=0;i<GradeTimes.size();++i)if(ImGui::BeginTabItem(FogTitles[i])){
+                            const std::string time=NorthlightTone::timeName(GradeTimes[i]);
+                            if(beginRows("fog")){
+                                if(const Field* f=draft.field(D::Celestial,region,time+"_fog_tint_strength"))regionalRow(*f,rowLabel(*f).c_str());
+                                for(const char* name:{"_fog_tint","_fog_brightness"})
+                                    if(const Field* f=draft.field(D::Celestial,region,time+name))row(*f);
+                                ImGui::EndTable();
+                            }
+                            ImGui::EndTabItem();
+                        }
+                        ImGui::EndTabBar();
+                    }
+                }
+                W::hint("Fog tint colours the fog a region already has and brightness darkens or lifts it, each for Daylight, Dusk and Night; Dusk also shows at sunrise. Shadow contrast deepens dark detail at every hour. The region chosen here is the one Colour grading and Sun & moon edit too.");
+            }
+            W::endCard();
+            break;
+        case Page::Grading:
+            if(W::beginCard("grading")){
+                if(pickRegion()){
+                    if(const Field* strength=draft.field(D::Celestial,region,"tone_curve_strength")){
+                        if(beginRows("strength")){regionalRow(*strength,"Tone curve strength");ImGui::EndTable();}
+                        if(number(draft.effective(*strength))==0)ImGui::TextWrapped("This region's grade is off while its strength is zero. Choose Tuned above to see your edits.");
+                        W::hint("Strength scales the whole grade; at zero the grade is off. Dusk is the 19:30 look, shown through sunset and again at sunrise; what it leaves unset follows the Daylight-to-Night blend.");
+                        if(ImGui::BeginTabBar("grades")){
+                            for(unsigned i=0;i<GradeTimes.size();++i)if(ImGui::BeginTabItem(GradeTitles[i])){
+                                ImGui::BeginDisabled(locked());
+                                gradeEditor(GradeTimes[i]);
+                                ImGui::EndDisabled();
+                                ImGui::EndTabItem();
+                            }
+                            ImGui::EndTabBar();
+                        }
+                    }
+                }
+            }
+            W::endCard();
+            break;
         case Page::Celestial:celestialTab();break;
         case Page::ShadowRange:shadowRangeTab();break;
         case Page::Renderer:rendererPage();break;
@@ -1026,25 +1359,298 @@ struct SettingsPanel::State {
     void appendCelestialQuality(std::vector<const Field*>& target)const{
         for(const char* key:CelestialQualityKeys)if(const Field* f=draft.quality(key))target.push_back(f);
     }
+    void refreshRegionChoices(){
+        if(!snapshot||regionChoicesSnapshot==snapshot.get())return;
+        regionChoices.clear();waterRegionChoices.clear();
+        std::set<std::string> waterAreaIds;
+        for(const auto& section:sections(D::Celestial)){
+            if(section=="Appearance")continue;
+            RegionChoice choice{section,regionLabel(section),regionGroup(section),{}};
+            choice.search=folded(choice.label+" "+section);
+            regionChoices.push_back(choice);
+            if(mapDefaultSection(section))continue;
+            const auto id=section=="default"?section:NorthlightSettings::liquidAreaKey(section);
+            if(!draft.field(NorthlightSettings::WaterFile,"RegionalSlime",id)||!waterAreaIds.insert(id).second)continue;
+            if(section.find("@inside")!=section.npos){
+                const auto root=section.substr(0,section.size()-7);
+                if(const char* name=find(NorthlightSettings::Regions,root))choice.label=std::string(name)+"  ("+section+")";
+                choice.search=folded(choice.label+" "+section);
+            }
+            waterRegionChoices.push_back(std::move(choice));
+        }
+        const auto inGroupOrder=[](const RegionChoice& a,const RegionChoice& b){
+            const int left=regionGroupOrder(a.group),right=regionGroupOrder(b.group);
+            return left==right?a.label<b.label:left<right;
+        };
+        std::sort(regionChoices.begin(),regionChoices.end(),inGroupOrder);
+        std::sort(waterRegionChoices.begin(),waterRegionChoices.end(),inGroupOrder);
+        regionChoicesSnapshot=snapshot.get();
+    }
+    bool pickRegion(std::string& selected,bool waterOnly=false){
+        refreshRegionChoices();
+        auto& regions=waterOnly?waterRegionChoices:regionChoices;
+        if(regions.empty())return false;
+        const bool hideInterior=page==Page::Celestial;
+        const auto visible=[&](const RegionChoice& choice){
+            return !hideInterior||choice.section.find("@inside")==choice.section.npos;
+        };
+        auto current=std::find_if(regions.begin(),regions.end(),
+            [&](const RegionChoice& choice){return choice.section==selected&&visible(choice);});
+        if(current==regions.end()){
+            current=std::find_if(regions.begin(),regions.end(),visible);
+            if(current==regions.end())return false;
+            selected=current->section;
+        }
+        auto& filter=waterOnly?waterRegionFilter:regionFilter;
+        ImGui::AlignTextToFramePadding();ImGui::TextUnformatted("Region");ImGui::SameLine();
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        if(ImGui::BeginCombo(waterOnly?"##water-region":"##region",current->label.c_str(),
+                             ImGuiComboFlags_HeightLarge)){
+            ImGui::SetNextItemWidth(-FLT_MIN);
+            ImGui::InputTextWithHint(waterOnly?"##water-region-search":"##region-search",
+                                     "Search by region name or INI key",filter.data(),filter.size());
+            ImGui::Separator();
+            const std::string query=folded(filter.data());std::string visibleGroup;bool found=false;
+            for(const auto& choice:regions){
+                if(!visible(choice))continue;
+                if(!query.empty()&&choice.search.find(query)==choice.search.npos)continue;
+                if(choice.group!=visibleGroup){
+                    if(found)ImGui::Spacing();
+                    ImGui::TextDisabled("%s",choice.group.c_str());visibleGroup=choice.group;
+                }
+                const bool active=choice.section==selected;
+                if(ImGui::Selectable(choice.label.c_str(),active)){selected=choice.section;filter[0]='\0';}
+                if(active)ImGui::SetItemDefaultFocus();found=true;
+            }
+            if(!found)ImGui::TextDisabled("No matching regions.");
+            ImGui::EndCombo();
+        }
+        return true;
+    }
+    bool pickRegion(){return pickRegion(region);}
+    // The curve graph: click an empty spot to add a point and drag it; the selected point has two handles that bend
+    // the curve on either side; right-click removes a point, or a handle.
+    void gradeEditor(NorthlightTone::TimeStop time){
+        namespace T=NorthlightTone;
+        ImGui::PushID(int(time));
+        const char* channels[]={"Brightness","Red","Green","Blue"};
+        const Field* pointsField=draft.field(D::Celestial,region,T::pointsKey(time,curveChannel));
+        const Field* levels[5]{};
+        T::Curve saved;
+        for(unsigned i=0;i<5;++i){
+            levels[i]=draft.field(D::Celestial,region,T::gradeKey(time,curveChannel,i));
+            if(!levels[i]||!pointsField){ImGui::PopID();return;}
+            float lo,hi;
+            *T::parameter(saved,i,lo,hi)=float(number(draft.effective(*levels[i])));
+        }
+        T::parseCurve(draft.effective(*pointsField),saved.points);
+        // While something is dragged, the points under the mouse are the curve; the look follows a few times a second.
+        const std::string shown=pointsField->id();
+        if(curveShown!=shown){curveShown=shown;selectedPoint=-1;curveDrag=CurveDrag::None;}
+        if(curveDrag==CurveDrag::None)curvePoints=T::pointsOf(saved);
+        T::PointList& list=curvePoints;
+        if(selectedPoint>=int(list.count))selectedPoint=-1;
+        const T::Shape curve=T::shape(T::curveOf(list));
+        const ImVec2 origin=ImGui::GetCursorScreenPos();
+        // Square, so a slope on screen is the slope of the curve; the channel choice and readout sit beside it.
+        const float side=std::clamp(ImGui::GetContentRegionAvail().x*.46f,190*scale,300*scale);
+        const ImVec2 size(side,side);
+        const float pad=6*scale,w=std::max(size.x-2*pad,1.f),h=size.y-2*pad;
+        auto pos=[&](float x,float y){return ImVec2(origin.x+pad+x*w,origin.y+pad+(1-y)*h);};
+        // A handle's end: sideways by its reach, up or down by the slope of that side.
+        auto handleEnd=[&](int i,bool out){
+            const float reach=T::handleReach(list,unsigned(i),out)*(out?1.f:-1.f);
+            const auto& knot=curve.knots[unsigned(i)+1];
+            return pos(list.points[i].x+reach,list.points[i].y+float(out?knot.out:knot.in)*reach);
+        };
+        ImGui::InvisibleButton("Curve graph",size);
+        const auto mouse=ImGui::GetIO().MousePos;
+        const float mouseX=(mouse.x+curveDragOffset.x-origin.x-pad)/w,mouseY=1-(mouse.y+curveDragOffset.y-origin.y-pad)/h;
+        auto commit=[&]{
+            const auto text=T::curveText(T::curveOf(list).points.data());
+            if(text!=draft.effective(*pointsField))set(*pointsField,text);
+        };
+        int hoverPoint=-1;CurveDrag hoverHandle=CurveDrag::None;
+        if(ImGui::IsItemHovered()&&curveDrag==CurveDrag::None){
+            float best=12*scale;
+            if(selectedPoint>=0)for(const bool out:{false,true}){
+                const auto end=handleEnd(selectedPoint,out);
+                const float dist=std::hypot(mouse.x-end.x,mouse.y-end.y);
+                if(dist<best){best=dist;hoverHandle=out?CurveDrag::HandleOut:CurveDrag::HandleIn;}
+            }
+            if(hoverHandle==CurveDrag::None)for(int i=0;i<int(list.count);++i){
+                const auto pt=pos(list.points[i].x,list.points[i].y);
+                const float dist=std::hypot(mouse.x-pt.x,mouse.y-pt.y);
+                if(dist<best){best=dist;hoverPoint=i;}
+            }
+            if(ImGui::IsMouseClicked(ImGuiMouseButton_Right)&&!locked()){
+                if(hoverHandle!=CurveDrag::None){
+                    auto& point=list.points[selectedPoint];
+                    (hoverHandle==CurveDrag::HandleOut?point.out:point.in)=T::StraightHandle;commit();
+                }else if(hoverPoint>=0){T::removePoint(list,unsigned(hoverPoint));selectedPoint=-1;hoverPoint=-1;commit();}
+            }
+        }
+        if(ImGui::IsItemActivated()){
+            curveDragged=false;curveDragOffset={};
+            if(hoverHandle!=CurveDrag::None){
+                curveDrag=hoverHandle;
+                const auto end=handleEnd(selectedPoint,hoverHandle==CurveDrag::HandleOut);
+                curveDragOffset={end.x-mouse.x,end.y-mouse.y};
+            }else if(hoverPoint>=0){
+                curveDrag=CurveDrag::Point;selectedPoint=hoverPoint;
+                const auto pt=pos(list.points[hoverPoint].x,list.points[hoverPoint].y);
+                curveDragOffset={pt.x-mouse.x,pt.y-mouse.y};
+            }else{
+                const int added=T::addPoint(list,(mouse.x-origin.x-pad)/w,1-(mouse.y-origin.y-pad)/h);
+                if(added>=0){selectedPoint=added;curveDrag=CurveDrag::Point;commit();}
+            }
+        }
+        if(curveDrag!=CurveDrag::None&&ImGui::IsItemActive()&&ImGui::IsMouseDragging(ImGuiMouseButton_Left,1.f))curveDragged=true;
+        if(curveDrag!=CurveDrag::None&&curveDragged&&selectedPoint>=0&&(ImGui::IsItemActive()||ImGui::IsItemDeactivated())){
+            if(curveDrag==CurveDrag::Point)T::movePoint(list,unsigned(selectedPoint),mouseX,mouseY);
+            else{
+                const bool out=curveDrag==CurveDrag::HandleOut;
+                const float run=mouseX-list.points[selectedPoint].x,rise=mouseY-list.points[selectedPoint].y;
+                // The handle keeps to its own side of the point; Alt moves it alone, otherwise the other follows in line.
+                if(out?run>.004f:run<-.004f)T::setHandle(list,unsigned(selectedPoint),out,rise/run,!ImGui::GetIO().KeyAlt);
+            }
+            if(ImGui::IsItemDeactivated()||ImGui::GetTime()>=nextCurvePreview){commit();nextCurvePreview=ImGui::GetTime()+.12;}
+        }
+        if(ImGui::IsItemDeactivated())curveDrag=CurveDrag::None;
+        auto* draw=ImGui::GetWindowDrawList();
+        draw->AddRectFilled(origin,{origin.x+size.x,origin.y+size.y},IM_COL32(27,33,39,255),3);
+        for(int i=1;i<4;++i){
+            draw->AddLine(pos(i*.25f,0),pos(i*.25f,1),IM_COL32(57,67,75,255));
+            draw->AddLine(pos(0,i*.25f),pos(1,i*.25f),IM_COL32(57,67,75,255));
+        }
+        draw->AddLine(pos(0,0),pos(1,1),IM_COL32(100,109,115,255));
+        const ImU32 inks[]={IM_COL32(226,223,209,255),IM_COL32(255,139,128,255),IM_COL32(130,220,165,255),IM_COL32(133,186,255,255)};
+        draw->PushClipRect(origin,{origin.x+size.x,origin.y+size.y},true);
+        const T::Shape drawn=T::shape(T::curveOf(list));
+        ImVec2 last=pos(0,0);
+        for(int i=1;i<=120;++i){
+            const float x=i/120.f;
+            const auto pt=pos(x,std::clamp(T::sample(drawn,x),0.f,1.f));
+            draw->AddLine(last,pt,inks[curveChannel],2*scale);last=pt;
+        }
+        if(selectedPoint>=0)for(const bool out:{false,true}){
+            const auto pt=pos(list.points[selectedPoint].x,list.points[selectedPoint].y);
+            const float reach=T::handleReach(list,unsigned(selectedPoint),out)*(out?1.f:-1.f);
+            const auto& knot=drawn.knots[unsigned(selectedPoint)+1];
+            const auto end=pos(list.points[selectedPoint].x+reach,list.points[selectedPoint].y+float(out?knot.out:knot.in)*reach);
+            const bool set=T::hasHandle(out?list.points[selectedPoint].out:list.points[selectedPoint].in);
+            const bool hot=hoverHandle==(out?CurveDrag::HandleOut:CurveDrag::HandleIn)||curveDrag==(out?CurveDrag::HandleOut:CurveDrag::HandleIn);
+            draw->AddLine(pt,end,IM_COL32(200,205,210,set?255:120),1.2f*scale);
+            const float r=(hot?4.5f:3.5f)*scale;
+            if(set)draw->AddRectFilled({end.x-r,end.y-r},{end.x+r,end.y+r},IM_COL32(226,230,234,255));
+            else{draw->AddRectFilled({end.x-r,end.y-r},{end.x+r,end.y+r},IM_COL32(27,33,39,255));draw->AddRect({end.x-r,end.y-r},{end.x+r,end.y+r},IM_COL32(200,205,210,200));}
+        }
+        for(int i=0;i<int(list.count);++i){
+            const auto pt=pos(list.points[i].x,list.points[i].y);
+            if(selectedPoint==i)draw->AddCircleFilled(pt,5.5f*scale,inks[curveChannel]);
+            else{draw->AddCircleFilled(pt,4.5f*scale,IM_COL32(27,33,39,255));draw->AddCircle(pt,4.5f*scale,inks[curveChannel],0,(hoverPoint==i?2.4f:1.5f)*scale);}
+        }
+        draw->PopClipRect();
+        ImGui::SameLine();ImGui::BeginGroup();
+        for(int i=0;i<4;++i)ImGui::RadioButton(channels[i],&curveChannel,i);
+        ImGui::Spacing();
+        if(selectedPoint>=0){
+            const auto& point=list.points[selectedPoint];
+            ImGui::Text("Point %d of %u: %.0f%% in, %.1f%% out (%+.1f)",selectedPoint+1,list.count,100*point.x,100*point.y,100*(point.y-point.x));
+        }else if(list.count)ImGui::Text("%u points",list.count);
+        else ImGui::TextUnformatted("A straight line: no points");
+        W::hint("Click an empty spot to add a point, then drag it. The selected point has two handles that bend the curve; hold Alt to move one alone. Right-click removes a point, or a handle.");
+        ImGui::BeginDisabled(selectedPoint<0);
+        if(ImGui::Button("Remove point")&&selectedPoint>=0){T::removePoint(list,unsigned(selectedPoint));selectedPoint=-1;commit();}
+        ImGui::SameLine();
+        if(ImGui::Button("Remove handles")&&selectedPoint>=0){list.points[selectedPoint].in=list.points[selectedPoint].out=T::StraightHandle;commit();}
+        ImGui::EndDisabled();
+        if(ImGui::Button("Inherit curve")){inherit(*pointsField);for(const Field* level:levels)inherit(*level);selectedPoint=-1;}
+        ImGui::Button("Hold to compare");
+        if(ImGui::IsItemActive())compareRequested=true;
+        ImGui::EndGroup();
+        if(const Field* f=draft.field(D::Celestial,region,NorthlightTone::vibranceKey(time)))
+            loose("colour-grade",{f});
+        // Colour ranges: choose one, then its three adjustments.
+        ImGui::Spacing();
+        ImGui::TextColored(Color::Heading,"Colour ranges");
+        auto bandTitle=[](NorthlightTone::HueBand band){
+            std::string title=NorthlightTone::bandName(band);
+            if(!title.empty())title[0]=char(std::toupper(static_cast<unsigned char>(title[0])));
+            return title;
+        };
+        // Red, Green and Blue are also channel names above: the ranges need their own ID scope.
+        ImGui::PushID("ranges");
+        int index=0;
+        for(const auto band:HueBands){if(index)ImGui::SameLine();ImGui::RadioButton(bandTitle(band).c_str(),&selectedBand,index);++index;}
+        ImGui::PopID();
+        index=0;
+        for(const auto band:HueBands){
+            if(index++!=selectedBand)continue;
+            const Field* values[3]{};
+            bool canReset=false,any=false;
+            for(unsigned i=0;i<SelectiveProperties.size();++i){
+                const auto key=NorthlightTone::selectiveKey(time,band,SelectiveProperties[i]);
+                values[i]=draft.field(D::Celestial,region,key);
+                if(values[i]){any=true;canReset|=values[i]->available&&D::canInherit(*values[i]);}
+            }
+            if(!any)continue;
+            ImGui::PushID(int(band));
+            if(beginRows("selective-adjustments")){
+                for(unsigned i=0;i<SelectiveProperties.size();++i)if(values[i]){
+                    std::string label=NorthlightTone::propertyName(SelectiveProperties[i]);
+                    std::replace(label.begin(),label.end(),'_',' ');
+                    if(!label.empty())label[0]=char(std::toupper(static_cast<unsigned char>(label[0])));
+                    if(SelectiveProperties[i]==NorthlightTone::SelectiveProperty::HueShift)label+=" (degrees)";
+                    row(*values[i],label.c_str());
+                }
+                ImGui::EndTable();
+            }
+            ImGui::BeginDisabled(!canReset||locked());
+            if(ImGui::SmallButton("Inherit range"))for(const Field* f:values)if(f&&f->available&&D::canInherit(*f))inherit(*f);
+            ImGui::EndDisabled();
+            ImGui::PopID();
+        }
+        W::hint("Each range acts on nearby hues only, after the curve. Zero leaves it alone. These and Vibrance need filterable 16-bit colour volume support; the curves work without it.");
+        ImGui::PopID();
+    }
+    // A regional strength as one table row. It has three states: follow the parent region, pinned off here, or tuned here.
+    void regionalRow(const Field& f,const char* title){
+        ImGui::PushID(f.id().c_str());
+        ImGui::TableNextRow();ImGui::TableSetColumnIndex(0);
+        marker(f);ImGui::AlignTextToFramePadding();
+        if(draft.edited(f))ImGui::TextColored(Color::Edited,"%s",title);else ImGui::TextUnformatted(title);
+        ImGui::TableSetColumnIndex(1);
+        const auto value=draft.effective(f);
+        const std::string mode=!draft.overrides(f)?"Inherit":number(value)==0?"Off":"Tuned";
+        ImGui::BeginDisabled(locked());
+        ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x*0.36f);
+        if(ImGui::BeginCombo("##mode",mode.c_str())){
+            for(const char* choice:{"Inherit","Off","Tuned"})if(ImGui::Selectable(choice,mode==choice)){
+                if(std::string(choice)=="Inherit")inherit(f);
+                else{draft.pin(f,std::string(choice)=="Off"?"0":number(value)>0?value:"0.5");edited(f);}
+            }
+            ImGui::EndCombo();
+        }
+        ImGui::SameLine();
+        if(mode=="Tuned")control(f);
+        else{
+            ImGui::AlignTextToFramePadding();
+            if(mode=="Inherit")ImGui::TextDisabled("follows parent: %s",value.c_str());else ImGui::TextDisabled("off in this region");
+        }
+        ImGui::EndDisabled();
+        ImGui::PopID();
+    }
     void celestialTab(){
         std::vector<const Field*> controls;
         appendCelestialQuality(controls);
         loose("celestial-controls",controls);
         ImGui::TextColored(Color::Muted,"Default: game placement and size. Forever: imported orbit and horizon size curves.");
         ImGui::Spacing();
-        auto regions=sections(D::Celestial);
-        regions.erase(std::remove(regions.begin(),regions.end(),"Appearance"),regions.end());
-        if(regions.empty()){ImGui::TextDisabled("No celestial profiles.");return;}
-        if(std::find(regions.begin(),regions.end(),region)==regions.end())region=regions.front();
-        ImGui::AlignTextToFramePadding();ImGui::TextUnformatted("Region");ImGui::SameLine();
-        ImGui::SetNextItemWidth(-FLT_MIN);
-        if(ImGui::BeginCombo("##region",regionLabel(region).c_str(),ImGuiComboFlags_HeightLarge)){
-            for(const auto& r:regions){const bool selected=r==region;if(ImGui::Selectable(regionLabel(r).c_str(),selected))region=r;if(selected)ImGui::SetItemDefaultFocus();}
-            ImGui::EndCombo();
-        }
-        ImGui::TextColored(Color::Muted,region=="default"?"Applies wherever a region sets no value of its own.":"Values this region does not set follow All regions (default).");
+        if(!pickRegion())return;
         std::map<std::string,const Field*> byKey;for(const Field* f:fields(D::Celestial,&region))byKey[f->key]=f;
         std::map<std::string,bool> used;
+        for(const auto& key:NorthlightSettings::AppearanceKeys)used[key]=true;
         ImGui::PushID(region.c_str());
         for(const auto& g:CelestialGroups)group(g,byKey,used);
         std::vector<const Field*> rest;for(auto& k:byKey)if(!used[k.first])rest.push_back(k.second);
@@ -1148,25 +1754,32 @@ struct SettingsPanel::State {
     }
     std::string factoryScope()const{
         if(page==Page::Celestial)return "Restore global Sun & moon settings and the factory profile of the selected region ("+regionLabel(region)+").";
+        if(page==Page::Regional||page==Page::Grading)return "Restore the settings on this page for "+regionLabel(region)+".";
         if(page==Page::ShadowRange)return "Restore the factory shadow reach of every region.";
         return std::string("Restore the factory values of every setting on the ")+Pages[unsigned(page)].title+" page.";
     }
     void factoryDefaults(){
-        auto targets=page==Page::Celestial?fields(D::Celestial,&region):pageFields(page);
-        if(page==Page::Celestial)appendCelestialQuality(targets);
+        auto targets=pageFields(page);
+        if(page==Page::Celestial||page==Page::Regional||page==Page::Grading){
+            targets.erase(std::remove_if(targets.begin(),targets.end(),[&](const Field* field){
+                return field->file==D::Celestial&&field->section!=region;
+            }),targets.end());
+        }
         for(const Field* f:targets)if(f->available){draft.factory(*f);live.erase(f->id());edited(*f);}
     }
     // The old menu's preset choice: quality overrides back to inherit, optionally Sun & moon and Shadow range to factory.
     void choosePreset(){
         const Field* preset=draft.quality("Preset");if(!preset)return;
         for(const Field* f:fields(D::Quality))if(f->key!="Preset"&&D::canInherit(*f)){draft.inherit(*f);live.erase(f->id());edited(*f);}
-        if(presetCelestial)for(const Field* f:fields(D::Celestial))if(f->available){draft.factory(*f);live.erase(f->id());edited(*f);}
+        if(presetCelestial)for(const Field* f:pageFields(Page::Celestial))if(f->file==D::Celestial&&f->available){draft.factory(*f);live.erase(f->id());edited(*f);}
         if(presetRange)for(const Field* f:fields(D::ShadowRange))if(f->available){draft.factory(*f);live.erase(f->id());edited(*f);}
         set(*preset,presetChoice);
     }
     void modals(){
         if(confirm==Confirm::Preset)ImGui::OpenPopup("Choose preset?");
         if(confirm==Confirm::Factory)ImGui::OpenPopup("Restore defaults?");
+        if(appearancePresetModal){ImGui::OpenPopup("Save as preset");appearancePresetModal=false;}
+        if(appearancePresetDeleteModal){ImGui::OpenPopup("Delete preset?");appearancePresetDeleteModal=false;}
         confirm=Confirm::None;
         const ImVec2 centre=ImGui::GetMainViewport()->GetCenter();
         auto ask=[&](const char* title,const char* body,const char* yes,auto&& accept){
@@ -1196,14 +1809,45 @@ struct SettingsPanel::State {
         }
         const std::string scope=factoryScope();
         ask("Restore defaults?",scope.c_str(),"Restore",[&]{factoryDefaults();});
+        ImGui::SetNextWindowPos(centre,ImGuiCond_Appearing,ImVec2(0.5f,0.5f));
+        ImGui::SetNextWindowSizeConstraints(ImVec2(440*scale,0),ImVec2(440*scale,FLT_MAX));
+        if(ImGui::BeginPopupModal("Save as preset",nullptr,ImGuiWindowFlags_AlwaysAutoResize|ImGuiWindowFlags_NoSavedSettings)){
+            ImGui::TextWrapped("Save the whole-world look as you see it now, with every regional difference and your unsaved edits, under a name.");
+            if(ImGui::IsWindowAppearing())ImGui::SetKeyboardFocusHere();
+            ImGui::SetNextItemWidth(280*scale);ImGui::InputText("Name",appearancePresetName,sizeof appearancePresetName);
+            std::string error;bool valid=NorthlightAppearancePresets::validName(appearancePresetName,error);
+            const bool shipped=valid&&NorthlightAppearancePresets::packaged(appearancePresetName);
+            const auto replaces=valid?ownAppearancePreset(appearancePresetName):std::string();
+            if(shipped){valid=false;ImGui::TextColored(Color::Bad,"That look comes with Northlight. Choose another name.");}
+            else if(!replaces.empty())ImGui::TextColored(Color::Edited,"This replaces your preset %s.",replaces.c_str());
+            else ImGui::TextWrapped("%s",NorthlightAppearancePresets::NameRuleText);
+            ImGui::TextColored(Color::Muted,"The file is written at once; Revert does not remove it.");
+            ImGui::Spacing();
+            ImGui::BeginDisabled(!valid||locked()||status.state==NorthlightSettings::Status::State::Busy);
+            if(ImGui::Button(replaces.empty()?"Save preset":"Replace preset")){saveAppearancePreset();if(savingAppearancePreset)ImGui::CloseCurrentPopup();}
+            ImGui::EndDisabled();ImGui::SameLine();
+            if(ImGui::Button("Cancel")||ImGui::IsKeyPressed(ImGuiKey_Escape))ImGui::CloseCurrentPopup();
+            ImGui::EndPopup();
+        }
+        ImGui::SetNextWindowPos(centre,ImGuiCond_Appearing,ImVec2(0.5f,0.5f));
+        ImGui::SetNextWindowSizeConstraints(ImVec2(440*scale,0),ImVec2(440*scale,FLT_MAX));
+        if(ImGui::BeginPopupModal("Delete preset?",nullptr,ImGuiWindowFlags_AlwaysAutoResize|ImGuiWindowFlags_NoSavedSettings)){
+            ImGui::TextWrapped("Delete your preset %s? Its file is removed from appearance-presets at once and Revert does not bring it back. If it is the look in use, the world returns to Default.",appearancePresetToDelete.c_str());
+            ImGui::Spacing();
+            ImGui::BeginDisabled(locked()||status.state==NorthlightSettings::Status::State::Busy);
+            if(ImGui::Button("Delete preset")){deleteAppearancePreset();if(savingAppearancePreset)ImGui::CloseCurrentPopup();}
+            ImGui::EndDisabled();ImGui::SameLine();
+            if(ImGui::Button("Cancel")||ImGui::IsKeyPressed(ImGuiKey_Escape))ImGui::CloseCurrentPopup();
+            ImGui::EndPopup();
+        }
     }
 };
 
 SettingsPanel::SettingsPanel(std::shared_ptr<NorthlightSettings::Service> service,std::string hotkey,CalibrationDraw calibration):s(std::make_unique<State>()){s->service=std::move(service);s->hotkey=std::move(hotkey);s->calibrationDraw=std::move(calibration);}
 SettingsPanel::~SettingsPanel()=default;
 void SettingsPanel::opened(){s->wantSnapshot=true;}
-void SettingsPanel::poll(){s->poll();}
-bool SettingsPanel::pending()const{return s->service&&(s->wantSnapshot||s->wantPreview||s->wantClear||s->saving||s->awaitingSnapshot);}
+void SettingsPanel::poll(){if(s->comparing){s->comparing=false;s->wantPreview=true;}s->poll();}
+bool SettingsPanel::pending()const{return s->service&&(s->wantSnapshot||s->wantPreview||s->wantClear||s->saving||s->awaitingSnapshot||s->savingAppearancePreset);}
 bool SettingsPanel::unsaved()const{return !s->draft.empty();}
 void SettingsPanel::performanceDevice(IDirect3DDevice9* device){
     NorthlightPerformance::Adapter info;info.owner=reinterpret_cast<uintptr_t>(device);D3DDEVICE_CREATION_PARAMETERS cp{};
@@ -1237,12 +1881,17 @@ bool SettingsPanel::draw(float scale){
     s->calibrationPatches.clear();
     State& st=*s;st.scale=scale;
     st.poll();
+    st.compareRequested=false;
     bool open=true;
     ImGui::SetNextWindowPos(ImVec2(48*scale,96*scale),ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSize(ImVec2(760*scale,680*scale),ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSizeConstraints(ImVec2(560*scale,360*scale),ImVec2(FLT_MAX,FLT_MAX));
     char title[96];std::snprintf(title,sizeof title,"Northlight settings | build %.12s###NorthlightSettings",NORTHLIGHT_SOURCE_ID);
-    if(!ImGui::Begin(title,&open,ImGuiWindowFlags_NoCollapse)){ImGui::End();return open;}
+    if(!ImGui::Begin(title,&open,ImGuiWindowFlags_NoCollapse)){
+        if(st.comparing){st.comparing=false;st.wantPreview=true;}
+        ImGui::End();
+        return open;
+    }
     const auto& style=ImGui::GetStyle();
     const float footer=ImGui::GetTextLineHeightWithSpacing()+ImGui::GetFrameHeightWithSpacing()+style.ItemSpacing.y*2+style.SeparatorTextBorderSize+2;
     // Sidebar (fixed width, scaled) and the selected page; the footer below stays put on every page.
@@ -1259,6 +1908,7 @@ bool SettingsPanel::draw(float scale){
     st.footer();
     st.modals();
     ImGui::End();
+    if(st.comparing!=st.compareRequested){st.comparing=st.compareRequested;st.wantPreview=true;}
     return open;
 }
 } // namespace NorthlightOverlay

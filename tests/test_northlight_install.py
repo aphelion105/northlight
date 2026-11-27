@@ -988,6 +988,18 @@ class Install(Base):
             p.start(); self.addCleanup(p.stop)
         return prompts
 
+    def test_review_cancel_keeps_client_byte_for_byte(self):
+        before = tree(self.client)
+        prompts = self.tty('n')
+        with self.assertRaisesRegex(fi.Refusal, 'Cancelled'):
+            self.installer().install(self.client, instances='none')
+        self.assertIn('STEP 3 of 4: Review', self.last_output)
+        self.assertNotIn('STEP 4 of 4', self.last_output)
+        self.assertEqual(prompts, ['  Press Enter to install, or type n to cancel > '])
+        self.assertEqual(tree(self.client), before)
+        self.assertFalse((self.client / 'renderer-backups').exists())
+        self.assertFalse(self.calls)
+
     def test_instances_default_to_none_and_start_no_process(self):
         report = self.installer().install(self.client)
         self.assertEqual(self.instance_calls(), [])
@@ -996,9 +1008,9 @@ class Install(Base):
         self.assertFalse((self.client / 'world-cache' / fi.INSTANCES).exists())
 
     def test_instances_argument_skips_the_question_and_reaches_the_orchestrator(self):
-        prompts = self.tty()
+        prompts = self.tty("")
         report = self.installer().install(self.client, instances='1 6')
-        self.assertEqual(prompts, [])
+        self.assertEqual(prompts, ["  Press Enter to install, or type n to cancel > "])
         (args,) = self.instance_calls()
         self.assertEqual(args[args.index('--instances') + 1], 'classic-dungeons,wotlk-raids')
         self.assertEqual(Path(args[args.index('--output') + 1]), self.client / 'world-cache')
@@ -1070,9 +1082,9 @@ class Install(Base):
 
     def test_update_keeps_saved_groups_without_prompting(self):
         self.installer().install(self.client, instances='all')
-        prompts = self.tty()
+        prompts = self.tty("")
         report = self.installer().install(self.client)
-        self.assertEqual(prompts, [])
+        self.assertEqual(prompts, ["  Press Enter to install, or type n to cancel > "])
         self.assertEqual(report['instances']['built'], [])
         self.assertEqual(report['instances']['kept'], list(instance_maps.KEYS))
 
@@ -1103,9 +1115,9 @@ class Install(Base):
     def test_update_remembers_none_without_prompting(self):
         self.installer().install(self.client, instances='none')
         self.assertEqual(json.loads((self.client / fi.CHOICE).read_text()), {'groups': []})
-        prompts = self.tty()
+        prompts = self.tty("")
         self.installer().install(self.client)
-        self.assertEqual(prompts, [])
+        self.assertEqual(prompts, ["  Press Enter to install, or type n to cancel > "])
         self.assertEqual(self.instance_calls(), [])
 
     def test_selection_survives_continent_build_failure(self):
@@ -1361,6 +1373,31 @@ class WindowsInstall(Install):
         self.assertFalse(stale.exists())
         fi.INSTALL.restore(self.client, Path(report['backups'][-1]))
         self.assertEqual(stale.read_bytes(), b'older unverified dxvk2')
+
+    def test_combo_can_leave_water_out_and_remembers_the_choice(self):
+        info_path = self.pkg_root / 'BUILD-INFO.json'
+        info = json.loads(info_path.read_text())
+        info['dll_version'] = '0.3.218'
+        info['tideglass'] = {'version': '0.2.0', 'core_sha256': sha(b'core')}
+        info_path.write_text(json.dumps(info))
+        manifest_path = self.pkg_root / 'payload-manifest.json'
+        manifest = json.loads(manifest_path.read_text())
+        for name, data in {'water-core.dll': b'core', 'water.ini': b'template', 'water-host.ini': b'host'}.items():
+            (self.pkg_root / 'payload' / name).write_bytes(data)
+            manifest.append({'path': name, 'sha256': sha(data), 'preserve': name.endswith('.ini')})
+        manifest_path.write_text(json.dumps(manifest))
+        def install(choice=None):
+            self.installer(tideglass=choice).install(self.client, art=False, world_cache=False)
+        install()
+        (self.client / 'water.ini').write_bytes(b'user settings')
+        install(False)
+        self.assertIn('Installed now:  Northlight 0.3.218 + Tideglass 0.2.0', self.last_output)
+        self.assertFalse((self.client / 'water-core.dll').exists())
+        install()
+        self.assertFalse((self.client / 'water-core.dll').exists())
+        install(True)
+        self.assertEqual((self.client / 'water-core.dll').read_bytes(), b'core')
+        self.assertEqual((self.client / 'water.ini').read_bytes(), b'user settings')
 
     def test_native_choice_is_kept_on_a_plain_reinstall(self):
         self.installer().install(self.client, backend='native')

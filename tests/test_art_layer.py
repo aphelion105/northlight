@@ -26,10 +26,41 @@ import northlight_paths as fp; fp.use_source_modules()
 import hashlib, json, re, shutil, struct
 from types import SimpleNamespace
 import build_art_layer, build_lighting, build_weather_textures, client_archives
+from build_outdoor_single_sun import MULGORE, separate_solar_batches
 from build_lighting import DBC, u, f
 from mpq import Archive
 from world_scene_builder import Assets, decode_blp
 import world_emitter_index
+
+def check_sky_layers():
+    def batch(count, start):
+        raw = bytearray(24)
+        struct.pack_into('<HH', raw, 14, count, start)
+        return raw
+
+    def skin(batches):
+        header = bytearray(48)
+        header[:4] = b'SKIN'
+        struct.pack_into('<II', header, 36, len(batches), len(header))
+        return header + b''.join(batches) + b'tail'
+
+    names = ['cloud.blp', 'mulgor_sun.blp']
+    cloud, sun = batch(1, 0), batch(1, 1)
+    for n in (3, 4, 5):
+        before = skin([cloud, *([sun] * n), cloud])
+        result, dropped, kept = separate_solar_batches(before, names, [0, 1], MULGORE, 0)
+        assert len(dropped) == n and len(kept) == 2
+        assert result[48:96] == cloud + cloud and result[96:] == bytes(24*n) + b'tail'
+        assert struct.unpack_from('<II', result, 36) == (2, 48)
+    try:
+        separate_solar_batches(skin([cloud, batch(2, 0)]), names, [0, 1], MULGORE, 0)
+    except build_lighting.Skip as skip:
+        assert 'share a batch' in str(skip)
+    else:
+        raise AssertionError('removed clouds mixed with the sun')
+
+
+check_sky_layers()
 
 client = fp.client_root()
 out = fp.output_dir()

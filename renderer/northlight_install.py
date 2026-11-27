@@ -90,6 +90,11 @@ INSTANCES = 'instances-manifest.json'   # in world-cache/: the groups built
 CHOICE = 'world-cache.instances.json'   # beside world-cache/, ours: the groups chosen (survives a swap of the folder)
 EXTRACT = 'world-cache.extract'   # this installer's extraction folder
 LOCK = 'northlight-installer.lock'   # one installer run per client at a time
+RECEIPT = 'northlight-install.json'
+RECEIPT_FORMAT = 'northlight-install/1'
+WATER_FILES = ('water-core.dll', 'water.ini', 'water-host.ini')
+PART_DETAIL = '      '
+PART_WIDTH = 66
 ART_STATE = 'northlight-art-cache.json'   # committed with the generated art files
 VARIANT_FORMAT = 'northlight-cache-variant/1'
 LOCAL_FORMAT = 'northlight-world-cache-install/1'
@@ -398,7 +403,7 @@ class Installer:
     """install / uninstall / status. The hooks (running, free_bytes, ram, identify_chain, run, ask,
     search_dirs) are attributes so tests can replace them."""
 
-    def __init__(self, package, platform=None, yes=False, out=None):
+    def __init__(self, package, platform=None, yes=False, out=None, tideglass=None):
         self.pkg = package
         # Parent-process MPQ ownership checks need the same bundled runtime as children.
         if package.stormlib.is_file():
@@ -415,15 +420,64 @@ class Installer:
         self.ram = None   # installed-memory probe; None = install_world_cache.total_memory
         self.search_dirs = [package.root.parent, package.root, Path.home() / 'Downloads']
         self.art_shas = set()
+        self.tideglass_choice = tideglass
+        self.part = None
+        self.parts_done = self.parts_total = 0
 
     # ---- output ----
 
     def say(self, *parts, console=True):
         line = ' '.join(str(p) for p in parts)
+        if self.part and line:   # under the part it belongs to
+            line = '\n'.join(PART_DETAIL + each.strip() for each in line.split('\n'))
         if console:
+            if self.part and not self.part['broken']:   # the part's own line is still open
+                print(file=self.out)
+                self.part['broken'] = True
             print(line, file=self.out, flush=True)
         if self.log:
             self.log.write(line + '\n')
+            self.log.flush()
+
+    def engine_line(self, *parts, **_):
+        line = ' '.join(str(part) for part in parts)
+        self.say(line, console=self.log is None or line.startswith(('Note:', 'Existing', 'Installation interrupted')))
+
+    def step(self, number, total, name):
+        """The heading of one stage of a run."""
+        self.say('')
+        self.say(f'STEP {number} of {total}: {name}')
+
+    def expect_parts(self, total):
+        self.parts_done, self.parts_total = 0, total
+
+    @contextlib.contextmanager
+    def working(self, label):
+        """One numbered part of the work: its line stays open until the part ends, so a quiet part reads
+        '[1/4] Fog ... done' and a part that reports its progress has those lines beneath it. The value yielded
+        takes another closing word in ['result']."""
+        self.parts_done += 1
+        head = f'  [{self.parts_done}/{max(self.parts_total, self.parts_done)}] {label} '
+        head += '.' * max(3, PART_WIDTH - len(head))
+        print(head, end='', file=self.out, flush=True)
+        if self.log:
+            self.log.write(head + '\n')
+            self.log.flush()
+        part = self.part = {'broken': False, 'result': 'done'}
+        started = time.monotonic()
+        try:
+            yield part
+        except BaseException:
+            if not part['broken']:
+                print(file=self.out, flush=True)
+            self.part = None
+            raise
+        self.part = None
+        took = (time.monotonic() - started) / 60
+        result = part['result'] + (f' in {round(took)} minutes' if took >= 1.5 else '')
+        print((PART_DETAIL if part['broken'] else ' ') + result, file=self.out, flush=True)
+        if self.log:
+            self.log.write(PART_DETAIL + result + '\n')
             self.log.flush()
 
     def open_log(self, action):
@@ -432,6 +486,22 @@ class Installer:
             self.log = (self.pkg.logs / f'northlight-{action}-{datetime.now():%Y%m%d-%H%M%S}.log').open('a', encoding='utf-8')
         except OSError:
             self.log = None
+
+    def interactive(self):
+        return bool(sys.stdin) and sys.stdin.isatty()
+
+    def confirm(self, verb):
+        """This is the only approval before writing to the game folder."""
+        if self.yes or not self.interactive():
+            return 'go'
+        question = f'  Press Enter to {verb}, or type n to cancel > '
+        while True:
+            answer = input(question).strip().lower()
+            if not answer:
+                return 'go'
+            if answer in ('n', 'no', 'q', 'quit', 'cancel'):
+                raise Refusal('Cancelled; nothing was changed.')
+            self.say(f'  Press Enter alone to {verb}.')
 
     def ask(self, question, default):
         """y/N (default False) or Y/n (default True). --yes accepts only questions whose default is yes."""
@@ -601,12 +671,8 @@ class Installer:
         busy = self.running()
         if busy:
             raise Refusal('Close these first, then run the installer again: ' + ', '.join(busy))
-        probe = client / f'.northlight-write-test-{os.getpid()}'
-        try:
-            probe.write_bytes(b'')
-            probe.unlink()
-        except OSError:
-            raise Refusal(f'Cannot write into {client}. Check the folder permissions.')
+        if not os.access(client, os.W_OK):
+            raise Refusal(f'Cannot write to the game folder: {client}')
         return locale
 
     def check_payload(self, backend='dxvk'):
@@ -896,7 +962,7 @@ class Installer:
                 found.append((rel, current))
         return found
 
-    def art_inputs(self, client, locale):
+    def art_inputs(self, client, locale, use_water=None):
         """Conservative build identity; renderer DLL releases are not art inputs."""
         sources = sorted({p for folder in (APP, APP / 'renderer') for pattern in ('*.py', '*.json')
                           for p in folder.glob(pattern) if p.is_file()})
@@ -904,7 +970,7 @@ class Installer:
         data = sorted((cache / 'fog').rglob('*.frf'))
         data += [cache / 'lights/world-emitters-v1.json',
                  client / 'Cache/WDB' / locale / 'creaturecache.wdb']
-        inputs = {'locale': locale, 'letter': LETTER, 'tideglass': self.pkg.tideglass,
+        inputs = {'locale': locale, 'letter': LETTER, 'tideglass': self.pkg.tideglass if use_water is None else use_water,
                   'archives': client_archives.fingerprint(client_archives.chain(client, 'all', locale, LETTER), client),
                   'sources': {p.relative_to(APP).as_posix(): sha(p) for p in sources},
                   'data': {p.relative_to(client).as_posix(): sha(p) if p.is_file() else None for p in data}}
@@ -935,14 +1001,15 @@ class Installer:
             return None
         return layer
 
-    def art_layer(self, client, locale):
+    def art_layer(self, client, locale, use_water=None):
         """({client path: bytes} to install, None, {client path: action}) or ({}, reason it is skipped, {}).
         The action per target is installed (absent before), replaced (another layer of ours) or kept-identical.
         A target that exists in another letter case (Data/Patch-Z.MPQ on Linux) keeps its name on disk, so that
         Wine never sees two files."""
         if not (client / CACHE / 'fog').is_dir():
             return {}, 'no world cache (its fog zones are an input)', {}
-        inputs = self.art_inputs(client, locale)
+        use_water = self.pkg.tideglass if use_water is None else use_water
+        inputs = self.art_inputs(client, locale, use_water)
         layer = self.cached_art(client, locale, inputs)
         if layer is not None:
             self.say('Art layer: up to date (inputs and installed files verified)')
@@ -953,7 +1020,7 @@ class Installer:
         work.mkdir(parents=True)
         code, _ = self.run(APP / 'build_art_layer.py', ['--client', client, '--locale', locale, '--world-cache',
                                                          client / CACHE, '--output', work, '--letter', LETTER]
-                           + (['--tideglass'] if self.pkg.tideglass else []), show=False)
+                           + (['--tideglass'] if use_water else []), show=False)
         report = read_json(work / 'art-layer-manifest.json')
         if code != 0 or not report:
             raise Failed(f'The art layer build failed (exit {code}); its last lines are shown above. '
@@ -985,7 +1052,7 @@ class Installer:
         if emission_data is not None:
             layer[emission] = emission_data
             actions[emission] = 'kept-identical' if (client / emission).is_file() and sha(client / emission) == hashlib.sha256(emission_data).hexdigest() else 'replaced' if (client / emission).exists() else 'installed'
-        if self.art_inputs(client, locale) != inputs:
+        if self.art_inputs(client, locale, use_water) != inputs:
             raise Failed('Art layer inputs changed during generation; run the installer again.')
         # The marker becomes visible only in the same rollback-safe transaction as
         # both MPQs, the dependency guard and the runtime emission catalog.
@@ -1123,12 +1190,85 @@ class Installer:
             self.say('Removing world-cache.previous left by an interrupted run...')
             remove_tree(previous)
 
-    def install(self, client, locale=None, cache=None, backend=None, art=True, world_cache=True, jobs=None,
+    def installed_versions(self, client):
+        receipt = read_json(client / RECEIPT)
+        if isinstance(receipt, dict) and receipt.get('format') == RECEIPT_FORMAT and isinstance(receipt.get('northlight'), str):
+            return receipt
+        transactions = self.all_transactions(client)
+        if not transactions:
+            return None
+        previous = {}
+        proxy = client / ('mods/d3d9.dll' if self.platform == 'mac' else INSTALL.PROXY)
+        for key, path, pattern in (
+                ('northlight', proxy, rb'Northlight renderer (\d+(?:\.\d+)+)'),
+                ('tideglass', client / 'water-core.dll', rb'Tideglass (\d+(?:\.\d+)+)')):
+            if path.is_file():
+                match = re.search(pattern, path.read_bytes())
+                if match:
+                    previous[key] = match[1].decode('ascii')
+        if 'northlight' not in previous:
+            _, record = transactions[0]
+            previous['northlight'] = record.get('version') or 'unknown'
+        return previous
+
+    def install(self, client, locale=None, cache=None, backend=None, art=None, world_cache=True, jobs=None,
                 instances=None):
+        self.step(1, 4, 'Your game')
         client = self.resolve_client(client)
+        previous = self.installed_versions(client)
+        self.step(2, 4, 'Your choices')
+        if art is None:
+            art = (previous or {}).get('art_layer', True)
         plan = self.plan_install(client, locale, cache, backend, art, world_cache, instances)
-        with locked(client):   # S5: taken once the read-only checks have passed
-            return self.apply_install(plan, jobs)
+        use_water = self.pkg.tideglass and (self.tideglass_choice if self.tideglass_choice is not None else
+                                            not (previous or {}).get('tideglass_left_out', False))
+        plan['use_water'] = use_water
+        try:
+            self.step(3, 4, 'Review')
+            self.review_install(plan, previous)
+            self.confirm('install')
+            self.step(4, 4, 'Install')
+            with locked(client):
+                emit = INSTALL.emit
+                INSTALL.emit = self.engine_line
+                try:
+                    return self.apply_install(plan, jobs)
+                finally:
+                    INSTALL.emit = emit
+        finally:
+            if plan['source']:
+                plan['source'].close()
+
+    def review_install(self, plan, previous):
+        def version(info):
+            return 'Northlight ' + info['northlight'] + (' + Tideglass ' + info['tideglass'] if info.get('tideglass') else '')
+
+        offered = {'northlight': self.pkg.info.get('dll_version') or self.pkg.version}
+        if plan['use_water']:
+            offered['tideglass'] = self.pkg.info['tideglass'].get('version')
+        if previous:
+            self.say('  Installed now:  ' + version(previous))
+        self.say('  This package:   ' + version(offered))
+        self.say('  Nothing has been changed yet. This will:')
+        self.say('    - install or update the renderer' +
+                 (f' with backend {plan["backend"]}' if self.proxy else ''))
+        self.say('    - ' + {
+            'skip': 'leave the outdoor and instance world caches alone',
+            'keep': 'keep the existing outdoor lighting',
+            'keep-local': 'keep the existing outdoor lighting',
+            'extract': 'install the matching prebuilt outdoor lighting',
+            'build': 'build or update outdoor lighting from your game files',
+        }[plan['action']])
+        if plan['action'] != 'skip':
+            names = ', '.join(self.instance_labels(plan['instances'])) or 'none'
+            self.say(f'    - set dungeon and raid lighting to {names}')
+        if plan['art'] and not plan['foreign']:
+            self.say('    - check and update Northlight skies, weather and scenery')
+        else:
+            self.say('    - leave the existing skies, weather and scenery alone')
+        if self.pkg.tideglass and not plan['use_water']:
+            self.say('    - leave Tideglass out and keep any existing water settings')
+        self.say('    - keep your settings and edited appearance presets, and back up replaced game files')
 
     def plan_install(self, client, locale, cache, backend, art, world_cache, instances=None):
         """Every check, read-only: returns what apply_install does. Raises Refusal."""
@@ -1236,6 +1376,10 @@ class Installer:
     def apply_install(self, p, jobs):
         client, locale, action, foreign = p['client'], p['locale'], p['action'], p['foreign']
         self.still_closed('changing anything')
+        use_water = p.get('use_water', self.pkg.tideglass)
+        leave_out = WATER_FILES if self.pkg.tideglass and not use_water else ()
+        instance_step = action != 'skip' and bool(p['instances'] or self.built_instances(client))
+        self.expect_parts(3 + instance_step)
         for backup, _ in reversed(p['old']):
             self.say('Restoring the older package first:', backup)
             INSTALL.restore(client, backup)
@@ -1244,7 +1388,7 @@ class Installer:
         report = {'client': str(client), 'locale': locale, 'variant': p['variant'], 'archive_warnings': [],
                   'instances': {'built': [], 'kept': [], 'removed': []}}
         instance_changed = False
-        try:
+        with self.working('Outdoor lighting') as work:
             if action != 'skip':
                 self.remember_instances(client, p['instances'])   # before either long cache step
             if action == 'extract':
@@ -1261,54 +1405,61 @@ class Installer:
                 report['archive_warnings'] = self.archive_warnings(client)
             else:
                 report['world_cache'] = 'not installed (--no-world-cache)'
-            if action != 'skip':   # nothing selected and nothing built earlier: no process
-                if p['instances'] or self.built_instances(client):   # also to remove what is built
-                    # The layer is optional: its failure is a warning in the summary, never a reason to skip the renderer.
-                    self.still_closed('building the instance world cache')
-                    try:
-                        done = self.build_instances(client, locale, jobs, p['without'], p['instances'])
-                        report['instances'] = done
-                        instance_changed = bool(done['built'] or done['removed'])
-                    except Failed as e:
-                        logs = getattr(e, 'logs', None) or [str(self.log.name) if self.log else 'the installer log']
-                        report['instances_failed'] = {'groups': p['instances'], 'log': logs[0]}
-                        self.say(f'WARNING: {e}')
-        finally:
-            if p['source']:
-                p['source'].close()
-        if not p['art']:
-            layer, why, actions = {}, 'disabled with --no-art-layer', {}
-        elif foreign:
-            layer, why, actions = {}, f'{foreign[0][0]} belongs to another mod; it is left as it is', {}
-        else:
-            layer, why, actions = self.art_layer(client, locale)
-        if why:
-            report['art_layer'] = 'skipped: ' + why
-        else:
-            report['art_layer'] = '; '.join(f'{action} {hashlib.sha256(layer[name]).hexdigest()[:8]} {name}'
-                                            for name, action in actions.items())
-        if self.pkg.tideglass:
+                work['result'] = 'skipped'
+        if instance_step:
+            with self.working('Dungeon and raid lighting') as work:
+                # The layer is optional: its failure is a warning in the summary, never a reason to skip the renderer.
+                self.still_closed('building the instance world cache')
+                try:
+                    done = self.build_instances(client, locale, jobs, p['without'], p['instances'])
+                    report['instances'] = done
+                    instance_changed = bool(done['built'] or done['removed'])
+                except Failed as e:
+                    logs = getattr(e, 'logs', None) or [str(self.log.name) if self.log else 'the installer log']
+                    report['instances_failed'] = {'groups': p['instances'], 'log': logs[0]}
+                    work['result'] = 'failed; continuing with the renderer'
+                    self.say(f'WARNING: {e}')
+        with self.working('Skies, weather and scenery') as work:
+            if not p['art']:
+                layer, why, actions = {}, 'disabled with --no-art-layer', {}
+            elif foreign:
+                layer, why, actions = {}, f'{foreign[0][0]} belongs to another mod; it is left as it is', {}
+            else:
+                layer, why, actions = self.art_layer(client, locale, use_water)
+            if why:
+                report['art_layer'] = 'skipped: ' + why
+            else:
+                report['art_layer'] = '; '.join(f'{action} {hashlib.sha256(layer[name]).hexdigest()[:8]} {name}'
+                                                for name, action in actions.items())
+            if why:
+                work['result'] = 'skipped'
+        if use_water:
             paths = client_archives.chain(client, locale=locale, pending=actions)
             layer['northlight-water-archives.txt'] = ''.join(
                 './' + path.relative_to(client).as_posix() + '\n' for path in paths).encode('utf-8')
-        backups, payload = [], 'kept (unchanged)'
-        if self.platform == 'mac':
-            self.still_closed('installing the renderer')
-            record = migrate().apply(client, self.pkg.dll, self.mac_backups(client))
-            if record:
-                backups.append(record)
-                payload = 'installed (mods/d3d9.dll preloaded from dlls.txt)'
-            plan, staged, _ = INSTALL.payload_plan(client, self.pkg.root, extra=layer, proxy=False)
-        else:
-            plan, staged, _ = INSTALL.payload_plan(client, self.pkg.root, backend=p['backend'], extra=layer, x64=self.pkg.x64)
-        files = [e['path'] for e in plan if e['path'] not in layer]
-        if plan:
-            self.still_closed('installing the renderer files')
-            backups.append(INSTALL.commit(client, plan, staged, self.pkg.payload, self.pkg.version))
-            if files:
-                payload = ('installed: ' if payload.startswith('kept') else payload + '; ') + ', '.join(files)
-        if self.proxy:   # the leftover of 0.3.189-0.3.194, whatever the backend; only after the commit
-            INSTALL.safe_path(client, INSTALL.LEGACY_DXVK3_MARKER).unlink(missing_ok=True)
+        with self.working('Renderer and settings'):
+            offer = {'format': RECEIPT_FORMAT, 'northlight': self.pkg.info.get('dll_version') or self.pkg.version,
+                     'tideglass': self.pkg.info.get('tideglass', {}).get('version') if use_water else None,
+                     'tideglass_left_out': bool(leave_out), 'art_layer': bool(p['art'])}
+            layer[RECEIPT] = (json.dumps(offer, sort_keys=True) + '\n').encode('utf-8')
+            backups, payload = [], 'kept (unchanged)'
+            if self.platform == 'mac':
+                self.still_closed('installing the renderer')
+                record = migrate().apply(client, self.pkg.dll, self.mac_backups(client))
+                if record:
+                    backups.append(record)
+                    payload = 'installed (mods/d3d9.dll preloaded from dlls.txt)'
+                plan, staged, _ = INSTALL.payload_plan(client, self.pkg.root, extra=layer, proxy=False, leave_out=leave_out)
+            else:
+                plan, staged, _ = INSTALL.payload_plan(client, self.pkg.root, backend=p['backend'], extra=layer, x64=self.pkg.x64, leave_out=leave_out)
+            files = [e['path'] for e in plan if e['path'] not in layer]
+            if plan:
+                self.still_closed('installing the renderer files')
+                backups.append(INSTALL.commit(client, plan, staged, self.pkg.payload, self.pkg.version))
+                if files:
+                    payload = ('installed: ' if payload.startswith('kept') else payload + '; ') + ', '.join(files)
+            if self.proxy:   # the leftover of 0.3.189-0.3.194, whatever the backend; only after the commit
+                INSTALL.safe_path(client, INSTALL.LEGACY_DXVK3_MARKER).unlink(missing_ok=True)
         changed = bool(backups) or not report['world_cache'].startswith(('kept', 'not')) or instance_changed
         try:   # never fails the install: the copies just stay
             freed, kept_why = self.tidy_backups(client)
@@ -1462,7 +1613,10 @@ def main(argv=None):
                     help='Windows and Linux: the Direct3D 9 behind the renderer (default dxvk = DXVK 3.1.1, or the dxvk2 or native already '
                          'installed; dxvk2 = DXVK 2.7.1 for AMD RX 5000/6000 or drivers DXVK 3 does not support; '
                          'legacy = the d3d9.dll found in the game folder)')
-    ap.add_argument('--no-art-layer', action='store_true', help='do not install the lighting art layer (patch-z)')
+    ap.add_argument('--art-layer', action=argparse.BooleanOptionalAction, default=None,
+                    help='install the lighting art layer; repeat installs keep the last choice')
+    ap.add_argument('--tideglass', action=argparse.BooleanOptionalAction, default=None,
+                    help='include or omit the Tideglass water; repeat installs keep the last choice')
     ap.add_argument('--no-world-cache', action='store_true', help='install the renderer without a world cache')
     ap.add_argument('--instances', metavar='SPEC', help='dungeon and raid world cache groups to have: numbers 1-6, keys, all or none '
                     '(default: keep the saved choice; asked on first install, initially none)')
@@ -1482,11 +1636,11 @@ def main(argv=None):
         print('ERROR: run this from an unpacked Northlight package (Install Northlight.command, Install.cmd or install.sh).',
               file=sys.stderr)
         return 2
-    installer = Installer(Package(root, platform), platform, yes=args.yes)
+    installer = Installer(Package(root, platform), platform, yes=args.yes, tideglass=args.tideglass)
     installer.open_log(args.action)
     try:
         if args.action == 'install':
-            installer.install(args.client, args.locale, args.cache, args.backend, not args.no_art_layer,
+            installer.install(args.client, args.locale, args.cache, args.backend, args.art_layer,
                               not args.no_world_cache, args.jobs, instances=args.instances)
         elif args.action == 'uninstall':
             installer.uninstall(args.client)

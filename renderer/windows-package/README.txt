@@ -42,9 +42,10 @@ INSTALLATION
 3. Open Install.cmd in the extracted folder and give the game folder path (the
    folder that holds wow.exe), for example C:\Games\WoW. Or, in a command prompt:
      Install.cmd --client "C:\Games\WoW"
-4. The installer first checks the client, the disk space and the package. If
-   something is missing, it stops before anything is changed and tells you
-   what to do.
+4. The installer shows Your game, Your choices, Review and Install. Review the
+   planned changes and press Enter to continue. The game folder has not been
+   changed at this point. On updates, the review shows the installed and new
+   versions. Your settings, edited presets and dungeon choices are kept.
 5. Then the installer
    - builds the world cache from the game's own files (after an interruption
      it continues where it left off),
@@ -65,6 +66,7 @@ Options (Install.cmd ...):
   --backend native       Windows' own Direct3D 9 instead of DXVK
   --backend legacy       the d3d9.dll that was already in the game folder (for example your own DXVK or ReShade)
   --no-art-layer         no lighting layer (patch-z)
+  --no-tideglass         omit the Tideglass water core and keep existing water settings
   --no-world-cache       the renderer only, without the cache (no static world shadows and no GI)
   --instances 1,2,6      the dungeon and raid groups to have, without the question: numbers 1-6, names, all or none
   --yes                  accept the recommended answers without asking

@@ -28,7 +28,7 @@ def run(label,command):
 try:
     exe=out/'overlay-gpu.exe'
     target='x86_64-windows-gnu' if args.x64 else 'x86-windows-gnu'
-    run('compile',[fp.zig(),'c++','-target',target,'-O2','-UNDEBUG','-std=c++17','-Wno-microsoft-exception-spec','-DIMGUI_USER_CONFIG="northlight_imconfig.h"',*fp.test_include_flags(),'-I'+str(fp.TESTS),fp.TESTS/'settings_overlay_gpu.cpp',*(fp.src(s) for s in sources),'-luser32','-luuid','-o',exe])
+    run('compile',[fp.zig(),'c++','-target',target,'-O2','-UNDEBUG','-std=c++17','-Wno-microsoft-exception-spec','-DNORTHLIGHT_OVERLAY_TEST_INPUT=1','-DIMGUI_USER_CONFIG="northlight_imconfig.h"',*fp.test_include_flags(),'-I'+str(fp.TESTS),fp.TESTS/'settings_overlay_gpu.cpp',*(fp.src(s) for s in sources),'-luser32','-luuid','-o',exe])
     run('gpu',[exe,backend,out/'settings',*(['--sdr-only'] if args.sdr_only else [])]);report['pass']=True
 finally:
     guard.processes();report['inputs_unchanged']=all(sha(Path(p))==v for p,v in inputs.items());report['pass']&=report['inputs_unchanged'];(out/'validation.json').write_text(json.dumps(report,indent=2)+'\n')

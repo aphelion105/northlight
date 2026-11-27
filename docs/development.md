@@ -275,7 +275,9 @@ client's archive chain. With the art layer enabled, the combo package uses
 daylight lighting underwater. Water settings are under **Water** in the
 in-game overlay. Ultra selects Far reflections, nearby scenery details and fine highlights.
 Changing **Use Tideglass** requires a restart. Overview also selects Default, Vibrant or Atmospheric.
-Appearance presets are INI files in the appearance-presets directory beside the executable.
+**Regional appearance** edits regional fog, shadow contrast and whole-world looks. **Colour grading**
+edits the curves, vibrance and colour ranges for Daylight, Dusk and Night. **Save as preset** exports
+the current look and any unsaved appearance edits to an INI in the appearance-presets directory.
 The renderer bakes regional daylight, dusk and night colour tables on a worker.
 
 For the standalone AMD64 client, put the x86_64 LLVM-MinGW tools on PATH and
@@ -296,7 +298,9 @@ python tests/verify_packages.py <out>/packages/Northlight-0.3.218-tideglass-0.2.
 Extract the x64 ZIP outside the game folder and run `Install.cmd`. Select the
 folder containing `WowClient64.exe` and the 3.3.5a data archives. The installer
 includes both pinned AMD64 DXVK backends, generates the world cache from the
-local archives, and backs up replaced files for `Uninstall.cmd`.
+local archives, and backs up replaced files for `Uninstall.cmd`. Both Windows packages show the
+game, choices, review and installation steps. Review precedes writes to the client. Repeat installs
+keep settings and prior choices. Use `--no-tideglass` to install without the water core.
 
 Tideglass runs with SDR and HDR output, including multisampled targets.
 The HDR path uses the legacy scene before Northlight decodes it into linear

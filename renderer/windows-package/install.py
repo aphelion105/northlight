@@ -69,6 +69,10 @@ def renderer_resources(dll):
         raise ValueError(RESOURCES + ' does not match this renderer DLL')
     return resources
 
+def emit(*parts, flush=True):
+    print(*parts, flush=flush)
+
+
 def sha(path):
     h = hashlib.sha256()
     with path.open('rb') as f:
@@ -223,7 +227,7 @@ def restore(client, backup):
         else: replace_file(safe_path(backup/'before', e['path']), target)
     record['status'] = 'restored'
     atomic_json(backup/'transaction.json', record)
-    print('Restored previous files:', backup)
+    emit('Restored previous files:', backup)
 
 def install_order(t):
     """Sort key of (folder, record): the second, then the exact creation time (same-second installs), then the folder name."""
@@ -386,11 +390,11 @@ def commit(client, plan, staged, payload=None, version='__RELEASE_VERSION__', ki
             else:
                 replace_file(source(e),dst)
                 if sha(dst) != e['after']: raise ValueError('Installed checksum mismatch: '+e['path'])
-            if i==0: print('Installing',len(plan),'files (each replaced file is backed up first)...',flush=True)
-            elif i%1000==0: print('Installed',i,'of',len(plan),'files',flush=True)
+            if i==0: emit('Installing',len(plan),'files (each replaced file is backed up first)...',flush=True)
+            elif i%1000==0: emit('Installed',i,'of',len(plan),'files',flush=True)
         record['status']='installed'; atomic_json(backup/'transaction.json',record)
     except BaseException:
-        print('Installation interrupted. Restoring the recorded transaction...',flush=True)
+        emit('Installation interrupted. Restoring the recorded transaction...',flush=True)
         restore(client,backup)
         raise
     finally:
@@ -505,7 +509,7 @@ def x64_config(path, backend):
     return bom + ''.join(result).encode(encoding, errors='surrogateescape')
 
 
-def payload_plan(client, package, use_existing=False, backend=None, extra=None, proxy=True, x64=False):
+def payload_plan(client, package, use_existing=False, backend=None, extra=None, proxy=True, x64=False, leave_out=()):
     """(plan, staged, foreign): the entries that bring client to the package payload.
     backend is already resolved (resolve_backend; None only with proxy=False, which writes no ini): 'dxvk'/'dxvk2'/'native'
     writes Backend=<backend>; 'legacy' (like use_existing) selects a foreign d3d9.dll kept as the legacy backend.
@@ -529,9 +533,9 @@ def payload_plan(client, package, use_existing=False, backend=None, extra=None, 
         raise ValueError('Package manifest lacks matching ' + RESOURCES)
     if proxy and PROXY not in [e['path'] for e in manifest]: raise ValueError('Package lacks the renderer '+PROXY)
     if foreign:
-        print('Existing', PROXY, 'is not this renderer; it is kept as', LEGACY, flush=True)
+        emit('Existing', PROXY, 'is not this renderer; it is kept as', LEGACY, flush=True)
         if not is_dxvk(safe_path(client, PROXY).read_bytes()):
-            print('Note: its settings (e.g. ReShade.ini, reshade-shaders, enbseries.ini) stay in the game folder;'
+            emit('Note: its settings (e.g. ReShade.ini, reshade-shaders, enbseries.ini) stay in the game folder;'
                   ' a ReShade/ENB used as Backend=legacy may not find them there.', flush=True)
     plan, proxy_entry = list(first), []
     # The selected DXVK backend's files must verify. A file missing from another DXVK folder (an antivirus
@@ -541,10 +545,22 @@ def payload_plan(client, package, use_existing=False, backend=None, extra=None, 
     keep_ini = not x64 and proxy and effective is not None and config_backend(safe_path(client, CONFIG)) == effective
     if proxy and backend is not None and not keep_ini and CONFIG not in [e['path'] for e in manifest]:
         manifest = manifest+[{'path':CONFIG, 'sha256':None}]
-    print('Verifying package and comparing installed files...', flush=True)
+    emit('Verifying package and comparing installed files...', flush=True)
+    bundled_looks = {'appearance-presets/Vibrant.ini', 'appearance-presets/Atmospheric.ini'}
+    recorded = {}
+    for _, record in transactions(client):
+        for entry in record.get('files', ()):
+            if entry['path'] in bundled_looks or entry['path'] in leave_out:
+                recorded.setdefault(entry['path'], set()).update(afters(entry))
     for e in manifest:
         if e['path'] == CONFIG and keep_ini: continue
         dst = safe_path(client, e['path'])
+        if e['path'] in leave_out:
+            if not e.get('preserve') and dst.is_file():
+                digest = sha(dst)
+                if digest in recorded.get(e['path'], ()):
+                    plan.append({'path': e['path'], 'before': digest, 'after': None})
+            continue
         if e['sha256'] is not None:
             src = safe_path(package/'payload', e['path'])
             other = other_dxvk(e['path'], selected)
@@ -552,20 +568,26 @@ def payload_plan(client, package, use_existing=False, backend=None, extra=None, 
                 if package_sha(src) != e['sha256']: raise ValueError(package_problem(e['path'], selected, False))
             elif other is None: raise ValueError(package_problem(e['path'], selected, True))
             else:
-                print('Note:', e['path'], 'is missing from the package (an antivirus product may have removed it);'
+                emit('Note:', e['path'], 'is missing from the package (an antivirus product may have removed it);'
                       ' skipping it. Backend', other, 'will not be available.', flush=True)
                 if dst.exists():
-                    print('Removing the older', e['path'], 'from the game folder (it was not verified by this install).', flush=True)
+                    emit('Removing the older', e['path'], 'from the game folder (it was not verified by this install).', flush=True)
                     plan.append({'path':e['path'], 'before':sha(dst), 'after':None})
                 continue
         old = sha(dst) if dst.exists() else None
         # Existing settings keep ordinary overrides. New Quality feature bundles migrate once;
         # the complete result is backed up and installed through this same transaction.
-        if e.get('preserve') and dst.exists():
+        if e['path'] in bundled_looks and dst.exists():
+            if old != e['sha256'] and old not in recorded.get(e['path'], ()):
+                emit('Keeping your edited', e['path'], flush=True)
+                continue
+        elif e.get('preserve') and dst.exists():
+            if e['path'] in ('water.ini', 'water-host.ini'):
+                continue
             merged = merge_quality_ini(dst.read_bytes(), safe_path(package/'payload', e['path']).read_bytes()) if e['sha256'] is not None else None
             if merged is None:
-                print('Keeping your existing', e['path'], flush=True); continue
-            print('Updating', e['path'], '(new settings and Quality feature defaults; other overrides kept)', flush=True)
+                emit('Keeping your existing', e['path'], flush=True); continue
+            emit('Updating', e['path'], '(new settings and Quality feature defaults; other overrides kept)', flush=True)
             staged[e['path']] = merged
             plan.append({'path':e['path'], 'before':old, 'after':hashlib.sha256(merged).hexdigest(), 'source':'staged', 'preserve':True}); continue
         entry = {'path':e['path'], 'before':old, 'after':e['sha256'], **({'preserve':True} if e.get('preserve') else {})}
@@ -601,7 +623,7 @@ def install(client, package=PACKAGE, use_existing=False, backend=None, extra=Non
     if not plan:
         print('This package is already installed.'); return None
     backup = commit(client, plan, staged, package/'payload', version)
-    print('Installed', version+'. Rollback:', backup)
+    emit('Installed', version+'. Rollback:', backup)
     print('wow.exe is not modified. The renderer is loaded as', PROXY, 'from the game folder.')
     if foreign: print('Your previous', PROXY, 'is in', LEGACY, '(Backend=legacy uses it).')
     print('Start wow.exe yourself. Check northlight-renderer.log for selected backend and capabilities.')

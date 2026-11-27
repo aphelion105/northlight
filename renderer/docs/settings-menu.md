@@ -4,6 +4,14 @@ Northlight draws its own settings window inside the game, in the renderer DLL, o
 
 Edits are a draft. A live ("F") setting previews immediately and writes nothing; Save commits, Revert discards the draft and returns the renderer to the saved configuration. Settings marked "R" (restart required) are saved but only read at start-up: the command stream, worker and GI solver settings, NameMask, SpellLayer, backend and regional shadow range. Everything the menu shows comes from the same schema the renderer loads; unavailable controls are greyed out.
 
+**Regional appearance** lets you select a whole-world look and tune each region's fog tint,
+fog brightness and shadow contrast. The region picker searches by name or INI key and is shared
+with **Colour grading** and **Sun & moon**. Colour grading edits Daylight, Dusk and Night separately.
+Drag the curve points and their handles, then adjust vibrance and individual colour ranges.
+**Save as preset** writes a shareable INI under `appearance-presets/` immediately, including
+the current draft. Saving a look leaves the main settings draft open. The menu can replace or
+delete custom looks. The packaged Default, Vibrant and Atmospheric names are reserved.
+
 Shadow range includes an editable default reach and the known outdoor zones, plus any extra zones already in the installed profile. Search by zone name, map or AreaTable ID, or filter by map. Zones without an override follow the default, including while editing; right-click a zone to restore that inheritance. Values range from 928 to 4096 yards. Save and restart the game to apply them. The default is stored as `[default] terrain_radius` in `shadow-range-profiles.ini`; older files without it retain 928 yards.
 
 Saving is transactional. A worker thread preserves unknown INI lines, comments, UTF-8/UTF-16LE encoding and line endings, verifies the file revision before writing, serializes writers with an interprocess lock, and journals the multi-file commit so a crash is rolled back at the next start (before any INI is read). A read-only or externally edited file is reported by name and never overwritten. Saved and previewed live values reach the renderer at a frame boundary.

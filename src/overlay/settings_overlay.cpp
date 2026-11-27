@@ -211,7 +211,12 @@ LRESULT CALLBACK windowProcedure(HWND window,UINT msg,WPARAM wparam,LPARAM lpara
     }
     if(!hook.active.load(std::memory_order_relaxed))return forward();
     In::Modifiers mods;
+#ifdef NORTHLIGHT_OVERLAY_TEST_INPUT
+    // The private GPU test sends messages to an offscreen HWND.
+    mods.ctrl=mods.shift=msg==WM_KEYDOWN&&wparam==VK_F11;
+#else
     if(msg>=WM_KEYFIRST&&msg<=WM_KEYLAST){mods.ctrl=GetKeyState(VK_CONTROL)<0;mods.shift=GetKeyState(VK_SHIFT)<0;mods.alt=GetKeyState(VK_MENU)<0;}
+#endif
     hook.master.message(msg,wparam,lparam,mods,GetForegroundWindow()==window);
     In::State state;state.open=hook.open.load(std::memory_order_relaxed);state.captureMouse=hook.captureMouse.load(std::memory_order_relaxed);
     state.captureText=hook.captureText.load(std::memory_order_relaxed);state.hotkey=unpack(hook.hotkey.load(std::memory_order_relaxed));

@@ -35,17 +35,10 @@ int main(int argc,char** argv){
     for(unsigned attempt=0;attempt<500&&!service->snapshot();++attempt)Sleep(10);
     assert(service->snapshot());
     auto overlay=NorthlightOverlay::create(&device,true,nullptr,service,[](const char* text){std::puts(text);});assert(overlay&&!overlay->visible());
+    // The private window supplies modifier state without touching desktop input.
     auto toggle=[&]{
-        BYTE previous[256]{},keys[256]{};
-        assert(GetKeyboardState(previous));
-        std::memcpy(keys,previous,sizeof keys);
-        keys[VK_CONTROL]|=0x80;keys[VK_SHIFT]|=0x80;keys[VK_MENU]&=0x7F;
-        assert(SetKeyboardState(keys));
         SendMessageW(window,WM_KEYDOWN,VK_F11,0);
-        keys[VK_CONTROL]&=0x7F;keys[VK_SHIFT]&=0x7F;
-        assert(SetKeyboardState(keys));
         SendMessageW(window,WM_KEYUP,VK_F11,0);
-        assert(SetKeyboardState(previous));
     };
     toggle();assert(overlay->visible());
     bool calibrationExpected=false;
@@ -65,7 +58,7 @@ int main(int argc,char** argv){
     ImGuiWindow* nav=nullptr;
     for(auto* child:parent->DC.ChildWindows)if(child->ChildId==parent->GetID("nav"))nav=child;
     assert(nav);
-    const char* pages[]={"Materials & parallax","Lighting & AO","Renderer & HDR","Diagnostics","Performance","Performance","Shadow range","Shadow range","Sun & moon"};
+    const char* pages[]={"Materials & parallax","Lighting & AO","Renderer & HDR","Diagnostics","Performance","Performance","Shadow range","Shadow range","Sun & moon","Regional appearance","Colour grading"};
     for(unsigned page=0;page<sizeof(pages)/sizeof(pages[0]);++page){
       if(page==4){
         // Synthetic presentation data in the private test process only. The
@@ -101,6 +94,32 @@ int main(int argc,char** argv){
       if(page==5){
         ImGuiWindow* content=nullptr;for(auto* child:parent->DC.ChildWindows)if(child!=nav)content=child;assert(content);
         content->StateStorage.SetInt(content->GetID("CPU memory breakdown"),1);draw(0);draw(0);assert(content->ScrollMax.y>0);
+      }
+      if(page==9){
+        ImGuiWindow* content=nullptr;
+        for(auto* child:parent->DC.ChildWindows)if(child!=nav&&child->Active)content=child;
+        assert(content);
+        ImGuiWindow* card=nullptr;
+        for(auto* child:content->DC.ChildWindows)if(child->ChildId==content->GetID("world-look"))card=child;
+        assert(card);
+        ImGui::ActivateItemByID(card->GetID("Save as preset..."));draw(0);draw(0);
+        auto* modal=ImGui::FindWindowByName("Save as preset");assert(modal&&modal->Active);
+        const auto name=modal->GetID("Name");
+        if(ImGui::GetActiveID()!=name){ImGui::ActivateItemByID(name);draw(0);draw(0);}
+        assert(ImGui::GetActiveID()==name);
+        ImGui::GetIO().AddInputCharactersUTF8("GPU look");draw(0);draw(0);
+        const auto* input=ImGui::GetInputTextState(name);
+        assert(input&&std::string(input->TextA.Data)=="GPU look");
+        for(unsigned wait=0;wait<500&&service->status().state==NorthlightSettings::Status::State::Busy;++wait){Sleep(10);draw(0);}
+        ImGui::ClearActiveID();
+        ImGui::ActivateItemByID(modal->GetID("Save preset"));draw(0);draw(0);
+        const auto path=std::filesystem::path(argv[2])/"appearance-presets"/"GPU look.ini";
+        for(unsigned wait=0;wait<500&&!std::filesystem::exists(path);++wait){Sleep(10);draw(0);}
+        const auto image=NorthlightSettings::readImage(path);
+        NorthlightAppearancePresets::Table look;std::string error;
+        if(!image.exists)std::fprintf(stderr,"Save preset status: %s\n",service->status().message.c_str());
+        assert(image.exists&&NorthlightAppearancePresets::parse(image.raw,look,error));
+        std::puts("APPEARANCE_MENU_PASS presetSaved=1");
       }
       float peaks[3]{};unsigned changed[3]{};
       for(unsigned mode=0;mode<(sdrOnly?1u:3u);++mode){
