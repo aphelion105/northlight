@@ -80,10 +80,11 @@ run requires confirmation in `northlight-renderer.log`. Keep the flag consistent
 across FPS comparisons because profiling adds measurement overhead. RenderProfile
 is off by default and is unavailable in stock and Vulkan cases.
 
-Add `--effects 0` to a Northlight run to set `Effects=0` in the private quality
-file. This bypasses all Northlight scene effects while keeping the renderer
-loaded, and the report shows `northlight=effects-disabled`. The default is
-`--effects 1`. The flag is unavailable in stock cases.
+Use `--effects 0` with a Northlight D3D9 case to bypass scene effects while
+keeping the renderer loaded. Use `--effects 1` to enable the scene effects
+configured in the quality profile. Both values require a wrapped D3D9 device
+and confirmation in `northlight-renderer.log` before the run can pass. Omit
+the flag to use the supplied quality profile's effects setting.
 
 ## Read the results
 
