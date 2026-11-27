@@ -1,3 +1,16 @@
+## Required language
+
+Use English for all Northlight interface text, including menus, settings,
+buttons, tooltips, status messages, and errors. Apply this rule across the
+game integration, overlay, installer, and command-line tools regardless of
+the language used in chat or on the host system.
+
+Use English for all project artifacts. This includes documentation, release
+notes, reports, logs, test output, and all authored text in screenshots,
+charts, videos, and other generated outputs. Capture UI evidence with the
+interface set to English. Check the language of changed interfaces and
+artifacts before handing them off.
+
 ## CodeGraph
 
 If this repository has a `.codegraph/` index, use `codegraph_explore` or

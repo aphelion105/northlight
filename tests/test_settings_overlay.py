@@ -122,11 +122,12 @@ check('97428e8ac99e339ce05eee531cf55b77b29ea709' in (fp.SRC / 'imgui' / 'README.
 
 # The search index and navigation share these pages.
 panel = uncomment(fp.src('settings_panel.cpp').read_text(encoding='utf-8'))
+check(re.search(r'[\u0400-\u052f]', panel) is None, 'settings_panel.cpp: interface text must be in English')
 titles = re.findall(r'\{Page::\w+,"([^"]+)"', panel)
 check(titles == ['Overview', 'Lighting & AO', 'Materials & parallax', 'Shadows', 'Atmosphere & weather', 'Water', 'Regional appearance', 'Colour grading', 'Sun & moon', 'Shadow range',
                  'Spells & names', 'Renderer & HDR', 'Performance', 'Diagnostics'], f'settings_panel.cpp: pages {titles}')
 sections = panel.split('constexpr MenuSection MenuSections[]=', 1)[1].split('\n};', 1)[0]
-check(re.findall(r'\{"([^"]+)",\{Page::', sections) == ['Обзор', 'Свет и тени', 'Материалы', 'Мир и погода', 'Вода', 'Заклинания и имена', 'Система'],
+check(re.findall(r'\{"([^"]+)",\{Page::', sections) == ['Overview', 'Lighting & shadows', 'Materials', 'World & weather', 'Water', 'Spells & names', 'System'],
       'settings_panel.cpp: seven approved menu sections')
 
 # The embedded font: generated header present and loaded first; its licence ships.

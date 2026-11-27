@@ -106,9 +106,9 @@ const std::map<std::string,const char*> Labels={
 };
 // Shorter row labels where the group title already gives the context.
 const std::map<std::string,const char*> ShortLabels={
-    {"CelestialStyle","Стиль неба"},{"ReflectionDistance","Дальность отражений"},{"ReflectionResolution","Разрешение отражений"},
-    {"ReflectionScenery","Объекты в отражениях"},{"ReflectionSceneryDetails","Мелкие объекты в отражениях"},
-    {"FineHighlights","Мелкие блики"},{"SurfaceBlur","Смягчение отражений"},
+    {"CelestialStyle","Sky style"},{"ReflectionDistance","Reflection distance"},{"ReflectionResolution","Reflection resolution"},
+    {"ReflectionScenery","Reflected scenery"},{"ReflectionSceneryDetails","Reflected scenery details"},
+    {"FineHighlights","Fine highlights"},{"SurfaceBlur","Reflection blur"},
     {"GIStrength","GI influence"},{"GIBrightness","Brightness adjustment (%)"},{"GIPrelitMix","Baked lighting blend (%)"},{"AuroraStrength","Northrend aurora (%)"},{"GIDistance","GI distance (yd)"},{"GIBounces","Light bounces"},{"AOStrength","Strength (%)"},{"AORadius","Radius (0.01 yd)"},
     {"ActorShadowRadius","Distance (yd)"},{"ActorShadowDetail","Detailed shadows"},{"EquipmentLights","Equipment lights"},{"FogCloudDensity","Density (%)"},
     {"HDRMaxNits","Manual peak (nits)"},{"AutoBumpDistance","Relief distance (yd)"},
@@ -352,7 +352,7 @@ constexpr std::array<NorthlightTone::HueBand,NorthlightTone::HueBandCount> HueBa
     NorthlightTone::HueBand::Green,NorthlightTone::HueBand::Cyan,NorthlightTone::HueBand::Blue,NorthlightTone::HueBand::Magenta};
 constexpr std::array<NorthlightTone::SelectiveProperty,3> SelectiveProperties={NorthlightTone::SelectiveProperty::HueShift,NorthlightTone::SelectiveProperty::Saturation,NorthlightTone::SelectiveProperty::Lightness};
 constexpr std::array<NorthlightTone::TimeStop,3> GradeTimes={NorthlightTone::TimeStop::Day,NorthlightTone::TimeStop::Dusk,NorthlightTone::TimeStop::Night};
-constexpr std::array<const char*,3> TimeTitles={"День","Сумерки","Ночь"};
+constexpr std::array<const char*,3> TimeTitles={"Day","Dusk","Night"};
 
 enum class Page { Overview, Lighting, Materials, Shadows, Atmosphere, Water, Regional, Grading, Celestial, ShadowRange, Spells, Renderer, Performance, Diagnostics, Count };
 struct PageInfo { Page page; const char* title; const char* quality; };
@@ -365,17 +365,17 @@ const PageInfo Pages[]={
 };
 static_assert(sizeof(Pages)/sizeof(Pages[0])==std::size_t(Page::Count),"one entry per page");
 constexpr std::array<const char*,std::size_t(Page::Count)> PageLabels={
-    "Обзор","Освещение и AO","Материалы","Тени","Атмосфера и погода","Вода","Туман и контраст",
-    "Цветокоррекция","Солнце и луна","Дальность теней","Заклинания и имена","Рендерер и HDR","Производительность","Диагностика"};
+    "Overview","Lighting & AO","Materials","Shadows","Atmosphere & weather","Water","Fog & contrast",
+    "Colour grading","Sun & moon","Shadow range","Spells & names","Renderer & HDR","Performance","Diagnostics"};
 struct MenuSection { const char* title; std::array<Page,4> pages; unsigned count; };
 constexpr MenuSection MenuSections[]={
-    {"Обзор",{Page::Overview},1},
-    {"Свет и тени",{Page::Lighting,Page::Shadows,Page::ShadowRange},3},
-    {"Материалы",{Page::Materials},1},
-    {"Мир и погода",{Page::Atmosphere,Page::Regional,Page::Grading,Page::Celestial},4},
-    {"Вода",{Page::Water},1},
-    {"Заклинания и имена",{Page::Spells},1},
-    {"Система",{Page::Renderer,Page::Performance,Page::Diagnostics},3},
+    {"Overview",{Page::Overview},1},
+    {"Lighting & shadows",{Page::Lighting,Page::Shadows,Page::ShadowRange},3},
+    {"Materials",{Page::Materials},1},
+    {"World & weather",{Page::Atmosphere,Page::Regional,Page::Grading,Page::Celestial},4},
+    {"Water",{Page::Water},1},
+    {"Spells & names",{Page::Spells},1},
+    {"System",{Page::Renderer,Page::Performance,Page::Diagnostics},3},
 };
 constexpr unsigned menuSection(Page page){
     for(unsigned i=0;i<std::size(MenuSections);++i)for(unsigned j=0;j<MenuSections[i].count;++j)if(MenuSections[i].pages[j]==page)return i;
@@ -1307,7 +1307,7 @@ struct SettingsPanel::State {
     }
     void waterPage(){
         ImGui::TextWrapped("Save to apply water settings. Restart the game after switching Tideglass on or off.");
-        W::cardTitle("Общие настройки воды");
+        W::cardTitle("General water settings");
         titled("Renderer",fields(NorthlightSettings::WaterHostFile));
         waterPresetControl(true);
         auto waterRows=[&](const char* title,const char* keys){
@@ -1321,10 +1321,10 @@ struct SettingsPanel::State {
         waterRows("Reflections","Reflection NearReflection");
         waterRows("Clarity and underwater","Clarity Underwater UnderwaterVisibility UnderwaterScenery");
         waterRows("Other liquids","Slime Lava");
-        W::cardTitle("Слизь в выбранном регионе");
+        W::cardTitle("Regional slime");
         const auto* scope=selectedRegion();
         const auto* slime=scope?draft.field(NorthlightSettings::WaterFile,"RegionalSlime",scope->slime):nullptr;
-        if(!slime)W::hint("Для этого профиля нет отдельной настройки слизи.");
+        if(!slime)W::hint("This profile has no separate slime setting.");
         else if(beginRows("regional-slime")){regionalRow(*slime,"Regional slime");ImGui::EndTable();}
     }
     void drawPage(){
@@ -1369,7 +1369,7 @@ struct SettingsPanel::State {
                             if(const Field* f=draft.field(D::Celestial,appearance,time+name))row(*f);
                         ImGui::EndTable();
                     }
-                }else W::hint("Для этого региона нет отдельного профиля облика.");
+                }else W::hint("This region uses the default appearance profile.");
                 W::hint("Fog tint colours the fog a region already has and brightness darkens or lifts it, each for Daylight, Dusk and Night; Dusk also shows at sunrise. Shadow contrast deepens dark detail at every hour. The region chosen here is the one Colour grading and Sun & moon edit too.");
             }
             W::endCard();
@@ -1381,7 +1381,7 @@ struct SettingsPanel::State {
                     if(number(draft.effective(*strength))==0)ImGui::TextWrapped("This region's grade is off while its strength is zero. Choose Tuned above to see your edits.");
                     W::hint("Strength scales the whole grade; at zero the grade is off. Dusk is the 19:30 look, shown through sunset and again at sunrise; what it leaves unset follows the Daylight-to-Night blend.");
                     ImGui::BeginDisabled(locked());gradeEditor(GradeTimes[editTime],appearance);ImGui::EndDisabled();
-                }else W::hint("Для этого региона нет отдельного профиля облика.");
+                }else W::hint("This region uses the default appearance profile.");
             }
             W::endCard();
             break;
@@ -1443,9 +1443,9 @@ struct SettingsPanel::State {
                     const auto options=D::modeField(*field)?D::modeOptions(*field):D::split(field->options);
                     for(const auto& option:options)terms+=" "+optionLabel(*field,option);
                 }
-                if(field->key.rfind("day_",0)==0)path+=" / День";
-                if(field->key.rfind("dusk_",0)==0)path+=" / Сумерки";
-                if(field->key.rfind("night_",0)==0)path+=" / Ночь";
+                if(field->key.rfind("day_",0)==0)path+=" / Day";
+                if(field->key.rfind("dusk_",0)==0)path+=" / Dusk";
+                if(field->key.rfind("night_",0)==0)path+=" / Night";
                 terms+=" "+path;
             }
             searchEntries.push_back({target,std::move(title),std::move(path),searchWords(std::move(terms)),key,field,action});
@@ -1456,26 +1456,25 @@ struct SettingsPanel::State {
             if(!seen.emplace(field->file,slime?"RegionalSlime":field->key).second)continue;
             const auto& key=field->key;
             const char* aliases="";
-            if(key.rfind("Reflection",0)==0||key=="NearReflection"||key=="SurfaceBlur")aliases="отражения отражений отражен отражённый";
-            else if(key=="CelestialStyle")aliases="небо солнце луна Default Forever";
-            else if(key=="GI")aliases="глобальное освещение непрямой свет";
-            else if(key=="ContactAO")aliases="контактное затенение ambient occlusion";
+            if(key.rfind("Reflection",0)==0||key=="NearReflection"||key=="SurfaceBlur")aliases="reflection reflected";
+            else if(key=="CelestialStyle")aliases="sky sun moon Default Forever";
+            else if(key=="GI")aliases="global illumination indirect lighting";
+            else if(key=="ContactAO")aliases="contact shading ambient occlusion";
             const auto title=slime?std::string("Regional slime"):rowLabel(*field);
-            add(info.page,title,field,nullptr,slime?"региональная слизь каналы":aliases);
+            add(info.page,title,field,nullptr,slime?"slime canals":aliases);
         }
-        if(draft.field(NorthlightSettings::WaterHostFile,"WaterIntegration","Enable"))add(Page::Water,"Пресет воды",nullptr,"water-preset","Water preset Ultra Quality Balanced Performance");
-        add(Page::Regional,"Сохранить облик как пресет",nullptr,"save-look","Save as preset сохранить палитру");
-        add(Page::Regional,"Удалить пресет облика",nullptr,"delete-look","Delete preset удалить палитру");
-        add(Page::Renderer,"Калибровка HDR",nullptr,"hdr-calibration","Show HDR calibration Test peak Wide field");
+        if(draft.field(NorthlightSettings::WaterHostFile,"WaterIntegration","Enable"))add(Page::Water,"Water preset",nullptr,"water-preset","Ultra Quality Balanced Performance");
+        add(Page::Regional,"Save as preset",nullptr,"save-look","appearance palette");
+        add(Page::Regional,"Delete preset",nullptr,"delete-look","appearance palette");
+        add(Page::Renderer,"HDR calibration",nullptr,"hdr-calibration","Show HDR calibration Test peak Wide field");
     }
     void updateSearch(){
         refreshSearch();
         const auto query=searchWords(searchText.data());
         if(query==searchQuery)return;
         searchQuery=query;searchResults.clear();searchSelected=0;
-        auto tokens=words(query.c_str());
+        const auto tokens=words(query.c_str());
         if(tokens.empty())return;
-        for(auto& token:tokens)if(token.rfind("отражени",0)==0)token="отражен";
         std::vector<std::pair<int,std::size_t>> ranked;
         for(std::size_t i=0;i<searchEntries.size();++i){
             const auto& hit=searchEntries[i];
@@ -1514,24 +1513,25 @@ struct SettingsPanel::State {
     }
     bool searchHeader(){
         searchUp=searchDown=false;
-        ImGui::SetNextItemWidth(std::max(70.f,ImGui::GetContentRegionAvail().x-buttonWidth("Очистить")-ImGui::GetStyle().ItemSpacing.x));
+        const char* clearLabel="Clear";
+        ImGui::SetNextItemWidth(std::max(70.f,ImGui::GetContentRegionAvail().x-buttonWidth(clearLabel)-ImGui::GetStyle().ItemSpacing.x));
         const auto callback=[](ImGuiInputTextCallbackData* data){
             auto& self=*static_cast<State*>(data->UserData);
             self.searchUp=data->EventKey==ImGuiKey_UpArrow;self.searchDown=data->EventKey==ImGuiKey_DownArrow;return 0;
         };
-        searchEnter=ImGui::InputTextWithHint("##settings-search","Найти настройку...",searchText.data(),searchText.size(),
+        searchEnter=ImGui::InputTextWithHint("##settings-search","Search settings...",searchText.data(),searchText.size(),
             ImGuiInputTextFlags_EscapeClearsAll|ImGuiInputTextFlags_EnterReturnsTrue|ImGuiInputTextFlags_CallbackHistory,callback,this);
         ImGui::SameLine();ImGui::BeginDisabled(!searchText[0]);
-        if(ImGui::Button("Очистить"))searchText[0]='\0';
+        if(ImGui::Button(clearLabel))searchText[0]='\0';
         ImGui::EndDisabled();
         return !words(searchWords(searchText.data()).c_str()).empty();
     }
     void drawSearch(){
-        ImGui::TextUnformatted("Результаты поиска");
-        if(!snapshot){W::hint("Загрузка настроек...");return;}
+        ImGui::TextUnformatted("Search results");
+        if(!snapshot){W::hint("Loading settings...");return;}
         updateSearch();
-        if(searchResults.empty()){W::hint("Совпадений нет. Попробуйте название или ключ INI.");return;}
-        ImGui::TextColored(Color::Muted,"Найдено %zu",searchResults.size());
+        if(searchResults.empty()){W::hint("No matches. Try a setting name or INI key.");return;}
+        ImGui::TextColored(Color::Muted,"Matches: %zu",searchResults.size());
         const auto size=int(searchResults.size());
         if(searchUp||searchDown){searchSelected=(searchSelected+(searchUp?size-1:1))%size;searchScroll=true;}
         if(searchEnter){openSearchHit(searchEntries[searchResults[searchSelected]]);return;}
@@ -1618,13 +1618,13 @@ struct SettingsPanel::State {
         ImGui::PushID("region-scope");
         const bool inlineTime=time&&ImGui::GetContentRegionAvail().x>=460*scale;
         const auto* current=selectedRegion();
-        ImGui::AlignTextToFramePadding();ImGui::TextUnformatted("Регион");ImGui::SameLine();
+        ImGui::AlignTextToFramePadding();ImGui::TextUnformatted("Region");ImGui::SameLine();
         ImGui::SetNextItemWidth(inlineTime?220*scale:-FLT_MIN);
         if(ImGui::BeginCombo("##region",current?current->label.c_str():"All regions (default)",ImGuiComboFlags_HeightLarge)){
             ImGui::SetNextItemWidth(-FLT_MIN);
-            ImGui::InputTextWithHint("##region-search","Название, карта или ID",regionFilter.data(),regionFilter.size());
+            ImGui::InputTextWithHint("##region-search","Name, map or ID",regionFilter.data(),regionFilter.size());
             const char* maps[]={"","Azeroth:","Kalimdor:","Expansion01:","Northrend:"};
-            const char* labels[]={"Все карты","Eastern Kingdoms","Kalimdor","Outland","Northrend"};
+            const char* labels[]={"All maps","Eastern Kingdoms","Kalimdor","Outland","Northrend"};
             ImGui::SetNextItemWidth(-FLT_MIN);ImGui::Combo("##region-map",&regionMap,labels,IM_ARRAYSIZE(labels));
             ImGui::Separator();
             const std::string query=folded(regionFilter.data());std::string visibleGroup;bool found=false;
@@ -1641,7 +1641,7 @@ struct SettingsPanel::State {
                 if(active)ImGui::SetItemDefaultFocus();found=true;
                 ImGui::PopID();
             }
-            if(!found)ImGui::TextDisabled("Совпадений нет.");
+            if(!found)ImGui::TextDisabled("No matches.");
             ImGui::EndCombo();
         }
         if(time)for(unsigned i=0;i<TimeTitles.size();++i){
@@ -1885,7 +1885,7 @@ struct SettingsPanel::State {
         loose("celestial-controls",controls);
         ImGui::TextColored(Color::Muted,"Default: game placement and size. Forever: imported orbit and horizon size curves.");
         ImGui::Spacing();
-        if(appearance.empty()){W::hint("Для этого региона нет отдельного профиля облика.");return;}
+        if(appearance.empty()){W::hint("This region uses the default appearance profile.");return;}
         std::map<std::string,const Field*> byKey;for(const Field* f:fields(D::Celestial,&appearance))byKey[f->key]=f;
         std::map<std::string,bool> used;
         for(const auto& key:NorthlightSettings::AppearanceKeys)used[key]=true;
@@ -1907,7 +1907,7 @@ struct SettingsPanel::State {
         ImGui::PopTextWrapPos();
         ImGui::Spacing();
         const auto* scope=selectedRegion();
-        if(!scope||scope->shadow.empty())W::hint("Для этого региона нет отдельной настройки дальности теней. Показано общее значение.");
+        if(!scope||scope->shadow.empty())W::hint("Showing the shared shadow range for this region.");
         else if(scope->shadow!="default")if(const auto* field=draft.field(D::ShadowRange,scope->shadow,"terrain_radius")){
             if(beginRows("zone-range")){row(*field,scope->label.c_str());ImGui::EndTable();}
         }

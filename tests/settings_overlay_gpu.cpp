@@ -106,7 +106,7 @@ int main(int argc,char** argv){
         auto* results=activePage();assert(results&&results->ChildId==parent->GetID("search-results"));
         assert(results->Size.x>=parent->InnerRect.GetWidth()-2*parent->WindowPadding.x-4);
     };
-    typeSearch("СТИЛЬ НЕБА");
+    typeSearch("SKY STYLE");
     {
         ok(real->GetRenderTargetData(device.target,readback));D3DLOCKED_RECT lock{};ok(readback->LockRect(&lock,nullptr,D3DLOCK_READONLY));
         std::ofstream image(std::filesystem::path(argv[2])/"search-results.fgr",std::ios::binary);
@@ -120,10 +120,10 @@ int main(int argc,char** argv){
     ImGui::ActivateItemByID(sky);draw(0);draw(0);assert(GImGui->OpenPopupStack.Size>0);
     key(ImGuiKey_Escape);
     typeSearch("night_red_curve");key(ImGuiKey_Escape);draw(0);assert(nav->Active);
-    std::puts("SETTINGS_SEARCH_GPU_PASS wide=1 keyboard=1 ini_key=1 cyrillic=1 result_opened=1");
+    std::puts("SETTINGS_SEARCH_GPU_PASS wide=1 keyboard=1 ini_key=1 english_label=1 result_opened=1");
     const char* pages[]={"Materials & parallax","Lighting & AO","Renderer & HDR","Diagnostics","Performance","Performance","Shadow range","Shadow range","Sun & moon","Regional appearance","Colour grading"};
-    const char* categories[]={"Материалы","Свет и тени","Система","Система","Система","Система","Свет и тени","Свет и тени","Мир и погода","Мир и погода","Мир и погода"};
-    const char* subsections[]={nullptr,"Освещение и AO","Рендерер и HDR","Диагностика","Производительность","Производительность","Дальность теней","Дальность теней","Солнце и луна","Туман и контраст","Цветокоррекция"};
+    const char* categories[]={"Materials","Lighting & shadows","System","System","System","System","Lighting & shadows","Lighting & shadows","World & weather","World & weather","World & weather"};
+    const char* subsections[]={nullptr,"Lighting & AO","Renderer & HDR","Diagnostics","Performance","Performance","Shadow range","Shadow range","Sun & moon","Fog & contrast","Colour grading"};
     for(unsigned page=0;page<sizeof(pages)/sizeof(pages[0]);++page){
       if(page==4){
         // Synthetic presentation data in the private test process only. The
@@ -241,17 +241,17 @@ int main(int argc,char** argv){
         std::puts("TREE_MENU_PASS independent=1 livePreview=1 saved=1");
       }
     }
-    auto* shadow=selectPage("Свет и тени","Дальность теней");
+    auto* shadow=selectPage("Lighting & shadows","Shadow range");
     selectRegion("1497@inside","Azeroth:1497","Undercity  (Azeroth:1497)");
     const auto undercity=ImHashStr("##value",0,ImHashStr("S\tAzeroth:1497\tterrain_radius",0,shadow->GetID("zone-range")));
     ImGui::ActivateItemByID(undercity);GImGui->NavNextActivateFlags=ImGuiActivateFlags_PreferInput;draw(0);draw(0);
     assert(ImGui::TempInputIsActive(undercity));key(ImGuiKey_Escape);
-    auto* water=selectPage("Вода",nullptr);
+    auto* water=selectPage("Water",nullptr);
     ImGui::SetScrollY(water,water->ScrollMax.y);draw(0);draw(0);
     const auto slime=ImHashStr("##mode",0,ImHashStr("W\tRegionalSlime\t1497",0,water->GetID("regional-slime")));
     ImGui::ActivateItemByID(slime);draw(0);draw(0);assert(GImGui->OpenPopupStack.Size>0);key(ImGuiKey_Escape);
     typeSearch("night_red_curve");key(ImGuiKey_Enter);draw(0);assert(nav->Active&&activePage());
-    auto* content=selectPage("Система","Производительность");
+    auto* content=selectPage("System","Performance");
     ImGui::SetScrollY(content,0);draw(0);draw(0);
     ImGui::ActivateItemByID(content->GetID("Show compact HUD while settings are closed (this session)"));draw(0);draw(0);
     toggle();assert(overlay->visible());
