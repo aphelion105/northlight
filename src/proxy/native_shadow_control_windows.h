@@ -45,7 +45,7 @@ inline bool verified(){
             {0x6bc148,72,UINT64_C(0x7ba88348f7a86cf1)}, {0x2675c7,21,UINT64_C(0x8b87c2c14c525390)},
             {0x267638,39,UINT64_C(0x75413e981bf90592)}, {0x26769b,24,UINT64_C(0x91a001b43a5c8ebf)},
         };
-        return NorthlightX64World::verifyCode(NorthlightX64World::imageBase(),proof);
+        return NorthlightX64World::verifyCode(NorthlightX64World::legacyImageBase(),proof);
     }();
     return supported;
 #else
@@ -56,7 +56,7 @@ inline bool verified(){
 }
 #if defined(_WIN64) && !defined(NORTHLIGHT_REPLAY_STAND)
 template<class Read> State sampleX64(Read read){
-    const auto base=NorthlightX64World::imageBase();
+    const auto base=NorthlightX64World::legacyImageBase();
     State result;
     uintptr_t cvar=0;
     constexpr uintptr_t NumericValue=0x54;
@@ -98,7 +98,7 @@ inline void producerPresent(){
     if((!replace&&!controller.leased())||!verified())return;
 #ifdef _WIN64
     const State state=sampleX64(static_cast<bool(*)(uintptr_t,void*,size_t)>(NorthlightX64World::read));
-    const auto base=NorthlightX64World::imageBase();
+    const auto base=NorthlightX64World::legacyImageBase();
     controller.update(state,replace,[&](std::uintptr_t slot,unsigned value){
         const auto address=base+(slot==Quality?X64Quality:X64Dirty);
         SIZE_T written=0;

@@ -141,7 +141,7 @@ inline int failingSignature(){
 }
 inline bool read(char (&map)[64],float projectionSign,Camera& out,Diagnostics* diagnostic=nullptr){
 #if defined(_WIN64) && !defined(NORTHLIGHT_REPLAY_STAND)
-    if(!NorthlightX64World::imageBase())return fail(diagnostic,Reject::Client);
+    if(!NorthlightX64World::worldImage().base)return fail(diagnostic,Reject::Client);
     NorthlightX64World::Scene scene;float rotation[16],position[3];char name[64]{};
     if(!NorthlightX64World::readScene(scene)||
        !NorthlightWorldContext::publishMapAndCamera(scene.map,scene.pose,name,position))return fail(diagnostic,Reject::Read);

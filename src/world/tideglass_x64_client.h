@@ -92,7 +92,7 @@ template<class ToRaw> void readMaterials(uintptr_t base,const Rows& rows,Inputs&
 }
 
 template<class ToRaw> void capture(Inputs& out,ToRaw toRaw){
-    static const auto base=NorthlightX64World::imageBase();
+    static const auto base=NorthlightX64World::legacyImageBase();
     static const bool liquid=verifyCode(base, std::array<CodeProof,4>{{
         {0x6b4290,24,UINT64_C(0xdd78121cbd0d23ff)}, {0x21e8a0,29,UINT64_C(0x8bd45f292248e2b1)},
         {0x21e6ae,18,UINT64_C(0x6baee63f673df882)}, {0x6c304b,12,UINT64_C(0x76e05ea6021c5cdf)}}});

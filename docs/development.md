@@ -249,11 +249,13 @@ opts into writing M2 material detail alongside game color on the legacy scene
 target. The material target and source textures stay on the GPU.
 The HDR material option runs with the normal replay path. Either option uses
 replay for draws that fall outside its admission rules.
-GI and detailed shadows can read the map, camera, view stack, and outdoor
-light in the AMD64 client built from `8a1b491e7f66`. The proxy checks the loaded
-image and its scene-reader signatures before using this layout. In game,
-`WORLD context validated` confirms admission. With diagnostics enabled,
-`GI activated` reports which probe result the renderer picked up.
+The AMD64 proxy locates the map, camera, view stack and outdoor light from
+code signatures in the loaded D3D9 client. The signatures validate the object
+layout and resolve image-relative references. If the client layout cannot be
+verified, a recognized building draw can still supply projection and depth
+for Contact AO on the main target. `WORLD context validated` confirms camera
+admission. With diagnostics enabled, `GI activated` reports the probe result
+the renderer picked up.
 The shadow provider takes over once its cascades are ready and restores the
 client's configured exterior shadow quality when Northlight shadows are disabled.
 Windows has standard installers for x86 and x64. Each installs a D3D9 proxy

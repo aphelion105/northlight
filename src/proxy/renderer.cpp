@@ -3092,7 +3092,8 @@ private:
                 }
                 return;
             }
-            if(wmo&&!world->wmoContext(vs))return;
+            // A validated WMO projection and the main depth buffer are enough for screen-space AO.
+            if(wmo&&!world->wmoContext(vs)&&(!(contactAO||worldDebug==SsaoView)||!hdrBackTarget()))return;
             if(model&&!screenModel&&!world->modelContext(vs))return;
             if(screenModel)world->menuContext(vs);
             if(tag==1&&world)world->terrainContext();

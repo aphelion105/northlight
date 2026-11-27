@@ -1,17 +1,14 @@
 #pragma once
-// Scene data in the installed AMD64 WowClient build (source 8a1b491e7f66).
-// RVAs are relative to the executable's loaded image. Never reuse the x86 layout.
 #include <windows.h>
 #include <cstdint>
+#include <memory>
+#include <new>
 #include "snapshot_store.h"
 #include "stream_hooks.h"
+#include "world_context_x64_layout.h"
 
 namespace NorthlightX64World {
-inline constexpr uintptr_t WorldFrame=0x1aeb640, MapName=0x1b56ee0, MapLoaded=0x1b3e4f8;
-inline constexpr uintptr_t GxDevice=0xedb5c0, D3dVtable=0xaab038, WorldFrameVtable=0xafcdd8, CameraVtable=0xaecd48;
-inline constexpr uintptr_t CameraField=0x8008, CameraPose=0x10, CameraTransform=0xb8;
-inline constexpr uintptr_t ViewSlot=0x1b98, ViewStack=0x1ba0, Sky=0x1b73560;
-inline constexpr unsigned SkyDirection=0x1c0, SkyDirect=0x1cc, SkyAmbient=0x1d0, SkySize=0x1d4;
+inline constexpr uintptr_t MapLoaded=0x1b3e4f8; // Tideglass's independently verified legacy layout.
 
 inline bool read(uintptr_t address,void* output,size_t size){
     SIZE_T copied=0;
@@ -51,27 +48,55 @@ template<class Proofs> bool verifyCode(uintptr_t base,const Proofs& proofs){
     return true;
 }
 
-inline uintptr_t imageBase(){
-    static const uintptr_t verified=[]()->uintptr_t{
+struct WorldImage {uintptr_t base=0;Layout layout{};};
+
+inline const WorldImage& worldImage(){
+    static const WorldImage verified=[]()->WorldImage{
         const auto base=reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
         IMAGE_DOS_HEADER dos{};
         IMAGE_NT_HEADERS64 nt{};
         if(!read(base,dos)||dos.e_magic!=IMAGE_DOS_SIGNATURE||dos.e_lfanew<0||
            dos.e_lfanew>0x1000||!read(base+dos.e_lfanew,nt)||nt.Signature!=IMAGE_NT_SIGNATURE||
-           nt.FileHeader.Machine!=IMAGE_FILE_MACHINE_AMD64||nt.FileHeader.TimeDateStamp!=0x6b05ba65||
-           nt.OptionalHeader.Magic!=IMAGE_NT_OPTIONAL_HDR64_MAGIC||nt.OptionalHeader.SizeOfImage!=0x1edf000)return 0;
-        // Map load, world-camera pose and attachment, Gx view getter, and the
-        // outdoor light block used by the native renderer.
-        constexpr CodeProof proofs[]={
-            {0x683753,22,UINT64_C(0xcc7eb061f4a53f34)}, {0x6837f7,19,UINT64_C(0x65c674dd259a0c29)},
-            {0x53be38,39,UINT64_C(0x871731a238dd5290)}, {0x4d3b80,74,UINT64_C(0x57360f3e1ddda931)},
-            {0x4d85a0,72,UINT64_C(0x01bdbe253221fbce)}, {0x108490,32,UINT64_C(0xd14b5e07e9c59fb3)},
-            {0x6bfda0,8,UINT64_C(0x5bd6859dfa09e5ce)}, {0x6b668a,14,UINT64_C(0x9e573de76661f7c8)},
-            {0x6b6748,31,UINT64_C(0x25c5e9d36e22e115)}, {0x6b662d,16,UINT64_C(0xe28285b53f127ba5)},
-        };
-        return verifyCode(base,proofs)?base:0;
+           nt.FileHeader.Machine!=IMAGE_FILE_MACHINE_AMD64||nt.OptionalHeader.Magic!=IMAGE_NT_OPTIONAL_HDR64_MAGIC||
+           nt.FileHeader.SizeOfOptionalHeader!=sizeof(IMAGE_OPTIONAL_HEADER64))return {};
+        const uintptr_t sectionTable=dos.e_lfanew+sizeof nt;
+        const auto imageSize=nt.OptionalHeader.SizeOfImage;
+        const auto tableSize=uintptr_t(nt.FileHeader.NumberOfSections)*sizeof(IMAGE_SECTION_HEADER);
+        if(imageSize>UINTPTR_MAX-base||nt.OptionalHeader.SizeOfHeaders>imageSize||
+           !ImageRange{0,nt.OptionalHeader.SizeOfHeaders}.contains(sectionTable,tableSize))return {};
+        ImageRange text{},data{},readOnly{};
+        for(unsigned i=0;i<nt.FileHeader.NumberOfSections;++i){
+            IMAGE_SECTION_HEADER section{};
+            if(!read(base+sectionTable+i*sizeof section,section))return {};
+            const auto flags=section.Characteristics;
+            const ImageRange range{section.VirtualAddress,section.Misc.VirtualSize};
+            if(!range.size||range.rva<nt.OptionalHeader.SizeOfHeaders||
+               !ImageRange{0,imageSize}.contains(range.rva,range.size))continue;
+            if(!std::memcmp(section.Name,".text\0\0",8)&&(flags&IMAGE_SCN_MEM_EXECUTE))text=range;
+            if(!std::memcmp(section.Name,".data\0\0",8)&&(flags&IMAGE_SCN_MEM_WRITE))data=range;
+            if(!std::memcmp(section.Name,".rdata\0",8)&&(flags&IMAGE_SCN_MEM_READ)&&!(flags&IMAGE_SCN_MEM_WRITE))readOnly=range;
+        }
+        if(!text.size||!data.size||!readOnly.size)return {};
+        std::unique_ptr<char[]> code(new(std::nothrow) char[text.size]);
+        Layout layout{};
+        if(!code||!read(base+text.rva,code.get(),text.size)||
+           !resolveLayout({code.get(),text.size},text.rva,data,readOnly,layout))return {};
+        return {base,layout};
     }();
     return verified;
+}
+
+// Tideglass and native shadow control still have their own fixed RVAs and code proofs.
+inline uintptr_t legacyImageBase(){
+    static const uintptr_t legacy=[]()->uintptr_t{
+        const auto base=worldImage().base;
+        IMAGE_DOS_HEADER dos{};
+        IMAGE_NT_HEADERS64 nt{};
+        const auto legacy=base&&read(base,dos)&&read(base+dos.e_lfanew,nt)&&
+                          nt.FileHeader.TimeDateStamp==0x6b05ba65&&nt.OptionalHeader.SizeOfImage==0x1edf000;
+        return legacy?base:0;
+    }();
+    return legacy;
 }
 
 struct Scene {
@@ -81,37 +106,37 @@ struct Scene {
 };
 
 inline bool readScene(Scene& out){
-    const auto base=imageBase();
+    const auto& [base,layout]=worldImage();
     if(!base)return false;
     Scene next;
     uint32_t loaded=0;
     uintptr_t frame=0,frameType=0,cam=0,camType=0,transform=0,after=0;
-    if(!readFrame(base+MapLoaded,loaded)||loaded!=1||!readFrame(base+WorldFrame,frame)||
+    if(!readFrame(base+layout.mapLoaded,loaded)||loaded!=1||!readFrame(base+layout.worldFrame,frame)||
        frame<0x10000||frame>UINTPTR_MAX-CameraField-sizeof(cam)||
-       !readFrame(frame,frameType)||frameType!=base+WorldFrameVtable||
+       !readFrame(frame,frameType)||frameType!=base+layout.worldFrameVtable||
        !readFrame(frame+CameraField,cam)||cam<0x10000||cam>UINTPTR_MAX-CameraTransform-sizeof(transform)||
-       !readFrame(cam,camType)||camType!=base+CameraVtable||
+       !readFrame(cam,camType)||camType!=base+layout.cameraVtable||
        !readFrame(cam+CameraPose,next.pose)||!readFrame(cam+CameraTransform,transform)||
-       !readFrame(base+MapName,next.map)||!readFrame(base+WorldFrame,after)||after!=frame||
-       !readFrame(frame+CameraField,after)||after!=cam||!readFrame(base+MapLoaded,loaded)||loaded!=1)return false;
+       !readFrame(base+layout.mapName,next.map)||!readFrame(base+layout.worldFrame,after)||after!=frame||
+       !readFrame(frame+CameraField,after)||after!=cam||!readFrame(base+layout.mapLoaded,loaded)||loaded!=1)return false;
     next.transformed=transform!=0;
     out=next;return true;
 }
 
 inline bool readView(float (&rotation)[16]){
-    const auto base=imageBase();
+    const auto& [base,layout]=worldImage();
     if(!base)return false;
     uintptr_t device=0,type=0,after=0;
     uint32_t slot=0,slotAfter=0;
-    return readFrame(base+GxDevice,device)&&device>=0x10000&&device<=UINTPTR_MAX-ViewStack-4*sizeof(rotation)&&
-        readFrame(device,type)&&type==base+D3dVtable&&readFrame(device+ViewSlot,slot)&&slot<4&&
-        readFrame(device+ViewStack+sizeof(rotation)*slot,rotation)&&readFrame(base+GxDevice,after)&&after==device&&
+    return base&&readFrame(base+layout.gxDevice,device)&&device>=0x10000&&device<=UINTPTR_MAX-ViewStack-4*sizeof(rotation)&&
+        readFrame(device,type)&&type==base+layout.d3dVtable&&readFrame(device+ViewSlot,slot)&&slot<4&&
+        readFrame(device+ViewStack+sizeof(rotation)*slot,rotation)&&readFrame(base+layout.gxDevice,after)&&after==device&&
         readFrame(device+ViewSlot,slotAfter)&&slotAfter==slot;
 }
 
 inline bool readSky(unsigned char (&sky)[SkySize]){
-    const auto base=imageBase();
+    const auto& [base,layout]=worldImage();
     unsigned char after[SkySize];
-    return base&&readFrame(base+Sky,sky)&&readFrame(base+Sky,after)&&!std::memcmp(sky,after,sizeof sky);
+    return base&&readFrame(base+layout.sky,sky)&&readFrame(base+layout.sky,after)&&!std::memcmp(sky,after,sizeof sky);
 }
 }

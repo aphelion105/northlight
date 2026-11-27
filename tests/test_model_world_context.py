@@ -101,7 +101,7 @@ struct World {
         if(menu){assert(!std::strncmp(map,"Menu:",5));assert(eye[2]==6);}
         else {assert(!std::strcmp(map,"Northrend"));assert(eye[2]==1041);}++updates;}
     bool readWorldLighting(const char*,const float* eye,NorthlightWmoContext::Lighting& light){return TestLight::readGlobalLighting(eye,light);}
-    bool wmoContext(IDirect3DVertexShader9*){valid=true;return true;}
+    bool wmoContext(IDirect3DVertexShader9*){valid=cameraOK&&lightOK;return valid;}
     void terrainContext(){valid=true;}
 __MENU__
 #define NorthlightWorldCamera TestCamera
@@ -135,6 +135,9 @@ struct Device {
         const float* borrowKnownVertexFloats(unsigned,unsigned) const{return projection;}
     } mirrorState;
     bool skySeen=false,applied=false,hdrAtUiBoundary=false,menuScene=false;
+    static constexpr unsigned SsaoView=6;
+    unsigned worldDebug=0;
+    bool contactAO=true;
     bool ortho=false,uiInputs=false,backTarget=true;struct {bool active=false;} hdr;
     bool orthographicUiGeometry(){return ortho;}bool hdrUiInputs(){return uiInputs;}
     bool hdrBackTarget(){return backTarget;}
@@ -240,6 +243,25 @@ int main(){
     {Device p;p.world->captureShaders[shader].fog=false;p.beforeDraw(shader);assert(p.terrain&&!p.world->fogProof&&p.world->traceFog==0);++cases;}
     {Device p;p.depthOK=false;p.world->captureShaders[shader]={};p.beforeDraw(shader);assert(!p.terrain&&p.allocations==0);++cases;}
     for(int tag:{1,0}){Device p;p.vc.entry=tag;p.vc.wmo=tag==0;p.vc.skinned=false;p.beforeDraw(shader);assert(p.terrain&&p.projectionValid);++cases;}
+    cameraOK=false;
+    for(unsigned check=0;check<7;++check){
+        Device p;p.vc.wmo=true;p.vc.skinned=false;
+        if(check==1){p.contactAO=false;p.worldDebug=Device::SsaoView;}
+        if(check==2)p.contactAO=false;
+        if(check==3)p.backTarget=false;
+        if(check==4)p.state.constants=false;
+        if(check==5)p.depthOK=false;
+        if(check==6)p.state.z=0;
+        p.beforeDraw(shader);
+        assert(!p.world->hasContext()&&!p.menuScene&&p.terrain==(check<2));
+        if(check<2){
+            assert(p.projectionValid&&p.binds==1);
+            p.vc.entry=2;p.vc.wmo=false;p.state.rows[11]=0;p.state.rows[14]=0;p.state.rows[15]=1;
+            p.state.zf=D3DCMP_ALWAYS;p.beforeDraw(shader);assert(p.applied&&p.effects==1);
+        }
+        ++cases;
+    }
+    cameraOK=true;
     for(bool on:{false,true}){Device p;p.aoActorOn=on;p.captured=true;p.vc.entry=1;p.vc.skinned=false;
         p.beforeDraw(shader);assert(p.terrain&&!p.captured&&p.actorAO.resumes==unsigned(on));++cases;}
     {Device p;p.vc.entry=1;p.vc.skinned=false;p.terrain=p.projectionValid=true;
