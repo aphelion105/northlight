@@ -167,5 +167,11 @@ checks['rain mask: WEATHER line carries the counters; the composite borrows s13'
 st=r[r.index('bool rainMaskStart(IDirect3DSurface9* maskTarget){'):r.index('bool rainMrtBegin(){')]
 checks['rain mask: after the depth snapshot the mirror relearns stage 0 from the device, so the frame\'s later rain draws still match the rain texture']=(
     'snapped=resolveDepthInto(rainDepth,false);}' in st and st.index('resolveDepthInto(rainDepth,false)')<st.index('{IDirect3DBaseTexture9* stage0=nullptr;if(SUCCEEDED(ext->GetTexture(0,&stage0)))drop(stage0);}')<st.index('if(!snapped)return false;'))
+# Render target 1 stays bound across consecutive rain draws only: a game target change unbinds it first (rain or water owner),
+# so the mask never meets another render target 0 or depth, and a render target 1 the game binds itself is not dropped later.
+for site in ('HRESULT STDMETHODCALLTYPE SetRenderTarget(','HRESULT STDMETHODCALLTYPE SetDepthStencilSurface('):
+    i=r.index(site);body=r[i:r.index('\n',i)]
+    checks[f'rain mask: {site.split()[-1].rstrip("(")} unbinds render target 1 unconditionally, before the device call']=(
+        '{Guard mirrorLock(mirrorState.gate);rainMrtUnbind();' in body and body.index('rainMrtUnbind();')<body.index('ext->Set'))
 for k,ok in checks.items():print(('PASS ' if ok else 'FAIL ')+k)
 sys.exit(0 if all(checks.values()) else 1)
