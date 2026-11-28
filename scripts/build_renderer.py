@@ -56,7 +56,12 @@ def link_renderer(command, env, output_dll):
     for name in ('ZIG_GLOBAL_CACHE_DIR', 'ZIG_LIB_DIR'):
         if env.get(name):
             env[name] = str(Path(env[name]).resolve())
-    with tempfile.TemporaryDirectory(prefix='coff-link-', dir=output) as cwd:
+    # Link into a staging folder beside the destination. The DLL, PDB and import
+    # library replace the previous build only after both links succeed.
+    with tempfile.TemporaryDirectory(prefix='coff-link-', dir=output) as cwd, \
+            tempfile.TemporaryDirectory(prefix='.link-', dir=output_dll.parent) as staging:
+        final_dll, output_dll = output_dll, Path(staging) / output_dll.name
+        command = [str(output_dll) if arg == str(final_dll) else arg for arg in command]
         result = subprocess.run([*command, '-v'], cwd=cwd, env=env, capture_output=True, text=True)
         log.write_text(result.stdout + result.stderr, encoding='utf-8')
         if result.returncode:
@@ -72,6 +77,8 @@ def link_renderer(command, env, output_dll):
             raise SystemExit(f'Cannot safely reconstruct Zig COFF inputs; see {log}')
         final = [command[0], *linker, '-OPT:REF', '-OPT:NOICF', '-MAP:' + str(output / (output_dll.stem + '.map'))]
         subprocess.run(final, cwd=cwd, env=env, check=True)
+        for path in sorted(Path(staging).iterdir(), key=lambda path: path == output_dll):
+            os.replace(path, final_dll.parent / path.name)
 
 def check_compiler(zig, env, target='x86-windows-gnu'):
     if sys.platform != 'win32':
