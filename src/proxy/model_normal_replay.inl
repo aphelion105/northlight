@@ -64,6 +64,11 @@
                 const Pending* previous=nullptr;IDirect3DVertexBuffer9* boundVertex=nullptr;IDirect3DIndexBuffer9* boundIndex=nullptr;UINT boundStride=0;bool bufferKnown=false;
                 PaletteDraw previousBatch;
                 const bool retainBindings=retainPaletteBindings();
+                // Pass-local state. Packet storage lives through the entire
+                // replay. Shader switches leave unrelated API bindings intact.
+                std::array<const SampledStage*,16> boundSamplers{};
+                NorthlightReplayConstants::BoundedDirtyRegisters<float,256,4> vertexBank;
+                NorthlightReplayConstants::BoundedDirtyRegisters<float,224,4> pixelBank;
                 bool paletteStreamsBound=false;
                 for(size_t at=0;at<pending.size();){
                     if(!ok)break;
@@ -87,21 +92,40 @@
                     for(unsigned mask=p->pixel->reads.samplers;mask;mask&=mask-1){
                         const unsigned i=__builtin_ctz(mask),bit=1u<<i;
                         const auto& stage=p->sampled[sampled++];
-                        const auto* prior=(previousMask&bit)?&previous->sampled[__builtin_popcount(previousMask&(bit-1))]:nullptr;
-                        if(!prior||prior->texture!=stage.texture)ok=SUCCEEDED(d->SetTexture(i,stage.texture))&&ok;
-                        for(unsigned s=0;s<13;++s)if(!prior||prior->states[s]!=stage.states[s])ok=SUCCEEDED(d->SetSamplerState(i,D3DSAMPLERSTATETYPE(s+1),stage.states[s]))&&ok;
+                        const auto* prior=retainReplayState?boundSamplers[i]:
+                            (previousMask&bit)?&previous->sampled[__builtin_popcount(previousMask&(bit-1))]:nullptr;
+                        if(!prior||prior->texture!=stage.texture){ok=SUCCEEDED(d->SetTexture(i,stage.texture))&&ok;if(profileCapture)++replayWork.textureWrites;}
+                        for(unsigned s=0;s<13;++s)if(!prior||prior->states[s]!=stage.states[s]){
+                            ok=SUCCEEDED(d->SetSamplerState(i,D3DSAMPLERSTATETYPE(s+1),stage.states[s]))&&ok;
+                            if(profileCapture)++replayWork.samplerWrites;
+                        }
+                        if(retainReplayState)boundSamplers[i]=&stage;
                     }
                     // Both packets must have captured the whole compared range;
                     // a shader switch may expose previously uninitialized lanes.
                     auto dirty=NorthlightReplayConstants::DirtySpan{p->vertex->first,p->vertex->count};
-                    if(previous&&!previousBatch.instances&&previous->vertex->first<=dirty.first&&previous->vertex->first+previous->vertex->count>=dirty.first+dirty.count){
+                    if(retainReplayState&&!instances.instances)dirty=vertexBank.update(p->constants,{dirty.first,dirty.count});
+                    else if(previous&&!previousBatch.instances&&previous->vertex->first<=dirty.first&&previous->vertex->first+previous->vertex->count>=dirty.first+dirty.count){
                         const auto relative=previous->constants==p->constants?NorthlightReplayConstants::DirtySpan{}:NorthlightReplayConstants::Detail::knownFloatSpan(previous->constants+dirty.first*4,p->constants+dirty.first*4,dirty.count);
                         dirty.first+=relative.first;dirty.count=relative.count;
                     }
-                    if(!instances.instances&&dirty.count)ok=SUCCEEDED(d->SetVertexShaderConstantF(dirty.first,p->constants+dirty.first*4,dirty.count))&&ok;
-                    if(!previous||previous->pixel->first!=p->pixel->first||previous->pixel->count!=p->pixel->count||
-                       std::memcmp(previous->ps.data(),p->ps.data(),p->pixel->count*16))
-                        ok=SUCCEEDED(d->SetPixelShaderConstantF(p->pixel->first,p->ps.data(),p->pixel->count))&&ok;
+                    if(!instances.instances&&dirty.count){
+                        ok=SUCCEEDED(d->SetVertexShaderConstantF(dirty.first,p->constants+dirty.first*4,dirty.count))&&ok;
+                        if(profileCapture){++replayWork.vertexWrites;replayWork.vertexRows+=dirty.count;}
+                    }
+                    const auto* ps=p->pixel;
+                    const bool boundedPixel=retainReplayState&&ps->first<=224&&ps->count<=224-ps->first;
+                    auto pixelDirty=NorthlightReplayConstants::DirtySpan{ps->first,ps->count};
+                    if(boundedPixel)pixelDirty=pixelBank.updateSpan(p->ps.data(),{ps->first,ps->count});
+                    else{
+                        if(retainReplayState)pixelBank.reset();
+                        if(previous&&previous->pixel->first==ps->first&&previous->pixel->count==ps->count&&
+                           (ps->count==0||!std::memcmp(previous->ps.data(),p->ps.data(),ps->count*16)))pixelDirty.count=0;
+                    }
+                    if(pixelDirty.count){
+                        ok=SUCCEEDED(d->SetPixelShaderConstantF(pixelDirty.first,p->ps.data()+(pixelDirty.first-ps->first)*4,pixelDirty.count))&&ok;
+                        if(profileCapture){++replayWork.pixelWrites;replayWork.pixelRows+=pixelDirty.count;}
+                    }
                     if(p->vertex->reads.i)ok=SUCCEEDED(d->SetVertexShaderConstantI(0,p->ints,16))&&ok;
                     if(p->pixel->reads.i)ok=SUCCEEDED(d->SetPixelShaderConstantI(0,p->nonFloat->pixelInts,16))&&ok;
                     if(p->vertex->reads.b)ok=SUCCEEDED(d->SetVertexShaderConstantB(0,p->bools,16))&&ok;
@@ -118,6 +142,7 @@
                         bufferKnown=ok;boundVertex=p->gpuVertex[0];boundIndex=p->gpuIndex;boundStride=stride;
                         if(ok&&instances.instances){
                             ok=SUCCEEDED(drawPalette(first,instances,submittedInstances,previous,previousBatch,retainBindings,paletteStreamsBound));
+                            if(retainReplayState)vertexBank.reset();
                             if(submittedInstances){run.packets=instances.instances;at=first+run.packets;}
                         }
                         if(ok&&!submittedInstances)ok=SUCCEEDED(mesh.indexed?d->DrawIndexedPrimitive(mesh.topology,p->placement.baseVertex(),run.min,run.vertices,p->placement.indexStart,run.count):

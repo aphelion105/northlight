@@ -56,20 +56,31 @@ public:
         if(!used.count)return {};
         assert(used.first<Count&&used.count<=Count-used.first&&desired);
         if(!desired||used.first>=Count||used.count>Count-used.first)return {};
+        return updateSpan(desired+used.first*Width,used);
+    }
+
+    // Use the same bank for captures that store only the requested registers.
+    DirtySpan updateSpan(const T* desired,ConstantRange used) noexcept {
+        if(!used.count)return {};
+        assert(used.first<Count&&used.count<=Count-used.first&&desired);
+        if(!desired||used.first>=Count||used.count>Count-used.first)return {};
         std::size_t first=used.first,last=first+used.count;
-        if(!anyKnown_){std::memcpy(values_.data()+first*Width,desired+first*Width,(last-first)*RegisterBytes);mark(first,last);return {used.first,used.count};}
+        if(!anyKnown_){std::memcpy(values_.data()+first*Width,desired,(last-first)*RegisterBytes);mark(first,last);return {used.first,used.count};}
         if constexpr(std::is_same_v<T,float>&&Width==4){
             if(knownRange(first,last)){
-                auto dirty=Detail::knownFloatSpan(values_.data()+first*Width,desired+first*Width,used.count);
-                if(dirty.count){dirty.first+=used.first;std::memcpy(values_.data()+dirty.first*Width,desired+dirty.first*Width,dirty.count*RegisterBytes);}
+                auto dirty=Detail::knownFloatSpan(values_.data()+first*Width,desired,used.count);
+                if(dirty.count){
+                    std::memcpy(values_.data()+(used.first+dirty.first)*Width,desired+dirty.first*Width,dirty.count*RegisterBytes);
+                    dirty.first+=used.first;
+                }
                 return dirty;
             }
         }
-        if(knownRange(first,last)&&std::memcmp(values_.data()+first*Width,desired+first*Width,(last-first)*RegisterBytes)==0)return {};
-        while(first<last&&known(first)&&Detail::equalRegister<RegisterBytes>(values_.data()+first*Width,desired+first*Width))++first;
-        while(last>first&&known(last-1)&&Detail::equalRegister<RegisterBytes>(values_.data()+(last-1)*Width,desired+(last-1)*Width))--last;
+        if(knownRange(first,last)&&std::memcmp(values_.data()+first*Width,desired,(last-first)*RegisterBytes)==0)return {};
+        while(first<last&&known(first)&&Detail::equalRegister<RegisterBytes>(values_.data()+first*Width,desired+(first-used.first)*Width))++first;
+        while(last>first&&known(last-1)&&Detail::equalRegister<RegisterBytes>(values_.data()+(last-1)*Width,desired+(last-1-used.first)*Width))--last;
         if(first==last)return {};
-        std::memcpy(values_.data()+first*Width,desired+first*Width,(last-first)*RegisterBytes);
+        std::memcpy(values_.data()+first*Width,desired+(first-used.first)*Width,(last-first)*RegisterBytes);
         mark(first,last);
         return {static_cast<uint32_t>(first),static_cast<uint32_t>(last-first)};
     }

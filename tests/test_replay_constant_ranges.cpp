@@ -22,11 +22,11 @@ static void randomSequence(const char* name){
     static_assert(sizeof(T)==4,"Test patterns are DWORDs");
     std::array<T,Count*Width> desired{},backend{};
     std::array<bool,Count> known{};
-    BoundedDirtyRegisters<T,Count,Width> cache;
+    BoundedDirtyRegisters<T,Count,Width> cache,packedCache;
     uint32_t rng=0x91fa79e3;
     uint64_t compared=0,full=0;
     for(unsigned iteration=0;iteration<20000;++iteration){
-        if(iteration%307==0){cache.reset();known.fill(false);std::memset(backend.data(),0xa5,sizeof backend);}
+        if(iteration%307==0){cache.reset();packedCache.reset();known.fill(false);std::memset(backend.data(),0xa5,sizeof backend);}
         for(unsigned edit=0;edit<iteration%9;++edit){auto at=randomBits(rng)%desired.size();auto bits=randomBits(rng);std::memcpy(&desired[at],&bits,4);}
         unsigned first=randomBits(rng)%Count,count=randomBits(rng)%(Count-first+1);
         if(iteration%29==0){first=0;count=Count;} // Relative/fallback full-bank path.
@@ -35,6 +35,9 @@ static void randomSequence(const char* name){
             if(expectedFirst==Count)expectedFirst=i;expectedLast=i+1;
         }
         auto span=cache.update(desired.data(),{first,count});
+        const std::vector<T> packed(desired.begin()+first*Width,desired.begin()+(first+count)*Width);
+        const auto packedSpan=packedCache.updateSpan(packed.data(),{first,count});
+        assert(span.count==packedSpan.count&&span.first==packedSpan.first);
         if(expectedFirst==Count)assert(span.count==0);
         else assert(span.first==expectedFirst&&span.count==expectedLast-expectedFirst);
         if(span.count){
@@ -42,7 +45,10 @@ static void randomSequence(const char* name){
             std::memcpy(backend.data()+span.first*Width,desired.data()+span.first*Width,span.count*Width*sizeof(T));
             for(unsigned i=span.first;i<span.first+span.count;++i)known[i]=true;
         }
-        for(unsigned i=first;i<first+count;++i)assert(std::memcmp(backend.data()+i*Width,desired.data()+i*Width,Width*sizeof(T))==0);
+        for(unsigned i=first;i<first+count;++i){
+            assert(std::memcmp(backend.data()+i*Width,desired.data()+i*Width,Width*sizeof(T))==0);
+            assert(std::memcmp(backend.data()+i*Width,packedCache.data()+i*Width,Width*sizeof(T))==0);
+        }
         compared+=count*Width*sizeof(T);full+=sizeof desired;
     }
     assert(cache.update(nullptr,{0,0}).count==0);

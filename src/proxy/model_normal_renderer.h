@@ -11,6 +11,7 @@
 #include "vertex_declaration_cache.h"
 #include "pose_bounds_handoff.h"
 #include "replay_constants.h"
+#include "replay_constant_ranges.h"
 #include "shader_constant_usage.h"
 #include "replay_capture_constants.h"
 #include "device_mirror.h"
@@ -42,6 +43,10 @@ class NorthlightModelNormals {
     NorthlightCapturePhases::Stats<CapturePhaseCount> capturePhases;
     NorthlightCapturePhases::Stats<ReplayPhaseCount> replayPhases;
     bool profileCapture=false;
+    bool retainReplayState=false;
+    struct ReplayWork {
+        unsigned textureWrites=0,samplerWrites=0,vertexWrites=0,vertexRows=0,pixelWrites=0,pixelRows=0;
+    } replayWork;
 
     bool peekDeclaration(IDirect3DVertexDeclaration9*& out)const{
         return drawStateSource&&drawStateSource->constantMirror()->heldByThisThread()&&
@@ -674,7 +679,13 @@ class NorthlightModelNormals {
         return depth;
     }
 public:
-    explicit NorthlightModelNormals(IDirect3DDevice9* device):programs(device),palette(device),d(device),nativeMrt(device),batchStates(device){snapshots.setSnapshotCacheLimit(0);pending.reserve(128);spare.reserve(128);
+    explicit NorthlightModelNormals(IDirect3DDevice9* device,bool keepReplayBindings=false)
+        :programs(device),palette(device),d(device),nativeMrt(device),retainReplayState(keepReplayBindings),batchStates(device){
+#ifdef NORTHLIGHT_MODEL_NORMALS_TEST
+        if(const char* setting=std::getenv("NORTHLIGHT_TEST_NORMAL_REPLAY_STATE"))
+            retainReplayState=std::strcmp(setting,"1")==0;
+#endif
+        snapshots.setSnapshotCacheLimit(0);pending.reserve(128);spare.reserve(128);
         D3DCAPS9 caps{};if(d&&SUCCEEDED(d->GetDeviceCaps(&caps))){primitiveLimit=caps.MaxPrimitiveCount;maxVertexIndex=caps.MaxVertexIndex;}
         snapshots.setDeclarationProvider(&declarations,[](void* c,IDirect3DVertexDeclaration9* decl,const D3DVERTEXELEMENT9*& elements,UINT& count){return static_cast<NorthlightVertexDeclarations::Cache*>(c)->get(decl,elements,count);});
         snapshots.setLayoutProvider(&declarations,[](void* c,IDirect3DVertexDeclaration9* decl,UINT* extent){return static_cast<NorthlightVertexDeclarations::Cache*>(c)->captureLayout(decl,extent);});
@@ -698,7 +709,7 @@ public:
         }
     }
     void endFrame(){declarationGets=sharedDeclarations=poseDeclarationGets=poseDeclarationPeeks=0;knownTargets=knownPixelShaders=mirroredSources=0;peakFloatBanks=peakPackets=peakBatchBytes=sharedMeshBytesAvoided=0;depthSeeded=0;clearPending();
-        capturePhases.clear();replayPhases.clear();profileCapture=false;
+        capturePhases.clear();replayPhases.clear();profileCapture=false;replayWork={};
         paletteWork={};
         release(sharedDepth);
         release(hybridDepth);hybridAttempts=hybridWritten=0;
@@ -912,6 +923,9 @@ public:
     template<class Log> void reportReplay(unsigned frame,double cpuMs,Log log)const{
         log("MODEL_NORMALS replay frame=%u cpuMs=%.3f declarationGets=%u sharedDeclarations=%u legacy=%u",
             frame,cpuMs,declarationGets,sharedDeclarations,unsigned(legacyDeclarations()));
+        log("MODEL_NORMALS replay work frame=%u textureWrites=%u samplerWrites=%u vertexWrites=%u vertexRows=%u pixelWrites=%u pixelRows=%u",
+            frame,replayWork.textureWrites,replayWork.samplerWrites,replayWork.vertexWrites,replayWork.vertexRows,
+            replayWork.pixelWrites,replayWork.pixelRows);
         log("MODEL_NORMALS palette instances frame=%u draws=%u packets=%u registers=%u failures=%u planned=%u linkedDraws=%u linkedPackets=%u enabled=%u retainBindings=%u inheritedDraws=%u skippedBinds=%u liftedDraws=%u liftedPackets=%u",
             frame,paletteWork.draws,paletteWork.packets,paletteWork.registers,paletteWork.failures,paletteWork.planned,paletteWork.linkedDraws,paletteWork.linkedPackets,
             unsigned(paletteEnabled()),unsigned(retainPaletteBindings()),paletteWork.inheritedDraws,paletteWork.skippedBinds,

@@ -3485,7 +3485,13 @@ public:
         world->setHdrBaseCompositeEnabled(backendHdrBaseComposite);
         world->setTemporalZeroWeightEnabled(backendTemporalZeroWeight);
         surface=std::make_unique<NorthlightSurfaceRenderer>(ext);
-        modelNormals=std::make_unique<NorthlightModelNormals>(ext);modelNormals->enableNativeMrt(true);
+        bool reuseNormalReplayBindings=false;
+#ifdef _WIN64
+        const char* normalReplayComparison=std::getenv("NORTHLIGHT_TEST_NORMAL_REPLAY_STATE");
+        reuseNormalReplayBindings=presentation.dxvk&&presentation.stream&&
+            (!normalReplayComparison||std::strcmp(normalReplayComparison,"0")!=0);
+#endif
+        modelNormals=std::make_unique<NorthlightModelNormals>(ext,reuseNormalReplayBindings);modelNormals->enableNativeMrt(true);
 #ifdef _WIN64
         const char* hybridMrt=std::getenv("NORTHLIGHT_X64_M2_NORMAL_MRT");
         const bool hybrid=presentation.dxvk&&presentation.stream&&hybridMrt&&!std::strcmp(hybridMrt,"1");
