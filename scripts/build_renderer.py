@@ -1,4 +1,5 @@
 """Cross-compile the renderer DLL. Does not run the game or the DLL."""
+import argparse
 import hashlib
 import json
 import os
@@ -94,14 +95,20 @@ def check_compiler(zig, env, target='x86-windows-gnu'):
 
 
 def main(argv=None):
-    arguments = sys.argv[1:] if argv is None else argv
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--dev-tuning', action='store_true', help='developer zone-tuning variant (frd9-dev-tuning.dll)')
+    parser.add_argument('--stand-replay', action='store_true', help='imported-input stand variant (frd9-stand-replay.dll)')
+    parser.add_argument('--profile-symbols', action='store_true', help='optimized build with symbols for profiling')
+    parser.add_argument('--x64', action='store_true', help='standalone AMD64 D3D9 proxy in out/x64-proxy/')
+    parser.add_argument('--x86-on12', action='store_true', help='standalone 32-bit D3D9On12 proxy in out/x86-on12-proxy/')
+    arguments = parser.parse_args(argv)
     from tideglass_source import verify
     verify()
-    dev_tuning = '--dev-tuning' in arguments
-    stand_replay = '--stand-replay' in arguments
-    profile_symbols = '--profile-symbols' in arguments
-    x64 = '--x64' in arguments
-    x86_on12 = '--x86-on12' in arguments
+    dev_tuning = arguments.dev_tuning
+    stand_replay = arguments.stand_replay
+    profile_symbols = arguments.profile_symbols
+    x64 = arguments.x64
+    x86_on12 = arguments.x86_on12
     if x86_on12 and (x64 or dev_tuning or stand_replay or profile_symbols):
         raise SystemExit('--x86-on12 builds a separate 32-bit comparison proxy.')
     if x64 and (dev_tuning or stand_replay):
