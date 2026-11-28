@@ -20,7 +20,13 @@ def main():
     args = parser.parse_args()
     if args.jobs < 1:
         parser.error('--jobs must be positive')
-    tideglass_source.verify()
+    try:
+        tideglass_source.verify()
+    except ValueError as error:
+        parser.error(str(error))
+    for tool in ('cmake', 'ninja'):
+        if not shutil.which(tool):
+            parser.error(f'Put {tool} on PATH')
     build = fp.out() / ('tideglass-x64' if args.x64 else 'tideglass')
     architecture = 'x86_64' if args.x64 else 'i686'
     configure = ['cmake', '-S', ROOT / 'tideglass', '-B', build, '-G', 'Ninja',
