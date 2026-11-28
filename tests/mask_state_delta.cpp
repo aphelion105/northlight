@@ -7,6 +7,9 @@
 #include <chrono>
 #include <cstdio>
 struct Backend {
+    // This fixture drives the immediate state delta path.
+    bool beginIndexedStencil(const ExtensionDevice::IndexedStencil&,unsigned){std::abort();}
+    unsigned endIndexedStencil(){std::abort();}
     IDirect3DDevice9* real=nullptr;std::array<DWORD,256> state{};unsigned sets=0,gets=0;int failRead=-1;
     __attribute__((noinline)) HRESULT SetRenderState(D3DRENDERSTATETYPE t,DWORD value){++sets;state[t]=value;return real?real->SetRenderState(t,value):D3D_OK;}
     __attribute__((noinline)) HRESULT GetRenderState(D3DRENDERSTATETYPE t,DWORD* value){++gets;if(int(t)==failRead)return E_FAIL;if(real)return real->GetRenderState(t,value);*value=state[t];return D3D_OK;}
@@ -24,6 +27,9 @@ struct Before:Reader {
     template<size_t N> void maskRestore(const NorthlightNameStencil::Set (&sets)[N],const DWORD (&previous)[N]){for(size_t i=0;i<N;++i)ext->SetRenderState(D3DRENDERSTATETYPE(sets[i].state),previous[i]);}
 };
 struct After:Reader {
+    static constexpr bool indexedPairGate=false;
+    struct IndexedStats {unsigned materializedStencils=0,deferredStencils=0,skippedStencilSets=0;};
+    IndexedStats* gameIndexedPair=nullptr;
 #include "mask_state_methods.inc"
 };
 template<size_t N>static void check(const NorthlightNameStencil::Set (&sets)[N]){

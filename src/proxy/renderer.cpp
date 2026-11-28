@@ -597,6 +597,7 @@ private:
     /* Cost of the mask on sample frames only (sampledDrawTimers), CpuScopes like the other per-draw costs: the decision (every 8th world-domain call timed, scaled by calls/timed, so the timer does not dominate a
        cheap test), the name runs (begin, alpha guard, end) and the unmark state wraps. Gross: each scope includes its two clock reads (qpcNs on the CPU timers line). The composite bind is once per frame and not timed. */
     LONGLONG cpuNameDecide=0,cpuNameMark=0,cpuNameUnmark=0;unsigned nameDecideCalls=0,nameDecideTimed=0;bool nameRun=false; /* a run of consecutive name draws keeps STENCILENABLE on (the other stencil states of kMark stay set) */
+    bool unmarkRunReuse=false;
     unsigned unlitMarks=0,prelitMarks=0,authoredMarks=0,roomLevels=0;
     NorthlightNameStencil::Mask nameMask;int maskKind=0; /* maskKind: this draw is 1 a name that gets marked, 2 a depth-final draw that unmarks (set by prepareDrawImpl, consumed by nameMaskDraw) */
     IDirect3DSurface9* maskFormatFor=nullptr;unsigned long maskFormatValue=0;unsigned maskFormatLogs=0;bool maskStencil=false;const void* maskDsId=nullptr; /* identities only: the world depth the format verdict is for, and the one whose Clear(Z) also clears stencil */
@@ -1558,11 +1559,20 @@ private:
         }
         if(kind==2){
             DWORD previous[sizeof NorthlightUnlitReceiver::Unmark/sizeof NorthlightUnlitReceiver::Unmark[0]];bool set=false,indexedDeferred=false;
-            extensionWork("name mask",[&]{CpuScope c(sampledDrawTimers()?&cpuNameUnmark:nullptr);set=maskApply(NorthlightUnlitReceiver::Unmark,previous,&indexedDeferred);});
+            const bool retain=unmarkRunReuse&&!indexedPairGate&&!rain&&!claimed;
+            extensionWork("name mask",[&]{
+                CpuScope c(sampledDrawTimers()?&cpuNameUnmark:nullptr);
+                set=(retain&&ext->reuseUnmark(NorthlightUnlitReceiver::Unmark,previous))||
+                    maskApply(NorthlightUnlitReceiver::Unmark,previous,&indexedDeferred);
+            });
             indexedPairStencilKind=indexedPairGate&&set?unsigned(kind):0;
             const HRESULT hr=rainBlendDraw(rain,claimed,draw);
             indexedPairStencilKind=0;
-            if(set&&!finishIndexedStencil(indexedDeferred))extensionWork("name mask",[&]{CpuScope c(sampledDrawTimers()?&cpuNameUnmark:nullptr);maskRestore(NorthlightUnlitReceiver::Unmark,previous);});
+            if(set&&!finishIndexedStencil(indexedDeferred))extensionWork("name mask",[&]{
+                CpuScope c(sampledDrawTimers()?&cpuNameUnmark:nullptr);
+                if(!retain||FAILED(hr)||!ext->deferUnmark(NorthlightUnlitReceiver::Unmark,previous))
+                    maskRestore(NorthlightUnlitReceiver::Unmark,previous);
+            });
             return hr;
         }
         DWORD alphaPrevious[sizeof NorthlightNameStencil::kAlphaGuard/sizeof NorthlightNameStencil::kAlphaGuard[0]];bool guard=false;
@@ -3486,6 +3496,7 @@ public:
         modelNormals->enableHybridMrt(dxvkX86,std::chrono::milliseconds(dxvkX86?x86ShaderWarmupMs:0));
 #endif
         autoBump=std::make_unique<NorthlightAutoBump>(ext,gpuScene);if(rootPath[0])autoBump->setPersistentCache(std::filesystem::path(rootPath)/L"Cache"/L"Northlight"/L"Materials-v1",NorthlightBackend::name(selectedBackend),materialCacheBackendIdentity.c_str(),materialCacheAsyncReadback);autoBump->setGeometryTracking(&NorthlightTrackedBuffers::identity,&NorthlightTrackedBuffers::version,&NorthlightTrackedBuffers::captureMetadata);autoBump->configure(world->surfaceSettings());
+        unmarkRunReuse=presentation.dxvk&&presentation.stream;
         modelNormals->setDrawStateSource(*ext);
         modelNormals->setTrustedPoseSource(ext->trustedConstantSource());
         modelNormals->shareCaptureSources(autoBump->captureSources(),&NorthlightTrackedBuffers::identity,&NorthlightTrackedBuffers::version,&NorthlightTrackedBuffers::captureMetadata);
@@ -4102,9 +4113,12 @@ public:
             if(modelNormals&&modelNormals->hybridRequested())
                 logf("MODEL_NORMALS hybrid attachments frame=%u reused=%u",frame,mirrorState.modelNormalTargetReuses);
             logf("NAMEMASK frame=%u marked=%u runs=%u unmarked=%u composite=%d depthFormat=%lu stencil=%d prelit=%u unlit=%u decisions=%u decisionsTimed=%u decideUs=%.1f markUs=%.1f unmarkUs=%.1f cpuUs=%.1f",frame,nameMask.marks,nameMask.runs,nameMask.unmarkDraws,int(nameMask.composited),(unsigned long)(worldDepthDescKnown?worldDepthDesc.Format:D3DFMT_UNKNOWN),int(maskStencil),prelitMarks,unlitMarks,nameDecideCalls,nameDecideTimed,decide,mark,unmark,decide+mark+unmark);
+            logf("NAMEMASK_UNMARK_REUSE frame=%u draws=%u statesReused=%u restored=%u failures=%u",frame,
+                mirrorState.unmarkRunsReused,mirrorState.unmarkStatesReused,mirrorState.unmarkStatesRestored,mirrorState.unmarkRestoreFailures);
         }
         if(sampledDrawTimers()&&modelNormals)modelNormals->reportCaptureProfile(frame,[](const char* format,auto... args){logf(format,args...);});
         cpuNameDecide=cpuNameMark=cpuNameUnmark=0;nameDecideCalls=nameDecideTimed=0;
+        mirrorState.unmarkRunsReused=mirrorState.unmarkStatesReused=mirrorState.unmarkStatesRestored=mirrorState.unmarkRestoreFailures=0;
         nameMask.endFrame();unlitMarks=prelitMarks=authoredMarks=roomLevels=0;
         if(sampled())logf("TRANSLUCENT frame=%u draws=%u lastOpaqueZ=%u clearResolve=%u earlyResolve=%u earlyResolveAt=%u earlyResolveTotal=%u earlyResolveUndone=%u earlyResolveUndoneTotal=%u",frame,censusDraws,lastOpaqueZAt,clearResolveAt,earlyResolves,earlyResolveAt,earlyResolveTotal,earlyResolveUndone,earlyResolveUndoneTotal);
         postEffectWorldDraws=postEffectSkinnedDraws=postEffectDepthWrites=postEffectDepthStateFailures=0;

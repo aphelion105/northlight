@@ -11,7 +11,7 @@ CONTROL = {'BeginStateBlock', 'EndStateBlock', 'CreateStateBlock', 'Reset', 'Set
 COUNTED = ['Clear', 'StretchRect', 'ColorFill', 'SetScissorRect', 'SetTextureStageState']
 AUXILIARY_BOUNDARIES = {'Clear', 'ColorFill', 'StretchRect', 'UpdateSurface', 'UpdateTexture',
                         'GetRenderTargetData', 'GetFrontBufferData', 'BeginScene', 'EndScene',
-                        'Present', 'ValidateDevice'}
+                        'Present', 'ValidateDevice', 'DrawRectPatch', 'DrawTriPatch'}
 AUXILIARY_BARRIER = 'if(!m->finishDeferredTargets())return E_FAIL;'
 
 def generated():

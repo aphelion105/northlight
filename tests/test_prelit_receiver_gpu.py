@@ -58,6 +58,8 @@ for index, backend in enumerate([Path(os.environ['WINDIR'])/'SysWOW64/d3d9.dll',
     (folder/'gpu.log').write_text(run.stdout+run.stderr)
     print(run.stdout+run.stderr, flush=True); run.check_returncode()
     assert 'PRELIT_RECEIVER_GPU_PASS' in run.stdout
+    if not os.environ.get('NORTHLIGHT_LIGHTING_BENCH'):
+        assert 'UNMARK_RUN_GPU_PASS' in run.stdout
     runs.append(dict(backend=str(backend), output=run.stdout))
 (out/'validation.json').write_text(json.dumps(dict(pass_=True, runs=runs,
     scope='Real shader registration and authored colour/shadow endpoints through WorldRenderer; not a replay of the supplied screenshots.'), indent=2)+'\n')

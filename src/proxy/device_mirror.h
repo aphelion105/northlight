@@ -1,5 +1,6 @@
 #pragma once
 #include "particle_draw_state.h"
+#include "name_stencil.h"
 // Shared, serialized read-through state cache. Only the extension queries it;
 // game-facing resource wrappers prevent raw GetDevice/Apply escape paths.
 // Unknown interface/resource escapes permanently disable caching before return.
@@ -71,6 +72,11 @@ struct DeviceMirror {
     IDirect3DBaseTexture9* textures[Textures]={};bool textureKnown[Textures]={};
     DWORD samplers[Textures][SamplerTypes]={};bool samplerKnown[Textures][SamplerTypes]={};
     DWORD renderStates[RenderStates]={};bool renderStateKnown[RenderStates]={};
+    struct UnmarkWrite {D3DRENDERSTATETYPE state;DWORD logical,physical;};
+    std::array<UnmarkWrite,8> deferredUnmark{};
+    IDirect3DDevice9* deferredUnmarkDevice=nullptr;
+    unsigned deferredUnmarkCount=0,unmarkRunsReused=0,unmarkStatesReused=0,unmarkStatesRestored=0,unmarkRestoreFailures=0;
+    bool restoringUnmark=false;
     NorthlightParticleDraw::State particleDraw;
     float nPatchMode=0;
     bool nPatchKnown=false;
@@ -132,7 +138,36 @@ struct DeviceMirror {
         ~TargetWrite(){clear();--mirror->targetWrites;}
     };
     bool targetDeferred(unsigned slot)const{return slot<Targets&&(deferredTargetMask&(1u<<slot));}
+    static bool unmarkState(D3DRENDERSTATETYPE type){
+        const auto key=unsigned(type);
+        return (key>=NorthlightNameStencil::StencilEnable&&key<=NorthlightNameStencil::StencilWriteMask)||
+            key==NorthlightNameStencil::TwoSidedStencilMode;
+    }
+    void logicalUnmarkState(D3DRENDERSTATETYPE state,DWORD value){
+        renderStates[state]=value;
+        renderStateKnown[state]=true;
+        forget(RenderStateSlot+unsigned(state));
+        if(synced)synced->renderState(unsigned(state));
+    }
+    bool finishDeferredUnmark(){
+        const unsigned count=deferredUnmarkCount;
+        if(!count)return true;
+        const auto writes=deferredUnmark;
+        auto* device=deferredUnmarkDevice;
+        deferredUnmarkCount=0;
+        restoringUnmark=true;
+        bool ok=true;
+        for(unsigned i=0;i<count;++i){
+            const auto& write=writes[i];
+            ok=SUCCEEDED(device->SetRenderState(write.state,write.logical))&&ok;
+        }
+        restoringUnmark=false;
+        unmarkStatesRestored+=count;
+        if(!ok)++unmarkRestoreFailures;
+        return ok;
+    }
     bool finishDeferredTargets(){
+        if(!finishDeferredUnmark()){invalidate();return false;}
         if(!deferredTargetMask)return true;
         TargetWrite write(this);
         while(deferredTargetMask){
@@ -189,6 +224,7 @@ struct DeviceMirror {
     }
     // Callers hold gate, including ALL block Apply, Reset, and disable paths.
     void invalidate(){
+        finishDeferredUnmark();
         constantEpoch.invalidate();if(synced)synced->clearAll();
         particleDraw.invalidate();
         nPatchKnown=false;programmableVS=false;
@@ -345,6 +381,7 @@ public:
     HRESULT STDMETHODCALLTYPE SetRenderState(D3DRENDERSTATETYPE type,DWORD value) override{
         Guard lock(m->gate);const unsigned particleSlot=NorthlightParticleDraw::blendSlot(type);
         NorthlightParticleDraw::State::Write decision(m->particleDraw,particleSlot!=0);
+        if(m->deferredUnmarkCount&&DeviceMirror::unmarkState(type)&&!m->finishDeferredUnmark()){m->invalidate();return E_FAIL;}
         if(m->synced)m->synced->renderState(unsigned(type));const std::uint64_t serial=m->mutations+1;HRESULT hr=real->SetRenderState(type,value);const bool slot=unsigned(type)<DeviceMirror::RenderStates;
         if(slot)m->renderStateKnown[type]=false;
         // Vendor command states (RESZ/ATOC etc.) may have implicit side effects.
@@ -361,6 +398,7 @@ public:
     HRESULT STDMETHODCALLTYPE GetRenderState(D3DRENDERSTATETYPE type,DWORD* out) override{
         Guard lock(m->gate);bool valid=unsigned(type)<DeviceMirror::RenderStates&&out;
         if(valid&&m->active()&&m->renderStateKnown[type]){++m->answered;*out=m->renderStates[type];return D3D_OK;}
+        if(m->deferredUnmarkCount&&DeviceMirror::unmarkState(type)&&!m->finishDeferredUnmark()){m->invalidate();return E_FAIL;}
         ++m->forwarded;HRESULT hr=real->GetRenderState(type,out);
         if(valid&&m->active()){const unsigned id=DeviceMirror::RenderStateSlot+unsigned(type);const bool same=SUCCEEDED(hr)&&*out==m->renderStates[type];
             if(same&&m->pending[id])m->prove(DeviceMirror::pair(id,*out));m->observed(id,same);
@@ -522,6 +560,7 @@ public:
     // Called at a bounded cadence under the same gate as all intercepted writes.
     const char* audit(){
         Guard lock(m->gate);if(!m->active())return nullptr;++m->checks;
+        if(!m->finishDeferredUnmark()){m->disable("stencil-restore");return "stencil-restore";}
         struct Coverage {DeviceMirror* mirror;std::uint64_t before;
             ~Coverage(){if(mirror->checkedFields==before)++mirror->emptyChecks;}
         } coverage{m,m->checkedFields};
@@ -726,6 +765,48 @@ public:
 #include "extension_raw_methods.inl"
 
     ExtensionDevice(IDirect3DDevice9* device,DeviceMirror* mirror):MirrorDevice(device,mirror){}
+    template<size_t N> bool reuseUnmark(const NorthlightNameStencil::Set (&states)[N],DWORD (&previous)[N]){
+        if(!m->deferredUnmarkCount||!m->heldByThisThread()||!m->active()||indexedPairOwner==this)return false;
+        for(size_t i=0;i<N;++i){
+            if(!m->renderStateKnown[states[i].state])return false;
+            previous[i]=m->renderStates[states[i].state];
+        }
+        for(unsigned i=0;i<m->deferredUnmarkCount;++i){
+            const auto& write=m->deferredUnmark[i];
+            m->logicalUnmarkState(write.state,write.physical);
+        }
+        m->unmarkStatesReused+=m->deferredUnmarkCount;
+        m->deferredUnmarkCount=0;
+        ++m->mutations;
+        ++m->unmarkRunsReused;
+        return true;
+    }
+    // Keep only the states the temporary unmark draw actually changed. The
+    // mirror continues to expose the game's state between game draws.
+    template<size_t N> bool deferUnmark(const NorthlightNameStencil::Set (&states)[N],const DWORD (&previous)[N]){
+        static_assert(N<=8);
+        if(m->deferredUnmarkCount||m->restoringUnmark||!m->heldByThisThread()||!m->gate.exclusive.load(std::memory_order_relaxed)||
+            !m->active()||indexedPairOwner==this)return false;
+        const auto serial=m->mutations;
+        unsigned count=0;
+        for(size_t i=0;i<N;++i){
+            const auto type=D3DRENDERSTATETYPE(states[i].state);
+            DWORD value=0;
+            if(m->renderStateKnown[type])value=m->renderStates[type];
+            else if(FAILED(MirrorDevice::GetRenderState(type,&value)))return false;
+            if(value!=states[i].value)return false;
+            if(previous[i]!=value)m->deferredUnmark[count++]={type,previous[i],value};
+        }
+        if(!count||!m->active()||m->mutations!=serial)return false;
+        for(unsigned i=0;i<count;++i){
+            const auto& write=m->deferredUnmark[i];
+            m->logicalUnmarkState(write.state,write.logical);
+        }
+        m->deferredUnmarkDevice=real;
+        m->deferredUnmarkCount=count;
+        ++m->mutations;
+        return true;
+    }
     HRESULT releaseAuxiliaryTarget(unsigned slot,IDirect3DSurface9* surface,bool modelNormal){
         // Only the owner of the just-submitted private draw may hide this
         // attachment. In raw/recording mode the backend remains authoritative.

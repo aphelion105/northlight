@@ -9,6 +9,72 @@
 #include "lighting_pair_timing.h"
 
 struct PipelineOffTest {
+    static void unmarkRunPixels(Device& device,unsigned width,unsigned height){
+        auto* d=device.ext;
+        IDirect3DSurface9 *target=nullptr,*depth=nullptr,*readback=nullptr;
+        screenOk(d->CreateRenderTarget(width,height,D3DFMT_A8R8G8B8,D3DMULTISAMPLE_NONE,0,FALSE,&target,nullptr));
+        screenOk(d->CreateDepthStencilSurface(width,height,D3DFMT_D24S8,D3DMULTISAMPLE_NONE,0,FALSE,&depth,nullptr));
+        screenOk(d->CreateOffscreenPlainSurface(width,height,D3DFMT_A8R8G8B8,D3DPOOL_SYSTEMMEM,&readback,nullptr));
+        {
+            SavedState saved(d,&device.stateBlocks);
+            assert(saved.ok);
+            screenOk(d->SetDepthStencilSurface(nullptr));
+            screenOk(d->SetRenderTarget(0,target));screenOk(d->SetDepthStencilSurface(depth));
+            screenOk(d->SetVertexShader(nullptr));screenOk(d->SetPixelShader(nullptr));
+            screenOk(d->SetTexture(0,nullptr));screenOk(d->SetFVF(D3DFVF_XYZRHW|D3DFVF_DIFFUSE));
+            screenOk(d->SetTextureStageState(0,D3DTSS_COLOROP,D3DTOP_SELECTARG1));
+            screenOk(d->SetTextureStageState(0,D3DTSS_COLORARG1,D3DTA_DIFFUSE));
+            screenOk(d->SetRenderState(D3DRS_CULLMODE,D3DCULL_NONE));
+            screenOk(d->SetRenderState(D3DRS_SCISSORTESTENABLE,FALSE));
+            screenOk(d->SetRenderState(D3DRS_ZENABLE,FALSE));
+            screenOk(d->SetRenderState(D3DRS_ALPHATESTENABLE,FALSE));
+            screenOk(d->SetRenderState(D3DRS_ALPHABLENDENABLE,FALSE));
+            constexpr D3DCOLOR green=0xff00ff00;
+            const auto strip=[&](unsigned first,unsigned last){
+                const float x0=float(first)-.5f,x1=float(last)-.5f,y0=-.5f,y1=float(height)-.5f;
+                struct Vertex {float x,y,z,w;DWORD color;};
+                const Vertex vertices[]={{x0,y0,0,1,green},{x1,y0,0,1,green},{x0,y1,0,1,green},{x1,y1,0,1,green}};
+                return d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,vertices,sizeof(Vertex));
+            };
+            assert(device.setExclusiveOwner(true));
+            {
+                MirrorGuard held(device.mirrorState.gate);
+                for(bool reuse:{false,true}){
+                    device.unmarkRunReuse=reuse;
+                    screenOk(d->SetRenderState(D3DRS_STENCILENABLE,FALSE));
+                    screenOk(d->Clear(0,nullptr,D3DCLEAR_TARGET|D3DCLEAR_STENCIL,0xff000000,1,NorthlightNameStencil::kBit));
+                    screenOk(d->SetRenderState(D3DRS_COLORWRITEENABLE,0));
+                    const auto renderUnmark=[&](unsigned start,unsigned end){
+                        device.maskKind=2;
+                        screenOk(device.nameMaskDraw(false,false,[&]{return strip(start,end);}));
+                    };
+                    screenOk(d->BeginScene());
+                    renderUnmark(0,width/4);renderUnmark(width/4,width/2);
+                    DWORD stencil=TRUE;screenOk(d->GetRenderState(D3DRS_STENCILENABLE,&stencil));assert(!stencil);
+                    screenOk(strip(width/2,width));
+                    assert(!device.mirrorState.deferredUnmarkCount);
+                    screenOk(d->SetRenderState(D3DRS_COLORWRITEENABLE,15));
+                    screenOk(d->SetRenderState(D3DRS_STENCILENABLE,TRUE));
+                    screenOk(d->SetRenderState(D3DRS_STENCILFUNC,D3DCMP_EQUAL));
+                    screenOk(d->SetRenderState(D3DRS_STENCILREF,NorthlightNameStencil::kBit));
+                    screenOk(d->SetRenderState(D3DRS_STENCILMASK,NorthlightNameStencil::kBit));
+                    screenOk(d->SetRenderState(D3DRS_STENCILWRITEMASK,0));
+                    screenOk(strip(0,width));
+                    screenOk(d->EndScene());
+                    screenOk(d->GetRenderTargetData(target,readback));
+                    D3DLOCKED_RECT lock{};screenOk(readback->LockRect(&lock,nullptr,D3DLOCK_READONLY));
+                    const auto* row=reinterpret_cast<const DWORD*>(static_cast<const char*>(lock.pBits)+height/2*lock.Pitch);
+                    assert((row[width/8]&0xffffff)==0&&(row[3*width/8]&0xffffff)==0&&(row[3*width/4]&0xffffff)==0xff00);
+                    screenOk(readback->UnlockRect());
+                }
+                assert(device.mirrorState.unmarkRunsReused==1&&!device.mirrorState.unmarkRestoreFailures);
+                device.unmarkRunReuse=false;
+            }
+            assert(device.setExclusiveOwner(false));
+        }
+        readback->Release();depth->Release();target->Release();
+        std::puts("UNMARK_RUN_GPU_PASS consecutive_draw_pixels ordinary_draw_stencil restored");
+    }
     static void layeredRoom(Device& device,const std::vector<DWORD>& words,unsigned width,unsigned height,
                             bool model=false,bool skinned=true,bool preserveRigidRoomLight=true){
         IDirect3DVertexShader9* shader=nullptr;IDirect3DSurface9* depth=nullptr;
@@ -185,6 +251,7 @@ int main(int argc,char** argv){
             PipelineOffTest::layeredRoom(*device,foreign,W,H);
             std::puts("CAPTURED_FOREIGN_WMO_REGISTRATION_PASS");
         }
+        if(!benchmark)PipelineOffTest::unmarkRunPixels(*device,W,H);
         device->Release();
     }
     IDirect3DSurface9 *target=nullptr,*read=nullptr,*mask=nullptr;

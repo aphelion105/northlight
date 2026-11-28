@@ -86,8 +86,8 @@
     HRESULT STDMETHODCALLTYPE CreatePixelShader(const DWORD *byte_code, IDirect3DPixelShader9 **shader) override { indexedBarrier();return real->CreatePixelShader(byte_code, shader); }
     HRESULT STDMETHODCALLTYPE SetPixelShaderConstantI(UINT reg_idx, const int *data, UINT count) override { indexedBarrier();return real->SetPixelShaderConstantI(reg_idx, data, count); }
     HRESULT STDMETHODCALLTYPE SetPixelShaderConstantB(UINT reg_idx, const WINBOOL *data, UINT count) override { indexedBarrier();return real->SetPixelShaderConstantB(reg_idx, data, count); }
-    HRESULT STDMETHODCALLTYPE DrawRectPatch(UINT handle, const float *segment_count, const D3DRECTPATCH_INFO *patch_info) override { indexedBarrier();return real->DrawRectPatch(handle, segment_count, patch_info); }
-    HRESULT STDMETHODCALLTYPE DrawTriPatch(UINT handle, const float *segment_count, const D3DTRIPATCH_INFO *patch_info) override { indexedBarrier();return real->DrawTriPatch(handle, segment_count, patch_info); }
+    HRESULT STDMETHODCALLTYPE DrawRectPatch(UINT handle, const float *segment_count, const D3DRECTPATCH_INFO *patch_info) override { indexedBarrier();if(!m->finishDeferredTargets())return E_FAIL;return real->DrawRectPatch(handle, segment_count, patch_info); }
+    HRESULT STDMETHODCALLTYPE DrawTriPatch(UINT handle, const float *segment_count, const D3DTRIPATCH_INFO *patch_info) override { indexedBarrier();if(!m->finishDeferredTargets())return E_FAIL;return real->DrawTriPatch(handle, segment_count, patch_info); }
     HRESULT STDMETHODCALLTYPE DeletePatch(UINT Handle) override { indexedBarrier();return real->DeletePatch(Handle); }
     HRESULT STDMETHODCALLTYPE CreateQuery(D3DQUERYTYPE Type, IDirect3DQuery9** ppQuery) override { indexedBarrier();return real->CreateQuery(Type, ppQuery); }
 #endif

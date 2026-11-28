@@ -188,13 +188,14 @@ checks['run: begin clears if needed then applies kMark once (nameRun), end resto
 effectRun=r[r.index('void renderEffects() {'):r.index('/* The guards of every mask decision')]
 reset=r[r.index('Reset(D3DPRESENT_PARAMETERS* pp) override'):]
 reset=reset[:reset.index('\n    }')]
+frameEnd=r[r.index('void finishFrameImpl() {'):r.index('const auto frameEffects=effectKeys.settings;')]
 checks['run ends before anything that could draw or clear with stencil on: prepareDrawImpl (any non-UI-hash draw), nameMaskDraw (non-name), Clear, EndScene, Reset, renderEffects, finishFrameImpl']=(
     '++drawCalls;maskKind=0;nativeLocalDomain=false;if(nameRun)nameMaskRunBreak();' in impl and 'if(kind!=1)nameMaskRunEnd();' in r
     and 'nameMaskRunEnd(); /* 0.3.212 (task 32): a run of names never spans a Clear */' in r[r.index('HRESULT STDMETHODCALLTYPE Clear('):][:700]
     and 'override { Guard mirrorLock(mirrorState.gate);nameMaskRunEnd();' in r
     and effectRun.index('nameMaskRunEnd();')<effectRun.index('SavedState saved(')
     and 'if(hdr.active&&(!hdrAtUiBoundary||!hdrBackTarget()))return;' in effectRun
-    and 'void finishFrameImpl() {\n        nameMaskRunEnd();' in r
+    and frameEnd.index('nameMaskRunEnd();')<frameEnd.index('captureEffectDiagnostics();')
     and reset.index('nameMaskRunEnd();')<reset.index('rainMrtUnbind();'))
 checks['the stencil-in-use guard reads the game\'s STENCILENABLE once per frame (reset at the frame end and Reset), so a run knows the value to restore']='if(!nameMask.stencilChecked){' in r and 'nameMask.stencilChecked=true;' in r and 'FAILED(ext->GetRenderState(D3DRS_STENCILENABLE,&stencilOn))' in r
 md=r[r.index('HRESULT nameMaskDraw('):r.index('    bool spellDepthTested(')]
