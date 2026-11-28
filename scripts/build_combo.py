@@ -15,7 +15,8 @@ import northlight_paths as fp
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--storm-source', type=Path, help='existing clean checkout of the pinned StormLib revision')
-    parser.add_argument('--jobs', type=int, default=2)
+    parser.add_argument('--jobs', type=int, default=2,
+                        help='parallel jobs for the Tideglass core build (the renderer build sets its own)')
     parser.add_argument('--x64', action='store_true', help='build the standalone AMD64 proxy and Tideglass core')
     args = parser.parse_args()
     if args.jobs < 1:
