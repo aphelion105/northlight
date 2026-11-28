@@ -29,6 +29,7 @@
     struct PointWorldTriangles {
         struct Entry {
             Batch::LampTriangles triangles;
+            NorthlightGI::Vec3 low{},high{};
             bool built=false,valid=false;
         };
         // Replay indices only identify the same frozen inputs within this pass.
@@ -117,6 +118,17 @@
             for(unsigned k=0;k<3;++k)if(b.high[k]<lo[k]-.003f||b.low[k]>hi[k]+.003f)return false;}
         ++pointCold.placedShellChecks;
         CpuScope work(NorthlightQuality::renderProfile(quality)?&pointCold.placedShell:nullptr);
+        const auto outsideShell=[&](const PointWorldTriangles::Entry& geometry){
+            const auto& lo=geometry.low;const auto& hi=geometry.high;
+            const auto& shellLo=shell.boundsLow;const auto& shellHi=shell.boundsHigh;
+            // Reject only if the exact CPU positions cannot match the shell.
+            // Keep the same pad as the conservative replay bounds above.
+            return hi.x<shellLo.x-.003f||lo.x>shellHi.x+.003f||
+                hi.y<shellLo.y-.003f||lo.y>shellHi.y+.003f||
+                hi.z<shellLo.z-.003f||lo.z>shellHi.z+.003f;
+        };
+        auto* cached=world&&index<world->entries.size()?&world->entries[index]:nullptr;
+        if(cached&&cached->valid&&outsideShell(*cached)){++pointCold.placedBoxRejects;return false;}
         const auto program=actorPrograms.find(p.originalShader);const D3DVERTEXELEMENT9* elements=nullptr;UINT count=0;
         if(program==actorPrograms.end()||!program->second||!declarationCache.get(p.decl,elements,count))return false;
         const bool cache=!memoryPressure&&p.shared&&count<=MAXD3DDECLLENGTH+1;
@@ -144,21 +156,24 @@
         if(cache&&std::memcmp(placedShellView.data(),context.inverseView,sizeof context.inverseView)){
             std::copy_n(context.inverseView,placedShellView.size(),placedShellView.begin());
             placedShellCount=placedShellNext=0;
+            ++pointCold.placedViewResets;
         }
         if(cache)for(unsigned i=0;i<placedShellCount;++i){
             const auto& memo=placedShellMemo[i];
             if(memo.declarationCount!=count||memo.topology!=p.type||
                memo.mesh.lock()!=p.shared||memo.shell.lock()!=shell.lampTriangles||
                memo.program.lock()!=program->second||
-               std::memcmp(memo.declaration.data(),elements,count*sizeof(*elements))||
-               memo.constants.size()!=constantCount||
-               (constantCount&&std::memcmp(memo.constants.data(),p.constants+constantOffset,constantCount*sizeof(float))))continue;
+               std::memcmp(memo.declaration.data(),elements,count*sizeof(*elements)))continue;
+            if(memo.constants.size()!=constantCount||
+               (constantCount&&std::memcmp(memo.constants.data(),p.constants+constantOffset,constantCount*sizeof(float)))){
+                ++pointCold.placedPaletteMisses;
+                continue;
+            }
             ++pointCold.placedShellHits;
             if(memo.matched)remaining=memo.runs;
             return memo.matched;
         }
         PointWorldTriangles::Entry transient;
-        auto* cached=world&&index<world->entries.size()?&world->entries[index]:nullptr;
         if(cached&&!cached->built&&p.count>world->trianglesLeft)cached=nullptr;
         auto& geometry=cached?*cached:transient;
         if(geometry.built)++pointCold.placedWorldHits;
@@ -168,18 +183,24 @@
             std::vector<NorthlightActorDeformation::Position> transientPositions;
             auto& positions=world?world->positions:transientPositions;
             geometry.valid=NorthlightActorDeformation::worldPositions(*program->second,p.mesh(),elements,count,p.constants,context.inverseView,positions)&&
+                StaticM2Dedup::boundsOf(positions,geometry.low,geometry.high)&&
                 StaticShadowDedup::makeTriangles(positions,p.mesh().indices,p.mesh().indexed,p.count,p.type==D3DPT_TRIANGLESTRIP,geometry.triangles,4096);
             geometry.built=true;
             if(cached)world->trianglesLeft-=p.count;
         }
         if(!geometry.valid)return false;
-        const auto excluded=NorthlightWmoLampShadow::matching(*shell.lampTriangles,geometry.triangles);
-        const bool matched=std::any_of(excluded.begin(),excluded.end(),[](bool hit){return hit;});
-        if(matched){
-            remaining.clear();
-            for(UINT first=0;first<excluded.size();){if(excluded[first]){++first;continue;}
-                UINT end=first+1;while(end<excluded.size()&&!excluded[end])++end;
-                remaining.push_back({first,end-first});first=end;}
+        bool matched=false;
+        if(outsideShell(geometry)){
+            ++pointCold.placedBoxRejects;
+        }else{
+            const auto excluded=NorthlightWmoLampShadow::matching(*shell.lampTriangles,geometry.triangles);
+            matched=std::any_of(excluded.begin(),excluded.end(),[](bool hit){return hit;});
+            if(matched){
+                remaining.clear();
+                for(UINT first=0;first<excluded.size();){if(excluded[first]){++first;continue;}
+                    UINT end=first+1;while(end<excluded.size()&&!excluded[end])++end;
+                    remaining.push_back({first,end-first});first=end;}
+            }
         }
         if(cache)try {
             auto runs=matched?remaining:PointReplayRuns{};

@@ -92,9 +92,11 @@
         uint64_t constantBytes=0;
         unsigned facesWithoutCache=0,facesResized=0,facesMoved=0,facesMeshInvalidated=0;
         unsigned nativeShellChecks=0,placedShellChecks=0,placedCacheable=0,placedShellHits=0,mergeShellBuilds=0,mergeShellHits=0;
+        unsigned placedBoxRejects=0,placedViewResets=0,placedPaletteMisses=0;
         unsigned placedWorldBuilds=0,placedWorldHits=0;
         size_t contentRecords=0,staticEmptyCandidates=0;
         int64_t ticks=0,order=0,prepare=0,boundsWait=0,candidates=0,submit=0,nativeShell=0,placedShell=0,mergeShell=0,placedWorld=0;} pointCold;
+    NorthlightPointShadow::BaseCopyProfile pointBaseCopies;
     template<class Call> HRESULT pointAllocate(unsigned& attempts,Call call){
         ++attempts;const bool timed=NorthlightQuality::renderProfile(quality);const int64_t start=timed?QpcClock::now():0;
         const HRESULT hr=call();if(timed)pointCold.ticks+=QpcClock::now()-start;return hr;
@@ -347,7 +349,10 @@
         const auto oldPairs=pointIndexedPairDraws,oldBatches=pointIndexedBatchDraws,oldPackets=pointIndexedBatchPackets;
         const auto check=[](HRESULT hr,const char*){return SUCCEEDED(hr);};
         NorthlightShadowReplay::Pass replayPass(d);
-        NorthlightPointShadow::FacePass bake(d,check,PointResolution,pointTargets.depth(),pointTargets.casterPixel());
+        unsigned emptyAuxiliaryTargets=0;
+        for(unsigned i=1;i<4;++i)if(!saved.targets[i])emptyAuxiliaryTargets|=1u<<i;
+        NorthlightPointShadow::FacePass bake(d,check,PointResolution,pointTargets.depth(),pointTargets.casterPixel(),
+            &emptyAuxiliaryTargets,NorthlightQuality::renderProfile(quality)?&pointBaseCopies:nullptr);
         bool allowBlend=pointMinBlend;
         const bool ok=bake.beginFace(target,pointSlot().selected.attenuationEnd)&&bake.copyCachedBase(staticSurface)&&
             bake.beginDynamic(nullptr,allowBlend,[]{return true;})&&
@@ -356,7 +361,7 @@
         pointCold=oldCold;pointWork=oldWork;pointDraws=oldDraws;pointBatchesMerged=oldMerged;
         pointIndexedPairDraws=oldPairs;pointIndexedBatchDraws=oldBatches;pointIndexedBatchPackets=oldPackets;
         pointCold.mixedBakedDraws+=submitted;
-        stateRestored=saved.restore();
+        stateRestored=saved.restore(emptyAuxiliaryTargets);
         return ok&&stateRestored;
     }
 
@@ -365,7 +370,8 @@
     // withReplays=false (0.3.158 ActorShadows=0): static cache, terrain and union only; the
     // cube is complete without replays (fresh=true) and the schedule sees none.
     bool renderPointShadow(const NorthlightLocalLights::Light& light,bool fresh=true,bool withReplays=true,
-                           const NorthlightShadowRefreshBudget* budget=nullptr,unsigned rendererFrame=0,PointWorldTriangles* world=nullptr){
+                           const NorthlightShadowRefreshBudget* budget=nullptr,unsigned rendererFrame=0,PointWorldTriangles* world=nullptr,
+                           unsigned* emptyAuxiliaryTargets=nullptr){
         const bool previouslyHeld=std::exchange(pointSlot().budgetHeld,false);
         pointSlot().prewarmed=false;pointSlot().ready=false;pointDraws=pointCulled=pointFacesReused=0;
         // Publication can lead the bounded upload. Its committed same-map
@@ -510,7 +516,8 @@
         NorthlightShadowReplay::Pass replayPass(d);
         const auto check=[&](HRESULT hr,const char* operation){return pointCheck(hr,operation);};
         NorthlightPointShadow::FacePass facePass(d,check,
-            PointResolution,pointTargets.depth(),pointTargets.casterPixel());
+            PointResolution,pointTargets.depth(),pointTargets.casterPixel(),emptyAuxiliaryTargets,
+            pointTimed?&pointBaseCopies:nullptr);
         using MeshPass=decltype(facePass)::MeshPass;
         const bool opaqueEnabled=pointOpaqueReuseEnabled()&&!memoryPressure&&lampSplits.empty();
         const bool mixedEnabled=pointMixedReuseEnabled()&&!memoryPressure&&lampSplits.empty();
@@ -696,7 +703,7 @@
     void renderPointShadows(const NorthlightLocalLightSelection::Selection& lights,bool fresh,bool withReplays,unsigned rendererFrame=0,
                             NorthlightShadowRefreshBudget::Clock::duration directionalTime={}){
         ++nativeCubeRevision;
-        pointReady=false;pointWork={};pointCold={};pointAdaptiveMotionHeld=pointAdaptiveMotionPeakAge=0;
+        pointReady=false;pointWork={};pointCold={};pointBaseCopies={};pointAdaptiveMotionHeld=pointAdaptiveMotionPeakAge=0;
         pointIndexedPairDraws=pointIndexedBatchDraws=pointIndexedBatchPackets=0;
         const auto hitsBefore=shadowReplayIndices.hits,buildsBefore=shadowReplayIndices.builds;
         const auto uploadsBefore=shadowReplayIndices.uploaded();
@@ -732,6 +739,8 @@
                 recycled.swapCube(pointSlot());
             }}
         PointWorldTriangles world;
+        // The point passes own MRTs until this selection ends. A nested bake restores them.
+        unsigned emptyAuxiliaryTargets=0;
         for(pointIndex=0;pointIndex<pointTargets.slots().size();++pointIndex){const auto& pick=picks[pointIndex];if(pick.index<0)continue;
             ++selected;
             restorePointSlot(lights.sources[pick.index]);pointSlot().selectionGain=pick.gain;
@@ -739,7 +748,10 @@
             // Spread first renders across frames. Restored cubes and the refresh
             // of already usable cubes follow the ordinary scheduling rules.
             if(cold&&coldCubes>=2){pointSelection.defer(pointIndex);continue;}
-            renderPointShadow(lights.sources[pick.index],fresh,withReplays,&refreshBudget,rendererFrame,memoryPressure?nullptr:&world);pointReady|=pointSlot().ready;
+            const bool rendered=renderPointShadow(lights.sources[pick.index],fresh,withReplays,&refreshBudget,rendererFrame,
+                memoryPressure?nullptr:&world,&emptyAuxiliaryTargets);
+            if(!rendered)emptyAuxiliaryTargets=0;
+            pointReady|=pointSlot().ready;
             if(cold&&pointSlot().ready)++coldCubes;
             held+=pointSlot().budgetHeld;
             movingHeld+=pointSlot().budgetHeld&&!NorthlightPointShadow::sameCube(pointSlot().schedule.light,pointSlot().selected);
@@ -785,10 +797,14 @@
         if(coldTimed&&captureFrequency.QuadPart>0){const double scale=1000.0/double(captureFrequency.QuadPart),cpuMs=double(QpcClock::now()-coldStarted)*scale;
             if(cpuMs>=8||profileSampled()){
                 logf("POINT_PHASE rendererFrame=%u prepareMs=%.3f boundsWaitMs=%.3f candidatesMs=%.3f submitMs=%.3f prepareIncludesBoundsAndCandidates=1 terrainMemoHits=%u terrainMemoMisses=%u terrainListSize=%zu totalBatches=%zu contentPasses=%u contentRecords=%zu spatialIndex=%u facesWithoutCache=%u facesResized=%u facesMoved=%u facesMeshInvalidated=%u staticEmptyCandidates=%zu preparedMeshBounds=%zu",rendererFrame,double(pointCold.prepare)*scale,double(pointCold.boundsWait)*scale,double(pointCold.candidates)*scale,double(pointCold.submit)*scale,pointCold.terrainMemoHits,pointCold.terrainMemoMisses,terrainBatchList.size(),batches.size(),pointCold.contentPasses,pointCold.contentRecords,unsigned(bool(pointTree)),pointCold.facesWithoutCache,pointCold.facesResized,pointCold.facesMoved,pointCold.facesMeshInvalidated,pointCold.staticEmptyCandidates,pointMeshBounds.size());
-                logf("POINT_SHELL rendererFrame=%u nativeMs=%.3f placedMs=%.3f mergeMs=%.3f nativeChecks=%u placedChecks=%u placedCacheable=%u placedHits=%u mergeBuilds=%u mergeHits=%u worldMs=%.3f worldBuilds=%u worldHits=%u insideCandidates=1",
+                logf("POINT_SHELL rendererFrame=%u nativeMs=%.3f placedMs=%.3f mergeMs=%.3f nativeChecks=%u placedChecks=%u placedCacheable=%u placedHits=%u mergeBuilds=%u mergeHits=%u worldMs=%.3f worldBuilds=%u worldHits=%u insideCandidates=1 boxRejects=%u viewResets=%u paletteMisses=%u",
                     rendererFrame,double(pointCold.nativeShell)*scale,double(pointCold.placedShell)*scale,double(pointCold.mergeShell)*scale,
                     pointCold.nativeShellChecks,pointCold.placedShellChecks,pointCold.placedCacheable,pointCold.placedShellHits,pointCold.mergeShellBuilds,pointCold.mergeShellHits,
-                    double(pointCold.placedWorld)*scale,pointCold.placedWorldBuilds,pointCold.placedWorldHits);
+                    double(pointCold.placedWorld)*scale,pointCold.placedWorldBuilds,pointCold.placedWorldHits,
+                    pointCold.placedBoxRejects,pointCold.placedViewResets,pointCold.placedPaletteMisses);
+                logf("POINT_BASE_COPY rendererFrame=%u attempts=%u failures=%u cpuMs=%.3f",rendererFrame,
+                    pointBaseCopies.attempts,pointBaseCopies.failures,
+                    std::chrono::duration<double,std::milli>(pointBaseCopies.elapsed).count());
                 logf("POINT_ORDER rendererFrame=%u cpuMs=%.3f packets=%u eligible=%u oncePerFrame=1 alphaBarriers=1 fixedDraws=%u alphaScopes=%u",rendererFrame,double(pointCold.order)*scale,pointCold.orderPackets,pointCold.orderEligible,pointCold.fixedDraws,pointCold.alphaScopes);
                 // A reused cube may leave the bounds job running. Its mutable
                 // counters are readable only after that job has been joined.

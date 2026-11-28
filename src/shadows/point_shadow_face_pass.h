@@ -2,10 +2,16 @@
 #include "screen_quad.h"
 #include <d3d9.h>
 #include <climits>
+#include <chrono>
 #include <vector>
 #include "point_transmission_filter.h"
 
 namespace NorthlightPointShadow {
+
+struct BaseCopyProfile {
+    unsigned attempts=0,failures=0;
+    std::chrono::steady_clock::duration elapsed{};
+};
 
 // One cube submission. The scheduler lends the surfaces and shaders and
 // publishes a face only after its static and dynamic caster draws succeed.
@@ -17,6 +23,8 @@ class FacePass {
     const D3DVIEWPORT9 viewport_;
     IDirect3DSurface9* const depth_;
     IDirect3DPixelShader9* const caster_;
+    unsigned* const emptyAuxiliaryTargets_;
+    BaseCopyProfile* const copyProfile_;
     IDirect3DSurface9* face_=nullptr;
     bool prepared_=false,seeded_=false,attached_=false;
     Destination destination_=Destination::Direct;
@@ -24,6 +32,12 @@ class FacePass {
     IDirect3DTexture9* material_=nullptr;
     float cutoff_=0;
     bool materialKnown_=false;
+
+    HRESULT unbindAuxiliary(unsigned slot){
+        const HRESULT result=device_->SetRenderTarget(slot,nullptr);
+        if(emptyAuxiliaryTargets_&&SUCCEEDED(result))*emptyAuxiliaryTargets_|=1u<<slot;
+        return result;
+    }
 
     bool bindCaster(IDirect3DSurface9* target,const char* operation,bool preserve,bool alreadyBound=false){
         return (alreadyBound||check_(device_->SetRenderTarget(0,target),operation))&&
@@ -44,15 +58,20 @@ public:
         size_t indexBase;
     };
 
-    FacePass(Device* device,Check check,UINT size,IDirect3DSurface9* depth,IDirect3DPixelShader9* caster):
-        device_(device),check_(check),viewport_{0,0,size,size,0,1},depth_(depth),caster_(caster){}
+    FacePass(Device* device,Check check,UINT size,IDirect3DSurface9* depth,IDirect3DPixelShader9* caster,
+             unsigned* emptyAuxiliaryTargets=nullptr,BaseCopyProfile* copyProfile=nullptr):
+        device_(device),check_(check),viewport_{0,0,size,size,0,1},depth_(depth),caster_(caster),
+        emptyAuxiliaryTargets_(emptyAuxiliaryTargets),copyProfile_(copyProfile){}
     FacePass(const FacePass&)=delete;
-    ~FacePass(){if(attached_)device_->SetRenderTarget(1,nullptr);}
+    ~FacePass(){if(attached_)unbindAuxiliary(1);}
 
     bool beginFace(IDirect3DSurface9* face,float range){
         if(!prepared_){
             for(unsigned i=0;i<13;++i)if(!check_(device_->SetTexture(i,nullptr),"unbind cube samplers"))return false;
-            for(unsigned i=1;i<4;++i)if(!check_(device_->SetRenderTarget(i,nullptr),"unbind cube MRT"))return false;
+            for(unsigned i=1;i<4;++i){
+                if(emptyAuxiliaryTargets_&&(*emptyAuxiliaryTargets_&(1u<<i)))continue;
+                if(!check_(unbindAuxiliary(i),"unbind cube MRT"))return false;
+            }
             for(unsigned i=0;i<4;++i)if(!check_(device_->SetStreamSourceFreq(i,1),"cube stream frequency"))return false;
             if(!check_(device_->SetRenderState(D3DRS_ALPHABLENDENABLE,FALSE),"cube blend")||
                !check_(device_->SetRenderState(D3DRS_COLORWRITEENABLE,15),"cube color mask"))return false;
@@ -72,6 +91,7 @@ public:
             attached_=SUCCEEDED(device_->SetRenderTarget(0,face_))&&
                 SUCCEEDED(device_->SetRenderState(D3DRS_COLORWRITEENABLE1,15))&&
                 SUCCEEDED(device_->SetRenderTarget(1,target));
+            if(attached_&&emptyAuxiliaryTargets_)*emptyAuxiliaryTargets_&=~2u;
             seeded_=attached_;
             if(!seeded_)canPair=false;
         }
@@ -80,7 +100,7 @@ public:
 
     bool finishStatic(){
         if(!attached_)return true;
-        if(!check_(device_->SetRenderTarget(1,nullptr),"unbind static cube cache"))return false;
+        if(!check_(unbindAuxiliary(1),"unbind static cube cache"))return false;
         attached_=false;
         return true;
     }
@@ -135,7 +155,16 @@ public:
     }
 
     bool copyCachedBase(IDirect3DSurface9* cacheSurface){
-        if(!cacheSurface||FAILED(device_->StretchRect(cacheSurface,nullptr,face_,nullptr,D3DTEXF_NONE)))return false;
+        if(!cacheSurface)return false;
+        using Clock=std::chrono::steady_clock;
+        const auto start=copyProfile_?Clock::now():Clock::time_point{};
+        const auto result=device_->StretchRect(cacheSurface,nullptr,face_,nullptr,D3DTEXF_NONE);
+        if(copyProfile_){
+            ++copyProfile_->attempts;
+            copyProfile_->failures+=FAILED(result);
+            copyProfile_->elapsed+=Clock::now()-start;
+        }
+        if(FAILED(result))return false;
         destination_=Destination::Copied;
         return true;
     }

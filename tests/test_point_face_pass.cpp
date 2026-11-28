@@ -79,12 +79,14 @@ static void pairedAndNextFace(){
 
 static void copiedAndUnion(bool copyFails,bool staticOnly){
     Fixture f;
-    auto pass=f.pass();
+    NorthlightPointShadow::BaseCopyProfile copies;
+    NorthlightPointShadow::FacePass pass(&f.device,Fixture::Check{&f},256,f.depth,f.caster,nullptr,&copies);
     assert(pass.beginFace(f.working,12));
     auto expected=prepare();
     if(copyFails)f.device.fault={Copy,2,1};
     pass.chooseDestination(true,f.cached,staticOnly,f.minBlend);
     assert(pass.usesUnion()==copyFails&&f.minBlend!=copyFails);
+    assert(copies.attempts==1&&copies.failures==unsigned(copyFails));
     append(expected,{{Copy,2,1}});
     if(!staticOnly){
         assert(pass.beginDynamic(f.scratch,f.minBlend,[&]{return SUCCEEDED(f.device.record({Geometry}));}));
@@ -109,6 +111,29 @@ static void copiedAndUnion(bool copyFails,bool staticOnly){
     pass.finishFace();
     defaults(expected);
     assert(f.device.calls==expected);
+}
+
+static void reuseEmptyAuxiliaryTargets(){
+    Fixture f;
+    unsigned empty=0;
+    {
+        NorthlightPointShadow::FacePass pass(&f.device,Fixture::Check{&f},256,f.depth,f.caster,&empty);
+        assert(pass.beginFace(f.working,12)&&empty==14u);
+        assert(pass.beginStatic(f.cached,true,f.canPair)&&empty==12u);
+        assert(pass.finishStatic()&&empty==14u);
+    }
+    f.device.calls.clear();
+    {
+        NorthlightPointShadow::FacePass pass(&f.device,Fixture::Check{&f},256,f.depth,f.caster,&empty);
+        assert(pass.beginFace(f.working,12)&&empty==14u);
+        assert(std::none_of(f.device.calls.begin(),f.device.calls.end(),[](const Call& call){
+            return call==Call{Target,1}||call==Call{Target,2}||call==Call{Target,3};
+        }));
+        assert(pass.beginStatic(f.cached,true,f.canPair)&&empty==12u);
+        f.device.fault={Target,1};
+        assert(!pass.finishStatic()&&empty==12u);
+    }
+    assert(empty==14u&&!f.device.attached);
 }
 
 static void failuresAndReset(){
@@ -288,6 +313,7 @@ static void opaqueFaceProof(){
 }
 
 int main(){
+    reuseEmptyAuxiliaryTargets();
     pairedAndNextFace();
     copiedAndUnion(false,false);
     copiedAndUnion(false,true);

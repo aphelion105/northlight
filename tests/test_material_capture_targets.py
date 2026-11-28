@@ -18,9 +18,9 @@ for mode,flags in [('O2',['-O2']),('O0',['-O0'])]:
  subprocess.run(command,env=fp.zig_env(),check=True);r=subprocess.run([str(exe)],capture_output=True,text=True);(out/(mode+'.log')).write_text(r.stdout+r.stderr);print((r.stdout+r.stderr)[-3000:],flush=True);r.check_returncode();assert 'CAPTURE_TARGETS_PASS' in r.stdout;runs.append(mode)
 header=(headers/'auto_bump_renderer.h').read_text();negatives=[]
 for name,old,new,reason in [
- ('far-write','packet->occlusion?15:0','15','CAPTURE_TARGET_WRITE_MISMATCH'),
+ ('far-write','D3DRS_COLORWRITEENABLE1,packet->occlusion?15:0);step(result);','D3DRS_COLORWRITEENABLE1,15);step(result);','CAPTURE_TARGET_WRITE_MISMATCH'),
  ('viewport','boundAuxiliary=attachAuxiliary;viewportKnown=false;','boundAuxiliary=attachAuxiliary;','CAPTURE_TARGET_VIEWPORT_MISMATCH'),
- ('up-mask','auxiliaryWritesKnown=false;}}','}}','CAPTURE_TARGET_WRITE_MISMATCH'),
+ ('up-mask','vertexKnown=indexKnown=false;auxiliaryWritesKnown=false;','vertexKnown=indexKnown=false;','CAPTURE_TARGET_WRITE_MISMATCH'),
  ('caps','auxiliary&&occlusionTarget&&independentCaptureWrites','auxiliary&&occlusionTarget','CAPTURE_TARGET_WRITE_MISMATCH')]:
  assert header.count(old)==1,(name,old);folder=out/('negative-'+name);folder.mkdir(exist_ok=True);(folder/'auto_bump_renderer.h').write_bytes(header.replace(old,new).encode());exe=folder/'test.exe'
  subprocess.run([str(fp.zig()),'c++','-target','x86-windows-gnu','-std=c++17','-UNDEBUG','-O2','-Wno-microsoft-exception-spec','-Wno-return-type','-I',str(folder),'-I',str(out),*fp.test_include_flags(),str(fp.TESTS/'test_material_capture_targets.cpp'),'-luser32','-luuid','-o',str(exe)],env=fp.zig_env(),check=True)

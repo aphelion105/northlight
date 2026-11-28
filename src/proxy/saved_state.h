@@ -78,14 +78,16 @@ struct SavedState {
     SavedState(const SavedState&)=delete;
     SavedState& operator=(const SavedState&)=delete;
     bool coversDevice(IDirect3DDevice9* device)const{return d==device&&ok&&!restored;}
-    bool restore(){
+    // A private pass may prove that some auxiliary targets are already null.
+    bool restore(unsigned emptyAuxiliaryTargets=0){
         if(restored)return restoreOK;
         restored=true;
         if(ok){
             auto retry=[](auto call){return SUCCEEDED(call())||SUCCEEDED(call());};
             restoreOK=retry([&]{return d->SetDepthStencilSurface(nullptr);});
             bool scrubbed[4]={};
-            for(int i=1;i<4;++i)scrubbed[i]=retry([&]{return d->SetRenderTarget(i,nullptr);});
+            for(int i=1;i<4;++i)scrubbed[i]=(emptyAuxiliaryTargets&(1u<<i))||
+                retry([&]{return d->SetRenderTarget(i,nullptr);});
             restoreOK=retry([&]{return d->SetRenderTarget(0,targets[0]);})&&restoreOK;
             for(int i=1;i<4;++i)if(targets[i]||!scrubbed[i])restoreOK=retry([&]{return d->SetRenderTarget(i,targets[i]);})&&restoreOK;
             restoreOK=retry([&]{return d->SetDepthStencilSurface(depth);})&&restoreOK;

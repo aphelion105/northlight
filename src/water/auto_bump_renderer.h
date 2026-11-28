@@ -129,6 +129,10 @@ class NorthlightAutoBump {
     unsigned queuedDomain[4]={},earlyRangeRejected=0,opaqueCoverage=0,packetVertexBankReuses=0;
     unsigned deferredTextureDraws=0,textureBarriers=0,snapshotBudget=0,snapshotStreams=0,textureRefused=0,batchLimit=0;
     bool deferredReport=false;uint64_t deferredReportFrame=0;
+    struct DeferredAdmission {
+        unsigned eligible=0,sharing=0,prepared=0,noGeometry=0,pixelShader=0,vertexShader=0;
+        unsigned singleDomain=0,singleCoverage=0,singleState=0,singleRange=0,singleDepth=0;
+    } deferredAdmission;
     float projection[4]={1,1,-1,8};
     float captureToWorld[12]={1,0,0,0,0,1,0,0,0,0,1,0};
     std::uint64_t worldLightStamp=~std::uint64_t(0);
@@ -870,6 +874,10 @@ public:
         if(deferredReport||cold.vertexSources||cold.vertexQueued||cold.modelMisses||cold.staticCreates)logf("MATERIAL_COLD frame=%llu sampled=%u enabled=%u vertexSources=%u vertexQueued=%u pendingVertices=%u pendingMaterialRejected=%u vertexCpuMs=%.6f modelMisses=%u modelBuilt=%u modelCpuMs=%.6f staticCreates=%u staticBuilt=%u staticCpuMs=%.6f sourceBytes=%llu",(unsigned long long)(deferredReport?deferredReportFrame:frames),unsigned(deferredReport),unsigned(enabled),cold.vertexSources,cold.vertexQueued,pendingVertices,cold.pendingMaterialRejected,cold.vertexMs,cold.modelMisses,cold.modelBuilt,cold.modelMs,cold.staticCreates,cold.staticBuilt,cold.staticMs,(unsigned long long)cold.sourceBytes);
         cold={};
         if(deferredReport||((queued||flushed||deferredFallback||deferredDiscarded)&&frames%600==0))logf("MATERIAL_DEFERRED frame=%llu sampled=%u enabled=%u queued=%u flushed=%u snapshotFallback=%u liveState=%u preparedGeometry=%u discardedUnused=%u terrain=%u walls=%u grass=%u models=%u earlyRangeRejected=%u opaqueCoverage=%u packetLimit=%u packetMiB=%u sourceMiB=%zu singleSample=%u equalDepthQueued=%u depthSeeds=%u depthBarriers=%u readOnlyDepthSkips=%u",(unsigned long long)(deferredReport?deferredReportFrame:frames),unsigned(deferredReport),unsigned(deferredAllowed),queued,flushed,deferredFallback,deferredUnsafe,deferredGeometry,deferredDiscarded,queuedDomain[0],queuedDomain[1],queuedDomain[2],queuedDomain[3],earlyRangeRejected,opaqueCoverage,deferredPacketLimit,unsigned(deferredByteLimit>>20),deferredSnapshots.snapshotCacheLimit()>>20,singleSampleQueued,equalDepthQueued,depthSeeds,depthBarriers,depthReadOnlySkips);
+        if(deferredReport)logf("MATERIAL_DEFERRED_ADMISSION frame=%llu eligible=%u sharing=%u prepared=%u noGeometry=%u pixelShader=%u vertexShader=%u singleDomain=%u singleCoverage=%u singleState=%u singleRange=%u singleDepth=%u",
+            (unsigned long long)deferredReportFrame,deferredAdmission.eligible,deferredAdmission.sharing,deferredAdmission.prepared,
+            deferredAdmission.noGeometry,deferredAdmission.pixelShader,deferredAdmission.vertexShader,deferredAdmission.singleDomain,
+            deferredAdmission.singleCoverage,deferredAdmission.singleState,deferredAdmission.singleRange,deferredAdmission.singleDepth);
         if(deferredReport||((queued||flushed||deferredFallback)&&frames%600==0)){
             logf("MATERIAL_REPLAY_CONTENT frame=%llu captureTests=%u captureHits=%u captureComparedBytes=%zu",(unsigned long long)(deferredReport?deferredReportFrame:frames),deferredSnapshots.replayContentTests(),deferredSnapshots.replayContentHits(),deferredSnapshots.replayContentComparedBytes());
             logf("MATERIAL_BATCH_SOURCE frame=%llu textureGuard=%u textureDraws=%u writeBarriers=%u refusedTexture=%u snapshotBudget=%u snapshotStreams=%u batchLimit=%u sourceHits=%u sourcePeerHits=%u sourceMisses=%u sourceReadBytes=%zu sourceEntries=%zu sourceBytes=%zu sourceLimitMiB=%zu",(unsigned long long)(deferredReport?deferredReportFrame:frames),unsigned(textureWriteGuarded),deferredTextureDraws,textureBarriers,textureRefused,snapshotBudget,snapshotStreams,batchLimit,deferredSnapshots.snapshotCacheHits(),deferredSnapshots.residentPeerHits(),deferredSnapshots.snapshotCacheMisses(),deferredSnapshots.bytesRead(),deferredSnapshots.snapshotCacheEntries(),deferredSnapshots.snapshotCacheBytes(),deferredSnapshots.snapshotCacheLimit()>>20);
@@ -893,6 +901,7 @@ public:
         sourceDraws=sourceInvalidated=sourcePaletteSaved=guardedSourcePackets=guardedSourceBarriers=0;
 
         singleSampleQueued=equalDepthQueued=depthSeeds=depthBarriers=depthReadOnlySkips=0;queued=flushed=deferredFallback=deferredDiscarded=deferredUnsafe=deferredGeometry=0;
+        deferredAdmission={};
         std::fill(std::begin(queuedDomain),std::end(queuedDomain),0);earlyRangeRejected=opaqueCoverage=0;
         deferredTextureDraws=textureBarriers=snapshotBudget=snapshotStreams=textureRefused=batchLimit=0;deferredSnapshots.clearFrame();
         if(occlusionRetry)--occlusionRetry;
@@ -1198,6 +1207,20 @@ public:
             singleSample=(equalDepth||farthestDepth<materialRange)&&sceneDepth.read(saved.depth)&&sceneDepth.desc.Format==D3DFMT_D24S8;
         }
         const bool canDefer=deferredSafe&&(multisampled||singleSample);
+        if(deferredAllowed&&profile&&profile->recording()){
+            // Count the first failed admission gate once per candidate.
+            if(canDefer)++deferredAdmission.eligible;
+            else if(sharing)++deferredAdmission.sharing;
+            else if(displacement.prepared())++deferredAdmission.prepared;
+            else if(!geometry)++deferredAdmission.noGeometry;
+            else if(!independent)++deferredAdmission.pixelShader;
+            else if(!v->second.deferredSafe)++deferredAdmission.vertexShader;
+            else if(domain!=4||modes[3]==2)++deferredAdmission.singleDomain;
+            else if(alpha&&!equalDepth&&!splitAlpha)++deferredAdmission.singleCoverage;
+            else if(s[5].value||(useSceneDepthScratch&&!depthScratch))++deferredAdmission.singleState;
+            else if(!equalDepth&&!(farthestDepth<materialRange))++deferredAdmission.singleRange;
+            else ++deferredAdmission.singleDepth;
+        }
         if(!deferred.empty()&&singleSampleBatch!=singleSample)if(!finishCaptures())return;
         if(deferredAllowed&&multisampled){if(displacement.prepared())++deferredGeometry;else if(sharing||!independent||!v->second.deferredSafe)++deferredUnsafe;}
         // Packets contain desired replay values; the flush saves native state
