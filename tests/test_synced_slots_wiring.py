@@ -19,7 +19,7 @@ checks={
  'every tracked setter clears its slot':all(k in bodies and 'm->synced->'+v in bodies[k] and 'm->synced)' in bodies[k] for k,v in HOOKED.items()),
  'SetRenderTarget clears the viewport only for target 0':'if(n==0&&m->synced)m->synced->viewport()' in bodies.get('SetRenderTarget',''),
  'no unclassified Set* override in MirrorDevice (a new setter must be hooked or listed as untracked)':set(bodies)<=set(HOOKED)|UNTRACKED,
- 'invalidate() clears every bit (state block Apply, Reset, RawScope entry and exit, vendor states, failed Sets, disable)':re.search(r'void invalidate\(\)\{[^}]*if\(synced\)synced->clearAll\(\);',m) is not None,
+ 'invalidate() clears every bit (state block Apply, Reset, RawScope entry and exit, vendor states, failed Sets, disable)':re.search(r'void invalidate\([^)]*\)\{[^}]*if\(synced\)synced->clearAll\(\);',m) is not None,
  'the mirror holds the bits by pointer, null until the renderer installs them':'SyncedSlots* synced=nullptr;' in m,
  'the renderer gives the bits to the layer and the mirror and takes them back at teardown':'cfg.synced=&spellSynced;mirrorState.synced=&spellSynced;' in r and 'mirrorState.synced=nullptr;' in r,
  'the layer uses the bits only with the state cache in use, and only when no write interleaved with the record':'(cfg_.dirtyRecord&&cfg_.synced&&mv_)' in sl and 'sy->epoch==epoch0' in sl,
@@ -38,7 +38,7 @@ def rawOk(line):
     return i>=0 and 0<=j and j>i and line.find('return MirrorDevice::')>line.find('}return')>0 and line.count('real->')==1
 checks2={
  'every raw Set of a tracked slot is inside the rawActive() branch and falls through to the mirror setter':all(k in rawLines and rawOk(rawLines[k]) for k in trackedRaw),
- 'RawScope brackets its work with invalidate() (entry and exit)':re.search(r'explicit RawScope\(ExtensionDevice& owner\)[^{]*\{[^}]*owner\.m->invalidate\(\);\+\+owner\.m->rawDepth',m) is not None and re.search(r'~RawScope\(\)\{[^}]*device->m->invalidate\(\);--device->m->rawDepth',m) is not None,
+ 'RawScope brackets its work with invalidate() (entry and exit)':re.search(r'explicit RawScope\(ExtensionDevice& owner[^{]*\{[^}]*owner\.m->invalidate\(DeviceMirror::EpochReset::RawEnter\);\+\+owner\.m->rawDepth',m) is not None and re.search(r'~RawScope\(\)\{[^}]*device->m->invalidate\(DeviceMirror::EpochReset::RawExit\);--device->m->rawDepth',m) is not None,
  'the raw methods are only generated from the MirrorDevice overrides (a new tracked setter gets its raw branch automatically)':'selected = set(re.findall(' in (fp.SCRIPTS/'generate_extension_raw_methods.py').read_text(),
 }
 stream=fp.src('command_stream.inl').read_text()

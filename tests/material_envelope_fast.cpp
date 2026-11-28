@@ -30,6 +30,88 @@ static void warm(E& e,const E::Prepared& p,const std::shared_ptr<const Mesh>& m,
     assert(false);
 }
 template<size_t N> static Program program(const uint32_t(&code)[N]){Program p;assert(NorthlightActorDeformation::compile(code,N,p));return p;}
+static void poseCertificateCapacity(const Program& p){
+    E small{true},large{true,true};
+    assert(small.poseCapacity()==16&&large.poseCapacity()==512);
+    auto prepared=E::prepareProgram(p,decl,4);
+    assert(prepared);
+    float constants[1024],inverse[16]={1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1};
+    pose(constants,0);
+    NorthlightConstantEpoch::Clock clock;
+    auto stamp=clock.stamp(true);
+    stamp.held=true;
+    std::vector<std::shared_ptr<const Mesh>> sources;
+    const auto evaluate=[&](E& cache,const std::shared_ptr<const Mesh>& source,const NorthlightConstantEpoch::Stamp* certificate){
+        cache.beginFrame(false,0,false,true,true);
+        B::Budget budget;B::Bounds result;
+        assert(cache.calculatePrepared(*prepared,*source,source,constants,inverse,budget,result,E::Stage::All,nullptr,certificate)==B::Status::Valid);
+        return result;
+    };
+    const auto same=[](const B::Bounds& a,const B::Bounds& b){
+        assert(a.valid&&b.valid&&!std::memcmp(a.low,b.low,sizeof a.low)&&!std::memcmp(a.high,b.high,sizeof a.high));
+    };
+    for(unsigned i=0;i<24;++i){
+        sources.push_back(mesh(1));
+        same(evaluate(small,sources.back(),&stamp),evaluate(large,sources.back(),&stamp));
+        assert(small.stats().poseColdMisses==1&&large.stats().poseColdMisses==1);
+    }
+    const auto& source=sources.front();
+    const auto original=evaluate(small,source,&stamp);
+    assert(small.stats().poseEvictionMisses==1);
+    same(original,evaluate(large,source,&stamp));
+    assert(large.stats().certifiedPoseHits==1);
+    inverse[12]=13;
+    const auto shifted=evaluate(large,source,&stamp);
+    assert(large.stats().poseBasisMisses==1&&shifted.low[0]!=original.low[0]);
+    same(shifted,evaluate(small,source,nullptr));
+    constants[4*31+3]+=50;
+    clock.writeFloat(31,1);
+    stamp=clock.stamp(true);
+    stamp.held=true;
+    const auto changed=evaluate(large,source,&stamp);
+    assert(large.stats().poseStampMisses==1&&changed.low[0]!=shifted.low[0]);
+    same(changed,evaluate(small,source,nullptr));
+    large.clearPoseCertificates();
+    same(changed,evaluate(large,source,&stamp));
+    assert(large.stats().certifiedPoseHits==0&&large.stats().poseColdMisses==1);
+    std::puts("MATERIAL_POSE_CERTIFICATES_PASS capacities=16/512 bitexact_bounds cold eviction basis stamp reset");
+}
+static void poseStampCauses(const Program& p){
+    using NorthlightConstantEpoch::Clock;
+    assert(NorthlightReplayBounds::SkinEnvelope::supports(p)||p.kernel.singleSkin());
+    E cache{true,true,true};
+    assert(cache.comparesPoseValues());
+    const auto prepared=E::prepareProgram(p,decl,4);
+    assert(prepared);
+    const auto source=mesh(1);
+    float constants[1024],basis[16]={1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1};
+    pose(constants,0);
+    Clock clock;
+    const auto evaluate=[&]{
+        auto stamp=clock.stamp(true);stamp.held=true;
+        cache.beginFrame(false,0,false,true,true);
+        B::Budget budget;B::Bounds result;
+        assert(cache.calculatePrepared(*prepared,*source,source,constants,basis,budget,result,E::Stage::All,nullptr,&stamp)==B::Status::Valid);
+        return result.low[0];
+    };
+    const float original=evaluate();
+    clock.writeFloat(31,1);
+    assert(evaluate()==original&&cache.stats().poseEqualSpan==1&&cache.stats().certifiedPoseHits==0);
+    assert(cache.stats().poseEqualRecomputedBounds==1&&cache.stats().poseChangedRecomputedBounds==0);
+    constants[34*4+3]+=30;
+    clock.writeFloat(34,1);
+    assert(evaluate()==original&&cache.stats().poseUnusedPaletteChanged==1);
+    constants[31*4+3]+=10;
+    clock.writeFloat(31,1);
+    const auto changed=evaluate();
+    assert(changed!=original&&cache.stats().poseUsedPaletteChanged==1);
+    assert(cache.stats().poseEqualRecomputedBounds==0&&cache.stats().poseChangedRecomputedBounds==1);
+    clock.invalidate();
+    assert(evaluate()==changed&&cache.stats().poseResetMismatch==1&&cache.stats().poseEqualSpanAfterReset==1);
+    clock.writeBool(1);
+    assert(evaluate()==changed&&cache.stats().poseIntegerBooleanMismatch==1&&cache.stats().poseEqualSpan==1);
+    std::puts("MATERIAL_POSE_STAMP_CAUSES_PASS equal span unused palette used palette reset");
+}
 static void unusedIndices(const std::vector<Program>& programs){
     unsigned checked=0;
     for(const auto& original:programs){
@@ -61,6 +143,9 @@ static void unusedIndices(const std::vector<Program>& programs){
 }
 int main(){
     auto programs=std::vector<Program>{program(ClientShaders::OneBoneVs3),program(ClientShaders::OneBoneVs3WLast),program(ClientShaders::OneBoneVs3WMid),program(ClientShaders::OneBoneVs2),program(ClientShaders::FourBoneVs3)};
+    poseCertificateCapacity(programs[0]);
+    poseStampCauses(programs.back());
+    poseStampCauses(programs.front());
     unusedIndices(programs);
     float c[1024],inverse[16]={1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1};pose(c,0);unsigned checks=0,fast=0;
     for(const auto& p:programs)for(unsigned groups:{1u,4u,8u,9u,32u}){

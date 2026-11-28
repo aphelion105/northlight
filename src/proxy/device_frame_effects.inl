@@ -14,6 +14,7 @@
         }
         if(!applied&&enabled&&!failed&&!projectionValid&&skySeen){D3DSURFACE_DESC desc{};if(fullViewport(desc,nullptr,true))recoverSkyContext(desc);}
         if (applied || !enabled || failed || !projectionValid) return;
+        if(mirrorState.rawCounting)mirrorState.epochProfile.effectsStarted=true;
         // Keep rare slow frames attributable too. No-op calls after composition
         // leave the valid first split untouched; raw draw counting stays sampled.
         effectsBucketed=NorthlightRenderThreadProbe::profiling();

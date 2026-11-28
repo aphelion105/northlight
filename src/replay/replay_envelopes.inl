@@ -43,7 +43,11 @@ public:
         size_t effectiveCopiedBytes=0,fastValid=0;
         size_t sourceIdentityHits=0,sourceReconstructedHits=0,sharedKeyHits=0,keyComparedBytes=0;
         size_t rigidPeerHits=0;
-        size_t certifiedPoseHits=0,poseBasisMisses=0,poseStampMisses=0;
+        size_t certifiedPoseHits=0,poseBasisMisses=0,poseStampMisses=0,poseEvictionMisses=0,poseColdMisses=0;
+        size_t poseResetMismatch=0,poseIntegerBooleanMismatch=0;
+        size_t poseEqualSpan=0,poseUnusedPaletteChanged=0,poseUsedPaletteChanged=0,poseOtherSpanChanged=0;
+        size_t poseEqualSpanAfterReset=0,poseUnusedPaletteChangedAfterReset=0;
+        size_t poseEqualRecomputedBounds=0,poseChangedRecomputedBounds=0;
         size_t coarseAttempts=0,coarseValid=0,coarseCulled=0;
         std::uint64_t coarseNanoseconds=0;
     };
@@ -59,7 +63,7 @@ private:
         std::shared_ptr<SkinEnvelope> skin;
         size_t vertex=0,index=0,indexCount=0;bool unsupported=false,ready=false;
         std::uint64_t touched=0,programHash=0,lastEvaluationNs=0,serial=0;size_t bytes=0,baseBytes=0;
-        unsigned constantFirst=0,constantCount=256,poseSlot[2]={16,16};
+        unsigned constantFirst=0,constantCount=256,poseSlot[2]={NoPoseSlot,NoPoseSlot};
         bool copyDefinitions=true,singleBone=false,rigidPositions=false; /* singleBone resolves its control DEF directly */
         unsigned rigidStride=0,paletteSpan=0,paletteFirst=256;bool rigidPeerTried=false;
     };
@@ -69,28 +73,104 @@ private:
     std::uint64_t entrySerial_=0;
     // Fixed storage, no geometry/COM owners. The serial belongs to one immutable
     // envelope; current register epochs and the exact basis certify its pose.
+    static constexpr unsigned NoPoseSlot=std::numeric_limits<unsigned>::max();
+    static constexpr unsigned ExpandedPoseCapacity=512;
     struct PoseCertificate {std::uint64_t serial=0;NorthlightConstantEpoch::Stamp stamp;float basis[16];Bounds bounds;};
-    std::array<PoseCertificate,16> poses_{};unsigned nextPose_=0;
-    bool certifiedPose(Entry& e,const NorthlightConstantEpoch::Stamp* stamp,const float* basis,Bounds& output){
+    std::array<PoseCertificate,16> inlinePoses_{};
+    std::unique_ptr<PoseCertificate[]> expandedPoses_;
+    PoseCertificate* const poses_;
+    const unsigned poseCapacity_;
+    // Diagnostics only. The held stamp covers the current complete bank.
+    using PoseValues=std::array<float,256*4>;
+    std::unique_ptr<PoseValues[]> poseValues_;
+    unsigned nextPose_=0;
+    void classifyPoseStampMiss(const Entry& e,const NorthlightActorDeformation::Program& program,unsigned slot,const float* constants,bool reset){
+        if(!poseValues_)return;
+        const float* previous=poseValues_[slot].data();
+        const unsigned start=e.constantFirst*4;
+        if(!std::memcmp(previous+start,constants+start,e.constantCount*4*sizeof(float))){
+            ++stats_.poseEqualSpan;stats_.poseEqualSpanAfterReset+=reset;return;
+        }
+        const auto boneChanged=[&](unsigned bone){
+            const unsigned offset=(31+3*bone)*4;
+            return std::memcmp(previous+offset,constants+offset,12*sizeof(float))!=0;
+        };
+        bool changed=false;
+        if(e.skin&&!e.copyDefinitions){
+            for(unsigned n=0;n<e.skin->usedBones&&!changed;++n)changed=boneChanged(e.skin->order[n]);
+        }else if(e.singleBone&&!e.copyDefinitions){
+            // The audited single-bone program reads c0 and three palette rows
+            // at 31 + 3*v1.x. Decline when the group cannot prove that address.
+            const auto before=NorthlightActorDeformation::singleSkinControl(program,previous);
+            const auto after=NorthlightActorDeformation::singleSkinControl(program,constants);
+            const auto binding=std::find_if(e.bindings->begin(),e.bindings->end(),[](const Binding& b){return b.reg==1;});
+            if(binding==e.bindings->end()||before[0]!=3||before[1]!=1||after[0]!=3||after[1]!=1){
+                ++stats_.poseOtherSpanChanged;return;
+            }
+            const size_t input=size_t(binding-e.bindings->begin())*8;
+            for(const auto& item:e.groups){
+                const auto& limits=item.second.limits;
+                const float index=limits[input];
+                if(index!=limits[input+4]||!(index>=0&&index<=74)||std::floor(index)!=index){
+                    ++stats_.poseOtherSpanChanged;return;
+                }
+                changed|=boneChanged(unsigned(index));
+            }
+        }else{++stats_.poseOtherSpanChanged;return;}
+        if(changed)++stats_.poseUsedPaletteChanged;
+        else{++stats_.poseUnusedPaletteChanged;stats_.poseUnusedPaletteChangedAfterReset+=reset;}
+    }
+    bool certifiedPose(Entry& e,const NorthlightActorDeformation::Program& program,
+                       const NorthlightConstantEpoch::Stamp* stamp,const float* constants,const float* basis,Bounds& output){
         if(!stamp||!stamp->valid||!stamp->held||!e.serial)return false;
+        bool hasLiveSlot=false,hasReplacedSlot=false;
         for(unsigned slot:e.poseSlot){
-            if(slot>=poses_.size())continue;auto& pose=poses_[slot];
-            if(pose.serial!=e.serial||std::memcmp(pose.basis,basis,sizeof pose.basis))continue;
-            if(!NorthlightConstantEpoch::banks(pose.stamp,*stamp,true,true)){++stats_.poseStampMisses;return false;}
+            if(slot>=poseCapacity_)continue;
+            const auto& pose=poses_[slot];
+            if(pose.serial!=e.serial){hasReplacedSlot|=pose.serial!=0;continue;}
+            hasLiveSlot=true;
+            if(std::memcmp(pose.basis,basis,sizeof pose.basis))continue;
+            if(!NorthlightConstantEpoch::banks(pose.stamp,*stamp,true,true)){
+                ++stats_.poseStampMisses;
+                if(poseValues_){
+                    const bool reset=pose.stamp.reset!=stamp->reset;
+                    if(reset)++stats_.poseResetMismatch;
+                    else ++stats_.poseIntegerBooleanMismatch;
+                    classifyPoseStampMiss(e,program,slot,constants,reset);
+                }
+                return false;
+            }
             unsigned first,last;NorthlightConstantEpoch::dirtySpan(pose.stamp,*stamp,e.constantFirst,e.constantFirst+e.constantCount,first,last);
-            if(first!=last){++stats_.poseStampMisses;return false;}
+            if(first!=last){++stats_.poseStampMisses;classifyPoseStampMiss(e,program,slot,constants,false);return false;}
             output=pose.bounds;return true;
         }
-        ++stats_.poseBasisMisses;return false;
+        if(hasLiveSlot)++stats_.poseBasisMisses;
+        else if(hasReplacedSlot)++stats_.poseEvictionMisses;
+        else ++stats_.poseColdMisses;
+        return false;
     }
-    void certifyPose(Entry& e,const NorthlightConstantEpoch::Stamp* stamp,const float* basis,const Bounds& output){
+    void certifyPose(Entry& e,const NorthlightConstantEpoch::Stamp* stamp,const float* constants,const float* basis,const Bounds& output){
         if(!stamp||!stamp->valid||!stamp->held||!e.serial||!output.valid)return;
         unsigned* selected=nullptr;
-        for(auto& slot:e.poseSlot)if(slot<poses_.size()&&poses_[slot].serial==e.serial&&!std::memcmp(poses_[slot].basis,basis,sizeof poses_[slot].basis)){selected=&slot;break;}
-        if(!selected)for(auto& slot:e.poseSlot)if(slot>=poses_.size()||poses_[slot].serial!=e.serial){selected=&slot;break;}
+        for(auto& slot:e.poseSlot)if(slot<poseCapacity_&&poses_[slot].serial==e.serial&&!std::memcmp(poses_[slot].basis,basis,sizeof poses_[slot].basis)){selected=&slot;break;}
+        const bool sameCertificate=selected!=nullptr;
+        if(!selected)for(auto& slot:e.poseSlot)if(slot>=poseCapacity_||poses_[slot].serial!=e.serial){selected=&slot;break;}
         if(!selected)selected=&e.poseSlot[1];
-        if(*selected>=poses_.size()||poses_[*selected].serial!=e.serial||std::memcmp(poses_[*selected].basis,basis,sizeof poses_[*selected].basis))*selected=nextPose_++%poses_.size();
-        auto& pose=poses_[*selected];pose.serial=e.serial;pose.stamp=*stamp;pose.bounds=output;std::memcpy(pose.basis,basis,sizeof pose.basis);
+        if(*selected>=poseCapacity_||poses_[*selected].serial!=e.serial||std::memcmp(poses_[*selected].basis,basis,sizeof poses_[*selected].basis)){
+            *selected=nextPose_;
+            if(++nextPose_==poseCapacity_)nextPose_=0;
+        }
+        auto& pose=poses_[*selected];
+        if(poseValues_&&sameCertificate){
+            if(!std::memcmp(pose.bounds.low,output.low,sizeof output.low)&&
+               !std::memcmp(pose.bounds.high,output.high,sizeof output.high))++stats_.poseEqualRecomputedBounds;
+            else ++stats_.poseChangedRecomputedBounds;
+        }
+        pose.serial=e.serial;pose.stamp=*stamp;pose.bounds=output;std::memcpy(pose.basis,basis,sizeof pose.basis);
+        if(poseValues_){
+            const unsigned start=e.constantFirst*4;
+            std::memcpy(poseValues_[*selected].data()+start,constants+start,e.constantCount*4*sizeof(float));
+        }
     }
     static constexpr std::uint64_t HeavyNanoseconds=AdaptiveTimeBudget::Heavy,CheapSliceNanoseconds=40000;
     AdaptiveTimeBudget timeBudget_;bool diagnostics_=true,terminalBuild_=false,manyPointShadows_=false;
@@ -130,7 +210,10 @@ private:
             if(id){++stats_.sourceIdentityHits;if(!same){++stats_.sourceReconstructedHits;
                 // Only immutable source envelopes survive reconstruction. Pose/
                 // camera results must be evaluated again for this live draw.
-                for(unsigned slot:e.poseSlot)if(slot<poses_.size()&&poses_[slot].serial==e.serial)poses_[slot].serial=0;
+                for(auto& slot:e.poseSlot){
+                    if(slot<poseCapacity_&&poses_[slot].serial==e.serial)poses_[slot].serial=0;
+                    slot=NoPoseSlot;
+                }
                 e.owner=owner;e.sourceAddress=owner.get();}}
             return it;
         }return entries_.end();
@@ -435,10 +518,16 @@ private:
         catch(...){pending_=nullptr;++stats_.pendingAbandoned;}
     }
 public:
-    explicit EnvelopeCache(bool alignedSkin=false):alignedSkin_(alignedSkin){}
+    explicit EnvelopeCache(bool alignedSkin=false,bool expandedPoses=false,bool comparePoseValues=false):alignedSkin_(alignedSkin),
+        expandedPoses_(expandedPoses?new(std::nothrow) PoseCertificate[ExpandedPoseCapacity]{}:nullptr),
+        poses_(expandedPoses_?expandedPoses_.get():inlinePoses_.data()),
+        poseCapacity_(expandedPoses_?ExpandedPoseCapacity:unsigned(inlinePoses_.size())),
+        poseValues_(comparePoseValues?new(std::nothrow) PoseValues[poseCapacity_]:nullptr){}
     EnvelopeCache(const EnvelopeCache&)=delete;EnvelopeCache& operator=(const EnvelopeCache&)=delete;
     EnvelopeCache(EnvelopeCache&&)=delete;EnvelopeCache& operator=(EnvelopeCache&&)=delete;
-    void clearPoseCertificates(){for(auto& p:poses_)p.serial=0;nextPose_=0;}
+    void clearPoseCertificates(){for(unsigned slot=0;slot<poseCapacity_;++slot)poses_[slot].serial=0;nextPose_=0;}
+    unsigned poseCapacity()const{return poseCapacity_;}
+    bool comparesPoseValues()const{return bool(poseValues_);}
     void clear(){clearPoseCertificates();pending_=nullptr;pendingProgressFrame_=0;entrySerial_=0;readySkinPrograms_=0;entries_.clear();scratch_.clear();bytes_=0;clock_=frame_=0;expensive_={};stats_={};beginFrame();}
     size_t operationLimit()const{return operationLimit_;}
     void beginFrame(bool diagnostics=true,size_t packets=0,bool manyPointShadows=false,bool crowdOperations=true,bool workOnly=false,bool coldLampBounds=false){
@@ -658,7 +747,7 @@ private:
         // clock and leave this source's measured pose cost available for retry.
         if(!fits){
             ++stats_.operationDeferred;status=Status::Budget;
-        }else if(certifiedPose(*e,poseStamp,inverse,output)){
+        }else if(certifiedPose(*e,p,poseStamp,constants,inverse,output)){
             ++stats_.certifiedPoseHits;budget.operations+=operations;status=Status::Valid;++stats_.ready;stats_.skinValid+=bool(e->skin);stats_.cheapValid+=batched;++stats_.fastValid;
             return true;
         }else{
@@ -666,7 +755,7 @@ private:
             if(!effective){++stats_.invalid;status=Status::Invalid;}
             else if(e->skin){budget.operations+=operations;status=e->skin->evaluate(effective,inverse,output,nullptr,nullptr,alignedSkin_)?Status::Valid:Status::Unsupported;}
             else status=evaluateGroups(p,*e,effective,inverse,budget,output,[]{return false;});
-            if(status==Status::Valid){certifyPose(*e,poseStamp,inverse,output);++stats_.ready;stats_.skinValid+=bool(e->skin);stats_.cheapValid+=batched;++stats_.fastValid;}
+            if(status==Status::Valid){certifyPose(*e,poseStamp,constants,inverse,output);++stats_.ready;stats_.skinValid+=bool(e->skin);stats_.cheapValid+=batched;++stats_.fastValid;}
             else {output={};if(status==Status::Unsupported)++stats_.unsupported;}
         }
         if(batched&&++fastCount_>=ReadyClockStride){const auto now=BoundsClock::now();readyNanoseconds_+=elapsedNs(now,fastMark_);fastMark_=now;fastCount_=0;}
@@ -737,7 +826,7 @@ private:
             // existing operation/slice caps suffice even above eight bones.
             const bool cheap=(e.skin||((e.singleBone||e.groups.size()<=8)&&operations<=128))&&(workOnly_||e.lastEvaluationNs<CheapSliceNanoseconds);
             if(info){info->kind=cheap?Kind::Cheap:Kind::Heavy;info->programHash=e.programHash;info->groups=groups;info->operations=operations;info->skin=bool(e.skin);info->paletteSpan=e.paletteSpan;info->paletteFirst=e.paletteSpan?e.paletteFirst:0;info->weightedPaletteEnd=e.skin?e.skin->paletteEnd:0;}
-            if(budget.operations<=budget.maxOperations&&operations<=budget.maxOperations-budget.operations&&certifiedPose(e,poseStamp,inverse,output)){
+            if(budget.operations<=budget.maxOperations&&operations<=budget.maxOperations-budget.operations&&certifiedPose(e,p,poseStamp,constants,inverse,output)){
                 if(timer.expired()){output={};return timeBudget();}
                 ++stats_.certifiedPoseHits;budget.operations+=operations;++stats_.ready;stats_.skinValid+=bool(e.skin);
                 if(info)info->kind=Kind::Cheap;
@@ -766,12 +855,12 @@ private:
                     if(interrupted){if(stage==Stage::Cheap&&timer.sliceExpired()){++stats_.cheapSliceDeferred;if(info)info->kind=Kind::Heavy;}return timeBudget();}
                     ++stats_.unsupported;evaluationStatus=Status::Unsupported;return evaluationStatus;}
                 ++stats_.ready;++stats_.skinValid;if(stage==Stage::Cheap)++stats_.cheapValid;if(stage==Stage::Heavy)++stats_.heavyValid;
-                certifyPose(e,poseStamp,inverse,output);evaluationStatus=Status::Valid;return evaluationStatus;
+                certifyPose(e,poseStamp,constants,inverse,output);evaluationStatus=Status::Valid;return evaluationStatus;
             }
             evaluationStatus=evaluateGroups(p,e,effective,inverse,budget,output,[&]{return timer.expired();});
             if(evaluationStatus==Status::Budget){if(stage==Stage::Cheap&&timer.sliceExpired()){++stats_.cheapSliceDeferred;if(info)info->kind=Kind::Heavy;}return timeBudget();}
             if(evaluationStatus!=Status::Valid){++stats_.unsupported;return evaluationStatus;}
-            ++stats_.ready;if(stage==Stage::Cheap)++stats_.cheapValid;if(stage==Stage::Heavy)++stats_.heavyValid;certifyPose(e,poseStamp,inverse,output);return evaluationStatus;
+            ++stats_.ready;if(stage==Stage::Cheap)++stats_.cheapValid;if(stage==Stage::Heavy)++stats_.heavyValid;certifyPose(e,poseStamp,constants,inverse,output);return evaluationStatus;
         }catch(...){evaluationStatus=Status::Unsupported;accountClassify();if(info)info->kind=Kind::Unsupported;++stats_.unsupported;return Status::Unsupported;}
     }
 };

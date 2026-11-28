@@ -37,7 +37,7 @@
             // The state block restores all game bindings. Submit this private
             // pass through the raw device, without mirroring each replay draw.
             std::optional<ExtensionDevice::RawScope> raw;
-            if(drawStateSource)raw.emplace(*drawStateSource);
+            if(drawStateSource)raw.emplace(*drawStateSource,__FILE__,__LINE__);
             SavedState saved(d,&batchStates);
             ok=saved.ok&&ok;
             if(ok){

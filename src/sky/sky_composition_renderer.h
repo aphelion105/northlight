@@ -64,6 +64,7 @@ public:
     void targetSet(std::uintptr_t){} // temporary offscreen passes do not erase main-sky coverage
     void colorWrite(std::uintptr_t target){if(reinterpret_cast<std::uintptr_t>(target_)==target)invalidate();}
     bool ready(unsigned frame)const{return valid_&&!native_&&frame_==frame;}
+    bool preparedFor(IDirect3DSurface9* target)const{return valid_&&target&&target_==target;}
     IDirect3DTexture9* texture(unsigned frame){
         if(!ready(frame))return nullptr;
         if(msaa_&&dirty_){if(FAILED(device_->StretchRect(msaa_,nullptr,surface_,nullptr,D3DTEXF_NONE))){invalidate();return nullptr;}dirty_=false;}
@@ -71,7 +72,7 @@ public:
     }
     bool prepare(IDirect3DDevice9* d,NorthlightStateBlockPool* pool=nullptr){
         if(native_)return false;
-        if(valid_){IDirect3DSurface9* current=nullptr;const bool same=SUCCEEDED(d->GetRenderTarget(0,&current))&&current==target_;release(current);if(same)return true;}
+        if(valid_){IDirect3DSurface9* current=nullptr;const bool same=SUCCEEDED(d->GetRenderTarget(0,&current))&&preparedFor(current);release(current);if(same)return true;}
         valid_=false;target_=nullptr;
         SavedState saved(d,pool);if(!saved.ok)return false;
         D3DSURFACE_DESC desc{};if(FAILED(saved.targets[0]->GetDesc(&desc)))return false;

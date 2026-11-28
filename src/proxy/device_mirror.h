@@ -111,6 +111,32 @@ struct DeviceMirror {
     static constexpr unsigned RawMethodCapacity=48;
     bool rawCounting=false;std::uint32_t rawMethodCalls[RawMethodCapacity]={};
     void countRaw(unsigned i){if(rawCounting)++rawMethodCalls[i];}
+    enum class EpochReset : unsigned { FixedDraw, ReentrantDraw, ProcessVertices, RawEnter, RawExit,
+        StateBlock, FailedCall, VendorState, DeviceReset, Other, Count };
+    static constexpr unsigned EpochResetCount=unsigned(EpochReset::Count);
+    struct RawSite {const char* file=nullptr;unsigned line=0,scopes=0,scene=0,nested=0;};
+    struct EpochProfile {
+        unsigned all[EpochResetCount]={},scene[EpochResetCount]={};
+        RawSite sites[32]={};
+        unsigned siteCount=0,siteOverflow=0;
+        bool effectsStarted=false;
+    } epochProfile;
+    void countRawSite(const char* file,unsigned line){
+        if(!rawCounting)return;
+        auto& profile=epochProfile;
+        unsigned index=0;
+        for(;index<profile.siteCount;++index)if(profile.sites[index].file==file&&profile.sites[index].line==line)break;
+        if(index==profile.siteCount){
+            if(index==sizeof profile.sites/sizeof profile.sites[0]){++profile.siteOverflow;return;}
+            profile.sites[index].file=file;profile.sites[index].line=line;++profile.siteCount;
+        }
+        auto& site=profile.sites[index];
+        ++site.scopes;site.scene+=!profile.effectsStarted;site.nested+=rawDepth!=0;
+    }
+    void resetConstantEpoch(EpochReset reason){
+        constantEpoch.invalidate();
+        if(rawCounting){++epochProfile.all[unsigned(reason)];if(!epochProfile.effectsStarted)++epochProfile.scene[unsigned(reason)];}
+    }
     // Write-through learning. A slot is pending after an untrusted accepted
     // write whose value is stored in its field; the next authoritative read
     // compares. TrustAfter equal round trips trust the slot; one differing or
@@ -223,9 +249,9 @@ struct DeviceMirror {
         if(trust[slot]<TrustAfter&&++trust[slot]==TrustAfter)++learnedSlots;
     }
     // Callers hold gate, including ALL block Apply, Reset, and disable paths.
-    void invalidate(){
+    void invalidate(EpochReset reason=EpochReset::Other){
         finishDeferredUnmark();
-        constantEpoch.invalidate();if(synced)synced->clearAll();
+        resetConstantEpoch(reason);if(synced)synced->clearAll();
         particleDraw.invalidate();
         nPatchKnown=false;programmableVS=false;
         vertexShaderKnown=pixelShaderKnown=declarationKnown=fvfKnown=indicesKnown=viewportKnown=depthKnown=false;
@@ -238,7 +264,14 @@ struct DeviceMirror {
     }
     void disable(const char* reason){MirrorGuard lock(gate);finishDeferredTargets();if(enabled){auto callback=beforeDisable;beforeDisable=nullptr;if(callback)callback(disableContext);enabled=false;disableReason=reason;}invalidate();}
     // Fixed-function processing may overwrite the programmable constant banks.
-    void afterDraw(bool fixed=false){if(fixed||!programmableVS){constantEpoch.invalidate();if(synced)synced->clearAll();std::memset(vsFloatKnown,0,sizeof vsFloatKnown);std::memset(vsFloatWritten,0,sizeof vsFloatWritten);std::memset(vsIntKnown,0,sizeof vsIntKnown);std::memset(vsBoolKnown,0,sizeof vsBoolKnown);}}
+    void afterDraw(bool fixed=false,bool reentered=false,EpochReset reason=EpochReset::FixedDraw){
+        if(fixed||!programmableVS||reentered){
+            resetConstantEpoch(fixed||!programmableVS?reason:EpochReset::ReentrantDraw);
+            if(synced)synced->clearAll();
+            std::memset(vsFloatKnown,0,sizeof vsFloatKnown);std::memset(vsFloatWritten,0,sizeof vsFloatWritten);
+            std::memset(vsIntKnown,0,sizeof vsIntKnown);std::memset(vsBoolKnown,0,sizeof vsBoolKnown);
+        }
+    }
 };
 
 class MirrorStateBlock final : public IDirect3DStateBlock9 {
@@ -265,7 +298,7 @@ public:
         if(!mirror->finishDeferredTargets())return E_FAIL;
         DeviceMirror::TargetWrite write(mirror);
         // Also invalidate failures: a backend may have changed part of the state.
-        HRESULT hr=real->Apply();mirror->invalidate();return hr;
+        HRESULT hr=real->Apply();mirror->invalidate(DeviceMirror::EpochReset::StateBlock);return hr;
     }
 };
 
@@ -274,7 +307,7 @@ protected:
     DeviceMirror* m;
     using Guard=MirrorGuard;
     template<class T> static void giveRef(T* p,T** out){if(p)p->AddRef();*out=p;}
-    bool accepted(HRESULT hr){++m->mutations;if(FAILED(hr)){m->invalidate();return false;}return m->active();}
+    bool accepted(HRESULT hr){++m->mutations;if(FAILED(hr)){m->invalidate(DeviceMirror::EpochReset::FailedCall);return false;}return m->active();}
     HRESULT wrapBlock(HRESULT hr,IDirect3DStateBlock9* block,IDirect3DStateBlock9** out){
         *out=block;
         if(SUCCEEDED(hr)&&block){
@@ -390,7 +423,7 @@ public:
         // depth to texture zero. Neither operation changes other bindings.
         const bool knownResolve=type==D3DRS_POINTSIZE&&m->dxvkResolvePointSize&&!m->recording&&
             (value==0x3f800000||value==0x7fa05000);
-        if(vendor&&!knownResolve)m->invalidate();
+        if(vendor&&!knownResolve)m->invalidate(DeviceMirror::EpochReset::VendorState);
         if(accepted(hr)&&slot&&!vendor){m->renderStates[type]=value;const unsigned id=DeviceMirror::RenderStateSlot+unsigned(type);m->renderStateKnown[type]=m->written(id,serial,m->isProven(DeviceMirror::pair(id,value)));}
         else if(slot)m->forget(DeviceMirror::RenderStateSlot+unsigned(type));
         if(particleSlot)m->particleDraw.blend(particleSlot,value,m->renderStateKnown[type]);return hr;
@@ -606,11 +639,11 @@ public:
         return nullptr;
     }
     HRESULT STDMETHODCALLTYPE BeginStateBlock() override{
-        Guard lock(m->gate);if(!m->finishDeferredTargets())return E_FAIL;HRESULT hr=real->BeginStateBlock();m->invalidate();if(SUCCEEDED(hr))m->recording=true;else m->disable("state-block-begin-failed");return hr;
+        Guard lock(m->gate);if(!m->finishDeferredTargets())return E_FAIL;HRESULT hr=real->BeginStateBlock();m->invalidate(DeviceMirror::EpochReset::StateBlock);if(SUCCEEDED(hr))m->recording=true;else m->disable("state-block-begin-failed");return hr;
     }
     HRESULT STDMETHODCALLTYPE EndStateBlock(IDirect3DStateBlock9** out) override{
         Guard lock(m->gate);if(!out){HRESULT hr=real->EndStateBlock(out);m->disable("state-block-end-null");return hr;}
-        IDirect3DStateBlock9* block=nullptr;HRESULT hr=real->EndStateBlock(&block);m->invalidate();
+        IDirect3DStateBlock9* block=nullptr;HRESULT hr=real->EndStateBlock(&block);m->invalidate(DeviceMirror::EpochReset::StateBlock);
         if(SUCCEEDED(hr))m->recording=false;else m->disable("state-block-end-failed");
         return wrapBlock(hr,block,out);
     }
@@ -619,16 +652,16 @@ public:
         IDirect3DStateBlock9* block=nullptr;HRESULT hr=real->CreateStateBlock(type,&block);return wrapBlock(hr,block,out);
     }
     HRESULT STDMETHODCALLTYPE DrawPrimitiveUP(D3DPRIMITIVETYPE type,UINT count,const void* data,UINT stride) override{
-        Guard lock(m->gate);if(!m->finishDeferredTargets())return E_FAIL;const bool fixed=!m->programmableVS;const auto serial=m->mutations;HRESULT hr=real->DrawPrimitiveUP(type,count,data,stride);m->afterDraw(fixed||m->mutations!=serial);m->streams[0].known=false;m->forget(DeviceMirror::StreamSlot);accepted(hr);return hr;
+        Guard lock(m->gate);if(!m->finishDeferredTargets())return E_FAIL;const bool fixed=!m->programmableVS;const auto serial=m->mutations;HRESULT hr=real->DrawPrimitiveUP(type,count,data,stride);m->afterDraw(fixed,m->mutations!=serial);m->streams[0].known=false;m->forget(DeviceMirror::StreamSlot);accepted(hr);return hr;
     }
     HRESULT STDMETHODCALLTYPE DrawIndexedPrimitiveUP(D3DPRIMITIVETYPE type,UINT minimum,UINT vertices,UINT count,const void* indices,D3DFORMAT format,const void* data,UINT stride) override{
-        Guard lock(m->gate);if(!m->finishDeferredTargets())return E_FAIL;const bool fixed=!m->programmableVS;const auto serial=m->mutations;HRESULT hr=real->DrawIndexedPrimitiveUP(type,minimum,vertices,count,indices,format,data,stride);m->afterDraw(fixed||m->mutations!=serial);m->streams[0].known=false;m->indicesKnown=false;m->forget(DeviceMirror::StreamSlot);m->forget(DeviceMirror::IndicesSlot);accepted(hr);return hr;
+        Guard lock(m->gate);if(!m->finishDeferredTargets())return E_FAIL;const bool fixed=!m->programmableVS;const auto serial=m->mutations;HRESULT hr=real->DrawIndexedPrimitiveUP(type,minimum,vertices,count,indices,format,data,stride);m->afterDraw(fixed,m->mutations!=serial);m->streams[0].known=false;m->indicesKnown=false;m->forget(DeviceMirror::StreamSlot);m->forget(DeviceMirror::IndicesSlot);accepted(hr);return hr;
     }
-    HRESULT STDMETHODCALLTYPE DrawPrimitive(D3DPRIMITIVETYPE type,UINT start,UINT count) override{Guard lock(m->gate);if(!m->finishDeferredTargets())return E_FAIL;const bool fixed=!m->programmableVS;const auto serial=m->mutations;HRESULT hr=real->DrawPrimitive(type,start,count);m->afterDraw(fixed||m->mutations!=serial);accepted(hr);return hr;}
-    HRESULT STDMETHODCALLTYPE DrawIndexedPrimitive(D3DPRIMITIVETYPE type,INT base,UINT minimum,UINT vertices,UINT start,UINT count) override{Guard lock(m->gate);if(!m->finishDeferredTargets())return E_FAIL;const bool fixed=!m->programmableVS;const auto serial=m->mutations;HRESULT hr=real->DrawIndexedPrimitive(type,base,minimum,vertices,start,count);m->afterDraw(fixed||m->mutations!=serial);accepted(hr);return hr;}
-    HRESULT STDMETHODCALLTYPE ProcessVertices(UINT source,UINT destination,UINT count,IDirect3DVertexBuffer9* buffer,IDirect3DVertexDeclaration9* decl,DWORD flags) override{Guard lock(m->gate);HRESULT hr=real->ProcessVertices(source,destination,count,buffer,decl,flags);m->afterDraw(true);accepted(hr);return hr;}
+    HRESULT STDMETHODCALLTYPE DrawPrimitive(D3DPRIMITIVETYPE type,UINT start,UINT count) override{Guard lock(m->gate);if(!m->finishDeferredTargets())return E_FAIL;const bool fixed=!m->programmableVS;const auto serial=m->mutations;HRESULT hr=real->DrawPrimitive(type,start,count);m->afterDraw(fixed,m->mutations!=serial);accepted(hr);return hr;}
+    HRESULT STDMETHODCALLTYPE DrawIndexedPrimitive(D3DPRIMITIVETYPE type,INT base,UINT minimum,UINT vertices,UINT start,UINT count) override{Guard lock(m->gate);if(!m->finishDeferredTargets())return E_FAIL;const bool fixed=!m->programmableVS;const auto serial=m->mutations;HRESULT hr=real->DrawIndexedPrimitive(type,base,minimum,vertices,start,count);m->afterDraw(fixed,m->mutations!=serial);accepted(hr);return hr;}
+    HRESULT STDMETHODCALLTYPE ProcessVertices(UINT source,UINT destination,UINT count,IDirect3DVertexBuffer9* buffer,IDirect3DVertexDeclaration9* decl,DWORD flags) override{Guard lock(m->gate);HRESULT hr=real->ProcessVertices(source,destination,count,buffer,decl,flags);m->afterDraw(true,false,DeviceMirror::EpochReset::ProcessVertices);accepted(hr);return hr;}
     HRESULT STDMETHODCALLTYPE Reset(D3DPRESENT_PARAMETERS* params) override{
-        Guard lock(m->gate);m->finishDeferredTargets();DeviceMirror::TargetWrite write(m);m->invalidate();HRESULT hr=real->Reset(params);m->invalidate();if(SUCCEEDED(hr))m->recording=false;return hr;
+        Guard lock(m->gate);m->finishDeferredTargets();DeviceMirror::TargetWrite write(m);m->invalidate(DeviceMirror::EpochReset::DeviceReset);HRESULT hr=real->Reset(params);m->invalidate(DeviceMirror::EpochReset::DeviceReset);if(SUCCEEDED(hr))m->recording=false;return hr;
     }
     // A setter may fail after changing state, or normalize its argument.
     // Learn the returned mode only between writes, including raw/state-block writes.
@@ -747,11 +780,12 @@ public:
         MirrorGuard lock; // 0.3.180 (D0): a member, released after the destructor body as before
         RawScope* previous;
     public:
-        explicit RawScope(ExtensionDevice& owner)
+        explicit RawScope(ExtensionDevice& owner,const char* file=__builtin_FILE(),unsigned line=__builtin_LINE())
             :device(&owner),lock(owner.m->gate,MirrorSite::Raw),previous(currentRaw){
             owner.indexedBarrier();
             owner.m->finishDeferredTargets();
-            owner.m->invalidate();++owner.m->rawDepth;++owner.m->rawScopes;
+            owner.m->countRawSite(file,line);
+            owner.m->invalidate(DeviceMirror::EpochReset::RawEnter);++owner.m->rawDepth;++owner.m->rawScopes;
             currentRaw=this;
         }
         RawScope(const RawScope&)=delete;RawScope& operator=(const RawScope&)=delete;
@@ -759,7 +793,7 @@ public:
             // Construct before SavedState so restoration runs while suspended.
             // Never restore enabled/recording: an escape or control failure may
             // have permanently disabled caching while this scope was active.
-            device->m->invalidate();--device->m->rawDepth;currentRaw=previous;
+            device->m->invalidate(DeviceMirror::EpochReset::RawExit);--device->m->rawDepth;currentRaw=previous;
         }
     };
 #include "extension_raw_methods.inl"

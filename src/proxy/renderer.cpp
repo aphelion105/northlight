@@ -2415,7 +2415,15 @@ private:
         if(!celestialDiscs||!celestialEnabled()||applied||debugMode||worldDebug||!count)return;
         D3DSURFACE_DESC full{};D3DVIEWPORT9 vp{};
         if(!fullViewport(full,&vp)||!NorthlightWorldDrawDomain::skyClaimPossible(worldMinDepth,worldMaxDepth,vp.MinZ,vp.MaxZ))return;
-        ExtensionDevice::RawScope raw(*ext);
+        static const bool narrowScope=[] {
+            const char* value=std::getenv("NORTHLIGHT_TEST_SKY_NARROW_RAW");
+            return value&&std::strcmp(value,"1")==0;
+        }();
+        const bool classifyMirrored=narrowScope&&mirrorState.active()&&!indexedPairGate&&!particlePairGate&&
+            !mirrorState.deferredTargetMask&&!mirrorState.deferredUnmarkCount;
+        std::optional<ExtensionDevice::RawScope> raw;
+        const auto requireRaw=[&]{if(!raw)raw.emplace(*ext,__FILE__,__LINE__);};
+        if(!classifyMirrored)requireRaw();
         skyLayers.begin(frame);
         if(skyLayers.native(frame))return;
         auroraBegin();
@@ -2444,6 +2452,7 @@ private:
             }
             const auto& m=entry->second;
             if(NorthlightAuroraNative::candidate(m.hash,m.format,m.width,m.height)){
+                requireRaw();
                 if(auroraDiagnostic.armed())auroraDiagnostic.draw(ext,frame,spellArgs,m.hash);
                 auroraObserve();
             }
@@ -2453,6 +2462,13 @@ private:
         }
         drop(texture);
         if(role==Role::Native){skyLayers.preserveNative();return;}
+        if(classifyMirrored&&!raw&&skyLayers.ready(frame)){
+            IDirect3DSurface9* target=nullptr;
+            NorthlightDrawSnapshot::Ref<IDirect3DSurface9> owned;
+            if(!ext->peekRenderTarget(0,target)&&SUCCEEDED(ext->GetRenderTarget(0,owned.out())))target=owned.p;
+            if(skyLayers.preparedFor(target))return;
+        }
+        requireRaw();
         if(!skyLayers.prepare(ext,&stateBlocks))role=Role::Unknown;
     }
     template<class Draw> void skyLayersReplay(NorthlightSkyComposition::Role role,bool accepted,Draw draw){
@@ -4264,6 +4280,18 @@ public:
                 logf("D3D calls frame=%u mirrorAudit=%u counted=%d total=%u gameDraws=%u mirrorAnswered=%llu mirrorForwarded=%llu captureSkipped=%u probeRan=%u probeMode=%s%s",sampleFrame,unsigned(sampleFrame%120==60),int(mirrorState.rawCounting),rawTotal,drawCalls-frameStartDrawCalls,
                     (unsigned long long)(mirrorState.answered-frameStartAnswered),(unsigned long long)(mirrorState.forwarded-frameStartForwarded),unsigned(world&&world->captureSkippedLastFrame()),
                     unsigned(world&&world->replayProbeRanThisFrame),NorthlightRenderThreadProbe::probeModeName(world?world->probeMode():NorthlightRenderThreadProbe::ProbeOff),calls);
+                const auto& epochs=mirrorState.epochProfile;
+                static constexpr const char* epochReasons[]={"fixedDraw","reentrantDraw","processVertices","rawEnter","rawExit",
+                    "stateBlock","failedCall","vendorState","deviceReset","other"};
+                static_assert(sizeof epochReasons/sizeof *epochReasons==DeviceMirror::EpochResetCount);
+                for(unsigned i=0;i<DeviceMirror::EpochResetCount;++i)if(epochs.all[i])
+                    logf("MIRROR_EPOCH frame=%u reason=%s all=%u beforeEffects=%u",sampleFrame,epochReasons[i],epochs.all[i],epochs.scene[i]);
+                for(unsigned i=0;i<epochs.siteCount;++i){
+                    const auto& site=epochs.sites[i];const char* basename=site.file;
+                    for(const auto* at=site.file;*at;++at)if(*at=='/'||*at=='\\')basename=at+1;
+                    logf("MIRROR_RAW_SITE frame=%u file=%s line=%u all=%u beforeEffects=%u nested=%u",sampleFrame,basename,site.line,site.scopes,site.scene,site.nested);
+                }
+                if(epochs.siteOverflow)logf("MIRROR_RAW_SITE overflow frame=%u scopes=%u",sampleFrame,epochs.siteOverflow);
                 logf("TERRAIN_SWAP frame=%u getPSConstantsRequested=%u getPSConstantsNative=%u setVS=%u setPS=%u setPSConstants=%u setPSConstantRegistersRequested=%u apiFailures=%u totalNative=%u",sampleFrame,
                     terrainSwapCalls.getRequests,terrainSwapCalls.getNative,terrainSwapCalls.setVS,terrainSwapCalls.setPS,terrainSwapCalls.setPSConstants,terrainSwapCalls.constantRegisters,terrainSwapCalls.failures,
                     terrainSwapCalls.getNative+terrainSwapCalls.setVS+terrainSwapCalls.setPS+terrainSwapCalls.setPSConstants);
@@ -4307,6 +4335,7 @@ public:
         terrainSwapCalls={};
         particleRouteStats={};
         if(mirrorState.rawCounting){std::memset(mirrorState.rawMethodCalls,0,sizeof mirrorState.rawMethodCalls);
+            mirrorState.epochProfile={};
             frameStartDrawCalls=drawCalls;frameStartAnswered=mirrorState.answered;frameStartForwarded=mirrorState.forwarded;frameStartScopeReads=CpuScope::reads;}
         gateFrame=mirrorState.rawCounting;
         mirrorState.gate.counting.store(gateFrame,std::memory_order_relaxed);perfCounting.store(gateFrame,std::memory_order_relaxed);

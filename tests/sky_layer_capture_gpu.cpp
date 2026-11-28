@@ -29,6 +29,7 @@ int main(int argc,char** argv){
         struct Vertex{float x,y,z,w;DWORD color;};
         for(unsigned fn=1;fn<=8;++fn)for(unsigned ref:{0u,96u,128u,255u})for(bool background:{false,true})for(bool outsideUnorm:{false,true}){
             const unsigned alpha=96;layers.begin(cases);
+            assert(!layers.preparedFor(target));
             // FP16 capture must clamp native UNORM shader output before blending.
             const float multiplier[]={outsideUnorm?3.f:1.f,outsideUnorm?-1.f:1.f,outsideUnorm?10.f:1.f,1.f};
             ok(d->SetPixelShaderConstantF(0,multiplier,1));
@@ -38,6 +39,7 @@ int main(int argc,char** argv){
             ok(d->SetRenderState(D3DRS_ALPHATESTENABLE,TRUE));ok(d->SetRenderState(D3DRS_ALPHAFUNC,fn));ok(d->SetRenderState(D3DRS_ALPHAREF,ref));
             ok(d->SetRenderState(D3DRS_CULLMODE,D3DCULL_NONE));ok(d->SetPixelShader(shader));ok(d->SetVertexShader(nullptr));ok(d->SetFVF(D3DFVF_XYZRHW|D3DFVF_DIFFUSE));
             ok(d->Clear(0,nullptr,D3DCLEAR_TARGET|D3DCLEAR_ZBUFFER,D3DCOLOR_ARGB(255,51,77,102),1,0));ok(d->BeginScene());assert(layers.prepare(d));
+            assert(layers.preparedFor(target)&&!layers.preparedFor(depth)&&!layers.preparedFor(nullptr));
             const Vertex vertices[]={{-.5f,-.5f,.5f,1,D3DCOLOR_ARGB(alpha,128,64,32)},{N-.5f,-.5f,.5f,1,D3DCOLOR_ARGB(alpha,128,64,32)},{-.5f,N-.5f,.5f,1,D3DCOLOR_ARGB(alpha,128,64,32)},{N-.5f,N-.5f,.5f,1,D3DCOLOR_ARGB(alpha,128,64,32)}};
             auto draw=[&]{return d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,vertices,sizeof(Vertex));};
             if(!layers.draw(d,background?Role::Background:Role::Foreground,draw)){std::fprintf(stderr,"CAPTURE FAILURE msaa=%u fn=%u ref=%u background=%u\n",unsigned(samples),fn,ref,background);return 2;}ok(draw());ok(d->EndScene());
@@ -79,7 +81,7 @@ int main(int argc,char** argv){
                 ++failures;std::printf("FAIL fixed-function msaa=%u mode=%u rgb=%g,%g,%g alpha=%g\n",unsigned(samples),mode,halfFloat(pixel[0]),halfFloat(pixel[1]),halfFloat(pixel[2]),halfFloat(pixel[3]));}
             ok(staging->UnlockRect());++cases;if(samples)++msaaCases;
         }
-        layers.preserveNative();assert(layers.native(cases-1)&&!layers.texture(cases-1)&&!layers.prepare(d));
+        layers.preserveNative();assert(layers.native(cases-1)&&!layers.texture(cases-1)&&!layers.preparedFor(target)&&!layers.prepare(d));
         layers.begin(cases);assert(!layers.native(cases)&&!layers.texture(cases));
         layers.reset();d->SetDepthStencilSurface(nullptr);target->Release();depth->Release();
     }

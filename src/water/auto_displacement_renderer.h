@@ -25,6 +25,7 @@
 #include <memory>
 #include <map>
 #include <cfloat>
+#include <cstdlib>
 
 struct NorthlightDisplacementStorage {
     using Mesh=NorthlightDrawSnapshot::Mesh;using Height=NorthlightDisplacementGeometry::Height;
@@ -112,7 +113,13 @@ class NorthlightAutoDisplacement {
     std::vector<Texture>& textures=geometry.textures;
     std::unordered_map<const Mesh*,Bounds> bounds;
     NorthlightIntrusiveLRU::List<Bounds> boundsLRU;
-    NorthlightReplayBounds::EnvelopeCache poseEnvelopes{true};
+    NorthlightReplayBounds::EnvelopeCache poseEnvelopes{true,[] {
+        const char* value=std::getenv("NORTHLIGHT_TEST_POSE_CERTIFICATES");
+        return value&&std::strcmp(value,"512")==0;
+    }(),[] {
+        const char* value=std::getenv("NORTHLIGHT_TEST_COMPARE_POSE_VALUES");
+        return value&&std::strcmp(value,"1")==0;
+    }()};
     void beginPoseEnvelopeFrame(){
         poseEnvelopes.beginFrame(false,0,false,true,NorthlightFrameParityClock::fixedProfileWork());
     }
@@ -715,6 +722,13 @@ public:
         const auto& boundsWork=positionBounds.maintenance();
         logf("MATERIAL_POSITION_BOUNDS frame=%llu hits=%u scans=%u positionBytes=%zu entries=%zu unknown=%u coldScans=%u revisionScans=%u evictions=%u budgetRejected=%u capturedBoundsHits=%u",(unsigned long long)frame,positionBounds.cacheHits(),positionBounds.scans(),positionBounds.bytesRead(),positionBounds.count(),positionBounds.failures(),boundsWork.coldScans,boundsWork.revisionScans,boundsWork.evictions,boundsWork.budgetRejected,capturedBoundsHits);
         const auto& e=poseEnvelopes.stats();
+        logf("MATERIAL_POSE_CERTIFICATES frame=%llu capacity=%u hits=%zu evicted=%zu cold=%zu basis=%zu stamp=%zu",
+             (unsigned long long)frame,poseEnvelopes.poseCapacity(),e.certifiedPoseHits,e.poseEvictionMisses,
+             e.poseColdMisses,e.poseBasisMisses,e.poseStampMisses);
+        if(poseEnvelopes.comparesPoseValues())
+            logf("MATERIAL_POSE_STAMP_CAUSES frame=%llu resetMismatch=%zu integerBooleanMismatch=%zu equalSpan=%zu unusedPaletteChanged=%zu usedPaletteChanged=%zu otherSpanChanged=%zu equalSpanAfterReset=%zu unusedPaletteChangedAfterReset=%zu equalRecomputedBounds=%zu changedRecomputedBounds=%zu",
+                 (unsigned long long)frame,e.poseResetMismatch,e.poseIntegerBooleanMismatch,e.poseEqualSpan,e.poseUnusedPaletteChanged,e.poseUsedPaletteChanged,
+                 e.poseOtherSpanChanged,e.poseEqualSpanAfterReset,e.poseUnusedPaletteChangedAfterReset,e.poseEqualRecomputedBounds,e.poseChangedRecomputedBounds);
         logf("MATERIAL_LOCAL_POSE frame=%llu reused=%u evaluated=%u sharedBudgetSkips=%u earlyVertexBudgetRejects=%u",(unsigned long long)frame,localPoseStats.reused,localPoseStats.evaluated,sharedPoseBudgetSkips,earlyPoseBudgetRejects);
         logf("MATERIAL_POSE_COARSE frame=%llu attempts=%zu valid=%zu culled=%zu cpuMs=%.6f unsupportedSkipped=%u budgetPreflightSkipped=%u localValid=%u shapeMisses=%u lookupReuses=%u",(unsigned long long)frame,e.coarseAttempts,e.coarseValid,e.coarseCulled,double(e.coarseNanoseconds)/1000000.,coarseProgramSkipped,coarseBudgetSkipped,coarseLocalValid,coarseShapeMisses,coarseLookupReuses);
         const auto& p=poseMetadata.stats();
