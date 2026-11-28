@@ -305,7 +305,10 @@ private:
                 }
                 if(q->type==8)q->completeEvent(hr,buf);
                 if(hr==S_OK){q->writeResult(buf,q->dataSize);q->readyGen.store(q->issueSeen,std::memory_order_release);done=true;}
-                else if(q->type==8&&FAILED(hr))done=true;
+                else if(FAILED(hr)){   // terminal: stop polling; the game reads this generation's error from the real query
+                    if(q->type!=8)q->failedGen.store(q->issueSeen,std::memory_order_release);
+                    done=true;
+                }
             }
             if(done){pending_[i]=pending_.back();pending_.pop_back();}else ++i;
         }

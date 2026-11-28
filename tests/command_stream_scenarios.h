@@ -977,6 +977,19 @@ static void queryProbeAndDeadQuery(){
     rig.sync();DWORD v=0;CHECK(q->Issue(D3::kIssueEnd)==D3D_OK);CHECK(q->GetData(&v,4,0)==D3DERR_INVALIDCALL&&get(rig.core().q.stats.deadCreates)>=1);
     q->Release();gKnobs.failQueries.store(false);rig.finish();checkClean();
 }
+// A failed occlusion poll ends that generation: the game reads the real error
+// instead of S_FALSE forever, and a new END polls normally again.
+static void failedQueryPoll(){
+    gTrace.clear();Rig rig(true);
+    IDirect3DQuery9* q=nullptr;CHECK(rig.dev->CreateQuery((D3DQUERYTYPE)9,&q)==D3D_OK&&q);DWORD d=0;
+    gKnobs.queryPollResult.store(D3DERR_INVALIDCALL);CHECK(q->Issue(D3::kIssueEnd)==D3D_OK);
+    int spins=0;HRESULT hr;while((hr=q->GetData(&d,4,0))==S_FALSE&&++spins<2000000)std::this_thread::yield();
+    CHECK(hr==D3DERR_INVALIDCALL);
+    gKnobs.queryPollResult.store(D3D_OK);CHECK(q->Issue(D3::kIssueEnd)==D3D_OK);
+    spins=0;while((hr=q->GetData(&d,4,0))==S_FALSE&&++spins<2000000)std::this_thread::yield();
+    CHECK(hr==D3D_OK);
+    q->Release();rig.finish();checkClean();
+}
 // StreamOcclusionLocal caches only the current generation. A newer END and
 // never-issued queries use the backend; disabling it keeps every FLUSH sync.
 static void occlusionFlushLocal(bool on){
@@ -2384,7 +2397,7 @@ static void textureReadbackTable(){
 }
 static void streamTests(bool threadsOnly){
     layoutIsolation();replayTimingAccounting();diagnosticsOffSkipsAudit();idlePollWakes();effectHookReplay();
-    lifetimeAndIdentity();pressureKeepsShadows();syncStormDetector();stateKnownUnknown();locksPreserveBytes();staticBufferShadows();dynamicBufferShadows();largeBufferAllowance();twoLargeBuffers();adaptiveShadowCap();shadowCap();queriesAndSyncCensus();eventQueryBatch();occlusionFlushLocal(true);occlusionFlushLocal(false);resetAndShutdown();directReplayRaw();redundantFiltering();renderTargetResetsViewport();textureShadows();textureExpressReadback();textureReadbackDiagnostics();textureExpressBehind();textureReadbackTable();statsLine();statsLine(true);childrenOutliveTheDevice();queryProbeAndDeadQuery();initFailureFallback();cursorHandling();nestedSyncInPump();testCooperativeLevelLocal(1);testCooperativeLevelLocal(3);upDrawsAndBackpressure();snapshotTriggers();snapshotPoolNotExhausted();memoryPressureRelease();impossibleBlockIsRefusedAtOnce();smallStagedLocksUseScratch();
+    lifetimeAndIdentity();pressureKeepsShadows();syncStormDetector();stateKnownUnknown();locksPreserveBytes();staticBufferShadows();dynamicBufferShadows();largeBufferAllowance();twoLargeBuffers();adaptiveShadowCap();shadowCap();queriesAndSyncCensus();eventQueryBatch();failedQueryPoll();occlusionFlushLocal(true);occlusionFlushLocal(false);resetAndShutdown();directReplayRaw();redundantFiltering();renderTargetResetsViewport();textureShadows();textureExpressReadback();textureReadbackDiagnostics();textureExpressBehind();textureReadbackTable();statsLine();statsLine(true);childrenOutliveTheDevice();queryProbeAndDeadQuery();initFailureFallback();cursorHandling();nestedSyncInPump();testCooperativeLevelLocal(1);testCooperativeLevelLocal(3);upDrawsAndBackpressure();snapshotTriggers();snapshotPoolNotExhausted();memoryPressureRelease();impossibleBlockIsRefusedAtOnce();smallStagedLocksUseScratch();
     framesAheadPacing();textureShadowSpares();frameSkipping();frameSkipReleasesPresentWait();   // 0.3.200 (frame skip)
     coalescedBufferUploads();zeroCopyRenames();zeroCopyRingBudget();zeroCopyAdaptiveRing();zeroCopyRetire();zeroCopyPumpedLock(0);zeroCopyPumpedLock(1);
     for(UINT len:{512u<<10,2u<<20}){zeroCopyRenames(len);zeroCopyRetire(len);zeroCopyPumpedLock(0,len);zeroCopyPumpedLock(1,len);}   // 0.3.204 (task 21): the same for DYNAMIC buffers in the regular shadow cap
