@@ -52,7 +52,7 @@ def link_renderer(command, env, output_dll):
     # Preserve the caller's caches and run in a fresh directory so the log contains
     # absolute inputs, including their spaces.
     env = dict(env)
-    env['ZIG_LOCAL_CACHE_DIR'] = str(Path(env.get('ZIG_LOCAL_CACHE_DIR') or '.zig-cache').resolve())
+    env['ZIG_LOCAL_CACHE_DIR'] = str(Path(env.get('ZIG_LOCAL_CACHE_DIR') or northlight_paths.REPO/'.zig-cache').resolve())
     for name in ('ZIG_GLOBAL_CACHE_DIR', 'ZIG_LIB_DIR'):
         if env.get(name):
             env[name] = str(Path(env[name]).resolve())
