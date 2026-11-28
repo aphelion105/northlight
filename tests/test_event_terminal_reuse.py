@@ -81,7 +81,7 @@ struct StreamQuery {
     bool eventWaitExpired=false;std::uint64_t issueSequence=0,issueReadbacks=0;
     NorthlightStream::EventSpinHistory eventSpinHistory;
     std::atomic<bool> dead{false};IDirect3DQuery9 driver;IDirect3DQuery9* inner=&driver;
-    std::atomic<std::uint32_t> eventDoneGen{0},readyGen{0},resultSeq{0};
+    std::atomic<std::uint32_t> eventDoneGen{0},readyGen{0},failedGen{0},resultSeq{0};
     std::atomic<HRESULT> eventStatus{S_FALSE};std::atomic<BOOL> eventValue{FALSE};
     unsigned char result[64]{};DWORD resultSize=0;
 '''
@@ -199,10 +199,13 @@ int main(int argc,char** argv){
         if(!dead)q.inner=nullptr;r.pending_={&q};r.pollQueries();assert(r.pending_.empty()&&q.driver.calls==0);}
     // Zero is not a completed-generation sentinel, including generation wrap.
     {Replayer r;StreamQuery q;q.issueSeen=0;r.pending_={&q};r.pollQueries();assert(q.driver.calls==1&&r.pending_.size()==1);}
-    // Occlusion always reads the driver and preserves nonterminal errors.
+    // Occlusion always reads the driver. An error ends that generation's polling
+    // and marks it failed, so the game reads the real error instead of S_FALSE.
     for(HRESULT status:{S_FALSE,S_OK,E_FAIL}){Replayer r;StreamQuery q;q.type=9;q.driver.status=status;q.driver.value=3;
         publish(q,S_OK,7);r.pending_={&q};r.pollQueries();assert(q.driver.calls==1);
-        assert(r.pending_.empty()==(status==S_OK));if(status==S_OK)valueIs(q,3);}
+        assert(r.pending_.empty()==(status!=S_FALSE));
+        assert(q.failedGen.load()==(status==E_FAIL?1u:0u)&&q.readyGen.load()==(status==S_OK?1u:0u));
+        if(status==S_OK)valueIs(q,3);else assert(q.resultSize==0);}
     // Swap/pop must not skip an adjacent pending, null or cached completion.
     {Replayer r;StreamQuery a,b,c,d;publish(a,S_OK,1);c.inner=nullptr;publish(d,E_FAIL,0);
      r.pending_={&a,&b,&c,&d};r.pollQueries();assert(r.pending_.size()==1&&r.pending_[0]==&b);
@@ -214,7 +217,7 @@ int main(int argc,char** argv){
         r.pending_={&q};r.pollQueries();calls+=q.driver.calls;polls+=r.core.q.stats.queryPolls.load();
         assert(r.pending_.empty()&&q.readyGen.load()==i);valueIs(q,BOOL(i&1));}
     assert(calls==0&&polls==0);
-    std::puts("PASS production pending-query loop: 8192 duplicate driver reads removed; pending, payload, errors, END reissue, reset, occlusion and swap/pop preserved; no game/GPU");
+    std::puts("PASS production pending-query loop: 8192 duplicate driver reads removed; pending, payload, errors, END reissue, reset, occlusion errors retired and swap/pop preserved; no game/GPU");
 }
 '''
 

@@ -32,6 +32,7 @@ struct StreamQuery final:IDirect3DQuery9,ProxyBase {
         eventDoneGen.store(issueSeen,std::memory_order_release);
     }
     std::atomic<std::uint32_t> gen{0},readyGen{0};   // gen: END issues by the game; readyGen: the replay's polled result belongs to it
+    std::atomic<std::uint32_t> failedGen{0};   // non-EVENT: the replay's poll of this generation failed and stopped
     unsigned char result[64]{};DWORD resultSize=0;std::uint32_t issueSeen=0,issueSeenEpoch=0;   // replay thread: END generation and device-reset epoch
     std::atomic<std::uint32_t> resultSeq{0};   // seqlock around result/resultSize: odd while the replay thread writes, so a stale read (FLUSH, below) never sees a torn result
     void writeResult(const unsigned char* buf,DWORD n){const std::uint32_t s=resultSeq.load(std::memory_order_relaxed);resultSeq.store(s+1,std::memory_order_relaxed);std::atomic_thread_fence(std::memory_order_release);
@@ -146,7 +147,8 @@ struct StreamQuery final:IDirect3DQuery9,ProxyBase {
         }
         pumped:
         if(flags||!issued||eventEpoch!=core->queryEpoch.load()||core->coopState.load()!=D3D_OK||
-           (data?size!=dataSize:size!=0)){   // Invalidated/uncached requests use the real query after all recorded work.
+           failedGen.load(std::memory_order_acquire)==issued||
+           (data?size!=dataSize:size!=0)){   // Invalidated/uncached/failed requests use the real query after all recorded work.
             // Sent-message handlers may release the last external reference
             // while this call pumps. Keep both the query and its device alive.
             struct Hold {StreamQuery* query;explicit Hold(StreamQuery* p):query(p){query->comAddRef();}~Hold(){query->comRelease();}} hold(this);
