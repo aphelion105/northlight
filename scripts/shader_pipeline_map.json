@@ -196,7 +196,7 @@
     },
     "normal-depth-seed": {
       "owner": "NorthlightModelNormals::finishCaptures",
-      "code": {"src/proxy/model_normal_renderer.h": ["D3DFMT_D24S8,D3DMULTISAMPLE_NONE"], "src/proxy/model_normal_replay.inl": ["CreatePixelShader(kModelNormalDepthSeedShader", "SetVertexShaderConstantF(dirty.first"], "src/proxy/device_frame_effects.inl": ["modelNormals->finishCaptures(true,&seed,materialDepth)"]},
+      "code": {"src/proxy/model_normal_renderer.h": ["D3DFMT_D24S8,D3DMULTISAMPLE_NONE"], "src/proxy/model_normal_replay.inl": ["CreatePixelShader(kModelNormalDepthSeedShader", "SetVertexShaderConstantF(dirty.first"], "src/proxy/device_frame_effects.inl": ["modelNormals->finishCaptures(true,&seed,materialDepth,sampleGrid)"]},
       "source": "auto_bump_capture.hlsl",
       "entries": {"ModelNormalDepthSeed": "Optional depth seed on the deferred capture path"},
       "bindings": {"Diffuse": "scene-depth"},

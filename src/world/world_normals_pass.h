@@ -59,7 +59,7 @@ public:
 
     template<class Check>
     bool draw(IDirect3DDevice9* d,UINT width,UINT height,IDirect3DTexture9* modelNormals,
-              IDirect3DSurface9* distance,const Check& check){
+              IDirect3DSurface9* distance,const Check& check,bool sampleGrid=false){
         d->SetRenderState(D3DRS_ALPHABLENDENABLE,FALSE);
         d->SetRenderState(D3DRS_COLORWRITEENABLE,15);
         d->SetTexture(14,nullptr);
@@ -74,6 +74,7 @@ public:
         }
         const float modelNormalInfo[]={modelNormals?1.f:0.f,0,0,0};
         d->SetPixelShaderConstantF(79,modelNormalInfo,1);
+        if(modelNormals&&sampleGrid)pointClamp(d,13);
         d->SetTexture(13,modelNormals); // s13 retains POINT/CLAMP, no mip and no sRGB.
         d->SetPixelShader(!distance&&normalsOnly_?normalsOnly_:shader_);
         if(!check(NorthlightScreen::drawQuad(d,width,height),"world normals pass"))return false;

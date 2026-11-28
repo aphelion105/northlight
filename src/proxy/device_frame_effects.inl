@@ -69,7 +69,13 @@
             const auto started=timed?qpcNow():0;
             // After this boundary, composition either completes or disables
             // further capture for the frame. Material depth is no longer read.
-            modelNormals->finishCaptures(true,&seed,materialDepth);
+            bool sampleGrid=false;
+#if defined(_WIN64) && !defined(NORTHLIGHT_REPLAY_STAND)
+            sampleGrid=world&&world->surfaceSettings().modelNormalSampleGrid&&NorthlightBackend::isPackagedDxvk(selectedBackend)&&
+                !debugMode&&!worldDebug&&!gpuDiagnosticFrame&&!nativeCaptureDiagnostic&&!frameParity.pending()&&!world->needsDiagnosticFallback();
+#endif
+            modelNormals->finishCaptures(true,&seed,materialDepth,sampleGrid);
+            if(sampleGrid&&timed)logf("MODEL_NORMALS sample grid frame=%u used=%u",frame,unsigned(modelNormals->usedSampleGrid()));
             if(timed)modelNormals->reportReplay(frame,1000.0*double(qpcNow()-started)/double(cpuFrequency.QuadPart),
                 [](const char* format,auto... args){logf(format,args...);});
         }
@@ -246,7 +252,7 @@
             auroraSources.end();
             traceWorld=0;
             world->setMaterialDetail(autoBump?autoBump->texture():nullptr,autoBump?autoBump->gain():0.f,autoBump?autoBump->distance():48.f,autoBump?autoBump->occlusionTexture():nullptr,autoBump?autoBump->occlusionDistance():8.f,autoBump&&autoBump->active()&&autoBump->hasCaptureResources(),autoBump&&autoBump->capturedFoliage());
-            world->setModelNormals(modelNormals?modelNormals->texture():nullptr);
+            world->setModelNormals(modelNormals?modelNormals->texture():nullptr,modelNormals&&modelNormals->usedSampleGrid());
             world->setNameMask(maskOn?worldDepth:nullptr);
             world->setEffectCoverage(coverage,effectCoverage.hasEmission());
             world->setPrelitMask(prelitMarks&&maskStencil&&!nameMask.disabled&&worldDebug==0?worldDepth:nullptr);

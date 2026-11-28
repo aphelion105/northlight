@@ -94,12 +94,19 @@ if args.reference_packet_layout:
         (overlay/'model_normal_replay.inl').write_bytes(subprocess.check_output(
             ['git','show',args.reference_packet_layout+':src/proxy/model_normal_replay.inl']))
     includes=['-I'+str(overlay)]
+sample_grid=not (args.reference_packet_layout or args.reference_native)
+if sample_grid: includes.append('-DNORTHLIGHT_TEST_NORMAL_SAMPLE_GRID')
 run('compile',[fp.zig(),'c++','-target','x86_64-windows-gnu' if args.x64 else 'x86-windows-gnu','-std=c++17','-O2','-UNDEBUG','-Wno-microsoft-exception-spec','-Wno-return-type',*includes,*fp.test_include_flags(),ROOT/'tests/model_normal_native_gpu.cpp',fp.src('world_gi.cpp'),'-luser32','-o',exe])
 data=bytearray(exe.read_bytes());at=struct.unpack_from('<I',data,0x3c)[0]+22;struct.pack_into('<H',data,at,struct.unpack_from('<H',data,at)[0]|0x20);exe.write_bytes(data)
 backends=[]
 for i,path in enumerate(args.backend):
     windows_gpu_guard.processes();path=path.resolve();text=run('gpu-'+str(i),[exe,path,str(fixture)+'/'])
     assert 'MODEL_NORMAL_NATIVE_GPU_PASS' in text
+    if sample_grid:
+        assert 'MODEL_NORMAL_SAMPLE_GRID_PASS extent=256x256' in text
+        odd_grid=run('sample-grid-odd-'+str(i),[exe,path,str(fixture)+'/',0,1,'sample-grid-odd'])
+        assert 'MODEL_NORMAL_SAMPLE_GRID_PASS extent=257x259' in odd_grid
+        print(*(line for log in (text,odd_grid) for line in log.splitlines() if line.startswith('MODEL_NORMAL_SAMPLE_GRID_PASS')),sep='\n',flush=True)
     if args.hybrid:assert 'MODEL_NORMAL_HYBRID_PASS' in text
     if not args.reference_packet_layout:
         matches=re.search(r'MODEL_NORMAL_DRAW_STATE targets=(\d+) pixelShaders=(\d+)',text)

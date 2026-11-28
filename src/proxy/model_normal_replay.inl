@@ -1,5 +1,5 @@
 // Included inside NorthlightModelNormals. Submit one ordered batch of deferred normal draws.
-    bool finishCaptures(bool final=false,const DepthSeed* seed=nullptr,IDirect3DSurface9* materialDepth=nullptr){
+    bool finishCaptures(bool final=false,const DepthSeed* seed=nullptr,IDirect3DSurface9* materialDepth=nullptr,bool sampleGrid=false){
         if(!hybridDepth&&final){
             bool probed=true,written=true;for(const auto& p:pending){probed=probed&&p->nativeProbed;written=written&&p->nativeWritten;}
             if(!bad&&nativeMrt.finish(probed,written,unsigned(pending.size()))){
@@ -14,6 +14,7 @@
         bool ok=!bad;
         auto* drawDepth=ok?replayDepth(final?materialDepth:nullptr):nullptr;
         ok=drawDepth!=nullptr;
+        const bool canUseGrid=sampleGrid&&final&&drawDepth&&drawDepth==depth&&!cleared&&!flushes&&!immediate;
         if(ok&&geometryCache){
             // Reuse the existing scene budget/promotion limits. Every packet
             // keeps buffer references across eviction; misses retain UP replay.
@@ -50,6 +51,15 @@
                 ok=SUCCEEDED(d->SetRenderState(D3DRS_CLIPPLANEENABLE,0))&&ok;
                 const DWORD values[]={TRUE,DWORD(!hybridDepth),DWORD(hybridDepth?D3DCMP_EQUAL:D3DCMP_LESSEQUAL),FALSE,FALSE,FALSE,FALSE,FALSE,FALSE,15,0,0};
                 for(unsigned i=0;i<State::Count;++i)ok=SUCCEEDED(d->SetRenderState(State::keys[i],values[i]))&&ok;
+                if(ok&&canUseGrid&&!sampleGridReady&&!sampleGridFailed){
+                    SavedState gridState(d,&batchStates);
+                    if(gridState.ok){
+                        const bool initialized=NorthlightModelNormalSampleGrid::initialize(d,width,height,primitiveLimit);
+                        ok=gridState.restore();
+                        sampleGridReady=initialized&&ok;
+                    }
+                    sampleGridFailed=!sampleGridReady;
+                }
                 if(ok&&seeded&&!seedDepth(*seed,seedMatrix)){
                     // A partial optional seed must not affect ordinary replay.
                     const D3DVIEWPORT9 viewport={0,0,width,height,0,1};
@@ -59,6 +69,10 @@
                     ok=SUCCEEDED(d->SetViewport(&viewport))&&ok;
                     if(ok)ok=SUCCEEDED(d->Clear(0,nullptr,D3DCLEAR_TARGET|D3DCLEAR_ZBUFFER,0,1,0));
                     cleared=ok;
+                }
+                if(ok&&canUseGrid&&sampleGridReady){
+                    sampleGridUsed=NorthlightModelNormalSampleGrid::test(d);
+                    if(!sampleGridUsed){sampleGridFailed=true;sampleGridReady=false;ok=SUCCEEDED(d->SetRenderState(D3DRS_STENCILENABLE,FALSE));}
                 }
                 ++flushes;
                 const Pending* previous=nullptr;IDirect3DVertexBuffer9* boundVertex=nullptr;IDirect3DIndexBuffer9* boundIndex=nullptr;UINT boundStride=0;bool bufferKnown=false;

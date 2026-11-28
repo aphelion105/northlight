@@ -3,6 +3,7 @@
 #include <d3d9.h>
 #include "model_normal_programs.h"
 #include "model_normal_draw_state.h"
+#include "model_normal_sample_grid.h"
 #include "model_normal_palette.h"
 #include <array>
 #include "model_normal_native.h"
@@ -89,6 +90,7 @@ class NorthlightModelNormals {
     IDirect3DTexture9* normal=nullptr;
     IDirect3DPixelShader9* depthSeedPS=nullptr;unsigned depthSeeded=0;
     IDirect3DSurface9 *surface=nullptr,*depth=nullptr,*sharedDepth=nullptr,*frameTarget=nullptr;
+    bool sampleGridReady=false,sampleGridFailed=false,sampleGridUsed=false;
     IDirect3DSurface9* hybridDepth=nullptr;
     bool hybridEnabled=false,mirrorSnapshots=false;
     unsigned hybridAttempts=0,hybridWritten=0;
@@ -670,7 +672,7 @@ class NorthlightModelNormals {
                 // Only the terminal replay can take the completed material
                 // surface. Retain it for the rest of this frame's depth ties.
                 sharedDepth=materialDepth;sharedDepth->AddRef();
-                if(depth&&++unusedDepthFrames>=30)release(depth);
+                if(depth&&++unusedDepthFrames>=30){release(depth);sampleGridReady=sampleGridFailed=false;}
                 return sharedDepth;
             }
         }
@@ -709,7 +711,7 @@ public:
         }
     }
     void endFrame(){declarationGets=sharedDeclarations=poseDeclarationGets=poseDeclarationPeeks=0;knownTargets=knownPixelShaders=mirroredSources=0;peakFloatBanks=peakPackets=peakBatchBytes=sharedMeshBytesAvoided=0;depthSeeded=0;clearPending();
-        capturePhases.clear();replayPhases.clear();profileCapture=false;replayWork={};
+        capturePhases.clear();replayPhases.clear();profileCapture=false;replayWork={};sampleGridUsed=false;
         paletteWork={};
         release(sharedDepth);
         release(hybridDepth);hybridAttempts=hybridWritten=0;
@@ -722,9 +724,11 @@ public:
 #endif
         nativeMrt.beginFrame();nativeCommittedPackets=0;streamFence.endFrame();streamedDraws=streamedBatches=streamedDiscards=streamFailures=0;streamedBytes=streamSavedBytes=0;streamBlocked=false;rangeCache.beginFrame();constantStats={};constantReadRegisters=materialBankReads=materialBankRegisters=materialBankChecks=materialBankMismatches=0;poseBoundsTests=poseBoundsCulled=poseViewportTests=poseViewportCulled=0;compactDraws=draws=queued=flushes=immediate=sourceReused=residentSourceHits=residentDraws=handoffs=rangeNarrow=rangeFull=rangeRegisters=rangeBankRegisters=packetPixelReadsSkipped=mergedDraws=duplicateDraws=0;sourceReadBytes=upBytes=0;cleared=bad=false;release(frameTarget);}
     void reset(bool preserveCaptureSources=false){endFrame();unusedDepthFrames=0;duplicateProbe={};duplicateEligiblePackets=duplicateScannedPackets=0;
+        sampleGridReady=sampleGridFailed=false;
         palette.reset();
         nativeMrt.reset();releaseStream();rangeCache.clear();if(!preserveCaptureSources)snapshots.clearSnapshotCache();declarations.clear();spare.clear();floatBanks.clear();floatBankBytes=spareBytes=0;batchStates.clear();release(surface);release(normal);release(depth);release(depthSeedPS);width=height=0;}
     IDirect3DTexture9* texture()const{return draws&&!bad?normal:nullptr;}
+    bool usedSampleGrid()const{return sampleGridUsed;}
     bool shareCaptureSources(NorthlightDrawSnapshot::Frame& source,NorthlightDrawSnapshot::Frame::IdentityFn identity,
                             NorthlightDrawSnapshot::Frame::VersionFn version,NorthlightCaptureMetadata::Read metadata){
         snapshots.setIdentityProvider(identity);snapshots.setVersionProvider(version);snapshots.setMetadataProvider(metadata);

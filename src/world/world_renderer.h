@@ -2143,7 +2143,8 @@ public:
     void setHdrBaseCompositeEnabled(bool enabled){composite.permitBase(enabled);}
     void setTemporalZeroWeightEnabled(bool enabled){history.permitZeroWeight(enabled);}
     void setStaggerColdCaptures(bool enabled){staggerColdCaptures=enabled;}
-    void setModelNormals(IDirect3DTexture9* texture){modelNormals=texture;}
+    bool modelNormalsSampleGrid=false;
+    void setModelNormals(IDirect3DTexture9* texture,bool sampleGrid=false){modelNormals=texture;modelNormalsSampleGrid=sampleGrid;}
     static constexpr float MoonTerrainSpecularDistance=128.f;
     float sunSurfaceSpecularGain(float wetness=0)const{
         if(!hasContext()||!celestialValid||!paletteFrameValid||!NorthlightQuality::foreverCelestial(quality)||
@@ -4370,7 +4371,7 @@ public:
         auto* const smoothSurface=fogScreen.scratch().surface;
         if(lightingNeeded){
         if(!worldNormals.draw(d,w/2,h/2,modelNormals,normalsProduceDistance?history.pending().distance.surface:nullptr,
-                              [&](HRESULT hr,const char* name){return check(hr,name);}))return false;
+                              [&](HRESULT hr,const char* name){return check(hr,name);},modelNormalsSampleGrid))return false;
         if(profile)profile->mark("WorldNormals");
         bucket(NorthlightEffectsBuckets::Lighting);
         if(!resolveDirectionalVisibility(w,h,firstSource,sourceActive,fogShadowMapsReady,anyShadowTransition,

@@ -47,6 +47,8 @@ int main(int argc,char** argv){
     assert(argc>=3&&argc<=6);std::setvbuf(stdout,nullptr,_IONBF,0);const std::string dir=argv[2];
     const unsigned timing=argc>=4?unsigned(std::atoi(argv[3])):0,N=timing?timing:3,copies=argc>=5?unsigned(std::atoi(argv[4])):1;assert(copies>=1&&copies<=32);
     const std::string timingMode=argc==6?argv[5]:"plain";
+    const bool oddGrid=timingMode=="sample-grid-odd";
+    unsigned gridFrames=0;
     const bool timingLocal=timingMode.find("local")!=std::string::npos;
     const bool timingBaseline=timingMode.find("baseline")!=std::string::npos;
     const bool timingBlend=timingMode.find("blend")!=std::string::npos;
@@ -66,7 +68,7 @@ int main(int argc,char** argv){
     D3DPRESENT_PARAMETERS pp{};pp.Windowed=TRUE;pp.hDeviceWindow=window;pp.BackBufferWidth=pp.BackBufferHeight=64;pp.BackBufferFormat=D3DFMT_X8R8G8B8;pp.SwapEffect=D3DSWAPEFFECT_DISCARD;pp.PresentationInterval=D3DPRESENT_INTERVAL_IMMEDIATE;
     IDirect3DDevice9* raw=nullptr;ok(api->CreateDevice(0,D3DDEVTYPE_HAL,window,D3DCREATE_HARDWARE_VERTEXPROCESSING|D3DCREATE_FPU_PRESERVE,&pp,&raw));
     NativeCalls calls(raw);DeviceMirror mirror;ExtensionDevice extension(&calls,&mirror);MirrorGuard held(mirror.gate);d=&extension;
-    const unsigned W=timing?3840:256,H=timing?2160:256;IDirect3DSurface9* depth=nullptr;ok(d->CreateDepthStencilSurface(W,H,D3DFMT_D24S8,D3DMULTISAMPLE_NONE,0,FALSE,&depth,nullptr));
+    const unsigned W=timing?3840:oddGrid?257:256,H=timing?2160:oddGrid?259:256;IDirect3DSurface9* depth=nullptr;ok(d->CreateDepthStencilSurface(W,H,D3DFMT_D24S8,D3DMULTISAMPLE_NONE,0,FALSE,&depth,nullptr));
     D3DVERTEXELEMENT9 elements[]={{0,0,D3DDECLTYPE_FLOAT3,0,D3DDECLUSAGE_POSITION,0},{0,12,D3DDECLTYPE_UBYTE4N,0,D3DDECLUSAGE_BLENDWEIGHT,0},{0,16,D3DDECLTYPE_UBYTE4,0,D3DDECLUSAGE_BLENDINDICES,0},{0,20,D3DDECLTYPE_FLOAT3,0,D3DDECLUSAGE_NORMAL,0},{0,32,D3DDECLTYPE_FLOAT2,0,D3DDECLUSAGE_TEXCOORD,0},{0,48,D3DDECLTYPE_D3DCOLOR,0,D3DDECLUSAGE_COLOR,0},{0,52,D3DDECLTYPE_FLOAT3,0,D3DDECLUSAGE_TEXCOORD,7},{0,64,D3DDECLTYPE_FLOAT2,0,D3DDECLUSAGE_TEXCOORD,6},D3DDECL_END()};IDirect3DVertexDeclaration9* decl=nullptr;ok(d->CreateVertexDeclaration(elements,&decl));
     auto bytes=read(dir+"human-0.mesh");unsigned nv,ni;std::memcpy(&nv,bytes.data()+4,4);std::memcpy(&ni,bytes.data()+8,4);assert(bytes.size()==12+nv*48+ni*4);auto* originalVertices=bytes.data()+12;auto* indices=originalVertices+nv*48;
     constexpr unsigned Stride=72;std::vector<unsigned char> expanded(size_t(nv)*Stride);
@@ -102,6 +104,7 @@ int main(int argc,char** argv){
     if(std::ifstream(dir+"model-vs3-local.bin").good())files.push_back("model-vs3-local.bin");
     for(const auto& filename:files)for(unsigned material=0;material<3;++material)for(bool hdr:{false,true})for(bool alpha:{false,true}){
         if(timing&&(filename!=(timingLocal?"model-vs3-local.bin":"model-vs3-rigid.bin")||material||alpha))continue;
+        if(oddGrid&&(filename!="model-vs3-skinned.bin"||material))continue;
         const auto* file=filename.c_str();const bool local=filename=="model-vs3-local.bin";
         auto source=vs(dir+file);auto color=target(W,H,hdr?D3DFMT_A16B16G16R16F:D3DFMT_A8R8G8B8,hdr?8:4);
         IDirect3DSurface9 *alternateColor=nullptr,*alternateDepth=nullptr;
@@ -143,7 +146,7 @@ int main(int argc,char** argv){
 #ifdef NORTHLIGHT_TEST_NORMAL_HYBRID
         std::chrono::milliseconds hybridWarmup{};
 #endif
-        auto frame=[&](bool mrt,unsigned scenario=0,unsigned fault=0,bool hybrid=false){
+        auto frame=[&](bool mrt,unsigned scenario=0,unsigned fault=0,bool hybrid=false,bool sparse=false){
             ModelNormalPacketTestAccess::drawState(*n,extension,mrt,0);
             if(captureSource)worldConsumer.clearFrame();
             n->endFrame();n->enableNativeMrt(mrt);
@@ -237,7 +240,14 @@ int main(int argc,char** argv){
                 if(scenario>=26&&scenario<32&&i==0)occluder();
             }
             if(scenario==3||scenario==6||(scenario>=12&&scenario<=22)||scenario==24||scenario==25||scenario==32||scenario==38)occluder();
-            assert(nativeDraws==N);assert(n->finishCaptures(true));ok(d->EndScene());assert(n->texture());
+            assert(nativeDraws==N);
+#ifdef NORTHLIGHT_TEST_NORMAL_SAMPLE_GRID
+            assert(n->finishCaptures(true,nullptr,nullptr,sparse));
+            if(sparse)assert(n->usedSampleGrid()==(scenario!=33));
+#else
+            assert(n->finishCaptures(true));
+#endif
+            ok(d->EndScene());assert(n->texture());
             if(timing)return ModelNormalPacketTestAccess::committed(*n);
             if(scenario==7)ok(d->StretchRect(msColor,nullptr,color.s,nullptr,D3DTEXF_NONE));
             auto rgb=pixels(color),normals=canonicalNormals(capturedPixels(n->texture(),W,H));
@@ -264,6 +274,33 @@ int main(int argc,char** argv){
             std::printf("MODEL_NORMAL_NATIVE_CYCLE draws=%u hdr=%u lateHazard=%u frames=16 probesMrt=%u cpuReplayMean=%.6f cpuMrtMean=%.6f\n",N,hdr,timingHazard,probes[1],mean(cpu[0]),mean(cpu[1]));
             q0->Release();q1->Release();hz->Release();
         }else{
+#ifdef NORTHLIGHT_TEST_NORMAL_SAMPLE_GRID
+        if(!material&&!local&&filename=="model-vs3-skinned.bin"){
+            frame(false,2);
+            const auto dense=capturedPixels(n->texture(),W,H);
+            const auto rgb=referenceColor;
+            unsigned occupied=0;
+            for(unsigned repeat=0;repeat<2;++repeat){
+                frame(false,2,0,false,true);
+                assert(referenceColor==rgb);
+                const auto sparse=capturedPixels(n->texture(),W,H);
+                for(unsigned y=0;y<H;++y)for(unsigned x=0;x<W;++x){
+                    const auto at=(size_t(y)*W+x)*8;
+                    const unsigned char empty[8]={};
+                    const bool consumed=(x&1)&&(y&1);
+                    assert(!std::memcmp(sparse.data()+at,consumed?dense.data()+at:empty,8));
+                    if(consumed&&std::memcmp(sparse.data()+at,empty,8))++occupied;
+                }
+                ++gridFrames;
+            }
+            assert(occupied>0);
+            frame(false,33);
+            const auto split=capturedPixels(n->texture(),W,H);
+            frame(false,33,0,false,true);
+            assert(capturedPixels(n->texture(),W,H)==split);
+        }
+#endif
+        if(!oddGrid){
         if(testHybrid&&!captureSource&&filename=="model-vs3-skinned.bin"&&!material&&hdr&&!alpha){
             for(unsigned scenario:{0u,1u,17u,37u,38u}){
                 n->reset();frame(false,scenario);
@@ -372,10 +409,14 @@ int main(int argc,char** argv){
         std::printf("MODEL_NORMAL_NATIVE_CASE_PASS fixture=%s material=%u hdr=%u alpha=%u %s\n",file,material,hdr,alpha,ModelNormalPacketTestAccess::stats(*n).c_str());
         if(local)assert(lighting.draws>0);
         }
+        }
         n.reset();if(alternateColor)alternateColor->Release();if(alternateDepth)alternateDepth->Release();if(msColor)msColor->Release();if(msDepth)msDepth->Release();if(cube)cube->Release();if(height){ok(d->SetTexture(D3DVERTEXTEXTURESAMPLER0+displacementBinding.sampler,nullptr));height->Release();}if(privateVS)privateVS->Release();if(privatePS)privatePS->Release();alternateSource->Release();source->Release();dispose(color);dispose(sky);
     }
     if(vb)vb->Release();if(ib)ib->Release();
     if(captureSource){assert(publishedSources>0);printf("MODEL_NORMAL_SOURCE_PASS published=%u lookupReference=%u\n",publishedSources,lookupReference);}
-    if(!timing){std::printf("MODEL_NORMAL_DRAW_STATE targets=%u pixelShaders=%u\n",ModelNormalPacketTestAccess::targetMatches,ModelNormalPacketTestAccess::pixelPeeks);assert(commits>0);std::printf("MODEL_NORMAL_NATIVE_GPU_PASS cases=%u committedFrames=%u RGB=exact normals=exact fallback=whole-frame faults=before-after nativeCalls=once hdrSky=exact fillSuccess=%u fillFailure=%u\n",cases,commits,calls.fillSuccess,calls.fillFailure);}
+#ifdef NORTHLIGHT_TEST_NORMAL_SAMPLE_GRID
+    if(!timing){assert(gridFrames>0);std::printf("MODEL_NORMAL_SAMPLE_GRID_PASS extent=%ux%u frames=%u consumed=bitexact unconsumed=clear split=full\n",W,H,gridFrames);}
+#endif
+    if(!timing&&!oddGrid){std::printf("MODEL_NORMAL_DRAW_STATE targets=%u pixelShaders=%u\n",ModelNormalPacketTestAccess::targetMatches,ModelNormalPacketTestAccess::pixelPeeks);assert(commits>0);std::printf("MODEL_NORMAL_NATIVE_GPU_PASS cases=%u committedFrames=%u RGB=exact normals=exact fallback=whole-frame faults=before-after nativeCalls=once hdrSky=exact fillSuccess=%u fillFailure=%u\n",cases,commits,calls.fillSuccess,calls.fillFailure);}
     return 0;
 }
