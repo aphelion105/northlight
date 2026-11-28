@@ -43,7 +43,7 @@ def main():
         products = (proxy / 'd3d9.dll', proxy / 'northlight-assets.bin', proxy / 'water-core.dll')
         shutil.copyfile(build / 'water-core.dll', products[-1])
     else:
-        products = (ROOT / 'renderer/frd9.dll', build / 'water-core.dll')
+        products = (fp.RENDERER / 'frd9.dll', fp.RENDERER / 'northlight-assets.bin', build / 'water-core.dll')
     for product in products:
         print(product)
 
