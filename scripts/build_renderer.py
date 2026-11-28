@@ -141,13 +141,18 @@ def main(argv=None):
     if any(manifest['shaders'].get(entry, {}).get('source_sha256') != water_hash for entry in WATER_DISTANCE_ENTRIES):
         raise SystemExit('Water distance source differs from its offline shader build.')
     # All shader modifications must pass the offline compile/SM3 gate first.
-    source_hash = hashlib.sha256((SHADERS/'effects.hlsl').read_bytes()).hexdigest()
-    if source_hash not in json.dumps(manifest):
+    actor_entries = ('AOActorPrepare', 'HBAOActorContactBloom', 'GTAOActorContactBloom', 'HBAOActorOnly', 'GTAOActorOnly')
+    effects = (SHADERS/'effects.hlsl').read_bytes()
+    source_hash = hashlib.sha256(effects).hexdigest()
+    # Every ps_3_0 entry compiled from effects.hlsl alone must carry the current source hash.
+    if manifest.get('source_sha256') != source_hash or any(
+            info.get('source_sha256') != source_hash for entry, info in manifest['shaders'].items()
+            if 'target' not in info and entry not in actor_entries and entry not in WATER_DISTANCE_ENTRIES):
         raise SystemExit('Shader source differs from the offline build; run scripts/shaders/compile_shaders.py.')
-    actor_hash = hashlib.sha256((SHADERS/'effects.hlsl').read_bytes() + b'\n' + (SHADERS/'ao_actor.hlsl').read_bytes()).hexdigest()
+    actor_hash = hashlib.sha256(effects + b'\n' + (SHADERS/'ao_actor.hlsl').read_bytes()).hexdigest()
     if actor_hash != manifest.get('actor_source_sha256'):
         raise SystemExit('Actor AO source differs from the offline build; rebuild all actor shader entries.')
-    for entry in ('AOActorPrepare', 'HBAOActorContactBloom', 'GTAOActorContactBloom', 'HBAOActorOnly', 'GTAOActorOnly'):
+    for entry in actor_entries:
         if manifest['shaders'].get(entry, {}).get('source_sha256') != actor_hash:
             raise SystemExit(f'{entry} has stale actor AO dependencies; rebuild all actor shader entries.')
     world_manifest = json.loads((SHADERS/'world-shader-build.json').read_text(encoding='utf-8'))
