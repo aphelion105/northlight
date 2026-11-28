@@ -181,7 +181,8 @@
       "test_gi_residency_gpu.py",
       "test_shadow_receiver_gpu.py",
       "test_relighting_color_edges_gpu.py",
-      "test_height_gpu_ownership_gpu.py"
+      "test_height_gpu_ownership_gpu.py",
+      "test_reset_world_refs_gpu.py"
     ]
   },
   "shadow-experiments": {
