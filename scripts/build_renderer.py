@@ -1,7 +1,9 @@
 """Cross-compile the renderer DLL. Does not run the game or the DLL."""
+import argparse
 import hashlib
 import json
 import os
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 import subprocess
@@ -9,6 +11,7 @@ import sys
 import tempfile
 import shutil
 import re
+import uuid
 
 ROOT = Path(__file__).resolve().parent                 # scripts/: the generators
 sys.path.insert(0, str(ROOT.parent))
@@ -51,15 +54,22 @@ def link_renderer(command, env, output_dll):
     # Preserve the caller's caches and run in a fresh directory so the log contains
     # absolute inputs, including their spaces.
     env = dict(env)
-    env['ZIG_LOCAL_CACHE_DIR'] = str(Path(env.get('ZIG_LOCAL_CACHE_DIR') or '.zig-cache').resolve())
+    env['ZIG_LOCAL_CACHE_DIR'] = str(Path(env.get('ZIG_LOCAL_CACHE_DIR') or northlight_paths.REPO/'.zig-cache').resolve())
     for name in ('ZIG_GLOBAL_CACHE_DIR', 'ZIG_LIB_DIR'):
         if env.get(name):
             env[name] = str(Path(env[name]).resolve())
-    with tempfile.TemporaryDirectory(prefix='coff-link-', dir=output) as cwd:
+    # Link into a staging folder beside the destination. The DLL, PDB and import
+    # library replace the previous build only after both links succeed.
+    with tempfile.TemporaryDirectory(prefix='coff-link-', dir=output) as cwd, \
+            tempfile.TemporaryDirectory(prefix='.link-', dir=output_dll.parent) as staging:
+        final_dll, output_dll = output_dll, Path(staging) / output_dll.name
+        command = [str(output_dll) if arg == str(final_dll) else arg for arg in command]
         result = subprocess.run([*command, '-v'], cwd=cwd, env=env, capture_output=True, text=True)
         log.write_text(result.stdout + result.stderr, encoding='utf-8')
         if result.returncode:
             raise SystemExit(f'Renderer compilation failed; see {log}\n{result.stderr[-6000:]}')
+        # A full Zig cache hit skips the link and prints no lld-link line; main()
+        # prevents that with a per-build nonce in the generated build_info.cpp.
         lines = [line for line in result.stderr.splitlines() if line.startswith('lld-link ')]
         if len(lines) != 1:
             raise SystemExit(f'Expected one Zig 0.15.2 COFF link command; see {log}')
@@ -71,6 +81,8 @@ def link_renderer(command, env, output_dll):
             raise SystemExit(f'Cannot safely reconstruct Zig COFF inputs; see {log}')
         final = [command[0], *linker, '-OPT:REF', '-OPT:NOICF', '-MAP:' + str(output / (output_dll.stem + '.map'))]
         subprocess.run(final, cwd=cwd, env=env, check=True)
+        for path in sorted(Path(staging).iterdir(), key=lambda path: path == output_dll):
+            os.replace(path, final_dll.parent / path.name)
 
 def check_compiler(zig, env, target='x86-windows-gnu'):
     if sys.platform != 'win32':
@@ -94,14 +106,20 @@ def check_compiler(zig, env, target='x86-windows-gnu'):
 
 
 def main(argv=None):
-    arguments = sys.argv[1:] if argv is None else argv
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--dev-tuning', action='store_true', help='developer zone-tuning variant (frd9-dev-tuning.dll)')
+    parser.add_argument('--stand-replay', action='store_true', help='imported-input stand variant (frd9-stand-replay.dll)')
+    parser.add_argument('--profile-symbols', action='store_true', help='optimized build with symbols for profiling')
+    parser.add_argument('--x64', action='store_true', help='standalone AMD64 D3D9 proxy in out/x64-proxy/')
+    parser.add_argument('--x86-on12', action='store_true', help='standalone 32-bit D3D9On12 proxy in out/x86-on12-proxy/')
+    arguments = parser.parse_args(argv)
     from tideglass_source import verify
     verify()
-    dev_tuning = '--dev-tuning' in arguments
-    stand_replay = '--stand-replay' in arguments
-    profile_symbols = '--profile-symbols' in arguments
-    x64 = '--x64' in arguments
-    x86_on12 = '--x86-on12' in arguments
+    dev_tuning = arguments.dev_tuning
+    stand_replay = arguments.stand_replay
+    profile_symbols = arguments.profile_symbols
+    x64 = arguments.x64
+    x86_on12 = arguments.x86_on12
     if x86_on12 and (x64 or dev_tuning or stand_replay or profile_symbols):
         raise SystemExit('--x86-on12 builds a separate 32-bit comparison proxy.')
     if x64 and (dev_tuning or stand_replay):
@@ -121,29 +139,38 @@ def main(argv=None):
         raise SystemExit(f'build_renderer.py: {e}\nInstall zig {northlight_paths.ZIG_VERSION} (https://ziglang.org/download/) and point NORTHLIGHT_ZIG at it.')
     env = northlight_paths.zig_env()
     check_compiler(zig, env, target)
-    subprocess.run([sys.executable, str(ROOT/'generate_glue_lighting_selection.py'), '--check'], check=True)
+    # Independent generators run concurrently. The mirror device and extension
+    # method generators read the forwarders.h that generate_forwarders.py writes.
+    with ThreadPoolExecutor() as pool:
+        for stage in ((('generate_glue_lighting_selection.py', '--check'), ('generate_forwarders.py',),
+                       ('generate_mirror_resource_forwarders.py',)),
+                      (('generate_mirror_guarded_device.py',), ('generate_extension_raw_methods.py',))):
+            for job in [pool.submit(subprocess.run, [sys.executable, str(ROOT/script), *args], check=True)
+                        for script, *args in stage]:
+                job.result()
     from build_sky_material_catalog import check_generated
     check_generated()
-    subprocess.run([sys.executable, str(ROOT/'generate_forwarders.py')], check=True)
-    subprocess.run([sys.executable, str(ROOT/'generate_mirror_guarded_device.py')], check=True)
-    subprocess.run([sys.executable, str(ROOT/'generate_mirror_resource_forwarders.py')], check=True)
-    subprocess.run([sys.executable, str(ROOT/'generate_extension_raw_methods.py')], check=True)
-    manifest = json.loads((SHADERS/'shader-build.json').read_text())
+    manifest = json.loads((SHADERS/'shader-build.json').read_text(encoding='utf-8'))
     from shaders.compile_shaders import WATER_DISTANCE_ENTRIES
     water_hash = hashlib.sha256((SHADERS/'water_distance.hlsl').read_bytes()).hexdigest()
     if any(manifest['shaders'].get(entry, {}).get('source_sha256') != water_hash for entry in WATER_DISTANCE_ENTRIES):
         raise SystemExit('Water distance source differs from its offline shader build.')
     # All shader modifications must pass the offline compile/SM3 gate first.
-    source_hash = hashlib.sha256((SHADERS/'effects.hlsl').read_bytes()).hexdigest()
-    if source_hash not in json.dumps(manifest):
+    actor_entries = ('AOActorPrepare', 'HBAOActorContactBloom', 'GTAOActorContactBloom', 'HBAOActorOnly', 'GTAOActorOnly')
+    effects = (SHADERS/'effects.hlsl').read_bytes()
+    source_hash = hashlib.sha256(effects).hexdigest()
+    # Every ps_3_0 entry compiled from effects.hlsl alone must carry the current source hash.
+    if manifest.get('source_sha256') != source_hash or any(
+            info.get('source_sha256') != source_hash for entry, info in manifest['shaders'].items()
+            if 'target' not in info and entry not in actor_entries and entry not in WATER_DISTANCE_ENTRIES):
         raise SystemExit('Shader source differs from the offline build; run scripts/shaders/compile_shaders.py.')
-    actor_hash = hashlib.sha256((SHADERS/'effects.hlsl').read_bytes() + b'\n' + (SHADERS/'ao_actor.hlsl').read_bytes()).hexdigest()
+    actor_hash = hashlib.sha256(effects + b'\n' + (SHADERS/'ao_actor.hlsl').read_bytes()).hexdigest()
     if actor_hash != manifest.get('actor_source_sha256'):
         raise SystemExit('Actor AO source differs from the offline build; rebuild all actor shader entries.')
-    for entry in ('AOActorPrepare', 'HBAOActorContactBloom', 'GTAOActorContactBloom', 'HBAOActorOnly', 'GTAOActorOnly'):
+    for entry in actor_entries:
         if manifest['shaders'].get(entry, {}).get('source_sha256') != actor_hash:
             raise SystemExit(f'{entry} has stale actor AO dependencies; rebuild all actor shader entries.')
-    world_manifest = json.loads((SHADERS/'world-shader-build.json').read_text())
+    world_manifest = json.loads((SHADERS/'world-shader-build.json').read_text(encoding='utf-8'))
     from shaders.shader_sources import source_hashes, world_source_bytes
     from shaders.compile_world_shaders import ENTRIES, NORMAL_ENTRIES, normal_sources
     world_source = SHADERS/'world_effects.hlsl'
@@ -155,14 +182,14 @@ def main(argv=None):
     if (world_manifest.get('normal_sources')!=normal_inputs or
         any(world_manifest['shaders'][entry]['source_sha256']!=normal_inputs['world_normals.hlsl'] for entry in NORMAL_ENTRIES)):
         raise SystemExit('World normal inputs differ from the offline build. Recompile all normal entries.')
-    transition_manifest = json.loads((SHADERS/'shadow-transition-shader-build.json').read_text())
+    transition_manifest = json.loads((SHADERS/'shadow-transition-shader-build.json').read_text(encoding='utf-8'))
     if transition_manifest['sources'] != source_hashes(SHADERS/'shadow_transition.hlsl'):
         raise SystemExit('Shadow transition source differs from offline build; run scripts/shaders/compile_shadow_transition_shaders.py.')
     for name, metadata in transition_manifest['shaders'].items():
         if hashlib.sha256((northlight_paths.COMPILED/(name+'.bin')).read_bytes()).hexdigest() != metadata['sha256']:
             raise SystemExit(f'{name} differs from the validated shadow transition build.')
-    local_manifest = json.loads((SHADERS/'local-light-shader-build.json').read_text())
-    volume_manifest = json.loads((SHADERS/'fog-volume-shader-build.json').read_text())
+    local_manifest = json.loads((SHADERS/'local-light-shader-build.json').read_text(encoding='utf-8'))
+    volume_manifest = json.loads((SHADERS/'fog-volume-shader-build.json').read_text(encoding='utf-8'))
     if volume_manifest['sources'] != source_hashes(SHADERS/'fog_volume.hlsl'):
         raise SystemExit('Volume fog source differs from offline build; run scripts/shaders/compile_fog_volume_shaders.py.')
     for name, metadata in volume_manifest['shaders'].items():
@@ -172,30 +199,30 @@ def main(argv=None):
         raise SystemExit('Local light shader source differs from offline build.')
     if hashlib.sha256((ROOT/'shaders/compile_local_light_shaders.py').read_bytes()).hexdigest() != local_manifest.get('derivative_hoist_sha256'):
         raise SystemExit('Local light shader transform differs from offline build; run scripts/shaders/compile_local_light_shaders.py.')
-    celestial_manifest = json.loads((SHADERS/'celestial-disc-shader-build.json').read_text())
+    celestial_manifest = json.loads((SHADERS/'celestial-disc-shader-build.json').read_text(encoding='utf-8'))
     if hashlib.sha256((SHADERS/'celestial_disc_effects.hlsl').read_bytes()).hexdigest() != celestial_manifest['source_sha256']:
         raise SystemExit('Celestial disc shader source differs from offline build.')
-    static_manifest = json.loads((SHADERS/'static-shadow-shader-build.json').read_text())
+    static_manifest = json.loads((SHADERS/'static-shadow-shader-build.json').read_text(encoding='utf-8'))
     if hashlib.sha256((SHADERS/'static_shadow_effects.hlsl').read_bytes()).hexdigest() != static_manifest['source_sha256']:
         raise SystemExit('Static caster shader source differs from offline build.')
-    surface_manifest = json.loads((SHADERS/'surface-shader-build.json').read_text())
+    surface_manifest = json.loads((SHADERS/'surface-shader-build.json').read_text(encoding='utf-8'))
     if hashlib.sha256((SHADERS/'surface_effects.hlsl').read_bytes()).hexdigest() != surface_manifest['source_sha256']:
         raise SystemExit('Precipitation shader source differs from offline build.')
-    weather_art = (northlight_paths.GENERATED/'weather_texture_data.h').read_text()
+    weather_art = (northlight_paths.GENERATED/'weather_texture_data.h').read_text(encoding='utf-8')
     for name in ('camera-frost.png','snow-flocs.png'):
         expected = hashlib.sha256((SHADERS/'assets'/name).read_bytes()).hexdigest()
         if f'// source-sha256 {name} {expected}' not in weather_art:
             raise SystemExit('Weather art differs from embedded materials; run scripts/generate_weather_art.py.')
-    hdr_manifest = json.loads((SHADERS/'hdr-shader-build.json').read_text())
+    hdr_manifest = json.loads((SHADERS/'hdr-shader-build.json').read_text(encoding='utf-8'))
     if hashlib.sha256((SHADERS/'hdr_effects.hlsl').read_bytes()).hexdigest() != hdr_manifest['source_sha256']:
         raise SystemExit('HDR shader source differs from offline build; run scripts/shaders/compile_hdr_shaders.py.')
-    aurora_manifest = json.loads((SHADERS/'aurora-shader-build.json').read_text())
+    aurora_manifest = json.loads((SHADERS/'aurora-shader-build.json').read_text(encoding='utf-8'))
     if hashlib.sha256((SHADERS/'aurora_emission.hlsl').read_bytes()).hexdigest() != aurora_manifest['source_sha256']:
         raise SystemExit('Aurora emission shader source differs from offline build; run scripts/shaders/compile_aurora_shaders.py.')
     bump_digest=hashlib.sha256((SHADERS/"auto_bump_normal.hlsl").read_bytes()).hexdigest()
     if any(m.get("bump_include_sha256")!=bump_digest for m in (world_manifest,local_manifest)):
         raise SystemExit("Auto bump include differs from the offline build.")
-    bump_manifest=json.loads((SHADERS/"auto-bump-shader-build.json").read_text())
+    bump_manifest=json.loads((SHADERS/"auto-bump-shader-build.json").read_text(encoding='utf-8'))
     if bump_manifest["source_sha256"]!=hashlib.sha256((SHADERS/"auto_bump_capture.hlsl").read_bytes()).hexdigest():
         raise SystemExit("Auto bump capture differs from the offline build.")
     if bump_manifest.get("normal_source_sha256")!=hashlib.sha256((SHADERS/"auto_normal_generate.hlsl").read_bytes()).hexdigest():
@@ -214,7 +241,7 @@ def main(argv=None):
     if x64:
         # Keep ordinals in the common definition. AMD64 has no stdcall aliases.
         x64_exports = assets_dir / 'd3d9.def'
-        x64_exports.write_text(re.sub(r'=\w+@\d+', '', exports.read_text()).replace(
+        x64_exports.write_text(re.sub(r'=\w+@\d+', '', exports.read_text(encoding='utf-8')).replace(
             'LIBRARY frd9', 'LIBRARY d3d9'), encoding='ascii')
         exports = x64_exports
     print('Resources', assets['raw_bytes'], '->', assets['bytes'], 'bytes', flush=True)
@@ -222,14 +249,22 @@ def main(argv=None):
     built_utc = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')
     print('Source identity', identity, flush=True)
     print('Build time', built_utc, flush=True)
+    # The identity and time change on every build. Keep them out of the shared
+    # flags so Zig reuses the cached objects of unchanged sources; only this file
+    # recompiles. Its nonce also changes every build, so Zig always relinks and
+    # link_renderer always sees the lld-link command it reconstructs.
+    build_info = assets_dir / 'build_info.cpp'
+    build_info.write_text(f'// Generated by scripts/build_renderer.py; build {uuid.uuid4().hex}\n'
+                          f'extern const char northlight_source_id[]="{identity}";\n'
+                          f'extern const char northlight_build_utc[]="{built_utc}";\n', encoding='utf-8')
     command = [str(zig), 'c++', '-target', target, '-O2', '-shared',
-               '-DNORTHLIGHT_SOURCE_ID="' + identity + '"',
-               '-DNORTHLIGHT_BUILD_UTC="' + built_utc + '"',
+               '-DNORTHLIGHT_BUILD_INFO_EXTERN=1',
                '-std=c++17', '-fno-rtti', '-ffunction-sections', '-fdata-sections',
                '-DNORTHLIGHT_EXTERNAL_ASSETS=1', '-I', str(assets_dir),
                '-Wall', '-Wextra', '-Wno-microsoft-exception-spec',
                *northlight_paths.include_flags(),
                *[str(northlight_paths.src(n)) for n in ('renderer.cpp', 'world_gi.cpp', 'world_mesh_plan.cpp', 'static_shadow_scene.cpp', 'renderer_assets.cpp')],
+               str(build_info),
                str(exports),
                # Settings overlay (src/overlay/) and the vendored Dear ImGui it draws with (src/imgui/, configured by northlight_imconfig.h).
                '-DIMGUI_USER_CONFIG="northlight_imconfig.h"',

@@ -1,5 +1,12 @@
 #pragma once
 
+#ifdef NORTHLIGHT_BUILD_INFO_EXTERN  // defined by the build_info.cpp that scripts/build_renderer.py generates
+extern const char northlight_source_id[];
+extern const char northlight_build_utc[];
+#define NORTHLIGHT_SOURCE_ID northlight_source_id
+#define NORTHLIGHT_BUILD_UTC northlight_build_utc
+#endif
+
 static void configureDxvkCompatibility(const NorthlightBackendLoader::Inspection& info,bool disableFse,bool latencyX86){
     // Do not edit dxvk.conf or global launcher/Wine settings. Only this client
     // process receives the required D3D9 compatibility options. Explicit

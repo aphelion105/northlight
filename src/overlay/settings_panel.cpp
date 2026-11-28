@@ -21,6 +21,12 @@
 #include "memory_profile_snapshot.h"
 #include "performance_hardware.h"
 
+#ifdef NORTHLIGHT_BUILD_INFO_EXTERN  // defined by the build_info.cpp that scripts/build_renderer.py generates
+extern const char northlight_source_id[];
+extern const char northlight_build_utc[];
+#define NORTHLIGHT_SOURCE_ID northlight_source_id
+#define NORTHLIGHT_BUILD_UTC northlight_build_utc
+#endif
 #ifndef NORTHLIGHT_SOURCE_ID
 #define NORTHLIGHT_SOURCE_ID "unrecorded"
 #endif

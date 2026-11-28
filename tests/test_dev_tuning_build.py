@@ -54,6 +54,7 @@ class DevTuningBuild(unittest.TestCase):
         self.assertIn('-DNORTHLIGHT_DEV_TUNING=1', dev)
         dev.remove('-DNORTHLIGHT_DEV_TUNING=1')
         dev[dev.index('-I')+1] = default[default.index('-I')+1]
+        dev = [next(d for d in default if d.endswith('build_info.cpp')) if a.endswith('build_info.cpp') else a for a in dev]
         self.assertEqual(dev[:-1], default[:-1], 'the flag changes nothing else but the output')
         self.assertEqual(Path(default[-1]).name, 'frd9.dll')
         self.assertEqual(Path(dev[-1]).name, 'frd9-dev-tuning.dll', 'the dev build never overwrites frd9.dll')
