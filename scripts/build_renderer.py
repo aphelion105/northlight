@@ -135,7 +135,7 @@ def main(argv=None):
     subprocess.run([sys.executable, str(ROOT/'generate_mirror_guarded_device.py')], check=True)
     subprocess.run([sys.executable, str(ROOT/'generate_mirror_resource_forwarders.py')], check=True)
     subprocess.run([sys.executable, str(ROOT/'generate_extension_raw_methods.py')], check=True)
-    manifest = json.loads((SHADERS/'shader-build.json').read_text())
+    manifest = json.loads((SHADERS/'shader-build.json').read_text(encoding='utf-8'))
     from shaders.compile_shaders import WATER_DISTANCE_ENTRIES
     water_hash = hashlib.sha256((SHADERS/'water_distance.hlsl').read_bytes()).hexdigest()
     if any(manifest['shaders'].get(entry, {}).get('source_sha256') != water_hash for entry in WATER_DISTANCE_ENTRIES):
@@ -150,7 +150,7 @@ def main(argv=None):
     for entry in ('AOActorPrepare', 'HBAOActorContactBloom', 'GTAOActorContactBloom', 'HBAOActorOnly', 'GTAOActorOnly'):
         if manifest['shaders'].get(entry, {}).get('source_sha256') != actor_hash:
             raise SystemExit(f'{entry} has stale actor AO dependencies; rebuild all actor shader entries.')
-    world_manifest = json.loads((SHADERS/'world-shader-build.json').read_text())
+    world_manifest = json.loads((SHADERS/'world-shader-build.json').read_text(encoding='utf-8'))
     from shaders.shader_sources import source_hashes, world_source_bytes
     from shaders.compile_world_shaders import ENTRIES, NORMAL_ENTRIES, normal_sources
     world_source = SHADERS/'world_effects.hlsl'
@@ -162,14 +162,14 @@ def main(argv=None):
     if (world_manifest.get('normal_sources')!=normal_inputs or
         any(world_manifest['shaders'][entry]['source_sha256']!=normal_inputs['world_normals.hlsl'] for entry in NORMAL_ENTRIES)):
         raise SystemExit('World normal inputs differ from the offline build. Recompile all normal entries.')
-    transition_manifest = json.loads((SHADERS/'shadow-transition-shader-build.json').read_text())
+    transition_manifest = json.loads((SHADERS/'shadow-transition-shader-build.json').read_text(encoding='utf-8'))
     if transition_manifest['sources'] != source_hashes(SHADERS/'shadow_transition.hlsl'):
         raise SystemExit('Shadow transition source differs from offline build; run scripts/shaders/compile_shadow_transition_shaders.py.')
     for name, metadata in transition_manifest['shaders'].items():
         if hashlib.sha256((northlight_paths.COMPILED/(name+'.bin')).read_bytes()).hexdigest() != metadata['sha256']:
             raise SystemExit(f'{name} differs from the validated shadow transition build.')
-    local_manifest = json.loads((SHADERS/'local-light-shader-build.json').read_text())
-    volume_manifest = json.loads((SHADERS/'fog-volume-shader-build.json').read_text())
+    local_manifest = json.loads((SHADERS/'local-light-shader-build.json').read_text(encoding='utf-8'))
+    volume_manifest = json.loads((SHADERS/'fog-volume-shader-build.json').read_text(encoding='utf-8'))
     if volume_manifest['sources'] != source_hashes(SHADERS/'fog_volume.hlsl'):
         raise SystemExit('Volume fog source differs from offline build; run scripts/shaders/compile_fog_volume_shaders.py.')
     for name, metadata in volume_manifest['shaders'].items():
@@ -179,30 +179,30 @@ def main(argv=None):
         raise SystemExit('Local light shader source differs from offline build.')
     if hashlib.sha256((ROOT/'shaders/compile_local_light_shaders.py').read_bytes()).hexdigest() != local_manifest.get('derivative_hoist_sha256'):
         raise SystemExit('Local light shader transform differs from offline build; run scripts/shaders/compile_local_light_shaders.py.')
-    celestial_manifest = json.loads((SHADERS/'celestial-disc-shader-build.json').read_text())
+    celestial_manifest = json.loads((SHADERS/'celestial-disc-shader-build.json').read_text(encoding='utf-8'))
     if hashlib.sha256((SHADERS/'celestial_disc_effects.hlsl').read_bytes()).hexdigest() != celestial_manifest['source_sha256']:
         raise SystemExit('Celestial disc shader source differs from offline build.')
-    static_manifest = json.loads((SHADERS/'static-shadow-shader-build.json').read_text())
+    static_manifest = json.loads((SHADERS/'static-shadow-shader-build.json').read_text(encoding='utf-8'))
     if hashlib.sha256((SHADERS/'static_shadow_effects.hlsl').read_bytes()).hexdigest() != static_manifest['source_sha256']:
         raise SystemExit('Static caster shader source differs from offline build.')
-    surface_manifest = json.loads((SHADERS/'surface-shader-build.json').read_text())
+    surface_manifest = json.loads((SHADERS/'surface-shader-build.json').read_text(encoding='utf-8'))
     if hashlib.sha256((SHADERS/'surface_effects.hlsl').read_bytes()).hexdigest() != surface_manifest['source_sha256']:
         raise SystemExit('Precipitation shader source differs from offline build.')
-    weather_art = (northlight_paths.GENERATED/'weather_texture_data.h').read_text()
+    weather_art = (northlight_paths.GENERATED/'weather_texture_data.h').read_text(encoding='utf-8')
     for name in ('camera-frost.png','snow-flocs.png'):
         expected = hashlib.sha256((SHADERS/'assets'/name).read_bytes()).hexdigest()
         if f'// source-sha256 {name} {expected}' not in weather_art:
             raise SystemExit('Weather art differs from embedded materials; run scripts/generate_weather_art.py.')
-    hdr_manifest = json.loads((SHADERS/'hdr-shader-build.json').read_text())
+    hdr_manifest = json.loads((SHADERS/'hdr-shader-build.json').read_text(encoding='utf-8'))
     if hashlib.sha256((SHADERS/'hdr_effects.hlsl').read_bytes()).hexdigest() != hdr_manifest['source_sha256']:
         raise SystemExit('HDR shader source differs from offline build; run scripts/shaders/compile_hdr_shaders.py.')
-    aurora_manifest = json.loads((SHADERS/'aurora-shader-build.json').read_text())
+    aurora_manifest = json.loads((SHADERS/'aurora-shader-build.json').read_text(encoding='utf-8'))
     if hashlib.sha256((SHADERS/'aurora_emission.hlsl').read_bytes()).hexdigest() != aurora_manifest['source_sha256']:
         raise SystemExit('Aurora emission shader source differs from offline build; run scripts/shaders/compile_aurora_shaders.py.')
     bump_digest=hashlib.sha256((SHADERS/"auto_bump_normal.hlsl").read_bytes()).hexdigest()
     if any(m.get("bump_include_sha256")!=bump_digest for m in (world_manifest,local_manifest)):
         raise SystemExit("Auto bump include differs from the offline build.")
-    bump_manifest=json.loads((SHADERS/"auto-bump-shader-build.json").read_text())
+    bump_manifest=json.loads((SHADERS/"auto-bump-shader-build.json").read_text(encoding='utf-8'))
     if bump_manifest["source_sha256"]!=hashlib.sha256((SHADERS/"auto_bump_capture.hlsl").read_bytes()).hexdigest():
         raise SystemExit("Auto bump capture differs from the offline build.")
     if bump_manifest.get("normal_source_sha256")!=hashlib.sha256((SHADERS/"auto_normal_generate.hlsl").read_bytes()).hexdigest():
@@ -221,7 +221,7 @@ def main(argv=None):
     if x64:
         # Keep ordinals in the common definition. AMD64 has no stdcall aliases.
         x64_exports = assets_dir / 'd3d9.def'
-        x64_exports.write_text(re.sub(r'=\w+@\d+', '', exports.read_text()).replace(
+        x64_exports.write_text(re.sub(r'=\w+@\d+', '', exports.read_text(encoding='utf-8')).replace(
             'LIBRARY frd9', 'LIBRARY d3d9'), encoding='ascii')
         exports = x64_exports
     print('Resources', assets['raw_bytes'], '->', assets['bytes'], 'bytes', flush=True)
