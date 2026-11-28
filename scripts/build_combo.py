@@ -29,7 +29,8 @@ def main():
         tool = shutil.which(f'{architecture}-w64-mingw32-{binary}')
         if not tool:
             parser.error(f'Put the llvm-mingw {architecture} cross-toolchain on PATH')
-        configure.append(f'-DCMAKE_{key}_COMPILER={Path(tool).resolve().as_posix()}')
+        # Keep the triple-prefixed name: llvm-mingw wrappers derive their target from argv[0].
+        configure.append(f'-DCMAKE_{key}_COMPILER={Path(tool).absolute().as_posix()}')
     configure.append('-DSTORM_SOURCE=' + (args.storm_source.resolve().as_posix() if args.storm_source else ''))
     subprocess.run(configure, check=True)
     subprocess.run(['cmake', '--build', build, '--target', 'water-core', '--parallel', str(args.jobs)], check=True)
