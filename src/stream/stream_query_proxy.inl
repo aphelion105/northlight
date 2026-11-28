@@ -146,7 +146,7 @@ struct StreamQuery final:IDirect3DQuery9,ProxyBase {
         }
         pumped:
         if(flags||!issued||eventEpoch!=core->queryEpoch.load()||core->coopState.load()!=D3D_OK||
-           (data?size!=dataSize:size!=0)){   // Invalidated/uncached requests use the real query after all recorded work.
+           dataSize>sizeof result||(data?size!=dataSize:size!=0)){   // Invalidated/uncached requests use the real query after all recorded work.
             // Sent-message handlers may release the last external reference
             // while this call pumps. Keep both the query and its device alive.
             struct Hold {StreamQuery* query;explicit Hold(StreamQuery* p):query(p){query->comAddRef();}~Hold(){query->comRelease();}} hold(this);

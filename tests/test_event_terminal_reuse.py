@@ -203,6 +203,10 @@ int main(int argc,char** argv){
     for(HRESULT status:{S_FALSE,S_OK,E_FAIL}){Replayer r;StreamQuery q;q.type=9;q.driver.status=status;q.driver.value=3;
         publish(q,S_OK,7);r.pending_={&q};r.pollQueries();assert(q.driver.calls==1);
         assert(r.pending_.empty()==(status==S_OK));if(status==S_OK)valueIs(q,3);}
+    // A result larger than the poll buffer is never read into it: the query
+    // leaves the pending list unpolled, and the game reads the real query.
+    {Replayer r;StreamQuery q;q.type=5;q.dataSize=352;r.pending_={&q};r.pollQueries();
+     assert(r.pending_.empty()&&q.driver.calls==0&&q.readyGen.load()==0&&q.resultSize==0);}
     // Swap/pop must not skip an adjacent pending, null or cached completion.
     {Replayer r;StreamQuery a,b,c,d;publish(a,S_OK,1);c.inner=nullptr;publish(d,E_FAIL,0);
      r.pending_={&a,&b,&c,&d};r.pollQueries();assert(r.pending_.size()==1&&r.pending_[0]==&b);
@@ -214,7 +218,7 @@ int main(int argc,char** argv){
         r.pending_={&q};r.pollQueries();calls+=q.driver.calls;polls+=r.core.q.stats.queryPolls.load();
         assert(r.pending_.empty()&&q.readyGen.load()==i);valueIs(q,BOOL(i&1));}
     assert(calls==0&&polls==0);
-    std::puts("PASS production pending-query loop: 8192 duplicate driver reads removed; pending, payload, errors, END reissue, reset, occlusion and swap/pop preserved; no game/GPU");
+    std::puts("PASS production pending-query loop: 8192 duplicate driver reads removed; pending, payload, errors, END reissue, reset, occlusion, oversized results and swap/pop preserved; no game/GPU");
 }
 '''
 
