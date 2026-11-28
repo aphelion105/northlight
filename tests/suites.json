@@ -161,6 +161,7 @@
       "test_effect_coverage_gpu.py",
       "test_weather_motion_gpu.py",
       "test_weather_capture_gpu.py",
+      "test_rain_mrt_target_change_gpu.py",
       "test_renderer_assets_gpu.py",
       "test_sky_planets_gpu.py",
       "test_celestial_composition_gpu.py",
