@@ -33,6 +33,20 @@ def events(scene):
 
 
 class GameplayBenchmarkTests(unittest.TestCase):
+    def test_asset_staging_copies_files_at_the_windows_hard_link_limit(self):
+        symlink = OSError()
+        symlink.winerror = 1314
+        hardlink = OSError()
+        hardlink.winerror = 1142
+        with TemporaryDirectory() as temp:
+            origin = Path(temp) / 'shared.fgs'
+            target = Path(temp) / 'staged.fgs'
+            origin.write_bytes(b'world cache fixture')
+            with patch.object(Path, 'symlink_to', side_effect=symlink), patch.object(bench.live.os, 'link', side_effect=hardlink):
+                bench.live.link_asset(origin, target)
+            self.assertEqual(target.read_bytes(), origin.read_bytes())
+            self.assertFalse(target.samefile(origin))
+
     def test_client_locale_follows_the_installed_locale_archive(self):
         locale_of = bench.live.data_locale
         with TemporaryDirectory() as temp:

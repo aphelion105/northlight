@@ -229,6 +229,9 @@ def link_asset(origin, target):
     try:
         os.link(origin, target)
     except OSError as error:
+        if getattr(error, 'winerror', None) == 1142:  # ERROR_TOO_MANY_LINKS
+            shutil.copyfile(origin, target)
+            return
         if getattr(error, 'winerror', None) != 17:
             raise
         raise ValueError(f'Cannot link {origin} into {target.anchor}: without Windows Developer Mode the archives '
