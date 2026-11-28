@@ -3,6 +3,7 @@ import argparse
 import hashlib
 import json
 import os
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 import subprocess
@@ -138,13 +139,17 @@ def main(argv=None):
         raise SystemExit(f'build_renderer.py: {e}\nInstall zig {northlight_paths.ZIG_VERSION} (https://ziglang.org/download/) and point NORTHLIGHT_ZIG at it.')
     env = northlight_paths.zig_env()
     check_compiler(zig, env, target)
-    subprocess.run([sys.executable, str(ROOT/'generate_glue_lighting_selection.py'), '--check'], check=True)
+    # Independent generators run concurrently. The mirror device and extension
+    # method generators read the forwarders.h that generate_forwarders.py writes.
+    with ThreadPoolExecutor() as pool:
+        for stage in ((('generate_glue_lighting_selection.py', '--check'), ('generate_forwarders.py',),
+                       ('generate_mirror_resource_forwarders.py',)),
+                      (('generate_mirror_guarded_device.py',), ('generate_extension_raw_methods.py',))):
+            for job in [pool.submit(subprocess.run, [sys.executable, str(ROOT/script), *args], check=True)
+                        for script, *args in stage]:
+                job.result()
     from build_sky_material_catalog import check_generated
     check_generated()
-    subprocess.run([sys.executable, str(ROOT/'generate_forwarders.py')], check=True)
-    subprocess.run([sys.executable, str(ROOT/'generate_mirror_guarded_device.py')], check=True)
-    subprocess.run([sys.executable, str(ROOT/'generate_mirror_resource_forwarders.py')], check=True)
-    subprocess.run([sys.executable, str(ROOT/'generate_extension_raw_methods.py')], check=True)
     manifest = json.loads((SHADERS/'shader-build.json').read_text(encoding='utf-8'))
     from shaders.compile_shaders import WATER_DISTANCE_ENTRIES
     water_hash = hashlib.sha256((SHADERS/'water_distance.hlsl').read_bytes()).hexdigest()
