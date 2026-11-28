@@ -25,7 +25,9 @@ PROFILE_DLL = northlight_paths.RENDERER / 'frd9-profile.dll'
 
 def source_identity(repo=northlight_paths.REPO):
     digest = hashlib.sha256()
-    paths = [p for folder in ('src', 'shaders') for p in (repo/folder).rglob('*') if p.is_file()]
+    # Skip dot-folders such as Visual Studio's .vs/ index: an IDE keeps them locked and rewrites them.
+    paths = [p for folder in ('src', 'shaders') for p in (repo/folder).rglob('*') if p.is_file()
+             and not any(part.startswith('.') for part in p.relative_to(repo/folder).parts)]
     paths += [repo/'scripts/build_renderer.py', repo/'northlight_paths.py']
     water_manifest = repo/'tideglass/source.json'
     if water_manifest.is_file():

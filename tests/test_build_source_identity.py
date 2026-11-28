@@ -21,6 +21,8 @@ with tempfile.TemporaryDirectory() as folder:
     assert build.source_identity(root)==original
     (root/'northlight-quality.ini').write_text('Personal settings')
     assert build.source_identity(root)==original
+    index=root/'src/.vs/src/FileContentIndex/example.vsidx';index.parent.mkdir(parents=True);index.write_bytes(b'IDE index')
+    assert build.source_identity(root)==original,'an IDE folder under src/ changed the build identity'
     for name in ('src/generated/example.h','shaders/example.hlsl','shaders/compiled/example.bin',
                  'scripts/build_renderer.py','northlight_paths.py'):
         path=root/name;before=path.read_bytes();path.write_bytes(before+b'changed')
