@@ -6,6 +6,7 @@
       "test_affected_tests.py",
       "test_build_source_identity.py",
       "test_player_water_core.py",
+      "test_build_combo.py",
       "test_renderer_assets.py",
       "test_dev_tuning_build.py",
       "test_capture_skip_wiring.py",

@@ -51,6 +51,7 @@ test_backend_work_policy.py
 test_band_retime.py
 test_blob_shadow_toggle.py
 test_blp_mip_guard.py
+test_build_combo.py
 test_build_source_identity.py
 test_bvh_build_scratch.py
 test_cache_shadow_optimizations.py
